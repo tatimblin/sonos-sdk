@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<root xmlns="urn:schemas-upnp-org:device-1-0">
+  <specVersion>
+    <major>1</major>
+    <minor>0</minor>
+  </specVersion>
+  <device>
+    <deviceType>urn:schemas-upnp-org:device:ZonePlayer:1</deviceType>
+    <friendlyName>192.168.4.39 - Sonos Roam 2 - RINCON_C43875CA135801400</friendlyName>
+    <manufacturer>Sonos, Inc.</manufacturer>
+    <manufacturerURL>http://www.sonos.com</manufacturerURL>
+    <modelNumber>S54</modelNumber>
+    <modelDescription>Sonos Roam 2</modelDescription>
+    <modelName>Sonos Roam 2</modelName>
+    <modelURL>http://www.sonos.com/products/zoneplayers/S54</modelURL>
+    <softwareVersion>85.0-64200</softwareVersion>
+    <swGen>2</swGen>
+    <hardwareVersion>1.33.3.5-1.13</hardwareVersion>
+    <serialNum>C4-38-75-CA-13-58:1</serialNum>
+    <MACAddress>C4:38:75:CA:13:58</MACAddress>
+    <UDN>uuid:RINCON_C43875CA135801400</UDN>
+    <iconList>
+      <icon>
+        <id>0</id>
+        <mimetype>image/png</mimetype>
+        <width>48</width>
+        <height>48</height>
+        <depth>24</depth>
+        <url>/img/icon-S54.png</url>
+      </icon>
+    </iconList>
+    <minCompatibleVersion>84.0-00000</minCompatibleVersion>
+    <legacyCompatibleVersion>58.0-00000</legacyCompatibleVersion>
+    <apiVersion>1.46.0</apiVersion>
+    <minApiVersion>1.1.0</minApiVersion>
+    <displayVersion>17.0</displayVersion>
+    <extraVersion></extraVersion>
+    <nsVersion>41</nsVersion>
+    <roomName>Roam / Office</roomName>
+    <displayName>Roam 2</displayName>
+    <zoneType>55</zoneType>
+    <feature1>0x00000000</feature1>
+    <feature2>0x07c01b12</feature2>
+    <feature3>0x0f45cc8a</feature3>
+    <feature4>0x00000000</feature4>
+    <seriesid>A200</seriesid>
+    <variant>13</variant>
+    <internalSpeakerSize>5</internalSpeakerSize>
+    <memory>1024</memory>
+    <flash>1024</flash>
+    <ampOnTime>35</ampOnTime>
+    <retailMode>0</retailMode>
+    <SSLPort>1443</SSLPort>
+    <securehhSSLPort>1843</securehhSSLPort>
+    <serviceList>
+      <service>
+        <serviceType>urn:schemas-upnp-org:service:AlarmClock:1</serviceType>
+        <serviceId>urn:upnp-org:serviceId:AlarmClock</serviceId>
+        <controlURL>/AlarmClock/Control</controlURL>
+        <eventSubURL>/AlarmClock/Event</eventSubURL>
+        <SCPDURL>/xml/AlarmClock1.xml</SCPDURL>
+      </service>
+    </serviceList>
+  </device>
+</root>

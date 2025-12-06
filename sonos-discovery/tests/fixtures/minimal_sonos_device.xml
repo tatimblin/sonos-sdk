@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<root xmlns="urn:schemas-upnp-org:device-1-0">
+  <device>
+    <deviceType>urn:schemas-upnp-org:device:ZonePlayer:1</deviceType>
+    <friendlyName>Test Room</friendlyName>
+    <manufacturer>Sonos, Inc.</manufacturer>
+    <modelName>Sonos One</modelName>
+    <UDN>uuid:RINCON_TEST123456</UDN>
+    <roomName>Test Room</roomName>
+  </device>
+</root>

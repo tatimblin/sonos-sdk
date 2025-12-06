@@ -1,0 +1,5 @@
+[workspace]
+members = [
+    "sonos-discovery",
+]
+resolver = "2"

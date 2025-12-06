@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<root xmlns="urn:schemas-upnp-org:device-1-0">
+  <specVersion>
+    <major>1</major>
+    <minor>0</minor>
+  </specVersion>
+  <device>
+    <deviceType>urn:schemas-upnp-org:device:ZonePlayer:1</deviceType>
+    <friendlyName>192.168.4.41 - Sonos Play:1 - RINCON_B8E9373C4F0601400</friendlyName>
+    <manufacturer>Sonos, Inc.</manufacturer>
+    <manufacturerURL>http://www.sonos.com</manufacturerURL>
+    <modelNumber>S1</modelNumber>
+    <modelDescription>Sonos Play:1</modelDescription>
+    <modelName>Sonos Play:1</modelName>
+    <modelURL>http://www.sonos.com/products/zoneplayers/S1</modelURL>
+    <softwareVersion>85.0-64200</softwareVersion>
+    <swGen>2</swGen>
+    <hardwareVersion>1.20.1.6-2</hardwareVersion>
+    <serialNum>B8-E9-37-3C-4F-06:7</serialNum>
+    <MACAddress>B8:E9:37:3C:4F:06</MACAddress>
+    <UDN>uuid:RINCON_B8E9373C4F0601400</UDN>
+    <iconList>
+      <icon>
+        <id>0</id>
+        <mimetype>image/png</mimetype>
+        <width>48</width>
+        <height>48</height>
+        <depth>24</depth>
+        <url>/img/icon-S1.png</url>
+      </icon>
+    </iconList>
+    <minCompatibleVersion>84.0-00000</minCompatibleVersion>
+    <legacyCompatibleVersion>58.0-00000</legacyCompatibleVersion>
+    <apiVersion>1.46.0</apiVersion>
+    <minApiVersion>1.1.0</minApiVersion>
+    <displayVersion>17.0</displayVersion>
+    <extraVersion>OTP: 1.1.1(1-20-1-6-0)</extraVersion>
+    <nsVersion>41</nsVersion>
+    <roomName>Dining Room</roomName>
+    <displayName>Play:1</displayName>
+    <zoneType>4</zoneType>
+    <feature1>0x00000000</feature1>
+    <feature2>0x00004172</feature2>
+    <feature3>0x0001000a</feature3>
+    <feature4>0x00000000</feature4>
+    <seriesid>P100</seriesid>
+    <variant>0</variant>
+    <internalSpeakerSize>3</internalSpeakerSize>
+    <memory>256</memory>
+    <flash>256</flash>
+    <ampOnTime>35</ampOnTime>
+    <retailMode>0</retailMode>
+    <SSLPort>1443</SSLPort>
+    <securehhSSLPort>1843</securehhSSLPort>
+    <serviceList>
+      <service>
+        <serviceType>urn:schemas-upnp-org:service:AlarmClock:1</serviceType>
+        <serviceId>urn:upnp-org:serviceId:AlarmClock</serviceId>
+        <controlURL>/AlarmClock/Control</controlURL>
+        <eventSubURL>/AlarmClock/Event</eventSubURL>
+        <SCPDURL>/xml/AlarmClock1.xml</SCPDURL>
+      </service>
+    </serviceList>
+  </device>
+</root>
