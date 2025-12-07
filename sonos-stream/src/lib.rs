@@ -8,9 +8,11 @@
 //! service-agnostic.
 
 mod error;
+mod strategy;
 mod subscription;
 mod types;
 
 pub use error::*;
+pub use strategy::*;
 pub use subscription::*;
 pub use types::*;
