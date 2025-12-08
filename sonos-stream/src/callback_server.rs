@@ -120,7 +120,7 @@ impl CallbackServer {
             "Failed to detect local IP address".to_string()
         })?;
 
-        let base_url = format!("http://{}:{}", local_ip, port);
+        let base_url = format!("http://{local_ip}:{port}");
 
         // Create event router
         let event_router = Arc::new(EventRouter::new(event_sender));
@@ -184,12 +184,7 @@ impl CallbackServer {
 
     /// Find an available port in the given range.
     fn find_available_port(start: u16, end: u16) -> Option<u16> {
-        for port in start..=end {
-            if Self::is_port_available(port) {
-                return Some(port);
-            }
-        }
-        None
+        (start..=end).find(|&port| Self::is_port_available(port))
     }
 
     /// Check if a port is available for binding.
@@ -274,7 +269,7 @@ impl CallbackServer {
                     },
                 );
 
-            eprintln!("CallbackServer listening on {}", addr);
+            eprintln!("CallbackServer listening on {addr}");
             server.await;
         })
     }

@@ -142,6 +142,7 @@ impl EventBroker {
     /// * `background_task` - Handle to the background renewal task
     /// * `shutdown_tx` - Sender for signaling background task shutdown
     /// * `raw_event_rx` - Receiver for raw events from callback server
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         strategies: HashMap<ServiceType, Box<dyn SubscriptionStrategy>>,
         callback_server: CallbackServer,
@@ -416,7 +417,7 @@ impl EventBroker {
                     .send(Event::ParseError {
                         speaker_id,
                         service_type,
-                        error: format!("No strategy registered for service type: {:?}", service_type),
+                        error: format!("No strategy registered for service type: {service_type:?}"),
                     })
                     .await;
                 return;
@@ -771,7 +772,7 @@ impl EventBroker {
                     // Background task completed successfully
                 }
                 Ok(Err(e)) => {
-                    eprintln!("Warning: Background task panicked during shutdown: {}", e);
+                    eprintln!("Warning: Background task panicked during shutdown: {e}");
                 }
                 Err(_) => {
                     return Err(BrokerError::ShutdownError(
@@ -799,7 +800,7 @@ impl EventBroker {
                     // Task was cancelled, which is expected
                 }
                 Ok(Err(e)) => {
-                    eprintln!("Warning: Event processing task panicked during shutdown: {}", e);
+                    eprintln!("Warning: Event processing task panicked during shutdown: {e}");
                 }
                 Err(_) => {
                     // Timeout is less critical for event processing task
@@ -849,8 +850,7 @@ impl EventBroker {
             Ok(callback_server) => {
                 if let Err(e) = callback_server.shutdown().await {
                     return Err(BrokerError::ShutdownError(format!(
-                        "Failed to shutdown callback server: {}",
-                        e
+                        "Failed to shutdown callback server: {e}"
                     )));
                 }
             }
@@ -1771,7 +1771,7 @@ mod tests {
                     Some("<test>event data</test>")
                 );
             }
-            _ => panic!("Expected ServiceEvent, got {:?}", event),
+            _ => panic!("Expected ServiceEvent, got {event:?}"),
         }
 
         // Verify subscription's last_event was updated
@@ -1909,7 +1909,7 @@ mod tests {
                 assert_eq!(evt_service_type, ServiceType::AVTransport);
                 assert!(error.contains("Invalid XML format"));
             }
-            _ => panic!("Expected ParseError event, got {:?}", event),
+            _ => panic!("Expected ParseError event, got {event:?}"),
         }
     }
 
@@ -1990,7 +1990,7 @@ mod tests {
                 assert_eq!(evt_service_type, ServiceType::AVTransport);
                 assert!(error.contains("No strategy registered"));
             }
-            _ => panic!("Expected ParseError event, got {:?}", event),
+            _ => panic!("Expected ParseError event, got {event:?}"),
         }
     }
 
@@ -2079,7 +2079,7 @@ mod tests {
 
         // Shutdown the broker
         let result = broker.shutdown().await;
-        assert!(result.is_ok(), "Shutdown should succeed: {:?}", result);
+        assert!(result.is_ok(), "Shutdown should succeed: {result:?}");
 
         // Note: We can't verify the internal state after shutdown because
         // the broker is consumed by the shutdown method. This is by design
@@ -2127,8 +2127,7 @@ mod tests {
         let result = broker.shutdown().await;
         assert!(
             result.is_ok(),
-            "Shutdown should succeed even with no subscriptions: {:?}",
-            result
+            "Shutdown should succeed even with no subscriptions: {result:?}"
         );
     }
 
@@ -2190,7 +2189,7 @@ mod tests {
 
         // Shutdown the broker (consumes it)
         let result = broker.shutdown().await;
-        assert!(result.is_ok(), "First shutdown should succeed: {:?}", result);
+        assert!(result.is_ok(), "First shutdown should succeed: {result:?}");
 
         // Note: We can't call shutdown again because the broker is consumed.
         // This test verifies that shutdown consumes the broker, preventing

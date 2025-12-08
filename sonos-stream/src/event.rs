@@ -255,7 +255,7 @@ mod tests {
             subscription_id: "test-sub-123".to_string(),
         };
 
-        let debug_str = format!("{:?}", event);
+        let debug_str = format!("{event:?}");
         assert!(debug_str.contains("SubscriptionEstablished"));
         assert!(debug_str.contains("speaker1"));
         assert!(debug_str.contains("AVTransport"));
@@ -479,7 +479,7 @@ mod tests {
     #[test]
     fn test_parsed_event_debug() {
         let event = ParsedEvent::custom("debug_test", HashMap::new());
-        let debug_str = format!("{:?}", event);
+        let debug_str = format!("{event:?}");
         assert!(debug_str.contains("Custom"));
         assert!(debug_str.contains("debug_test"));
     }

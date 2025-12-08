@@ -52,7 +52,7 @@
 //! let mut broker = EventBrokerBuilder::new()
 //!     .with_strategy(Box::new(MyStrategy))
 //!     .with_port_range(3400, 3500)
-//!     .build()?;
+//!     .build().await?;
 //!
 //! // Create a speaker instance
 //! let speaker = Speaker::new(
@@ -63,7 +63,7 @@
 //! );
 //!
 //! // Subscribe to a service
-//! broker.subscribe(&speaker, ServiceType::AVTransport)?;
+//! broker.subscribe(&speaker, ServiceType::AVTransport).await?;
 //!
 //! // Get the event stream
 //! let mut event_stream = broker.event_stream();
@@ -85,10 +85,10 @@
 //! }
 //!
 //! // Unsubscribe when done
-//! broker.unsubscribe(&speaker, ServiceType::AVTransport)?;
+//! broker.unsubscribe(&speaker, ServiceType::AVTransport).await?;
 //!
 //! // Shutdown the broker
-//! broker.shutdown()?;
+//! broker.shutdown().await?;
 //! # Ok(())
 //! # }
 //! ```
@@ -183,12 +183,12 @@
 //! use sonos_stream::EventBrokerBuilder;
 //! use std::time::Duration;
 //!
-//! # fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let broker = EventBrokerBuilder::new()
 //!     .with_port_range(3400, 3500)                    // Callback server port range
 //!     .with_subscription_timeout(Duration::from_secs(1800))  // 30 minutes
 //!     .with_retry_config(3, Duration::from_secs(2))   // 3 retries, 2s base backoff
-//!     .build()?;
+//!     .build().await?;
 //! # Ok(())
 //! # }
 //! ```
