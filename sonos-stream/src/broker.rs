@@ -42,7 +42,7 @@ use std::time::SystemTime;
 use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 
-use crate::callback_server::CallbackServer;
+use crate::callback_server::{CallbackServer, RawEvent};
 use crate::strategy::SubscriptionStrategy;
 use crate::subscription::Subscription;
 use crate::types::{BrokerConfig, ServiceType, SubscriptionKey};
@@ -121,6 +121,8 @@ pub struct EventBroker {
     background_task: Option<JoinHandle<()>>,
     /// Shutdown signal sender for background task
     shutdown_tx: Option<mpsc::Sender<()>>,
+    /// Event processing task handle
+    event_processing_task: Option<JoinHandle<()>>,
 }
 
 impl EventBroker {
@@ -138,6 +140,7 @@ impl EventBroker {
     /// * `event_receiver` - Channel receiver for the event stream
     /// * `background_task` - Handle to the background renewal task
     /// * `shutdown_tx` - Sender for signaling background task shutdown
+    /// * `raw_event_rx` - Receiver for raw events from callback server
     pub(crate) fn new(
         strategies: HashMap<ServiceType, Box<dyn SubscriptionStrategy>>,
         callback_server: CallbackServer,
@@ -146,16 +149,125 @@ impl EventBroker {
         event_receiver: mpsc::Receiver<Event>,
         background_task: JoinHandle<()>,
         shutdown_tx: mpsc::Sender<()>,
+        raw_event_rx: mpsc::UnboundedReceiver<RawEvent>,
     ) -> Self {
+        let subscriptions = Arc::new(RwLock::new(HashMap::new()));
+        let strategies = Arc::new(strategies);
+        
+        // Start event processing task
+        let event_processing_task = Self::start_event_processing_task(
+            raw_event_rx,
+            strategies.clone(),
+            subscriptions.clone(),
+            event_sender.clone(),
+        );
+        
         Self {
-            subscriptions: Arc::new(RwLock::new(HashMap::new())),
-            strategies: Arc::new(strategies),
+            subscriptions,
+            strategies,
             callback_server: Arc::new(callback_server),
             event_sender,
             event_receiver: Some(event_receiver),
             config,
             background_task: Some(background_task),
             shutdown_tx: Some(shutdown_tx),
+            event_processing_task: Some(event_processing_task),
+        }
+    }
+
+    /// Start the event processing task that receives raw events and routes them to strategies.
+    ///
+    /// This task runs in the background and:
+    /// 1. Receives raw events from the callback server
+    /// 2. Routes events to the appropriate strategy for parsing
+    /// 3. Emits ServiceEvent with parsed data on success
+    /// 4. Emits ParseError event on parse failure
+    /// 5. Ensures errors don't stop event processing
+    fn start_event_processing_task(
+        mut raw_event_rx: mpsc::UnboundedReceiver<RawEvent>,
+        strategies: Arc<HashMap<ServiceType, Box<dyn SubscriptionStrategy>>>,
+        subscriptions: Arc<RwLock<HashMap<SubscriptionKey, ActiveSubscription>>>,
+        event_sender: mpsc::Sender<Event>,
+    ) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            while let Some(raw_event) = raw_event_rx.recv().await {
+                // Process the event
+                Self::process_raw_event(
+                    raw_event,
+                    &strategies,
+                    &subscriptions,
+                    &event_sender,
+                )
+                .await;
+            }
+        })
+    }
+
+    /// Process a single raw event from the callback server.
+    ///
+    /// This method:
+    /// 1. Looks up the strategy for the service type
+    /// 2. Calls the strategy to parse the event
+    /// 3. Emits ServiceEvent for each parsed event
+    /// 4. Emits ParseError if parsing fails
+    /// 5. Updates the subscription's last event timestamp
+    async fn process_raw_event(
+        raw_event: RawEvent,
+        strategies: &Arc<HashMap<ServiceType, Box<dyn SubscriptionStrategy>>>,
+        subscriptions: &Arc<RwLock<HashMap<SubscriptionKey, ActiveSubscription>>>,
+        event_sender: &mpsc::Sender<Event>,
+    ) {
+        let speaker_id = raw_event.speaker_id.clone();
+        let service_type = raw_event.service_type;
+        let event_xml = raw_event.event_xml;
+
+        // Look up strategy for service type
+        let strategy = match strategies.get(&service_type) {
+            Some(s) => s,
+            None => {
+                // No strategy registered - emit parse error
+                let _ = event_sender
+                    .send(Event::ParseError {
+                        speaker_id,
+                        service_type,
+                        error: format!("No strategy registered for service type: {:?}", service_type),
+                    })
+                    .await;
+                return;
+            }
+        };
+
+        // Parse the event using the strategy
+        match strategy.parse_event(&speaker_id, &event_xml) {
+            Ok(parsed_events) => {
+                // Emit ServiceEvent for each parsed event
+                for parsed_event in parsed_events {
+                    let _ = event_sender
+                        .send(Event::ServiceEvent {
+                            speaker_id: speaker_id.clone(),
+                            service_type,
+                            event: parsed_event,
+                        })
+                        .await;
+                }
+
+                // Update subscription's last event timestamp
+                let key = SubscriptionKey::new(speaker_id, service_type);
+                let mut subs = subscriptions.write().await;
+                if let Some(active_sub) = subs.get_mut(&key) {
+                    active_sub.mark_event_received();
+                }
+            }
+            Err(e) => {
+                // Emit ParseError event
+                let _ = event_sender
+                    .send(Event::ParseError {
+                        speaker_id,
+                        service_type,
+                        error: e.to_string(),
+                    })
+                    .await;
+            }
         }
     }
 
@@ -752,7 +864,7 @@ mod tests {
         use std::net::IpAddr;
 
         // Create callback server
-        let (raw_event_tx, _raw_event_rx) = mpsc::unbounded_channel();
+        let (raw_event_tx, raw_event_rx) = mpsc::unbounded_channel();
         let callback_server = crate::callback_server::CallbackServer::new(
             (50000, 50100),
             raw_event_tx,
@@ -788,6 +900,7 @@ mod tests {
             event_rx,
             background_task,
             shutdown_tx,
+            raw_event_rx,
         );
 
         // Create speaker
@@ -831,7 +944,7 @@ mod tests {
         use std::net::IpAddr;
 
         // Create callback server
-        let (raw_event_tx, _raw_event_rx) = mpsc::unbounded_channel();
+        let (raw_event_tx, raw_event_rx) = mpsc::unbounded_channel();
         let callback_server = crate::callback_server::CallbackServer::new(
             (50000, 50100),
             raw_event_tx,
@@ -867,6 +980,7 @@ mod tests {
             event_rx,
             background_task,
             shutdown_tx,
+            raw_event_rx,
         );
 
         // Create speaker
@@ -903,7 +1017,7 @@ mod tests {
         use std::net::IpAddr;
 
         // Create callback server
-        let (raw_event_tx, _raw_event_rx) = mpsc::unbounded_channel();
+        let (raw_event_tx, raw_event_rx) = mpsc::unbounded_channel();
         let callback_server = crate::callback_server::CallbackServer::new(
             (50000, 50100),
             raw_event_tx,
@@ -934,6 +1048,7 @@ mod tests {
             event_rx,
             background_task,
             shutdown_tx,
+            raw_event_rx,
         );
 
         // Create speaker
@@ -962,7 +1077,7 @@ mod tests {
         use std::net::IpAddr;
 
         // Create callback server
-        let (raw_event_tx, _raw_event_rx) = mpsc::unbounded_channel();
+        let (raw_event_tx, raw_event_rx) = mpsc::unbounded_channel();
         let callback_server = crate::callback_server::CallbackServer::new(
             (50000, 50100),
             raw_event_tx,
@@ -998,6 +1113,7 @@ mod tests {
             event_rx,
             background_task,
             shutdown_tx,
+            raw_event_rx,
         );
 
         // Create speaker
@@ -1047,7 +1163,7 @@ mod tests {
         use std::net::IpAddr;
 
         // Create callback server
-        let (raw_event_tx, _raw_event_rx) = mpsc::unbounded_channel();
+        let (raw_event_tx, raw_event_rx) = mpsc::unbounded_channel();
         let callback_server = crate::callback_server::CallbackServer::new(
             (50000, 50100),
             raw_event_tx,
@@ -1083,6 +1199,7 @@ mod tests {
             event_rx,
             background_task,
             shutdown_tx,
+            raw_event_rx,
         );
 
         // Create speaker
@@ -1147,7 +1264,7 @@ mod tests {
         use std::net::IpAddr;
 
         // Create callback server
-        let (raw_event_tx, _raw_event_rx) = mpsc::unbounded_channel();
+        let (raw_event_tx, raw_event_rx) = mpsc::unbounded_channel();
         let callback_server = crate::callback_server::CallbackServer::new(
             (50000, 50100),
             raw_event_tx,
@@ -1183,6 +1300,7 @@ mod tests {
             event_rx,
             background_task,
             shutdown_tx,
+            raw_event_rx,
         );
 
         // Create speaker
@@ -1208,7 +1326,7 @@ mod tests {
         use std::net::IpAddr;
 
         // Create callback server
-        let (raw_event_tx, _raw_event_rx) = mpsc::unbounded_channel();
+        let (raw_event_tx, raw_event_rx) = mpsc::unbounded_channel();
         let callback_server = crate::callback_server::CallbackServer::new(
             (50000, 50100),
             raw_event_tx,
@@ -1249,6 +1367,7 @@ mod tests {
             event_rx,
             background_task,
             shutdown_tx,
+            raw_event_rx,
         );
 
         // Create speaker
@@ -1291,6 +1410,364 @@ mod tests {
         {
             let subs = broker.subscriptions.read().await;
             assert_eq!(subs.len(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_event_routing_and_parsing() {
+        use crate::types::{BrokerConfig, Speaker};
+        use std::net::IpAddr;
+        use std::collections::HashMap;
+
+        // Create callback server
+        let (raw_event_tx, raw_event_rx) = mpsc::unbounded_channel();
+        let callback_server = crate::callback_server::CallbackServer::new(
+            (50000, 50100),
+            raw_event_tx.clone(),
+        )
+        .await
+        .unwrap();
+
+        // Create event channel
+        let (event_tx, event_rx) = mpsc::channel(10);
+
+        // Create mock strategy that returns parsed events
+        struct TestStrategy;
+        impl crate::strategy::SubscriptionStrategy for TestStrategy {
+            fn service_type(&self) -> ServiceType {
+                ServiceType::AVTransport
+            }
+
+            fn subscription_scope(&self) -> crate::types::SubscriptionScope {
+                crate::types::SubscriptionScope::PerSpeaker
+            }
+
+            fn create_subscription(
+                &self,
+                speaker: &crate::types::Speaker,
+                _callback_url: String,
+                _config: &crate::types::SubscriptionConfig,
+            ) -> Result<Box<dyn crate::subscription::Subscription>, crate::error::StrategyError> {
+                Ok(Box::new(MockSub {
+                    id: format!("test-sub-{}", speaker.id.as_str()),
+                    speaker_id: speaker.id.clone(),
+                    service_type: ServiceType::AVTransport,
+                }))
+            }
+
+            fn parse_event(
+                &self,
+                _speaker_id: &crate::types::SpeakerId,
+                event_xml: &str,
+            ) -> Result<Vec<crate::strategy::ParsedEvent>, crate::error::StrategyError> {
+                // Parse the test XML and return a custom event
+                Ok(vec![crate::strategy::ParsedEvent::custom(
+                    "test_event",
+                    HashMap::from([("xml_content".to_string(), event_xml.to_string())]),
+                )])
+            }
+        }
+
+        // Create strategies
+        let mut strategies = HashMap::new();
+        strategies.insert(
+            ServiceType::AVTransport,
+            Box::new(TestStrategy) as Box<dyn crate::strategy::SubscriptionStrategy>,
+        );
+
+        // Create background task (dummy for testing)
+        let (_shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+        let background_task = tokio::spawn(async move {
+            shutdown_rx.recv().await;
+        });
+
+        let (shutdown_tx, _) = mpsc::channel::<()>(1);
+
+        // Create broker
+        let mut broker = EventBroker::new(
+            strategies,
+            callback_server,
+            BrokerConfig::default(),
+            event_tx,
+            event_rx,
+            background_task,
+            shutdown_tx,
+            raw_event_rx,
+        );
+
+        // Create speaker
+        let speaker = Speaker::new(
+            SpeakerId::new("RINCON_123"),
+            "192.168.1.100".parse::<IpAddr>().unwrap(),
+            "Living Room".to_string(),
+            "Living Room".to_string(),
+        );
+
+        // Subscribe
+        broker.subscribe(&speaker, ServiceType::AVTransport).await.unwrap();
+
+        // Get event stream
+        let mut event_rx = broker.event_stream();
+
+        // Consume the SubscriptionEstablished event
+        let event = event_rx.recv().await.unwrap();
+        match event {
+            Event::SubscriptionEstablished { .. } => {
+                // Expected
+            }
+            _ => panic!("Expected SubscriptionEstablished event"),
+        }
+
+        // Simulate a raw event from the callback server
+        let raw_event = crate::callback_server::RawEvent {
+            subscription_id: "test-sub-RINCON_123".to_string(),
+            speaker_id: speaker.id.clone(),
+            service_type: ServiceType::AVTransport,
+            event_xml: "<test>event data</test>".to_string(),
+        };
+
+        raw_event_tx.send(raw_event).unwrap();
+
+        // Wait for the ServiceEvent to be emitted
+        let event = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            event_rx.recv()
+        ).await.unwrap().unwrap();
+
+        match event {
+            Event::ServiceEvent {
+                speaker_id: evt_speaker_id,
+                service_type: evt_service_type,
+                event: parsed_event,
+            } => {
+                assert_eq!(evt_speaker_id, speaker.id);
+                assert_eq!(evt_service_type, ServiceType::AVTransport);
+                assert_eq!(parsed_event.event_type(), "test_event");
+                assert_eq!(
+                    parsed_event.data().get("xml_content").map(|s| s.as_str()),
+                    Some("<test>event data</test>")
+                );
+            }
+            _ => panic!("Expected ServiceEvent, got {:?}", event),
+        }
+
+        // Verify subscription's last_event was updated
+        let subs = broker.subscriptions.read().await;
+        let key = crate::types::SubscriptionKey::new(speaker.id.clone(), ServiceType::AVTransport);
+        let active_sub = subs.get(&key).unwrap();
+        assert!(active_sub.last_event.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_event_parsing_error() {
+        use crate::types::{BrokerConfig, Speaker};
+        use std::net::IpAddr;
+
+        // Create callback server
+        let (raw_event_tx, raw_event_rx) = mpsc::unbounded_channel();
+        let callback_server = crate::callback_server::CallbackServer::new(
+            (50000, 50100),
+            raw_event_tx.clone(),
+        )
+        .await
+        .unwrap();
+
+        // Create event channel
+        let (event_tx, event_rx) = mpsc::channel(10);
+
+        // Create mock strategy that fails to parse
+        struct FailingStrategy;
+        impl crate::strategy::SubscriptionStrategy for FailingStrategy {
+            fn service_type(&self) -> ServiceType {
+                ServiceType::AVTransport
+            }
+
+            fn subscription_scope(&self) -> crate::types::SubscriptionScope {
+                crate::types::SubscriptionScope::PerSpeaker
+            }
+
+            fn create_subscription(
+                &self,
+                speaker: &crate::types::Speaker,
+                _callback_url: String,
+                _config: &crate::types::SubscriptionConfig,
+            ) -> Result<Box<dyn crate::subscription::Subscription>, crate::error::StrategyError> {
+                Ok(Box::new(MockSub {
+                    id: format!("test-sub-{}", speaker.id.as_str()),
+                    speaker_id: speaker.id.clone(),
+                    service_type: ServiceType::AVTransport,
+                }))
+            }
+
+            fn parse_event(
+                &self,
+                _speaker_id: &crate::types::SpeakerId,
+                _event_xml: &str,
+            ) -> Result<Vec<crate::strategy::ParsedEvent>, crate::error::StrategyError> {
+                Err(crate::error::StrategyError::EventParseFailed(
+                    "Invalid XML format".to_string(),
+                ))
+            }
+        }
+
+        // Create strategies
+        let mut strategies = HashMap::new();
+        strategies.insert(
+            ServiceType::AVTransport,
+            Box::new(FailingStrategy) as Box<dyn crate::strategy::SubscriptionStrategy>,
+        );
+
+        // Create background task (dummy for testing)
+        let (_shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+        let background_task = tokio::spawn(async move {
+            shutdown_rx.recv().await;
+        });
+
+        let (shutdown_tx, _) = mpsc::channel::<()>(1);
+
+        // Create broker
+        let mut broker = EventBroker::new(
+            strategies,
+            callback_server,
+            BrokerConfig::default(),
+            event_tx,
+            event_rx,
+            background_task,
+            shutdown_tx,
+            raw_event_rx,
+        );
+
+        // Create speaker
+        let speaker = Speaker::new(
+            SpeakerId::new("RINCON_123"),
+            "192.168.1.100".parse::<IpAddr>().unwrap(),
+            "Living Room".to_string(),
+            "Living Room".to_string(),
+        );
+
+        // Subscribe
+        broker.subscribe(&speaker, ServiceType::AVTransport).await.unwrap();
+
+        // Get event stream
+        let mut event_rx = broker.event_stream();
+
+        // Consume the SubscriptionEstablished event
+        let event = event_rx.recv().await.unwrap();
+        match event {
+            Event::SubscriptionEstablished { .. } => {
+                // Expected
+            }
+            _ => panic!("Expected SubscriptionEstablished event"),
+        }
+
+        // Simulate a raw event from the callback server
+        let raw_event = crate::callback_server::RawEvent {
+            subscription_id: "test-sub-RINCON_123".to_string(),
+            speaker_id: speaker.id.clone(),
+            service_type: ServiceType::AVTransport,
+            event_xml: "<invalid>malformed xml".to_string(),
+        };
+
+        raw_event_tx.send(raw_event).unwrap();
+
+        // Wait for the ParseError event to be emitted
+        let event = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            event_rx.recv()
+        ).await.unwrap().unwrap();
+
+        match event {
+            Event::ParseError {
+                speaker_id: evt_speaker_id,
+                service_type: evt_service_type,
+                error,
+            } => {
+                assert_eq!(evt_speaker_id, speaker.id);
+                assert_eq!(evt_service_type, ServiceType::AVTransport);
+                assert!(error.contains("Invalid XML format"));
+            }
+            _ => panic!("Expected ParseError event, got {:?}", event),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_event_routing_no_strategy() {
+        use crate::types::{BrokerConfig, Speaker};
+        use std::net::IpAddr;
+
+        // Create callback server
+        let (raw_event_tx, raw_event_rx) = mpsc::unbounded_channel();
+        let callback_server = crate::callback_server::CallbackServer::new(
+            (50000, 50100),
+            raw_event_tx.clone(),
+        )
+        .await
+        .unwrap();
+
+        // Create event channel
+        let (event_tx, event_rx) = mpsc::channel(10);
+
+        // Create strategies (empty - no strategies registered)
+        let strategies = HashMap::new();
+
+        // Create background task (dummy for testing)
+        let (_shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+        let background_task = tokio::spawn(async move {
+            shutdown_rx.recv().await;
+        });
+
+        let (shutdown_tx, _) = mpsc::channel::<()>(1);
+
+        // Create broker
+        let mut broker = EventBroker::new(
+            strategies,
+            callback_server,
+            BrokerConfig::default(),
+            event_tx,
+            event_rx,
+            background_task,
+            shutdown_tx,
+            raw_event_rx,
+        );
+
+        // Get event stream
+        let mut event_rx = broker.event_stream();
+
+        // Create speaker
+        let speaker = Speaker::new(
+            SpeakerId::new("RINCON_123"),
+            "192.168.1.100".parse::<IpAddr>().unwrap(),
+            "Living Room".to_string(),
+            "Living Room".to_string(),
+        );
+
+        // Simulate a raw event for a service with no registered strategy
+        let raw_event = crate::callback_server::RawEvent {
+            subscription_id: "test-sub-123".to_string(),
+            speaker_id: speaker.id.clone(),
+            service_type: ServiceType::AVTransport,
+            event_xml: "<test>event data</test>".to_string(),
+        };
+
+        raw_event_tx.send(raw_event).unwrap();
+
+        // Wait for the ParseError event to be emitted
+        let event = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            event_rx.recv()
+        ).await.unwrap().unwrap();
+
+        match event {
+            Event::ParseError {
+                speaker_id: evt_speaker_id,
+                service_type: evt_service_type,
+                error,
+            } => {
+                assert_eq!(evt_speaker_id, speaker.id);
+                assert_eq!(evt_service_type, ServiceType::AVTransport);
+                assert!(error.contains("No strategy registered"));
+            }
+            _ => panic!("Expected ParseError event, got {:?}", event),
         }
     }
 }
