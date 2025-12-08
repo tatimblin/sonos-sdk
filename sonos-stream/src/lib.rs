@@ -8,6 +8,7 @@
 //! service-agnostic.
 
 mod broker;
+mod builder;
 mod callback_server;
 mod error;
 mod strategy;
@@ -15,6 +16,7 @@ mod subscription;
 mod types;
 
 pub use broker::{ActiveSubscription, Event, EventBroker};
+pub use builder::EventBrokerBuilder;
 pub use callback_server::{CallbackServer, EventRouter, RawEvent};
 pub use error::*;
 pub use strategy::*;
