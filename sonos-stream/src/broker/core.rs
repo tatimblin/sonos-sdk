@@ -4,19 +4,17 @@
 //! The broker coordinates between manager components and exposes a clean public
 //! interface for subscription management and event streaming.
 
-use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::mpsc;
 
 use crate::callback::CallbackServer;
 use crate::event::Event;
-use crate::strategy::SubscriptionStrategy;
-use crate::types::{BrokerConfig, ServiceType, SubscriptionKey};
+use crate::types::ServiceType;
 
 // Import manager types
 use super::event_processor::EventProcessor;
 use super::renewal_manager::RenewalManager;
-use super::subscription_manager::{ActiveSubscription, SubscriptionManager};
+use super::subscription_manager::SubscriptionManager;
 
 /// Event broker for managing UPnP event subscriptions.
 ///
@@ -67,27 +65,17 @@ use super::subscription_manager::{ActiveSubscription, SubscriptionManager};
 /// broker.shutdown().await?;
 /// ```
 pub struct EventBroker {
-    /// Map of active subscriptions by (speaker_id, service_type)
-    #[allow(dead_code)]
-    subscriptions: Arc<RwLock<HashMap<SubscriptionKey, ActiveSubscription>>>,
-    /// Map of registered strategies by service type
-    #[allow(dead_code)]
-    strategies: Arc<HashMap<ServiceType, Box<dyn SubscriptionStrategy>>>,
     /// Callback server for receiving UPnP events
     callback_server: Arc<CallbackServer>,
     /// Sender for emitting events to the application
     event_sender: mpsc::Sender<Event>,
     /// Receiver for the event stream (taken by event_stream())
     event_receiver: Option<mpsc::Receiver<Event>>,
-    /// Broker configuration
-    #[allow(dead_code)]
-    config: BrokerConfig,
     /// Subscription manager for lifecycle operations
     subscription_manager: SubscriptionManager,
     /// Renewal manager for automatic renewal
     renewal_manager: RenewalManager,
     /// Event processor for routing and parsing
-    #[allow(dead_code)]
     event_processor: EventProcessor,
 }
 
@@ -99,34 +87,24 @@ impl EventBroker {
     ///
     /// # Arguments
     ///
-    /// * `strategies` - Arc-wrapped map of service type to strategy implementation
     /// * `callback_server` - Arc-wrapped callback server for receiving events
-    /// * `config` - Broker configuration
     /// * `event_sender` - Channel sender for emitting events
     /// * `event_receiver` - Channel receiver for the event stream
     /// * `subscription_manager` - Manager for subscription lifecycle operations
     /// * `renewal_manager` - Manager for automatic renewal
     /// * `event_processor` - Manager for event routing and parsing
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        strategies: Arc<HashMap<ServiceType, Box<dyn SubscriptionStrategy>>>,
         callback_server: Arc<CallbackServer>,
-        config: BrokerConfig,
         event_sender: mpsc::Sender<Event>,
         event_receiver: mpsc::Receiver<Event>,
         subscription_manager: SubscriptionManager,
         renewal_manager: RenewalManager,
         event_processor: EventProcessor,
     ) -> Self {
-        let subscriptions = Arc::new(RwLock::new(HashMap::new()));
-
         Self {
-            subscriptions,
-            strategies,
             callback_server,
             event_sender,
             event_receiver: Some(event_receiver),
-            config,
             subscription_manager,
             renewal_manager,
             event_processor,
@@ -314,17 +292,15 @@ impl EventBroker {
     pub async fn shutdown(self) -> crate::error::Result<()> {
         use crate::error::BrokerError;
 
-        // TODO: Implement shutdown sequence once manager components are complete
-        // 1. Shutdown RenewalManager (task 4) - DONE
-        // 2. Shutdown EventProcessor (task 5)
-        // 3. Shutdown SubscriptionManager - unsubscribe all (task 3) - DONE
-        // 4. Shutdown callback server
-        // 5. Close event channels
-
         // 1. Shutdown RenewalManager
         self.renewal_manager.shutdown().await?;
 
-        // 2. TODO: Shutdown EventProcessor (task 5)
+        // 2. Shutdown EventProcessor
+        if let Err(e) = self.event_processor.shutdown().await {
+            return Err(BrokerError::ShutdownError(format!(
+                "Failed to shutdown event processor: {e}"
+            )));
+        }
 
         // 3. Shutdown SubscriptionManager - unsubscribe all
         self.subscription_manager.shutdown_all().await?;
