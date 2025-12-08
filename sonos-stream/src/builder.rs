@@ -363,11 +363,9 @@ impl EventBrokerBuilder {
             event_tx.clone(),
         );
 
-        // Create the broker with the shared Arc-wrapped components
+        // Create the broker with the manager components
         Ok(EventBroker::new(
-            strategies_arc,
             callback_server_arc,
-            self.config,
             event_tx,
             event_rx,
             subscription_manager,
