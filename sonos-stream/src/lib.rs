@@ -198,9 +198,10 @@
 //! All public types are thread-safe and can be shared across async tasks. The broker uses
 //! internal locking to ensure safe concurrent access to subscription state.
 
+// Module declarations
 mod broker;
 mod builder;
-mod callback_server;
+mod callback;
 mod error;
 mod event;
 mod strategy;
@@ -208,8 +209,11 @@ mod subscription;
 mod types;
 
 // Re-export main broker types
-pub use broker::EventBroker;
+pub use broker::{ActiveSubscription, EventBroker};
 pub use builder::EventBrokerBuilder;
+
+// Re-export callback types
+pub use callback::{CallbackServer, EventRouter, RawEvent};
 
 // Re-export event types
 pub use event::{Event, ParsedEvent};
@@ -226,7 +230,3 @@ pub use types::{
     BrokerConfig, ServiceType, Speaker, SpeakerId, SubscriptionConfig, SubscriptionKey,
     SubscriptionScope,
 };
-
-// Internal types that may be useful for advanced use cases
-pub use broker::ActiveSubscription;
-pub use callback_server::{CallbackServer, EventRouter, RawEvent};

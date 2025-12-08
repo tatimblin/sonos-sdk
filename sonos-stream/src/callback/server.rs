@@ -1,81 +1,12 @@
-//! HTTP callback server for receiving UPnP event notifications.
+//! HTTP server for receiving UPnP event notifications.
 
-use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::mpsc;
 use warp::Filter;
 
 use crate::types::{ServiceType, SpeakerId};
-
-/// Raw event received from the callback server.
-#[derive(Debug, Clone)]
-pub struct RawEvent {
-    /// The subscription ID this event is for
-    pub subscription_id: String,
-    /// The speaker ID
-    pub speaker_id: SpeakerId,
-    /// The service type
-    pub service_type: ServiceType,
-    /// The raw XML event body
-    pub event_xml: String,
-}
-
-/// Routes events from HTTP callbacks to the appropriate handlers.
-#[derive(Clone)]
-pub struct EventRouter {
-    /// Map of subscription ID to (speaker_id, service_type)
-    subscriptions: Arc<RwLock<HashMap<String, (SpeakerId, ServiceType)>>>,
-    /// Channel for sending raw events to the broker
-    event_sender: mpsc::UnboundedSender<RawEvent>,
-}
-
-impl EventRouter {
-    /// Create a new event router.
-    pub fn new(event_sender: mpsc::UnboundedSender<RawEvent>) -> Self {
-        Self {
-            subscriptions: Arc::new(RwLock::new(HashMap::new())),
-            event_sender,
-        }
-    }
-
-    /// Register a subscription for event routing.
-    pub async fn register(
-        &self,
-        subscription_id: String,
-        speaker_id: SpeakerId,
-        service_type: ServiceType,
-    ) {
-        let mut subs = self.subscriptions.write().await;
-        subs.insert(subscription_id, (speaker_id, service_type));
-    }
-
-    /// Unregister a subscription.
-    pub async fn unregister(&self, subscription_id: &str) {
-        let mut subs = self.subscriptions.write().await;
-        subs.remove(subscription_id);
-    }
-
-    /// Route an incoming event to the broker.
-    pub async fn route_event(&self, subscription_id: String, event_xml: String) -> bool {
-        let subs = self.subscriptions.read().await;
-        
-        if let Some((speaker_id, service_type)) = subs.get(&subscription_id) {
-            let event = RawEvent {
-                subscription_id,
-                speaker_id: speaker_id.clone(),
-                service_type: *service_type,
-                event_xml,
-            };
-            
-            // Send event to broker (ignore errors if receiver is dropped)
-            let _ = self.event_sender.send(event);
-            true
-        } else {
-            false
-        }
-    }
-}
+use super::router::{EventRouter, RawEvent};
 
 /// HTTP callback server for receiving UPnP event notifications.
 pub struct CallbackServer {
@@ -416,72 +347,6 @@ mod tests {
             &Some("upnp:event".to_string()),
             &Some("wrong".to_string()),
         ));
-    }
-
-    #[tokio::test]
-    async fn test_event_router_register_and_route() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let router = EventRouter::new(tx);
-
-        let sub_id = "test-sub-123".to_string();
-        let speaker_id = SpeakerId::new("speaker1");
-        let service_type = ServiceType::AVTransport;
-
-        // Register subscription
-        router
-            .register(sub_id.clone(), speaker_id.clone(), service_type)
-            .await;
-
-        // Route an event
-        let event_xml = "<event>test</event>".to_string();
-        let routed = router.route_event(sub_id.clone(), event_xml.clone()).await;
-        assert!(routed);
-
-        // Verify event was sent
-        let event = rx.recv().await.unwrap();
-        assert_eq!(event.subscription_id, sub_id);
-        assert_eq!(event.speaker_id, speaker_id);
-        assert_eq!(event.service_type, service_type);
-        assert_eq!(event.event_xml, event_xml);
-    }
-
-    #[tokio::test]
-    async fn test_event_router_unregister() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let router = EventRouter::new(tx);
-
-        let sub_id = "test-sub-123".to_string();
-        let speaker_id = SpeakerId::new("speaker1");
-        let service_type = ServiceType::AVTransport;
-
-        // Register and then unregister
-        router
-            .register(sub_id.clone(), speaker_id.clone(), service_type)
-            .await;
-        router.unregister(&sub_id).await;
-
-        // Try to route an event - should fail
-        let event_xml = "<event>test</event>".to_string();
-        let routed = router.route_event(sub_id, event_xml).await;
-        assert!(!routed);
-
-        // No event should be received
-        assert!(rx.try_recv().is_err());
-    }
-
-    #[tokio::test]
-    async fn test_event_router_unknown_subscription() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let router = EventRouter::new(tx);
-
-        // Try to route event for unknown subscription
-        let routed = router
-            .route_event("unknown-sub".to_string(), "<event>test</event>".to_string())
-            .await;
-        assert!(!routed);
-
-        // No event should be received
-        assert!(rx.try_recv().is_err());
     }
 
     #[tokio::test]

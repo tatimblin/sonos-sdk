@@ -235,6 +235,7 @@ impl MockSubscription {
     }
 
     /// Set the expiration time for testing.
+    #[allow(dead_code)]
     pub fn set_expires_at(&self, expires_at: SystemTime) {
         if let Ok(mut state) = self.state.lock() {
             state.expires_at = expires_at;
@@ -242,6 +243,7 @@ impl MockSubscription {
     }
 
     /// Set the renewal threshold for testing.
+    #[allow(dead_code)]
     pub fn set_renewal_threshold(&self, threshold: Duration) {
         if let Ok(mut state) = self.state.lock() {
             state.renewal_threshold = threshold;

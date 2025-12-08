@@ -21,11 +21,13 @@
 //! ```
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 
-use crate::broker::EventBroker;
-use crate::callback_server::CallbackServer;
+// Use new broker module structure
+use crate::broker::{EventBroker, EventProcessor, RenewalManager, SubscriptionManager};
+use crate::callback::CallbackServer;
 use crate::error::{BrokerError, Result};
 use crate::strategy::SubscriptionStrategy;
 use crate::types::{BrokerConfig, ServiceType};
@@ -315,7 +317,7 @@ impl EventBrokerBuilder {
             ));
         }
 
-        // Create raw event channel for callback server -> broker communication
+        // Create raw event channel for callback server -> event processor communication
         let (raw_event_tx, raw_event_rx) = mpsc::unbounded_channel();
 
         // Create and start callback server
@@ -325,31 +327,52 @@ impl EventBrokerBuilder {
                 BrokerError::CallbackServerError(format!("Failed to start callback server: {e}"))
             })?;
 
+        // Wrap callback server in Arc for sharing between components
+        let callback_server_arc = Arc::new(callback_server);
+
         // Create event channel for broker -> application communication
         let (event_tx, event_rx) = mpsc::channel(self.config.event_buffer_size);
 
-        // Create shutdown channel for background task
-        let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
+        // Create shared subscription state
+        let subscriptions = Arc::new(RwLock::new(HashMap::new()));
 
-        // Start background renewal task
-        let subscriptions = std::sync::Arc::new(tokio::sync::RwLock::new(HashMap::new()));
-        let background_task = EventBroker::start_renewal_task(
+        // Create strategies Arc for sharing between components
+        let strategies_arc = Arc::new(self.strategies);
+
+        // Create SubscriptionManager
+        let subscription_manager = SubscriptionManager::new(
             subscriptions.clone(),
+            strategies_arc.clone(),
+            callback_server_arc.clone(),
             event_tx.clone(),
-            shutdown_rx,
             self.config.clone(),
         );
 
-        // Create the broker
+        // Start RenewalManager with background task
+        let renewal_manager = RenewalManager::start(
+            subscriptions.clone(),
+            event_tx.clone(),
+            self.config.clone(),
+        );
+
+        // Start EventProcessor with background task
+        let event_processor = EventProcessor::start(
+            raw_event_rx,
+            strategies_arc.clone(),
+            subscriptions.clone(),
+            event_tx.clone(),
+        );
+
+        // Create the broker with the shared Arc-wrapped components
         Ok(EventBroker::new(
-            self.strategies,
-            callback_server,
+            strategies_arc,
+            callback_server_arc,
             self.config,
             event_tx,
             event_rx,
-            background_task,
-            shutdown_tx,
-            raw_event_rx,
+            subscription_manager,
+            renewal_manager,
+            event_processor,
         ))
     }
 }
