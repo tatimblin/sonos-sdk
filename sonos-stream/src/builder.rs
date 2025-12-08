@@ -437,7 +437,7 @@ mod tests {
             &self,
             _speaker_id: &SpeakerId,
             _event_xml: &str,
-        ) -> std::result::Result<Vec<crate::strategy::ParsedEvent>, StrategyError> {
+        ) -> std::result::Result<Vec<crate::event::ParsedEvent>, StrategyError> {
             Ok(vec![])
         }
     }

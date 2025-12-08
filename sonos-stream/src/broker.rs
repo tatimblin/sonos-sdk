@@ -43,6 +43,7 @@ use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 
 use crate::callback_server::{CallbackServer, RawEvent};
+use crate::event::Event;
 use crate::strategy::SubscriptionStrategy;
 use crate::subscription::Subscription;
 use crate::types::{BrokerConfig, ServiceType, SubscriptionKey};
@@ -877,78 +878,6 @@ impl EventBroker {
     }
 }
 
-/// Events emitted by the broker.
-///
-/// These events represent the lifecycle of subscriptions and the parsed events
-/// from services. Applications should handle these events to track subscription
-/// state and process service events.
-#[derive(Debug, Clone)]
-pub enum Event {
-    /// A subscription was successfully established.
-    SubscriptionEstablished {
-        /// The speaker ID
-        speaker_id: crate::types::SpeakerId,
-        /// The service type
-        service_type: ServiceType,
-        /// The UPnP subscription ID
-        subscription_id: String,
-    },
-
-    /// A subscription failed to establish.
-    SubscriptionFailed {
-        /// The speaker ID
-        speaker_id: crate::types::SpeakerId,
-        /// The service type
-        service_type: ServiceType,
-        /// Error message describing the failure
-        error: String,
-    },
-
-    /// A subscription was successfully renewed.
-    SubscriptionRenewed {
-        /// The speaker ID
-        speaker_id: crate::types::SpeakerId,
-        /// The service type
-        service_type: ServiceType,
-    },
-
-    /// A subscription expired after all renewal attempts failed.
-    SubscriptionExpired {
-        /// The speaker ID
-        speaker_id: crate::types::SpeakerId,
-        /// The service type
-        service_type: ServiceType,
-    },
-
-    /// A subscription was removed (unsubscribed).
-    SubscriptionRemoved {
-        /// The speaker ID
-        speaker_id: crate::types::SpeakerId,
-        /// The service type
-        service_type: ServiceType,
-    },
-
-    /// A parsed event from a service.
-    ServiceEvent {
-        /// The speaker ID
-        speaker_id: crate::types::SpeakerId,
-        /// The service type
-        service_type: ServiceType,
-        /// The parsed event data
-        event: crate::strategy::ParsedEvent,
-    },
-
-    /// An error occurred parsing an event.
-    ParseError {
-        /// The speaker ID
-        speaker_id: crate::types::SpeakerId,
-        /// The service type
-        service_type: ServiceType,
-        /// Error message describing the parse failure
-        error: String,
-    },
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1095,52 +1024,6 @@ mod tests {
         assert!(active_sub.last_event.unwrap() <= SystemTime::now());
     }
 
-    #[test]
-    fn test_event_debug() {
-        let event = Event::SubscriptionEstablished {
-            speaker_id: SpeakerId::new("speaker1"),
-            service_type: ServiceType::AVTransport,
-            subscription_id: "test-sub-123".to_string(),
-        };
-
-        let debug_str = format!("{:?}", event);
-        assert!(debug_str.contains("SubscriptionEstablished"));
-        assert!(debug_str.contains("speaker1"));
-        assert!(debug_str.contains("AVTransport"));
-        assert!(debug_str.contains("test-sub-123"));
-    }
-
-    #[test]
-    fn test_event_clone() {
-        let event = Event::SubscriptionFailed {
-            speaker_id: SpeakerId::new("speaker1"),
-            service_type: ServiceType::RenderingControl,
-            error: "connection failed".to_string(),
-        };
-
-        let cloned = event.clone();
-
-        match (event, cloned) {
-            (
-                Event::SubscriptionFailed {
-                    speaker_id: s1,
-                    service_type: st1,
-                    error: e1,
-                },
-                Event::SubscriptionFailed {
-                    speaker_id: s2,
-                    service_type: st2,
-                    error: e2,
-                },
-            ) => {
-                assert_eq!(s1, s2);
-                assert_eq!(st1, st2);
-                assert_eq!(e1, e2);
-            }
-            _ => panic!("Event type mismatch after clone"),
-        }
-    }
-
     // Mock strategy for testing
     struct MockStrategy {
         service_type: ServiceType,
@@ -1193,7 +1076,7 @@ mod tests {
             &self,
             _speaker_id: &SpeakerId,
             _event_xml: &str,
-        ) -> Result<Vec<crate::strategy::ParsedEvent>, crate::error::StrategyError> {
+        ) -> Result<Vec<crate::event::ParsedEvent>, crate::error::StrategyError> {
             Ok(vec![])
         }
     }
@@ -1799,9 +1682,9 @@ mod tests {
                 &self,
                 _speaker_id: &crate::types::SpeakerId,
                 event_xml: &str,
-            ) -> Result<Vec<crate::strategy::ParsedEvent>, crate::error::StrategyError> {
+            ) -> Result<Vec<crate::event::ParsedEvent>, crate::error::StrategyError> {
                 // Parse the test XML and return a custom event
-                Ok(vec![crate::strategy::ParsedEvent::custom(
+                Ok(vec![crate::event::ParsedEvent::custom(
                     "test_event",
                     HashMap::from([("xml_content".to_string(), event_xml.to_string())]),
                 )])
@@ -1943,7 +1826,7 @@ mod tests {
                 &self,
                 _speaker_id: &crate::types::SpeakerId,
                 _event_xml: &str,
-            ) -> Result<Vec<crate::strategy::ParsedEvent>, crate::error::StrategyError> {
+            ) -> Result<Vec<crate::event::ParsedEvent>, crate::error::StrategyError> {
                 Err(crate::error::StrategyError::EventParseFailed(
                     "Invalid XML format".to_string(),
                 ))
