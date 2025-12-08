@@ -68,32 +68,6 @@ pub trait Subscription: Send + Sync {
     fn service_type(&self) -> ServiceType;
 }
 
-/// Raw event data received from the callback server.
-///
-/// This struct represents an unparsed UPnP event notification that has been
-/// received by the callback server. The broker routes these events to the
-/// appropriate strategy for parsing based on the subscription ID.
-#[derive(Debug, Clone)]
-pub struct RawEvent {
-    /// The UPnP subscription ID this event is for
-    pub subscription_id: String,
-    /// The raw XML body of the event notification
-    pub event_xml: String,
-    /// The sequence number of the event (from the SEQ header)
-    pub sequence: Option<u32>,
-}
-
-impl RawEvent {
-    /// Create a new raw event.
-    pub fn new(subscription_id: String, event_xml: String, sequence: Option<u32>) -> Self {
-        Self {
-            subscription_id,
-            event_xml,
-            sequence,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,45 +254,5 @@ mod tests {
 
         sub.unsubscribe().unwrap();
         assert!(sub.time_until_renewal().is_none());
-    }
-
-    #[test]
-    fn test_raw_event_creation() {
-        let event = RawEvent::new(
-            "uuid:sub-123".to_string(),
-            "<event>test</event>".to_string(),
-            Some(42),
-        );
-
-        assert_eq!(event.subscription_id, "uuid:sub-123");
-        assert_eq!(event.event_xml, "<event>test</event>");
-        assert_eq!(event.sequence, Some(42));
-    }
-
-    #[test]
-    fn test_raw_event_without_sequence() {
-        let event = RawEvent::new(
-            "uuid:sub-456".to_string(),
-            "<event>data</event>".to_string(),
-            None,
-        );
-
-        assert_eq!(event.subscription_id, "uuid:sub-456");
-        assert_eq!(event.event_xml, "<event>data</event>");
-        assert_eq!(event.sequence, None);
-    }
-
-    #[test]
-    fn test_raw_event_clone() {
-        let event = RawEvent::new(
-            "uuid:sub-789".to_string(),
-            "<event>clone</event>".to_string(),
-            Some(1),
-        );
-
-        let cloned = event.clone();
-        assert_eq!(cloned.subscription_id, event.subscription_id);
-        assert_eq!(cloned.event_xml, event.event_xml);
-        assert_eq!(cloned.sequence, event.sequence);
     }
 }

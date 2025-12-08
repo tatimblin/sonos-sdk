@@ -7,11 +7,13 @@
 //! service-specific event parsing to separate implementations, keeping the core broker logic
 //! service-agnostic.
 
+mod callback_server;
 mod error;
 mod strategy;
 mod subscription;
 mod types;
 
+pub use callback_server::{CallbackServer, EventRouter, RawEvent};
 pub use error::*;
 pub use strategy::*;
 pub use subscription::*;
