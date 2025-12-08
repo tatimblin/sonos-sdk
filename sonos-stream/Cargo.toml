@@ -1,0 +1,17 @@
+[package]
+name = "sonos-stream"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.0", features = ["full"] }
+warp = "0.3"
+reqwest = { version = "0.11", features = ["blocking"] }
+quick-xml = { version = "0.31", features = ["serialize"] }
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "1.0"
+uuid = { version = "1.0", features = ["v4"] }
+bytes = "1.0"
+
+[dev-dependencies]
+rstest = "0.18"

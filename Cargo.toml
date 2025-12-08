@@ -1,5 +1,6 @@
 [workspace]
 members = [
     "sonos-discovery",
+    "sonos-stream",
 ]
 resolver = "2"
