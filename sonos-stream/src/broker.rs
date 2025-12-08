@@ -720,6 +720,161 @@ impl EventBroker {
         // Handle non-existent subscriptions gracefully - just return Ok
         Ok(())
     }
+
+    /// Shutdown the broker and clean up all resources.
+    ///
+    /// This method performs a graceful shutdown of the broker by:
+    /// 1. Sending shutdown signal to background task
+    /// 2. Waiting for background task to complete
+    /// 3. Unsubscribing from all active subscriptions
+    /// 4. Shutting down the callback server
+    /// 5. Clearing internal state
+    /// 6. Closing event channels
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` if shutdown completed successfully.
+    ///
+    /// # Errors
+    ///
+    /// * `BrokerError::ShutdownError` - If shutdown fails or times out
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use sonos_stream::EventBroker;
+    ///
+    /// // Use the broker...
+    ///
+    /// // Clean shutdown
+    /// broker.shutdown().await?;
+    /// ```
+    pub async fn shutdown(mut self) -> crate::error::Result<()> {
+        use crate::error::BrokerError;
+
+        // 1. Send shutdown signal to background task
+        if let Some(shutdown_tx) = self.shutdown_tx.take() {
+            // Send shutdown signal (ignore error if receiver already dropped)
+            let _ = shutdown_tx.send(()).await;
+        }
+
+        // 2. Wait for background task to complete (with timeout)
+        if let Some(background_task) = self.background_task.take() {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                background_task,
+            )
+            .await
+            {
+                Ok(Ok(())) => {
+                    // Background task completed successfully
+                }
+                Ok(Err(e)) => {
+                    eprintln!("Warning: Background task panicked during shutdown: {}", e);
+                }
+                Err(_) => {
+                    return Err(BrokerError::ShutdownError(
+                        "Background task shutdown timed out".to_string(),
+                    ));
+                }
+            }
+        }
+
+        // 3. Wait for event processing task to complete (with timeout)
+        if let Some(event_processing_task) = self.event_processing_task.take() {
+            // Abort the event processing task since it waits on channel
+            event_processing_task.abort();
+            
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                event_processing_task,
+            )
+            .await
+            {
+                Ok(Ok(())) => {
+                    // Event processing task completed successfully
+                }
+                Ok(Err(e)) if e.is_cancelled() => {
+                    // Task was cancelled, which is expected
+                }
+                Ok(Err(e)) => {
+                    eprintln!("Warning: Event processing task panicked during shutdown: {}", e);
+                }
+                Err(_) => {
+                    // Timeout is less critical for event processing task
+                    eprintln!("Warning: Event processing task shutdown timed out");
+                }
+            }
+        }
+
+        // 4. Unsubscribe from all active subscriptions
+        let subscription_keys: Vec<_> = {
+            let subs = self.subscriptions.read().await;
+            subs.keys().cloned().collect()
+        };
+
+        for key in subscription_keys {
+            // Get the subscription and unsubscribe
+            let subscription_opt = {
+                let mut subs = self.subscriptions.write().await;
+                subs.remove(&key)
+            };
+
+            if let Some(mut active_sub) = subscription_opt {
+                let subscription_id = active_sub.subscription.subscription_id().to_string();
+
+                // Call unsubscribe() on subscription instance
+                // Log errors but don't fail shutdown
+                if let Err(e) = active_sub.subscription.unsubscribe() {
+                    eprintln!(
+                        "Warning: Failed to unsubscribe {}/{:?} during shutdown: {}",
+                        key.speaker_id.as_str(),
+                        key.service_type,
+                        e
+                    );
+                }
+
+                // Unregister from callback server
+                self.callback_server
+                    .unregister_subscription(&subscription_id)
+                    .await;
+            }
+        }
+
+        // 5. Shutdown callback server
+        // We need to take ownership of the callback server from the Arc
+        // Since we own self, we can try to unwrap the Arc
+        match Arc::try_unwrap(self.callback_server) {
+            Ok(callback_server) => {
+                if let Err(e) = callback_server.shutdown().await {
+                    return Err(BrokerError::ShutdownError(format!(
+                        "Failed to shutdown callback server: {}",
+                        e
+                    )));
+                }
+            }
+            Err(_) => {
+                // Arc still has other references, which shouldn't happen in normal usage
+                eprintln!("Warning: Callback server has multiple references during shutdown");
+            }
+        }
+
+        // 6. Clear internal state (already done by unsubscribing all)
+        // The subscriptions map should now be empty
+        {
+            let mut subs = self.subscriptions.write().await;
+            subs.clear();
+        }
+
+        // 7. Close event channels
+        // Drop the event_sender to close the channel
+        drop(self.event_sender);
+        
+        // Drop the event_receiver if it hasn't been taken
+        drop(self.event_receiver);
+
+        Ok(())
+    }
 }
 
 /// Events emitted by the broker.
@@ -1954,5 +2109,208 @@ mod tests {
             }
             _ => panic!("Expected ParseError event, got {:?}", event),
         }
+    }
+
+    #[tokio::test]
+    async fn test_shutdown() {
+        use crate::types::{BrokerConfig, Speaker};
+        use std::net::IpAddr;
+
+        // Create callback server
+        let (raw_event_tx, raw_event_rx) = mpsc::unbounded_channel();
+        let callback_server = crate::callback_server::CallbackServer::new(
+            (50000, 50100),
+            raw_event_tx,
+        )
+        .await
+        .unwrap();
+
+        // Create event channel
+        let (event_tx, event_rx) = mpsc::channel(10);
+
+        // Create strategies
+        let mut strategies = HashMap::new();
+        strategies.insert(
+            ServiceType::AVTransport,
+            Box::new(MockStrategy::new(ServiceType::AVTransport))
+                as Box<dyn crate::strategy::SubscriptionStrategy>,
+        );
+        strategies.insert(
+            ServiceType::RenderingControl,
+            Box::new(MockStrategy::new(ServiceType::RenderingControl))
+                as Box<dyn crate::strategy::SubscriptionStrategy>,
+        );
+
+        // Create background task with proper shutdown channel
+        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+        let background_task = tokio::spawn(async move {
+            shutdown_rx.recv().await;
+        });
+
+        // Create broker
+        let broker = EventBroker::new(
+            strategies,
+            callback_server,
+            BrokerConfig::default(),
+            event_tx,
+            event_rx,
+            background_task,
+            shutdown_tx,
+            raw_event_rx,
+        );
+
+        // Create speakers
+        let speaker1 = Speaker::new(
+            SpeakerId::new("RINCON_123"),
+            "192.168.1.100".parse::<IpAddr>().unwrap(),
+            "Living Room".to_string(),
+            "Living Room".to_string(),
+        );
+
+        let speaker2 = Speaker::new(
+            SpeakerId::new("RINCON_456"),
+            "192.168.1.101".parse::<IpAddr>().unwrap(),
+            "Bedroom".to_string(),
+            "Bedroom".to_string(),
+        );
+
+        // Subscribe to multiple services on multiple speakers
+        broker
+            .subscribe(&speaker1, ServiceType::AVTransport)
+            .await
+            .unwrap();
+        broker
+            .subscribe(&speaker1, ServiceType::RenderingControl)
+            .await
+            .unwrap();
+        broker
+            .subscribe(&speaker2, ServiceType::AVTransport)
+            .await
+            .unwrap();
+
+        // Verify subscriptions exist
+        {
+            let subs = broker.subscriptions.read().await;
+            assert_eq!(subs.len(), 3);
+        }
+
+        // Shutdown the broker
+        let result = broker.shutdown().await;
+        assert!(result.is_ok(), "Shutdown should succeed: {:?}", result);
+
+        // Note: We can't verify the internal state after shutdown because
+        // the broker is consumed by the shutdown method. This is by design
+        // to ensure proper cleanup and prevent use-after-shutdown.
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_with_no_subscriptions() {
+        use crate::types::BrokerConfig;
+
+        // Create callback server
+        let (raw_event_tx, raw_event_rx) = mpsc::unbounded_channel();
+        let callback_server = crate::callback_server::CallbackServer::new(
+            (50000, 50100),
+            raw_event_tx,
+        )
+        .await
+        .unwrap();
+
+        // Create event channel
+        let (event_tx, event_rx) = mpsc::channel(10);
+
+        // Create strategies (empty)
+        let strategies = HashMap::new();
+
+        // Create background task with proper shutdown channel
+        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+        let background_task = tokio::spawn(async move {
+            shutdown_rx.recv().await;
+        });
+
+        // Create broker
+        let broker = EventBroker::new(
+            strategies,
+            callback_server,
+            BrokerConfig::default(),
+            event_tx,
+            event_rx,
+            background_task,
+            shutdown_tx,
+            raw_event_rx,
+        );
+
+        // Shutdown immediately without any subscriptions
+        let result = broker.shutdown().await;
+        assert!(
+            result.is_ok(),
+            "Shutdown should succeed even with no subscriptions: {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_idempotency() {
+        use crate::types::{BrokerConfig, Speaker};
+        use std::net::IpAddr;
+
+        // Create callback server
+        let (raw_event_tx, raw_event_rx) = mpsc::unbounded_channel();
+        let callback_server = crate::callback_server::CallbackServer::new(
+            (50000, 50100),
+            raw_event_tx,
+        )
+        .await
+        .unwrap();
+
+        // Create event channel
+        let (event_tx, event_rx) = mpsc::channel(10);
+
+        // Create strategies
+        let mut strategies = HashMap::new();
+        strategies.insert(
+            ServiceType::AVTransport,
+            Box::new(MockStrategy::new(ServiceType::AVTransport))
+                as Box<dyn crate::strategy::SubscriptionStrategy>,
+        );
+
+        // Create background task with proper shutdown channel
+        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+        let background_task = tokio::spawn(async move {
+            shutdown_rx.recv().await;
+        });
+
+        // Create broker
+        let broker = EventBroker::new(
+            strategies,
+            callback_server,
+            BrokerConfig::default(),
+            event_tx,
+            event_rx,
+            background_task,
+            shutdown_tx,
+            raw_event_rx,
+        );
+
+        // Create speaker and subscribe
+        let speaker = Speaker::new(
+            SpeakerId::new("RINCON_123"),
+            "192.168.1.100".parse::<IpAddr>().unwrap(),
+            "Living Room".to_string(),
+            "Living Room".to_string(),
+        );
+
+        broker
+            .subscribe(&speaker, ServiceType::AVTransport)
+            .await
+            .unwrap();
+
+        // Shutdown the broker (consumes it)
+        let result = broker.shutdown().await;
+        assert!(result.is_ok(), "First shutdown should succeed: {:?}", result);
+
+        // Note: We can't call shutdown again because the broker is consumed.
+        // This test verifies that shutdown consumes the broker, preventing
+        // accidental double-shutdown attempts at compile time.
     }
 }
