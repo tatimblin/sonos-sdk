@@ -327,6 +327,102 @@ impl EventBroker {
             }
         }
     }
+
+    /// Unsubscribe from a specific service on a speaker.
+    ///
+    /// This method removes an existing subscription for the given speaker-service combination.
+    /// If no subscription exists for this combination, the operation completes gracefully without error.
+    ///
+    /// # Process
+    ///
+    /// 1. Look up the subscription by key
+    /// 2. Call `unsubscribe()` on the subscription instance
+    /// 3. Unregister from the callback server
+    /// 4. Remove from the internal map
+    /// 5. Emit a `SubscriptionRemoved` event
+    ///
+    /// # Parameters
+    ///
+    /// * `speaker` - The speaker to unsubscribe from
+    /// * `service_type` - The service type to unsubscribe from
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` if the unsubscribe operation completed successfully.
+    /// Returns `Ok(())` even if no subscription existed (graceful handling).
+    ///
+    /// # Errors
+    ///
+    /// This method does not return errors for non-existent subscriptions.
+    /// Errors from the subscription's unsubscribe operation are logged but not propagated.
+    ///
+    /// # Events
+    ///
+    /// * `Event::SubscriptionRemoved` - Emitted when the subscription is successfully removed
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use sonos_stream::{EventBroker, Speaker, ServiceType, SpeakerId};
+    /// use std::net::IpAddr;
+    ///
+    /// let speaker = Speaker::new(
+    ///     SpeakerId::new("RINCON_123"),
+    ///     "192.168.1.100".parse::<IpAddr>().unwrap(),
+    ///     "Living Room".to_string(),
+    ///     "Living Room".to_string(),
+    /// );
+    ///
+    /// broker.unsubscribe(&speaker, ServiceType::AVTransport).await?;
+    /// ```
+    pub async fn unsubscribe(
+        &self,
+        speaker: &crate::types::Speaker,
+        service_type: ServiceType,
+    ) -> crate::error::Result<()> {
+        use crate::types::SubscriptionKey;
+
+        let key = SubscriptionKey::new(speaker.id.clone(), service_type);
+
+        // Look up subscription by key
+        let subscription_opt = {
+            let mut subs = self.subscriptions.write().await;
+            subs.remove(&key)
+        };
+
+        // If subscription exists, clean it up
+        if let Some(mut active_sub) = subscription_opt {
+            let subscription_id = active_sub.subscription.subscription_id().to_string();
+
+            // Call unsubscribe() on subscription instance
+            // Log errors but don't propagate them - we still want to clean up
+            if let Err(e) = active_sub.subscription.unsubscribe() {
+                eprintln!(
+                    "Warning: Failed to unsubscribe {}/{:?}: {}",
+                    speaker.id.as_str(),
+                    service_type,
+                    e
+                );
+            }
+
+            // Unregister from callback server
+            self.callback_server
+                .unregister_subscription(&subscription_id)
+                .await;
+
+            // Emit SubscriptionRemoved event
+            let _ = self
+                .event_sender
+                .send(Event::SubscriptionRemoved {
+                    speaker_id: speaker.id.clone(),
+                    service_type,
+                })
+                .await;
+        }
+
+        // Handle non-existent subscriptions gracefully - just return Ok
+        Ok(())
+    }
 }
 
 /// Events emitted by the broker.
@@ -943,5 +1039,258 @@ mod tests {
         let subs = broker.subscriptions.read().await;
         let key = crate::types::SubscriptionKey::new(speaker.id.clone(), ServiceType::AVTransport);
         assert!(!subs.contains_key(&key));
+    }
+
+    #[tokio::test]
+    async fn test_unsubscribe_success() {
+        use crate::types::{BrokerConfig, Speaker};
+        use std::net::IpAddr;
+
+        // Create callback server
+        let (raw_event_tx, _raw_event_rx) = mpsc::unbounded_channel();
+        let callback_server = crate::callback_server::CallbackServer::new(
+            (50000, 50100),
+            raw_event_tx,
+        )
+        .await
+        .unwrap();
+
+        // Create event channel
+        let (event_tx, event_rx) = mpsc::channel(10);
+
+        // Create strategies
+        let mut strategies = HashMap::new();
+        strategies.insert(
+            ServiceType::AVTransport,
+            Box::new(MockStrategy::new(ServiceType::AVTransport))
+                as Box<dyn crate::strategy::SubscriptionStrategy>,
+        );
+
+        // Create background task (dummy for testing)
+        let (_shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+        let background_task = tokio::spawn(async move {
+            shutdown_rx.recv().await;
+        });
+
+        let (shutdown_tx, _) = mpsc::channel::<()>(1);
+
+        // Create broker
+        let mut broker = EventBroker::new(
+            strategies,
+            callback_server,
+            BrokerConfig::default(),
+            event_tx,
+            event_rx,
+            background_task,
+            shutdown_tx,
+        );
+
+        // Create speaker
+        let speaker = Speaker::new(
+            SpeakerId::new("RINCON_123"),
+            "192.168.1.100".parse::<IpAddr>().unwrap(),
+            "Living Room".to_string(),
+            "Living Room".to_string(),
+        );
+
+        // Subscribe first
+        let result = broker.subscribe(&speaker, ServiceType::AVTransport).await;
+        assert!(result.is_ok());
+
+        // Verify subscription exists
+        {
+            let subs = broker.subscriptions.read().await;
+            let key = crate::types::SubscriptionKey::new(speaker.id.clone(), ServiceType::AVTransport);
+            assert!(subs.contains_key(&key));
+        }
+
+        // Unsubscribe
+        let result = broker.unsubscribe(&speaker, ServiceType::AVTransport).await;
+        assert!(result.is_ok());
+
+        // Verify subscription was removed
+        {
+            let subs = broker.subscriptions.read().await;
+            let key = crate::types::SubscriptionKey::new(speaker.id.clone(), ServiceType::AVTransport);
+            assert!(!subs.contains_key(&key));
+        }
+
+        // Get event stream and verify events
+        let mut event_rx = broker.event_stream();
+        
+        // First event should be SubscriptionEstablished
+        let event = event_rx.try_recv().unwrap();
+        match event {
+            Event::SubscriptionEstablished { .. } => {
+                // Expected
+            }
+            _ => panic!("Expected SubscriptionEstablished event"),
+        }
+
+        // Second event should be SubscriptionRemoved
+        let event = event_rx.try_recv().unwrap();
+        match event {
+            Event::SubscriptionRemoved {
+                speaker_id,
+                service_type,
+            } => {
+                assert_eq!(speaker_id, speaker.id);
+                assert_eq!(service_type, ServiceType::AVTransport);
+            }
+            _ => panic!("Expected SubscriptionRemoved event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_unsubscribe_non_existent() {
+        use crate::types::{BrokerConfig, Speaker};
+        use std::net::IpAddr;
+
+        // Create callback server
+        let (raw_event_tx, _raw_event_rx) = mpsc::unbounded_channel();
+        let callback_server = crate::callback_server::CallbackServer::new(
+            (50000, 50100),
+            raw_event_tx,
+        )
+        .await
+        .unwrap();
+
+        // Create event channel
+        let (event_tx, event_rx) = mpsc::channel(10);
+
+        // Create strategies
+        let mut strategies = HashMap::new();
+        strategies.insert(
+            ServiceType::AVTransport,
+            Box::new(MockStrategy::new(ServiceType::AVTransport))
+                as Box<dyn crate::strategy::SubscriptionStrategy>,
+        );
+
+        // Create background task (dummy for testing)
+        let (_shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+        let background_task = tokio::spawn(async move {
+            shutdown_rx.recv().await;
+        });
+
+        let (shutdown_tx, _) = mpsc::channel::<()>(1);
+
+        // Create broker
+        let mut broker = EventBroker::new(
+            strategies,
+            callback_server,
+            BrokerConfig::default(),
+            event_tx,
+            event_rx,
+            background_task,
+            shutdown_tx,
+        );
+
+        // Create speaker
+        let speaker = Speaker::new(
+            SpeakerId::new("RINCON_123"),
+            "192.168.1.100".parse::<IpAddr>().unwrap(),
+            "Living Room".to_string(),
+            "Living Room".to_string(),
+        );
+
+        // Unsubscribe without subscribing first - should succeed gracefully
+        let result = broker.unsubscribe(&speaker, ServiceType::AVTransport).await;
+        assert!(result.is_ok());
+
+        // Get event stream and verify no events were emitted
+        let mut event_rx = broker.event_stream();
+        assert!(event_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_unsubscribe_multiple_services() {
+        use crate::types::{BrokerConfig, Speaker};
+        use std::net::IpAddr;
+
+        // Create callback server
+        let (raw_event_tx, _raw_event_rx) = mpsc::unbounded_channel();
+        let callback_server = crate::callback_server::CallbackServer::new(
+            (50000, 50100),
+            raw_event_tx,
+        )
+        .await
+        .unwrap();
+
+        // Create event channel
+        let (event_tx, event_rx) = mpsc::channel(10);
+
+        // Create strategies for multiple services
+        let mut strategies = HashMap::new();
+        strategies.insert(
+            ServiceType::AVTransport,
+            Box::new(MockStrategy::new(ServiceType::AVTransport))
+                as Box<dyn crate::strategy::SubscriptionStrategy>,
+        );
+        strategies.insert(
+            ServiceType::RenderingControl,
+            Box::new(MockStrategy::new(ServiceType::RenderingControl))
+                as Box<dyn crate::strategy::SubscriptionStrategy>,
+        );
+
+        // Create background task (dummy for testing)
+        let (_shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+        let background_task = tokio::spawn(async move {
+            shutdown_rx.recv().await;
+        });
+
+        let (shutdown_tx, _) = mpsc::channel::<()>(1);
+
+        // Create broker
+        let broker = EventBroker::new(
+            strategies,
+            callback_server,
+            BrokerConfig::default(),
+            event_tx,
+            event_rx,
+            background_task,
+            shutdown_tx,
+        );
+
+        // Create speaker
+        let speaker = Speaker::new(
+            SpeakerId::new("RINCON_123"),
+            "192.168.1.100".parse::<IpAddr>().unwrap(),
+            "Living Room".to_string(),
+            "Living Room".to_string(),
+        );
+
+        // Subscribe to both services
+        broker.subscribe(&speaker, ServiceType::AVTransport).await.unwrap();
+        broker.subscribe(&speaker, ServiceType::RenderingControl).await.unwrap();
+
+        // Verify both subscriptions exist
+        {
+            let subs = broker.subscriptions.read().await;
+            assert_eq!(subs.len(), 2);
+        }
+
+        // Unsubscribe from one service
+        broker.unsubscribe(&speaker, ServiceType::AVTransport).await.unwrap();
+
+        // Verify only one subscription remains
+        {
+            let subs = broker.subscriptions.read().await;
+            assert_eq!(subs.len(), 1);
+            
+            let key = crate::types::SubscriptionKey::new(
+                speaker.id.clone(),
+                ServiceType::RenderingControl,
+            );
+            assert!(subs.contains_key(&key));
+        }
+
+        // Unsubscribe from the other service
+        broker.unsubscribe(&speaker, ServiceType::RenderingControl).await.unwrap();
+
+        // Verify no subscriptions remain
+        {
+            let subs = broker.subscriptions.read().await;
+            assert_eq!(subs.len(), 0);
+        }
     }
 }
