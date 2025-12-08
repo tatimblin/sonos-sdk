@@ -1397,6 +1397,7 @@ dependencies = [
 name = "sonos-stream"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "quick-xml",
  "reqwest",
  "rstest",
