@@ -175,6 +175,191 @@ impl EventBroker {
         }
     }
 
+    /// Start the background renewal task.
+    ///
+    /// This task runs on an interval and:
+    /// 1. Checks all subscriptions for renewal needs using `time_until_renewal()`
+    /// 2. Calls `renew()` on subscriptions that need renewal
+    /// 3. Emits `SubscriptionRenewed` event on success
+    /// 4. Implements retry logic with exponential backoff for renewal failures
+    /// 5. Emits `SubscriptionExpired` event after all retries exhausted
+    /// 6. Handles shutdown signal to stop task gracefully
+    pub(crate) fn start_renewal_task(
+        subscriptions: Arc<RwLock<HashMap<SubscriptionKey, ActiveSubscription>>>,
+        event_sender: mpsc::Sender<Event>,
+        mut shutdown_rx: mpsc::Receiver<()>,
+        config: BrokerConfig,
+    ) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            // Check for renewals every 60 seconds
+            let mut renewal_interval = tokio::time::interval(std::time::Duration::from_secs(60));
+
+            loop {
+                tokio::select! {
+                    _ = renewal_interval.tick() => {
+                        Self::check_and_renew_subscriptions(
+                            &subscriptions,
+                            &event_sender,
+                            &config,
+                        ).await;
+                    }
+                    _ = shutdown_rx.recv() => {
+                        // Shutdown signal received, exit gracefully
+                        break;
+                    }
+                }
+            }
+        })
+    }
+
+    /// Check all subscriptions and renew those that need renewal.
+    ///
+    /// This method iterates through all active subscriptions and checks if they need
+    /// renewal using `time_until_renewal()`. For subscriptions that need renewal,
+    /// it attempts to renew them with retry logic and exponential backoff.
+    async fn check_and_renew_subscriptions(
+        subscriptions: &Arc<RwLock<HashMap<SubscriptionKey, ActiveSubscription>>>,
+        event_sender: &mpsc::Sender<Event>,
+        config: &BrokerConfig,
+    ) {
+        // Get list of subscriptions that need renewal
+        let subscriptions_to_renew: Vec<SubscriptionKey> = {
+            let subs = subscriptions.read().await;
+            subs.iter()
+                .filter_map(|(key, active_sub)| {
+                    if active_sub.subscription.is_active() {
+                        if let Some(time_until) = active_sub.subscription.time_until_renewal() {
+                            // Need renewal if within threshold
+                            if time_until <= config.renewal_threshold {
+                                return Some(key.clone());
+                            }
+                        }
+                    }
+                    None
+                })
+                .collect()
+        };
+
+        // Renew each subscription that needs it
+        for key in subscriptions_to_renew {
+            Self::renew_subscription_with_retry(
+                subscriptions,
+                &key,
+                event_sender,
+                config,
+            ).await;
+        }
+    }
+
+    /// Renew a single subscription with retry logic and exponential backoff.
+    ///
+    /// This method attempts to renew a subscription up to `max_retry_attempts` times,
+    /// using exponential backoff between attempts. On success, it emits a
+    /// `SubscriptionRenewed` event. On failure after all retries, it emits a
+    /// `SubscriptionExpired` event and removes the subscription.
+    async fn renew_subscription_with_retry(
+        subscriptions: &Arc<RwLock<HashMap<SubscriptionKey, ActiveSubscription>>>,
+        key: &SubscriptionKey,
+        event_sender: &mpsc::Sender<Event>,
+        config: &BrokerConfig,
+    ) {
+        let mut attempt = 0;
+        let max_attempts = config.max_retry_attempts;
+        let base_backoff = config.retry_backoff_base;
+
+        loop {
+            // Try to renew the subscription
+            let renewal_result = {
+                let mut subs = subscriptions.write().await;
+                if let Some(active_sub) = subs.get_mut(key) {
+                    active_sub.subscription.renew()
+                } else {
+                    // Subscription no longer exists, nothing to do
+                    return;
+                }
+            };
+
+            match renewal_result {
+                Ok(()) => {
+                    // Renewal succeeded, emit event
+                    let _ = event_sender
+                        .send(Event::SubscriptionRenewed {
+                            speaker_id: key.speaker_id.clone(),
+                            service_type: key.service_type,
+                        })
+                        .await;
+                    return;
+                }
+                Err(e) => {
+                    attempt += 1;
+
+                    // Check if this is a non-retryable error
+                    if matches!(e, crate::error::SubscriptionError::Expired) {
+                        // Subscription already expired, don't retry
+                        Self::handle_subscription_expiration(
+                            subscriptions,
+                            key,
+                            event_sender,
+                        ).await;
+                        return;
+                    }
+
+                    // Check if we've exhausted all retry attempts
+                    if attempt >= max_attempts {
+                        // All retries exhausted, emit expiration event and remove subscription
+                        Self::handle_subscription_expiration(
+                            subscriptions,
+                            key,
+                            event_sender,
+                        ).await;
+                        return;
+                    }
+
+                    // Calculate backoff duration with exponential backoff
+                    let backoff = base_backoff * 2_u32.pow(attempt - 1);
+                    
+                    // Log the retry attempt (in production, use proper logging)
+                    eprintln!(
+                        "Renewal failed for {}/{:?} (attempt {}/{}): {}. Retrying in {:?}...",
+                        key.speaker_id.as_str(),
+                        key.service_type,
+                        attempt,
+                        max_attempts,
+                        e,
+                        backoff
+                    );
+
+                    // Wait before retrying
+                    tokio::time::sleep(backoff).await;
+                }
+            }
+        }
+    }
+
+    /// Handle subscription expiration by removing it and emitting an event.
+    ///
+    /// This method is called when a subscription fails to renew after all retry
+    /// attempts have been exhausted. It removes the subscription from the internal
+    /// map and emits a `SubscriptionExpired` event.
+    async fn handle_subscription_expiration(
+        subscriptions: &Arc<RwLock<HashMap<SubscriptionKey, ActiveSubscription>>>,
+        key: &SubscriptionKey,
+        event_sender: &mpsc::Sender<Event>,
+    ) {
+        // Remove the subscription
+        let mut subs = subscriptions.write().await;
+        subs.remove(key);
+        drop(subs);
+
+        // Emit expiration event
+        let _ = event_sender
+            .send(Event::SubscriptionExpired {
+                speaker_id: key.speaker_id.clone(),
+                service_type: key.service_type,
+            })
+            .await;
+    }
+
     /// Start the event processing task that receives raw events and routes them to strategies.
     ///
     /// This task runs in the background and:
