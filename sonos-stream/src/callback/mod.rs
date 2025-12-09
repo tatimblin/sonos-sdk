@@ -141,9 +141,6 @@ pub struct CallbackServer {
     inner: callback_server::CallbackServer,
     /// Map of subscription ID to (speaker_id, service_type)
     subscription_map: Arc<RwLock<HashMap<String, (SpeakerId, ServiceType)>>>,
-    /// Channel for sending Sonos-specific raw events (used in adapter task)
-    #[allow(dead_code)]
-    raw_event_sender: mpsc::UnboundedSender<RawEvent>,
     /// Handle for the adapter task
     adapter_task: Option<tokio::task::JoinHandle<()>>,
 }
@@ -208,7 +205,6 @@ impl CallbackServer {
         Ok(Self {
             inner,
             subscription_map,
-            raw_event_sender,
             adapter_task: Some(adapter_task),
         })
     }
