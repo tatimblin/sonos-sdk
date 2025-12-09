@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "callback-server",
     "sonos-discovery",
     "sonos-stream",
 ]
