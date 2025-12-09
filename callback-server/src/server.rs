@@ -5,10 +5,36 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use warp::Filter;
 
-use crate::types::{ServiceType, SpeakerId};
-use super::router::{EventRouter, RawEvent};
+use super::router::{EventRouter, NotificationPayload};
 
 /// HTTP callback server for receiving UPnP event notifications.
+///
+/// The `CallbackServer` binds to a local port and provides an HTTP endpoint
+/// for receiving UPnP NOTIFY requests. It validates UPnP headers and routes
+/// events through an `EventRouter` to a channel.
+///
+/// # Example
+///
+/// ```no_run
+/// use tokio::sync::mpsc;
+/// use callback_server::{CallbackServer, NotificationPayload};
+///
+/// #[tokio::main]
+/// async fn main() {
+///     let (tx, mut rx) = mpsc::unbounded_channel::<NotificationPayload>();
+///     
+///     let server = CallbackServer::new((3400, 3500), tx)
+///         .await
+///         .expect("Failed to create callback server");
+///     
+///     println!("Server listening at: {}", server.base_url());
+///     
+///     // Process notifications
+///     while let Some(notification) = rx.recv().await {
+///         println!("Received event for subscription: {}", notification.subscription_id);
+///     }
+/// }
+/// ```
 pub struct CallbackServer {
     /// The port the server is bound to
     port: u16,
@@ -25,17 +51,33 @@ pub struct CallbackServer {
 impl CallbackServer {
     /// Create and start a new callback server.
     ///
+    /// This method finds an available port in the specified range, detects the
+    /// local IP address, and starts an HTTP server to receive UPnP notifications.
+    ///
     /// # Arguments
     ///
     /// * `port_range` - Range of ports to try binding to (start, end)
-    /// * `event_sender` - Channel for sending raw events to the broker
+    /// * `event_sender` - Channel for sending notification payloads
     ///
     /// # Returns
     ///
-    /// Returns the callback server instance or an error if no port could be bound.
+    /// Returns the callback server instance or an error if no port could be bound
+    /// or the local IP address could not be detected.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use tokio::sync::mpsc;
+    /// # use callback_server::{CallbackServer, NotificationPayload};
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let (tx, _rx) = mpsc::unbounded_channel::<NotificationPayload>();
+    /// let server = CallbackServer::new((3400, 3500), tx).await.unwrap();
+    /// # }
+    /// ```
     pub async fn new(
         port_range: (u16, u16),
-        event_sender: mpsc::UnboundedSender<RawEvent>,
+        event_sender: mpsc::UnboundedSender<NotificationPayload>,
     ) -> Result<Self, String> {
         // Find an available port in the range
         let port = Self::find_available_port(port_range.0, port_range.1)
@@ -72,6 +114,9 @@ impl CallbackServer {
     }
 
     /// Get the base URL for callback registration.
+    ///
+    /// This URL should be used when subscribing to UPnP events. The format is
+    /// `http://<local_ip>:<port>`.
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
@@ -81,24 +126,44 @@ impl CallbackServer {
         self.port
     }
 
-    /// Register a subscription for event routing.
-    pub async fn register_subscription(
-        &self,
-        subscription_id: String,
-        speaker_id: SpeakerId,
-        service_type: ServiceType,
-    ) {
-        self.event_router
-            .register(subscription_id, speaker_id, service_type)
-            .await;
-    }
-
-    /// Unregister a subscription.
-    pub async fn unregister_subscription(&self, subscription_id: &str) {
-        self.event_router.unregister(subscription_id).await;
+    /// Get a reference to the event router.
+    ///
+    /// The router can be used to register and unregister subscription IDs
+    /// for event routing.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use tokio::sync::mpsc;
+    /// # use callback_server::{CallbackServer, NotificationPayload};
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// # let (tx, _rx) = mpsc::unbounded_channel::<NotificationPayload>();
+    /// # let server = CallbackServer::new((3400, 3500), tx).await.unwrap();
+    /// server.router().register("uuid:subscription-123".to_string()).await;
+    /// # }
+    /// ```
+    pub fn router(&self) -> &Arc<EventRouter> {
+        &self.event_router
     }
 
     /// Shutdown the callback server gracefully.
+    ///
+    /// This sends a shutdown signal to the HTTP server and waits for it to
+    /// complete any in-flight requests.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use tokio::sync::mpsc;
+    /// # use callback_server::{CallbackServer, NotificationPayload};
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// # let (tx, _rx) = mpsc::unbounded_channel::<NotificationPayload>();
+    /// # let server = CallbackServer::new((3400, 3500), tx).await.unwrap();
+    /// server.shutdown().await.unwrap();
+    /// # }
+    /// ```
     pub async fn shutdown(mut self) -> Result<(), String> {
         // Send shutdown signal
         if let Some(tx) = self.shutdown_tx.take() {
@@ -128,6 +193,9 @@ impl CallbackServer {
     }
 
     /// Detect the local IP address for callback URLs.
+    ///
+    /// This uses a UDP socket connection to determine the local IP address
+    /// that would be used for outbound connections. No data is actually sent.
     fn detect_local_ip() -> Option<IpAddr> {
         // Try to connect to a public IP to determine our local IP
         // We don't actually send data, just use the socket to determine routing
@@ -206,6 +274,9 @@ impl CallbackServer {
     }
 
     /// Validate UPnP event notification headers.
+    ///
+    /// Checks that the required SID header is present and validates optional
+    /// NT and NTS headers if they are provided.
     fn validate_upnp_headers(
         sid: &Option<String>,
         nt: &Option<String>,
@@ -230,6 +301,9 @@ impl CallbackServer {
     }
 
     /// Extract subscription ID from SID header.
+    ///
+    /// UPnP SID headers have the format `uuid:subscription-UUID`. This method
+    /// strips the `uuid:` prefix and returns the subscription ID.
     fn extract_subscription_id(sid: &str) -> Option<String> {
         // SID format: uuid:subscription-UUID
         sid.strip_prefix("uuid:").map(|s| s.to_string())
@@ -370,16 +444,12 @@ mod tests {
         let server = CallbackServer::new((50000, 50100), tx).await.unwrap();
 
         let sub_id = "test-sub-123".to_string();
-        let speaker_id = SpeakerId::new("speaker1");
-        let service_type = ServiceType::AVTransport;
 
-        // Register subscription
-        server
-            .register_subscription(sub_id.clone(), speaker_id.clone(), service_type)
-            .await;
+        // Register subscription via router
+        server.router().register(sub_id.clone()).await;
 
-        // Unregister subscription
-        server.unregister_subscription(&sub_id).await;
+        // Unregister subscription via router
+        server.router().unregister(&sub_id).await;
 
         // Cleanup
         server.shutdown().await.unwrap();
