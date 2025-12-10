@@ -10,7 +10,7 @@ use crate::operations::av_transport::{
 use crate::operations::rendering_control::{
     GetVolumeOperation, GetVolumeRequest,
     SetVolumeOperation, SetVolumeRequest, SetRelativeVolumeOperation,
-    SetRelativeVolumeRequest, SetRelativeVolumeResponse
+    SetRelativeVolumeRequest
 };
 use crate::ApiError;
 

@@ -5,8 +5,5 @@ members = [
     "sonos-stream",
     "soap-client",
     "sonos-api",
-    "test-av-transport",
-    "test-rendering-control",
-    "debug-soap",
 ]
 resolver = "2"

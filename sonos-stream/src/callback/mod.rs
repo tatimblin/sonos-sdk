@@ -73,8 +73,7 @@
 //!
 //! ```no_run
 //! use tokio::sync::mpsc;
-//! use sonos_stream::{CallbackServer, RawEvent};
-//! use sonos_stream::types::{SpeakerId, ServiceType};
+//! use sonos_stream::{CallbackServer, RawEvent, SpeakerId, ServiceType};
 //!
 //! # async fn example() -> Result<(), String> {
 //! // Create channel for receiving Sonos-specific events

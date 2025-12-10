@@ -83,16 +83,14 @@ mod integration_tests {
     /// Test controller trait implementation consistency
     #[test]
     fn test_controller_trait_consistency() {
-        use sonos_api::Controller;
-        
         let av_controller = AVTransportController::new();
         let rendering_controller = RenderingControlController::new();
         
         // Both controllers should implement the Controller trait
-        // This is verified at compile time, but we can test runtime behavior
+        // This is verified at compile time by the fact that they can be created
         
-        // Test that both controllers have the execute_operation method
-        // (This is implicit through the trait, but demonstrates the common interface)
+        // Test that both controllers exist and can be instantiated
+        // (This demonstrates the common interface through trait implementation)
         
         // Note: Without dependency injection or mocking framework,
         // we can't easily test execute_operation directly here.

@@ -4,33 +4,14 @@
 //! and handle errors correctly using mocked SOAP responses.
 
 use sonos_api::{
-    Controller, AVTransportController, RenderingControlController,
+    AVTransportController, RenderingControlController,
     GroupRenderingControlController, ZoneGroupTopologyController,
     DevicePropertiesController, ApiError
 };
 use soap_client::SoapError;
 
-/// Mock SOAP client for testing
-/// 
-/// This mock client simulates SOAP responses for testing controller behavior
-/// without requiring actual network communication.
-struct MockSoapClient {
-    response: Result<String, SoapError>,
-}
-
-impl MockSoapClient {
-    fn new_success(xml_response: &str) -> Self {
-        Self {
-            response: Ok(xml_response.to_string()),
-        }
-    }
-
-    fn new_error(error: SoapError) -> Self {
-        Self {
-            response: Err(error),
-        }
-    }
-}
+// Note: Mock SOAP client functionality would be added here in the future
+// when we implement dependency injection for better testability
 
 #[cfg(test)]
 mod av_transport_controller_tests {
@@ -75,7 +56,7 @@ mod rendering_control_controller_tests {
 
     #[test]
     fn test_volume_validation() {
-        let controller = RenderingControlController::new();
+        let _controller = RenderingControlController::new();
         
         // Test invalid volume (> 100) - this should be caught at the controller level
         // Note: This test demonstrates the validation logic that should be in place

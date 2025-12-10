@@ -169,14 +169,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a2330da5de22e8a3cb63252ce2abb30116bf5265e89c0e01bc17015ce30a476"
 
 [[package]]
-name = "debug-soap"
-version = "0.1.0"
-dependencies = [
- "sonos-discovery",
- "ureq",
-]
-
-[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1621,26 +1613,6 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "test-av-transport"
-version = "0.1.0"
-dependencies = [
- "soap-client",
- "sonos-api",
- "sonos-discovery",
- "tokio",
-]
-
-[[package]]
-name = "test-rendering-control"
-version = "0.1.0"
-dependencies = [
- "soap-client",
- "sonos-api",
- "sonos-discovery",
- "tokio",
 ]
 
 [[package]]
