@@ -26,12 +26,40 @@ impl SonosOperation for PlayOperation {
     const ACTION: &'static str = "Play";
     
     fn build_payload(request: &Self::Request) -> String {
-        // TODO: Implement payload construction
-        todo!("Play operation implementation will be added in task 4")
+        format!(
+            "<InstanceID>{}</InstanceID><Speed>{}</Speed>",
+            request.instance_id, request.speed
+        )
     }
     
     fn parse_response(_xml: &Element) -> Result<Self::Response, ApiError> {
-        // TODO: Implement response parsing
-        todo!("Play operation implementation will be added in task 4")
+        // Play operation has no meaningful response data
+        Ok(PlayResponse)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_play_payload_construction() {
+        let request = PlayRequest {
+            instance_id: 0,
+            speed: "1".to_string(),
+        };
+        
+        let payload = PlayOperation::build_payload(&request);
+        assert_eq!(payload, "<InstanceID>0</InstanceID><Speed>1</Speed>");
+    }
+
+    #[test]
+    fn test_play_response_parsing() {
+        // Play operation returns empty response
+        let xml_str = r#"<PlayResponse></PlayResponse>"#;
+        let xml = Element::parse(xml_str.as_bytes()).unwrap();
+        
+        let result = PlayOperation::parse_response(&xml);
+        assert!(result.is_ok());
     }
 }

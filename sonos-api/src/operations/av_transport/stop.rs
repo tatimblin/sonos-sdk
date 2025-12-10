@@ -25,12 +25,36 @@ impl SonosOperation for StopOperation {
     const ACTION: &'static str = "Stop";
     
     fn build_payload(request: &Self::Request) -> String {
-        // TODO: Implement payload construction
-        todo!("Stop operation implementation will be added in task 4")
+        format!("<InstanceID>{}</InstanceID>", request.instance_id)
     }
     
     fn parse_response(_xml: &Element) -> Result<Self::Response, ApiError> {
-        // TODO: Implement response parsing
-        todo!("Stop operation implementation will be added in task 4")
+        // Stop operation has no meaningful response data
+        Ok(StopResponse)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_stop_payload_construction() {
+        let request = StopRequest {
+            instance_id: 0,
+        };
+        
+        let payload = StopOperation::build_payload(&request);
+        assert_eq!(payload, "<InstanceID>0</InstanceID>");
+    }
+
+    #[test]
+    fn test_stop_response_parsing() {
+        // Stop operation returns empty response
+        let xml_str = r#"<StopResponse></StopResponse>"#;
+        let xml = Element::parse(xml_str.as_bytes()).unwrap();
+        
+        let result = StopOperation::parse_response(&xml);
+        assert!(result.is_ok());
     }
 }
