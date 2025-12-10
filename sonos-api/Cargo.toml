@@ -1,0 +1,19 @@
+[package]
+name = "sonos-api"
+version = "0.1.0"
+edition = "2021"
+description = "High-level Sonos API for device control"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/your-org/sonos-sdk"
+keywords = ["sonos", "upnp", "audio", "smart-home"]
+categories = ["multimedia::audio", "network-programming"]
+
+[dependencies]
+soap-client = { path = "../soap-client" }
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "1.0"
+xmltree = "0.10"
+
+[dev-dependencies]
+rstest = "0.18"
+mockito = "1.2"

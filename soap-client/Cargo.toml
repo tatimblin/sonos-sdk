@@ -1,0 +1,11 @@
+[package]
+name = "soap-client"
+version = "0.1.0"
+edition = "2021"
+description = "Private SOAP client for UPnP device communication"
+publish = false
+
+[dependencies]
+ureq = { version = "2.9", features = ["json"] }
+xmltree = "0.10"
+thiserror = "1.0"
