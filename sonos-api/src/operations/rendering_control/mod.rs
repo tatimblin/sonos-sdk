@@ -6,6 +6,6 @@ mod get_volume;
 mod set_volume;
 mod set_relative_volume;
 
-pub use get_volume::GetVolumeOperation;
-pub use set_volume::SetVolumeOperation;
-pub use set_relative_volume::SetRelativeVolumeOperation;
+pub use get_volume::{GetVolumeOperation, GetVolumeRequest, GetVolumeResponse};
+pub use set_volume::{SetVolumeOperation, SetVolumeRequest, SetVolumeResponse};
+pub use set_relative_volume::{SetRelativeVolumeOperation, SetRelativeVolumeRequest, SetRelativeVolumeResponse};

@@ -10,5 +10,10 @@ pub mod zone_group_topology;
 pub mod device_properties;
 
 // Re-export commonly used operations
-pub use av_transport::{PlayOperation, PauseOperation, StopOperation, GetTransportInfoOperation};
+pub use av_transport::{
+    PlayOperation, PlayRequest, PlayResponse,
+    PauseOperation, PauseRequest, PauseResponse,
+    StopOperation, StopRequest, StopResponse,
+    GetTransportInfoOperation, GetTransportInfoRequest, GetTransportInfoResponse, PlayState
+};
 pub use rendering_control::{GetVolumeOperation, SetVolumeOperation, SetRelativeVolumeOperation};

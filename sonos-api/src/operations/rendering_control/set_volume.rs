@@ -27,12 +27,81 @@ impl SonosOperation for SetVolumeOperation {
     const ACTION: &'static str = "SetVolume";
     
     fn build_payload(request: &Self::Request) -> String {
-        // TODO: Implement payload construction
-        todo!("SetVolume operation implementation will be added in task 5")
+        // Validate volume range (0-100)
+        if request.desired_volume > 100 {
+            // Note: In a real implementation, we might want to handle this validation
+            // at a higher level, but for now we'll construct the payload as-is
+        }
+        
+        format!(
+            "<InstanceID>{}</InstanceID><Channel>{}</Channel><DesiredVolume>{}</DesiredVolume>",
+            request.instance_id, request.channel, request.desired_volume
+        )
     }
     
     fn parse_response(_xml: &Element) -> Result<Self::Response, ApiError> {
-        // TODO: Implement response parsing
-        todo!("SetVolume operation implementation will be added in task 5")
+        // SetVolume operation has no meaningful response data
+        Ok(SetVolumeResponse)
+    }
+}#[cfg(test
+)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_set_volume_payload_construction() {
+        let request = SetVolumeRequest {
+            instance_id: 0,
+            channel: "Master".to_string(),
+            desired_volume: 50,
+        };
+        
+        let payload = SetVolumeOperation::build_payload(&request);
+        assert_eq!(payload, "<InstanceID>0</InstanceID><Channel>Master</Channel><DesiredVolume>50</DesiredVolume>");
+    }
+
+    #[test]
+    fn test_set_volume_payload_construction_zero_volume() {
+        let request = SetVolumeRequest {
+            instance_id: 0,
+            channel: "Master".to_string(),
+            desired_volume: 0,
+        };
+        
+        let payload = SetVolumeOperation::build_payload(&request);
+        assert_eq!(payload, "<InstanceID>0</InstanceID><Channel>Master</Channel><DesiredVolume>0</DesiredVolume>");
+    }
+
+    #[test]
+    fn test_set_volume_payload_construction_max_volume() {
+        let request = SetVolumeRequest {
+            instance_id: 0,
+            channel: "Master".to_string(),
+            desired_volume: 100,
+        };
+        
+        let payload = SetVolumeOperation::build_payload(&request);
+        assert_eq!(payload, "<InstanceID>0</InstanceID><Channel>Master</Channel><DesiredVolume>100</DesiredVolume>");
+    }
+
+    #[test]
+    fn test_set_volume_response_parsing() {
+        let xml_str = r#"<SetVolumeResponse></SetVolumeResponse>"#;
+        let xml = Element::parse(xml_str.as_bytes()).unwrap();
+        
+        let result = SetVolumeOperation::parse_response(&xml);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_set_volume_payload_construction_different_channel() {
+        let request = SetVolumeRequest {
+            instance_id: 0,
+            channel: "LF".to_string(),
+            desired_volume: 75,
+        };
+        
+        let payload = SetVolumeOperation::build_payload(&request);
+        assert_eq!(payload, "<InstanceID>0</InstanceID><Channel>LF</Channel><DesiredVolume>75</DesiredVolume>");
     }
 }

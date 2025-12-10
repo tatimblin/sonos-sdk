@@ -12,4 +12,8 @@ pub mod operations;
 pub use error::{ApiError, Result};
 pub use operation::SonosOperation;
 pub use service::{Service, ServiceInfo};
-pub use controller::DeviceController;
+pub use controller::{
+    Controller, DeviceController, AVTransportController, 
+    RenderingControlController, GroupRenderingControlController,
+    ZoneGroupTopologyController, DevicePropertiesController
+};
