@@ -31,6 +31,12 @@ impl From<&str> for SpeakerId {
     }
 }
 
+impl std::fmt::Display for SpeakerId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 /// Represents a Sonos speaker on the network.
 #[derive(Debug, Clone)]
 pub struct Speaker {

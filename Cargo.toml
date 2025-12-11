@@ -3,5 +3,7 @@ members = [
     "callback-server",
     "sonos-discovery",
     "sonos-stream",
+    "soap-client",
+    "sonos-api",
 ]
 resolver = "2"
