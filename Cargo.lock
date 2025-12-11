@@ -1531,6 +1531,7 @@ dependencies = [
  "serde",
  "thiserror",
  "tokio",
+ "url",
  "uuid",
  "warp",
 ]

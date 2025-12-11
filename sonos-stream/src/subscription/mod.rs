@@ -1,5 +1,9 @@
 //! Subscription trait and related types for managing UPnP event subscriptions.
 
+pub mod upnp;
+
+pub use upnp::UPnPSubscription;
+
 use crate::error::SubscriptionError;
 use crate::types::{ServiceType, SpeakerId};
 use std::time::Duration;

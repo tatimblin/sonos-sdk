@@ -208,6 +208,8 @@ mod strategy;
 mod subscription;
 mod types;
 
+
+
 // Re-export main broker types
 pub use broker::{ActiveSubscription, EventBroker};
 pub use builder::EventBrokerBuilder;
@@ -220,7 +222,7 @@ pub use event::{Event, ParsedEvent};
 
 // Re-export trait definitions
 pub use strategy::SubscriptionStrategy;
-pub use subscription::Subscription;
+pub use subscription::{Subscription, UPnPSubscription};
 
 // Re-export error types
 pub use error::{BrokerError, StrategyError, SubscriptionError};
