@@ -9,8 +9,8 @@ use std::collections::HashMap;
 
 use crate::error::StrategyError;
 use crate::event::ParsedEvent;
-use crate::parser::AVTransportParser;
 use crate::types::{ServiceType, SpeakerId, SubscriptionScope};
+use sonos_parser::services::av_transport::AVTransportParser;
 
 use super::SubscriptionStrategy;
 
@@ -141,7 +141,7 @@ impl SubscriptionStrategy for AVTransportStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::DidlLite;
+    use sonos_parser::common::DidlLite;
     use crate::types::{SpeakerId, Speaker, SubscriptionConfig};
     use std::net::IpAddr;
 

@@ -1,11 +1,11 @@
-//! AVTransport event parser using serde.
+//! AVTransport service parser implementation
 //!
 //! This module provides serde-based parsing for AVTransport UPnP events.
 //! It handles the complex nested XML structure including escaped DIDL-Lite metadata.
 
 use serde::{Deserialize, Serialize};
-
-use super::xml_decode::{deserialize_nested, NestedAttribute, ValueAttribute};
+use crate::error::ParseResult;
+use crate::common::{DidlLite, ValueAttribute, NestedAttribute, xml_decode};
 
 /// Root parser for AVTransport UPnP events.
 ///
@@ -31,7 +31,7 @@ pub struct Property {
     /// The LastChange element with nested XML content
     #[serde(
         rename = "LastChange",
-        deserialize_with = "deserialize_nested"
+        deserialize_with = "xml_decode::deserialize_nested"
     )]
     pub last_change: LastChangeEvent,
 }
@@ -139,83 +139,6 @@ pub struct InstanceID {
     pub absolute_time_position: Option<ValueAttribute>,
 }
 
-/// DIDL-Lite metadata structure for track information.
-///
-/// DIDL-Lite format example:
-/// ```xml
-/// <DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" ...>
-///   <item id="-1" parentID="-1">
-///     <dc:title>Song Title</dc:title>
-///     <dc:creator>Artist Name</dc:creator>
-///     <upnp:album>Album Name</upnp:album>
-///     <res duration="0:03:58">uri</res>
-///   </item>
-/// </DIDL-Lite>
-/// ```
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename = "DIDL-Lite")]
-pub struct DidlLite {
-    /// The item element containing track metadata
-    #[serde(rename = "item")]
-    pub item: DidlItem,
-}
-
-/// Individual item in DIDL-Lite metadata.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct DidlItem {
-    /// Item ID
-    #[serde(rename = "@id", default)]
-    pub id: String,
-
-    /// Parent ID
-    #[serde(rename = "@parentID", default)]
-    pub parent_id: String,
-
-    /// Whether the item is restricted
-    #[serde(rename = "@restricted", default)]
-    pub restricted: Option<String>,
-
-    /// Resource element with URI and duration
-    #[serde(rename = "res", default)]
-    pub res: Option<DidlResource>,
-
-    /// Album art URI
-    #[serde(rename = "albumArtURI", default)]
-    pub album_art_uri: Option<String>,
-
-    /// Item class (e.g., object.item.audioItem.musicTrack)
-    #[serde(rename = "class", default)]
-    pub class: Option<String>,
-
-    /// Track title
-    #[serde(rename = "title", default)]
-    pub title: Option<String>,
-
-    /// Track creator/artist
-    #[serde(rename = "creator", default)]
-    pub creator: Option<String>,
-
-    /// Album name
-    #[serde(rename = "album", default)]
-    pub album: Option<String>,
-
-    /// Stream info
-    #[serde(rename = "streamInfo", default)]
-    pub stream_info: Option<String>,
-}
-
-/// Resource element in DIDL-Lite.
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
-pub struct DidlResource {
-    /// Duration in HH:MM:SS format
-    #[serde(rename = "@duration", default)]
-    pub duration: Option<String>,
-
-    /// The resource URI
-    #[serde(rename = "$value", default)]
-    pub uri: Option<String>,
-}
-
 impl AVTransportParser {
     /// Parse AVTransport event XML.
     ///
@@ -226,8 +149,8 @@ impl AVTransportParser {
     /// # Returns
     ///
     /// The parsed AVTransport event, or an error if parsing fails.
-    pub fn from_xml(xml: &str) -> Result<Self, quick_xml::DeError> {
-        super::xml_decode::parse(xml)
+    pub fn from_xml(xml: &str) -> ParseResult<Self> {
+        xml_decode::parse(xml)
     }
 
     /// Get the transport state from the parsed event.
@@ -314,15 +237,8 @@ impl AVTransportParser {
 
 impl LastChangeEvent {
     /// Parse LastChange XML directly.
-    pub fn from_xml(xml: &str) -> Result<Self, quick_xml::DeError> {
-        super::xml_decode::parse(xml)
-    }
-}
-
-impl DidlLite {
-    /// Parse DIDL-Lite XML directly.
-    pub fn from_xml(xml: &str) -> Result<Self, quick_xml::DeError> {
-        super::xml_decode::parse(xml)
+    pub fn from_xml(xml: &str) -> ParseResult<Self> {
+        xml_decode::parse(xml)
     }
 }
 
@@ -354,10 +270,17 @@ mod tests {
 
     #[test]
     fn test_parse_duration_to_ms() {
-        assert_eq!(AVTransportParser::parse_duration_to_ms("0:03:57"), Some(237000));
+        // Standard format HH:MM:SS
+        assert_eq!(AVTransportParser::parse_duration_to_ms("0:04:32"), Some(272000));
         assert_eq!(AVTransportParser::parse_duration_to_ms("1:00:00"), Some(3600000));
         assert_eq!(AVTransportParser::parse_duration_to_ms("0:00:30"), Some(30000));
+        
+        // MM:SS format
+        assert_eq!(AVTransportParser::parse_duration_to_ms("04:32"), Some(272000));
+        
+        // Invalid format
         assert_eq!(AVTransportParser::parse_duration_to_ms("invalid"), None);
+        assert_eq!(AVTransportParser::parse_duration_to_ms(""), None);
     }
 
     #[test]
@@ -367,14 +290,59 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_didl_lite_directly() {
-        let didl_xml = r#"<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/"><item id="-1" parentID="-1"><dc:title>Song</dc:title><dc:creator>Artist</dc:creator></item></DIDL-Lite>"#;
+    fn test_parse_minimal_xml() {
+        let minimal_xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><LastChange>&lt;Event xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/AVT/&quot;&gt;&lt;InstanceID val=&quot;0&quot;&gt;&lt;TransportState val=&quot;STOPPED&quot;/&gt;&lt;/InstanceID&gt;&lt;/Event&gt;</LastChange></e:property></e:propertyset>"#;
         
-        let result = DidlLite::from_xml(didl_xml);
-        assert!(result.is_ok());
+        let result = AVTransportParser::from_xml(minimal_xml);
+        assert!(result.is_ok(), "Failed to parse minimal XML: {:?}", result.err());
         
-        let didl = result.unwrap();
-        assert_eq!(didl.item.title, Some("Song".to_string()));
-        assert_eq!(didl.item.creator, Some("Artist".to_string()));
+        let parsed = result.unwrap();
+        assert_eq!(parsed.transport_state(), "STOPPED");
+        assert_eq!(parsed.current_track_uri(), None);
+        assert_eq!(parsed.current_track_duration(), None);
+        assert_eq!(parsed.track_title(), None);
+        assert_eq!(parsed.track_artist(), None);
+        assert_eq!(parsed.track_album(), None);
+    }
+
+    #[test]
+    fn test_parse_invalid_xml() {
+        let invalid_xml = r#"<invalid>not a valid AVTransport event</invalid>"#;
+        
+        let result = AVTransportParser::from_xml(invalid_xml);
+        assert!(result.is_err(), "Should fail to parse invalid XML");
+        
+        match result.unwrap_err() {
+            crate::error::ParseError::XmlDeserializationFailed(_) => {
+                // Expected error type
+            }
+            other => panic!("Unexpected error type: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_empty_metadata() {
+        let empty_metadata_xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><LastChange>&lt;Event xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/AVT/&quot;&gt;&lt;InstanceID val=&quot;0&quot;&gt;&lt;TransportState val=&quot;PLAYING&quot;/&gt;&lt;CurrentTrackMetaData val=&quot;&quot;/&gt;&lt;/InstanceID&gt;&lt;/Event&gt;</LastChange></e:property></e:propertyset>"#;
+        
+        let result = AVTransportParser::from_xml(empty_metadata_xml);
+        assert!(result.is_ok(), "Failed to parse XML with empty metadata: {:?}", result.err());
+        
+        let parsed = result.unwrap();
+        assert_eq!(parsed.transport_state(), "PLAYING");
+        assert!(parsed.track_metadata().is_none());
+        assert_eq!(parsed.track_title(), None);
+        assert_eq!(parsed.track_artist(), None);
+        assert_eq!(parsed.track_album(), None);
+    }
+
+    #[test]
+    fn test_last_change_event_direct_parsing() {
+        let last_change_xml = r#"<Event xmlns="urn:schemas-upnp-org:metadata-1-0/AVT/"><InstanceID val="0"><TransportState val="PLAYING"/></InstanceID></Event>"#;
+        
+        let result = LastChangeEvent::from_xml(last_change_xml);
+        assert!(result.is_ok(), "Failed to parse LastChange XML directly: {:?}", result.err());
+        
+        let parsed = result.unwrap();
+        assert_eq!(parsed.instance.transport_state.val, "PLAYING");
     }
 }

@@ -4,93 +4,10 @@
 //! nested and escaped XML structures found in UPnP events. Sonos devices
 //! send events with XML-escaped content that needs to be decoded and parsed
 //! in multiple stages.
-//!
-//! # Key Types
-//!
-//! - [`ValueAttribute`]: For elements with a `val` attribute (e.g., `<TransportState val="PLAYING"/>`)
-//! - [`NestedAttribute`]: For elements with a `val` attribute containing escaped XML that should be parsed
 
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Deserializer, Serialize};
-
-/// Represents an XML element with a `val` attribute.
-///
-/// Many UPnP state variables are represented as empty elements with a `val` attribute:
-/// ```xml
-/// <TransportState val="PLAYING"/>
-/// <CurrentTrackDuration val="0:03:57"/>
-/// ```
-///
-/// This struct captures that pattern for easy deserialization.
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
-pub struct ValueAttribute {
-    /// The value from the `val` attribute
-    #[serde(rename = "@val", default)]
-    pub val: String,
-}
-
-/// Represents an XML element with a `val` attribute containing nested XML.
-///
-/// Some UPnP elements contain XML-escaped content in their `val` attribute that
-/// should be parsed into a structured type. For example, `CurrentTrackMetaData`
-/// contains escaped DIDL-Lite XML.
-///
-/// This struct automatically deserializes the escaped XML content into the
-/// specified type `T`.
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct NestedAttribute<T> {
-    /// The parsed value from the nested XML, or None if empty/unparseable
-    pub val: Option<T>,
-}
-
-impl<'de, T: DeserializeOwned> Deserialize<'de> for NestedAttribute<T> {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct RawAttr {
-            #[serde(rename = "@val", default)]
-            val: String,
-        }
-
-        let raw = RawAttr::deserialize(deserializer)?;
-        
-        if raw.val.is_empty() {
-            return Ok(NestedAttribute { val: None });
-        }
-
-        // Try to parse the nested XML
-        match parse::<T>(&raw.val) {
-            Ok(parsed) => Ok(NestedAttribute { val: Some(parsed) }),
-            Err(_) => Ok(NestedAttribute { val: None }),
-        }
-    }
-}
-
-/// Custom deserializer for nested XML content.
-///
-/// This deserializer handles elements where the text content is XML-escaped
-/// and needs to be parsed into a structured type. Used with serde's
-/// `deserialize_with` attribute.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// #[derive(Deserialize)]
-/// struct Property {
-///     #[serde(deserialize_with = "deserialize_nested")]
-///     last_change: LastChangeEvent,
-/// }
-/// ```
-pub fn deserialize_nested<'de, D, T>(deserializer: D) -> Result<T, D::Error>
-where
-    D: Deserializer<'de>,
-    T: DeserializeOwned,
-{
-    let s = String::deserialize(deserializer)?;
-    parse::<T>(&s).map_err(serde::de::Error::custom)
-}
+use crate::error::{ParseError, ParseResult};
+use serde::de::{DeserializeOwned, Deserializer};
+use serde::Deserialize;
 
 /// Parse XML string into a deserializable type with namespace stripping.
 ///
@@ -105,12 +22,13 @@ where
 /// # Returns
 ///
 /// The parsed value of type `T`, or an error if parsing fails.
-pub fn parse<T: DeserializeOwned>(xml: &str) -> Result<T, quick_xml::DeError> {
+pub fn parse<T: DeserializeOwned>(xml: &str) -> ParseResult<T> {
     let stripped = strip_namespaces(xml);
     quick_xml::de::from_str(&stripped)
+        .map_err(|e| ParseError::XmlDeserializationFailed(e.to_string()))
 }
 
-/// Strip namespace prefixes from XML.
+/// Strip namespace prefixes from XML content to simplify parsing.
 ///
 /// UPnP XML often contains namespace prefixes like `e:`, `dc:`, `upnp:`, etc.
 /// This function removes these prefixes to simplify parsing with serde.
@@ -119,7 +37,7 @@ pub fn parse<T: DeserializeOwned>(xml: &str) -> Result<T, quick_xml::DeError> {
 ///
 /// Input: `<e:propertyset><dc:title>Song</dc:title></e:propertyset>`
 /// Output: `<propertyset><title>Song</title></propertyset>`
-fn strip_namespaces(xml: &str) -> String {
+pub fn strip_namespaces(xml: &str) -> String {
     let mut result = String::with_capacity(xml.len());
     let mut chars = xml.chars().peekable();
 
@@ -241,37 +159,33 @@ fn strip_namespaces(xml: &str) -> String {
     result
 }
 
+/// Custom deserializer for nested XML content.
+///
+/// This deserializer handles elements where the text content is XML-escaped
+/// and needs to be parsed into a structured type. Used with serde's
+/// `deserialize_with` attribute.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// #[derive(Deserialize)]
+/// struct Property {
+///     #[serde(deserialize_with = "deserialize_nested")]
+///     last_change: LastChangeEvent,
+/// }
+/// ```
+pub fn deserialize_nested<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: DeserializeOwned,
+{
+    let s = String::deserialize(deserializer)?;
+    parse::<T>(&s).map_err(serde::de::Error::custom)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_value_attribute_deserialize() {
-        let xml = r#"<Root><TransportState val="PLAYING"/></Root>"#;
-        
-        #[derive(Debug, Deserialize)]
-        struct Root {
-            #[serde(rename = "TransportState")]
-            transport_state: ValueAttribute,
-        }
-        
-        let result: Root = parse(xml).unwrap();
-        assert_eq!(result.transport_state.val, "PLAYING");
-    }
-
-    #[test]
-    fn test_value_attribute_empty() {
-        let xml = r#"<Root><TransportState val=""/></Root>"#;
-        
-        #[derive(Debug, Deserialize)]
-        struct Root {
-            #[serde(rename = "TransportState")]
-            transport_state: ValueAttribute,
-        }
-        
-        let result: Root = parse(xml).unwrap();
-        assert_eq!(result.transport_state.val, "");
-    }
 
     #[test]
     fn test_strip_namespaces_basic() {
@@ -306,7 +220,7 @@ mod tests {
         #[derive(Debug, Deserialize)]
         struct Property {
             #[serde(rename = "Value")]
-            value: ValueAttribute,
+            value: crate::common::attributes::ValueAttribute,
         }
         
         let result: PropertySet = parse(xml).unwrap();
