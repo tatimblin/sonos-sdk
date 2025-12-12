@@ -233,7 +233,7 @@ mod tests {
     use super::*;
     use crate::event::ParsedEvent;
     use crate::subscription::Subscription;
-    use crate::types::{ServiceType, SpeakerId, Speaker, SubscriptionConfig, SubscriptionScope};
+    use crate::types::{ServiceType, SpeakerId, SubscriptionScope};
     use crate::error::StrategyError;
     use std::time::Duration;
 
@@ -268,13 +268,8 @@ mod tests {
             SubscriptionScope::PerSpeaker
         }
 
-        fn create_subscription(
-            &self,
-            _speaker: &Speaker,
-            _callback_url: String,
-            _config: &SubscriptionConfig,
-        ) -> Result<Box<dyn Subscription>, StrategyError> {
-            unimplemented!("Not needed for event processor tests")
+        fn service_endpoint_path(&self) -> &'static str {
+            "/MockService/Event"
         }
 
         fn parse_event(

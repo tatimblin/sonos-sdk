@@ -15,7 +15,7 @@
 
 use sonos_stream::{
     EventBrokerBuilder, Event, ServiceType, Speaker, SpeakerId, 
-    SubscriptionStrategy, Subscription, SubscriptionScope, SubscriptionConfig,
+    SubscriptionStrategy, Subscription, SubscriptionScope,
     StrategyError, SubscriptionError, ParsedEvent,
 };
 use std::collections::HashMap;
@@ -34,16 +34,8 @@ impl SubscriptionStrategy for SimpleStrategy {
         SubscriptionScope::PerSpeaker
     }
 
-    fn create_subscription(
-        &self,
-        speaker: &Speaker,
-        _callback_url: String,
-        _config: &SubscriptionConfig,
-    ) -> Result<Box<dyn Subscription>, StrategyError> {
-        Ok(Box::new(SimpleSubscription {
-            id: format!("sub-{}", speaker.id.as_str()),
-            speaker_id: speaker.id.clone(),
-        }))
+    fn service_endpoint_path(&self) -> &'static str {
+        "/MediaRenderer/AVTransport/Event"
     }
 
     fn parse_event(

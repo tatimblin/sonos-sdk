@@ -1,7 +1,7 @@
 //! UPnP subscription implementation.
 
 use crate::error::SubscriptionError;
-use crate::subscription::Subscription;
+use super::Subscription;
 use crate::types::{ServiceType, SpeakerId};
 use std::time::{Duration, SystemTime};
 

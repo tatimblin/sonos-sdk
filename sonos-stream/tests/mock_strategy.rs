@@ -88,6 +88,10 @@ impl SubscriptionStrategy for MockStrategy {
         self.subscription_scope
     }
 
+    fn service_endpoint_path(&self) -> &'static str {
+        "/MockService/Event"
+    }
+
     fn create_subscription(
         &self,
         speaker: &Speaker,

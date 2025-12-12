@@ -385,8 +385,7 @@ impl Default for EventBrokerBuilder {
 mod tests {
     use super::*;
     use crate::error::StrategyError;
-    use crate::subscription::Subscription;
-    use crate::types::{SpeakerId, Speaker, SubscriptionConfig, SubscriptionScope};
+    use crate::types::{SpeakerId, SubscriptionScope};
 
     // Mock strategy for testing
     struct MockStrategy {
@@ -408,50 +407,8 @@ mod tests {
             SubscriptionScope::PerSpeaker
         }
 
-        fn create_subscription(
-            &self,
-            speaker: &Speaker,
-            _callback_url: String,
-            _config: &SubscriptionConfig,
-        ) -> std::result::Result<Box<dyn Subscription>, StrategyError> {
-            // Mock subscription
-            struct MockSub {
-                id: String,
-                speaker_id: SpeakerId,
-                service_type: ServiceType,
-            }
-
-            impl Subscription for MockSub {
-                fn subscription_id(&self) -> &str {
-                    &self.id
-                }
-                fn renew(&mut self) -> std::result::Result<(), crate::error::SubscriptionError> {
-                    Ok(())
-                }
-                fn unsubscribe(
-                    &mut self,
-                ) -> std::result::Result<(), crate::error::SubscriptionError> {
-                    Ok(())
-                }
-                fn is_active(&self) -> bool {
-                    true
-                }
-                fn time_until_renewal(&self) -> Option<Duration> {
-                    None
-                }
-                fn speaker_id(&self) -> &SpeakerId {
-                    &self.speaker_id
-                }
-                fn service_type(&self) -> ServiceType {
-                    self.service_type
-                }
-            }
-
-            Ok(Box::new(MockSub {
-                id: format!("mock-sub-{}", speaker.id.as_str()),
-                speaker_id: speaker.id.clone(),
-                service_type: self.service_type,
-            }))
+        fn service_endpoint_path(&self) -> &'static str {
+            "/MockService/Event"
         }
 
         fn parse_event(
