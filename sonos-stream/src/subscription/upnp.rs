@@ -4,6 +4,7 @@ use crate::error::SubscriptionError;
 use super::Subscription;
 use crate::types::{ServiceType, SpeakerId};
 use std::time::{Duration, SystemTime};
+use async_trait::async_trait;
 
 /// Default UPnP subscription implementation.
 ///
@@ -72,7 +73,7 @@ impl UPnPSubscription {
     ///
     /// Returns `SubscriptionError::NetworkError` if the HTTP request fails.
     /// Returns `SubscriptionError::UnsubscribeFailed` if the subscription request is rejected.
-    pub fn create_subscription(
+    pub async fn create_subscription(
         speaker_id: SpeakerId,
         service_type: ServiceType,
         endpoint_url: String,
@@ -80,7 +81,7 @@ impl UPnPSubscription {
         timeout_seconds: u32,
     ) -> Result<Self, SubscriptionError> {
         // Create HTTP client with timeout
-        let client = reqwest::blocking::Client::builder()
+        let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .build()
             .map_err(|e| SubscriptionError::NetworkError(format!("Failed to create HTTP client: {}", e)))?;
@@ -100,14 +101,17 @@ impl UPnPSubscription {
             .header("NT", "upnp:event")
             .header("TIMEOUT", format!("Second-{}", timeout_seconds))
             .send()
+            .await
             .map_err(|e| SubscriptionError::NetworkError(format!("SUBSCRIBE request failed: {}", e)))?;
 
         // Check response status
-        if !response.status().is_success() {
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_default();
             return Err(SubscriptionError::UnsubscribeFailed(format!(
                 "SUBSCRIBE failed: HTTP {} - {}",
-                response.status(),
-                response.text().unwrap_or_default()
+                status,
+                error_text
             )));
         }
 
@@ -159,8 +163,8 @@ impl UPnPSubscription {
     }
 
     /// Send a UPnP UNSUBSCRIBE request.
-    fn send_unsubscribe_request(&self) -> Result<(), SubscriptionError> {
-        let client = reqwest::blocking::Client::builder()
+    async fn send_unsubscribe_request(&self) -> Result<(), SubscriptionError> {
+        let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .build()
             .map_err(|e| SubscriptionError::NetworkError(e.to_string()))?;
@@ -173,6 +177,7 @@ impl UPnPSubscription {
             .header("HOST", self.extract_host_from_url())
             .header("SID", &self.sid)
             .send()
+            .await
             .map_err(|e| SubscriptionError::NetworkError(e.to_string()))?;
 
         if !response.status().is_success() {
@@ -186,8 +191,8 @@ impl UPnPSubscription {
     }
 
     /// Send a subscription renewal request.
-    fn send_renewal_request(&mut self) -> Result<(), SubscriptionError> {
-        let client = reqwest::blocking::Client::builder()
+    async fn send_renewal_request(&mut self) -> Result<(), SubscriptionError> {
+        let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .build()
             .map_err(|e| SubscriptionError::NetworkError(e.to_string()))?;
@@ -201,6 +206,7 @@ impl UPnPSubscription {
             .header("SID", &self.sid)
             .header("TIMEOUT", format!("Second-{}", self.timeout_seconds))
             .send()
+            .await
             .map_err(|e| SubscriptionError::NetworkError(e.to_string()))?;
 
         if !response.status().is_success() {
@@ -234,27 +240,28 @@ impl UPnPSubscription {
     }
 }
 
+#[async_trait]
 impl Subscription for UPnPSubscription {
     fn subscription_id(&self) -> &str {
         &self.sid
     }
 
-    fn renew(&mut self) -> Result<(), SubscriptionError> {
+    async fn renew(&mut self) -> Result<(), SubscriptionError> {
         if !self.active {
             return Err(SubscriptionError::Expired);
         }
 
-        self.send_renewal_request()
+        self.send_renewal_request().await
     }
 
-    fn unsubscribe(&mut self) -> Result<(), SubscriptionError> {
+    async fn unsubscribe(&mut self) -> Result<(), SubscriptionError> {
         if !self.active {
             return Err(SubscriptionError::UnsubscribeFailed(
                 "Already unsubscribed".to_string(),
             ));
         }
 
-        let result = self.send_unsubscribe_request();
+        let result = self.send_unsubscribe_request().await;
         self.active = false;
         result
     }
@@ -312,8 +319,8 @@ mod tests {
         assert!(subscription.is_active());
     }
 
-    #[test]
-    fn test_upnp_subscription_unsubscribe() {
+    #[tokio::test]
+    async fn test_upnp_subscription_unsubscribe() {
         let mut subscription = UPnPSubscription::new(
             "uuid:12345".to_string(),
             SpeakerId::new("speaker1"),
@@ -325,13 +332,13 @@ mod tests {
         // Mark as inactive to avoid actual HTTP request
         subscription.active = false;
         
-        let result = subscription.unsubscribe();
+        let result = subscription.unsubscribe().await;
         assert!(result.is_err());
         assert!(!subscription.is_active());
     }
 
-    #[test]
-    fn test_upnp_subscription_renewal_when_inactive() {
+    #[tokio::test]
+    async fn test_upnp_subscription_renewal_when_inactive() {
         let mut subscription = UPnPSubscription::new(
             "uuid:12345".to_string(),
             SpeakerId::new("speaker1"),
@@ -341,7 +348,7 @@ mod tests {
         );
 
         subscription.active = false;
-        let result = subscription.renew();
+        let result = subscription.renew().await;
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), SubscriptionError::Expired));
     }

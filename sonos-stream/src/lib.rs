@@ -204,7 +204,6 @@ mod builder;
 mod callback;
 mod error;
 mod event;
-pub mod parser;
 mod strategy;
 mod subscription;
 mod types;
@@ -231,3 +230,6 @@ pub use types::{
     BrokerConfig, ServiceType, Speaker, SpeakerId, SubscriptionConfig, SubscriptionKey,
     SubscriptionScope,
 };
+
+// Re-export parser types from sonos-parser crate
+pub use sonos_parser;

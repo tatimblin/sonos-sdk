@@ -150,6 +150,7 @@ impl SubscriptionManager {
 
         // Generate callback URL using callback server base URL
         let callback_url = self.callback_server.base_url().to_string();
+        println!("🔗 Using callback URL: {}", callback_url);
 
         // Create subscription config
         let config = SubscriptionConfig::new(
@@ -158,7 +159,7 @@ impl SubscriptionManager {
         );
 
         // Call strategy to create subscription
-        let subscription_result = strategy.create_subscription(speaker, callback_url, &config);
+        let subscription_result = strategy.create_subscription(speaker, callback_url, &config).await;
 
         match subscription_result {
             Ok(subscription) => {
@@ -246,7 +247,7 @@ impl SubscriptionManager {
 
             // Call unsubscribe() on subscription instance
             // Log errors but don't propagate them - we still want to clean up
-            if let Err(e) = active_sub.subscription.unsubscribe() {
+            if let Err(e) = active_sub.subscription.unsubscribe().await {
                 eprintln!(
                     "Warning: Failed to unsubscribe {}/{:?}: {}",
                     speaker.id.as_str(),
@@ -303,7 +304,7 @@ impl SubscriptionManager {
 
                 // Call unsubscribe() on subscription instance
                 // Log errors but don't fail shutdown
-                if let Err(e) = active_sub.subscription.unsubscribe() {
+                if let Err(e) = active_sub.subscription.unsubscribe().await {
                     eprintln!(
                         "Warning: Failed to unsubscribe {}/{:?} during shutdown: {}",
                         key.speaker_id.as_str(),

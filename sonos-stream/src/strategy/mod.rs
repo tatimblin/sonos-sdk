@@ -98,6 +98,7 @@ pub use av_transport::AVTransportStrategy;
 
 use crate::error::StrategyError;
 use crate::event::ParsedEvent;
+use async_trait::async_trait;
 use crate::subscription::{Subscription, UPnPSubscription};
 use crate::types::{ServiceType, SpeakerId, Speaker, SubscriptionConfig, SubscriptionScope};
 
@@ -124,6 +125,7 @@ use crate::types::{ServiceType, SpeakerId, Speaker, SubscriptionConfig, Subscrip
 ///
 /// Strategies should construct the full subscription URL using the speaker's IP address
 /// and the appropriate endpoint path.
+#[async_trait]
 pub trait SubscriptionStrategy: Send + Sync {
     /// Get the service type this strategy handles.
     ///
@@ -179,7 +181,7 @@ pub trait SubscriptionStrategy: Send + Sync {
     /// Returns `StrategyError::SubscriptionCreationFailed` if the subscription request fails.
     /// Returns `StrategyError::NetworkError` if a network error occurs.
     /// Returns `StrategyError::InvalidConfiguration` if the configuration is invalid.
-    fn create_subscription(
+    async fn create_subscription(
         &self,
         speaker: &Speaker,
         callback_url: String,
@@ -189,7 +191,7 @@ pub trait SubscriptionStrategy: Send + Sync {
         let endpoint_url = format!("http://{}:1400{}", speaker.ip, self.service_endpoint_path());
         
         // Use the helper method to create the UPnP subscription
-        self.create_subscription_with_endpoint(speaker, callback_url, config, &endpoint_url)
+        self.create_subscription_with_endpoint(speaker, callback_url, config, &endpoint_url).await
     }
 
     /// Parse a raw UPnP event into structured event data.
@@ -295,7 +297,7 @@ pub trait SubscriptionStrategy: Send + Sync {
     /// The response should contain:
     /// - `SID`: The subscription ID assigned by the device
     /// - `TIMEOUT`: The actual timeout granted by the device
-    fn create_subscription_with_endpoint(
+    async fn create_subscription_with_endpoint(
         &self,
         speaker: &Speaker,
         callback_url: String,
@@ -310,6 +312,7 @@ pub trait SubscriptionStrategy: Send + Sync {
             callback_url,
             config.timeout_seconds,
         )
+        .await
         .map_err(|e| match e {
             crate::error::SubscriptionError::NetworkError(msg) => StrategyError::NetworkError(msg),
             crate::error::SubscriptionError::UnsubscribeFailed(msg) => StrategyError::SubscriptionCreationFailed(msg),

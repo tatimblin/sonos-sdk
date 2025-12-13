@@ -11,6 +11,7 @@ use crate::error::StrategyError;
 use crate::event::ParsedEvent;
 use crate::types::{ServiceType, SpeakerId, SubscriptionScope};
 use sonos_parser::services::av_transport::AVTransportParser;
+use async_trait::async_trait;
 
 use super::SubscriptionStrategy;
 
@@ -104,6 +105,7 @@ fn json_to_string_map_recursive(prefix: &str, value: serde_json::Value, map: &mu
     }
 }
 
+#[async_trait]
 impl SubscriptionStrategy for AVTransportStrategy {
     fn service_type(&self) -> ServiceType {
         ServiceType::AVTransport
