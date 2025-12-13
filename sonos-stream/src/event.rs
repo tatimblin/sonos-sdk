@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use crate::types::{ServiceType, SpeakerId};
+use sonos_parser::services::av_transport::AVTransportParser;
 
 /// Events emitted by the broker.
 ///
@@ -151,7 +152,7 @@ pub enum Event {
 /// );
 ///
 /// assert_eq!(event.event_type(), "volume_changed");
-/// assert_eq!(event.data().get("volume").map(|s| s.as_str()), Some("50"));
+/// assert_eq!(event.data().unwrap().get("volume").map(|s| s.as_str()), Some("50"));
 /// ```
 #[derive(Debug, Clone)]
 pub enum ParsedEvent {
@@ -178,6 +179,28 @@ pub enum ParsedEvent {
         event_type: String,
         /// Event-specific data as key-value pairs
         data: HashMap<String, String>,
+    },
+
+    /// A typed AVTransport event with strongly-typed data.
+    ///
+    /// This variant provides direct access to parsed AVTransport data without
+    /// the overhead of JSON serialization and HashMap conversion. The parsed
+    /// data maintains all type information and provides convenient accessor
+    /// methods for common fields.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// ParsedEvent::AVTransport {
+    ///     event_type: "av_transport_event".to_string(),
+    ///     data: parsed_av_transport_data,
+    /// }
+    /// ```
+    AVTransport {
+        /// The type of event (e.g., "av_transport_event")
+        event_type: String,
+        /// Strongly-typed AVTransport data
+        data: AVTransportParser,
     },
 }
 
@@ -207,6 +230,29 @@ impl ParsedEvent {
         }
     }
 
+    /// Create a new AVTransport event with typed data.
+    ///
+    /// # Arguments
+    ///
+    /// * `event_type` - The type of event (e.g., "av_transport_event")
+    /// * `data` - Parsed AVTransport data
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use sonos_stream::ParsedEvent;
+    /// use sonos_parser::services::av_transport::AVTransportParser;
+    ///
+    /// let parsed_data = AVTransportParser::from_xml(xml_string)?;
+    /// let event = ParsedEvent::av_transport("av_transport_event", parsed_data);
+    /// ```
+    pub fn av_transport(event_type: impl Into<String>, data: AVTransportParser) -> Self {
+        Self::AVTransport {
+            event_type: event_type.into(),
+            data,
+        }
+    }
+
     /// Get the event type.
     ///
     /// # Example
@@ -221,10 +267,14 @@ impl ParsedEvent {
     pub fn event_type(&self) -> &str {
         match self {
             Self::Custom { event_type, .. } => event_type,
+            Self::AVTransport { event_type, .. } => event_type,
         }
     }
 
-    /// Get the event data.
+    /// Get the event data as HashMap (for Custom events only).
+    ///
+    /// Returns `None` for AVTransport events since they use typed data.
+    /// Use `av_transport_data()` to access typed AVTransport data.
     ///
     /// # Example
     ///
@@ -234,11 +284,36 @@ impl ParsedEvent {
     ///
     /// let data = HashMap::from([("key".to_string(), "value".to_string())]);
     /// let event = ParsedEvent::custom("test", data.clone());
-    /// assert_eq!(event.data().get("key").map(|s| s.as_str()), Some("value"));
+    /// assert_eq!(event.data().unwrap().get("key").map(|s| s.as_str()), Some("value"));
     /// ```
-    pub fn data(&self) -> &HashMap<String, String> {
+    pub fn data(&self) -> Option<&HashMap<String, String>> {
         match self {
-            Self::Custom { data, .. } => data,
+            Self::Custom { data, .. } => Some(data),
+            Self::AVTransport { .. } => None,
+        }
+    }
+
+    /// Get the typed AVTransport data (for AVTransport events only).
+    ///
+    /// Returns `None` for Custom events. Use `data()` to access HashMap data
+    /// for Custom events.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use sonos_stream::ParsedEvent;
+    ///
+    /// if let Some(av_data) = event.av_transport_data() {
+    ///     println!("Transport state: {}", av_data.transport_state());
+    ///     if let Some(title) = av_data.track_title() {
+    ///         println!("Track title: {}", title);
+    ///     }
+    /// }
+    /// ```
+    pub fn av_transport_data(&self) -> Option<&AVTransportParser> {
+        match self {
+            Self::Custom { .. } => None,
+            Self::AVTransport { data, .. } => Some(data),
         }
     }
 }
@@ -453,8 +528,9 @@ mod tests {
         let event = ParsedEvent::custom("state_changed", data.clone());
 
         assert_eq!(event.event_type(), "state_changed");
-        assert_eq!(event.data().get("state").map(|s| s.as_str()), Some("PLAYING"));
-        assert_eq!(event.data().get("track").map(|s| s.as_str()), Some("1"));
+        assert_eq!(event.data().unwrap().get("state").map(|s| s.as_str()), Some("PLAYING"));
+        assert_eq!(event.data().unwrap().get("track").map(|s| s.as_str()), Some("1"));
+        assert!(event.av_transport_data().is_none());
     }
 
     #[test]
@@ -462,7 +538,8 @@ mod tests {
         let event = ParsedEvent::custom("empty_event", HashMap::new());
 
         assert_eq!(event.event_type(), "empty_event");
-        assert!(event.data().is_empty());
+        assert!(event.data().unwrap().is_empty());
+        assert!(event.av_transport_data().is_none());
     }
 
     #[test]
@@ -481,6 +558,48 @@ mod tests {
         let event = ParsedEvent::custom("debug_test", HashMap::new());
         let debug_str = format!("{event:?}");
         assert!(debug_str.contains("Custom"));
+        assert!(debug_str.contains("debug_test"));
+    }
+
+    #[test]
+    fn test_parsed_event_av_transport() {
+        let xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><LastChange>&lt;Event xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/AVT/&quot;&gt;&lt;InstanceID val=&quot;0&quot;&gt;&lt;TransportState val=&quot;PLAYING&quot;/&gt;&lt;/InstanceID&gt;&lt;/Event&gt;</LastChange></e:property></e:propertyset>"#;
+        
+        let parsed_data = AVTransportParser::from_xml(xml).unwrap();
+        let event = ParsedEvent::av_transport("av_transport_event", parsed_data);
+
+        assert_eq!(event.event_type(), "av_transport_event");
+        assert!(event.data().is_none());
+        
+        let av_data = event.av_transport_data().unwrap();
+        assert_eq!(av_data.transport_state(), "PLAYING");
+    }
+
+    #[test]
+    fn test_parsed_event_av_transport_clone() {
+        let xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><LastChange>&lt;Event xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/AVT/&quot;&gt;&lt;InstanceID val=&quot;0&quot;&gt;&lt;TransportState val=&quot;STOPPED&quot;/&gt;&lt;/InstanceID&gt;&lt;/Event&gt;</LastChange></e:property></e:propertyset>"#;
+        
+        let parsed_data = AVTransportParser::from_xml(xml).unwrap();
+        let event = ParsedEvent::av_transport("test_event", parsed_data);
+
+        let cloned = event.clone();
+
+        assert_eq!(event.event_type(), cloned.event_type());
+        assert_eq!(
+            event.av_transport_data().unwrap().transport_state(),
+            cloned.av_transport_data().unwrap().transport_state()
+        );
+    }
+
+    #[test]
+    fn test_parsed_event_av_transport_debug() {
+        let xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><LastChange>&lt;Event xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/AVT/&quot;&gt;&lt;InstanceID val=&quot;0&quot;&gt;&lt;TransportState val=&quot;PAUSED_PLAYBACK&quot;/&gt;&lt;/InstanceID&gt;&lt;/Event&gt;</LastChange></e:property></e:propertyset>"#;
+        
+        let parsed_data = AVTransportParser::from_xml(xml).unwrap();
+        let event = ParsedEvent::av_transport("debug_test", parsed_data);
+        
+        let debug_str = format!("{event:?}");
+        assert!(debug_str.contains("AVTransport"));
         assert!(debug_str.contains("debug_test"));
     }
 }

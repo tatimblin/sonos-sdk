@@ -602,17 +602,21 @@ async fn test_real_upnp_event_reception() {
             assert_eq!(service_type, ServiceType::AVTransport);
             assert_eq!(event.event_type(), "av_transport_event");
             
-            // Verify parsed AVTransport data
-            let data = event.data();
-            assert_eq!(data.get("property.LastChange.InstanceID.@val"), Some(&"0".to_string()));
-            assert_eq!(data.get("property.LastChange.InstanceID.TransportState.@val"), Some(&"PLAYING".to_string()));
-            assert_eq!(data.get("property.LastChange.InstanceID.CurrentPlayMode.@val"), Some(&"NORMAL".to_string()));
-            assert_eq!(data.get("property.LastChange.InstanceID.CurrentTrackDuration.@val"), Some(&"0:03:45".to_string()));
+            // Verify parsed AVTransport data using typed access
+            let av_data = event.av_transport_data().unwrap();
+            assert_eq!(av_data.transport_state(), "PLAYING");
+            assert_eq!(av_data.current_track_duration(), Some("0:03:45"));
             
             // Verify DIDL-Lite metadata was parsed
-            assert_eq!(data.get("property.LastChange.InstanceID.CurrentTrackMetaData.val.item.title"), Some(&"Test Song Title".to_string()));
-            assert_eq!(data.get("property.LastChange.InstanceID.CurrentTrackMetaData.val.item.creator"), Some(&"Test Artist".to_string()));
-            assert_eq!(data.get("property.LastChange.InstanceID.CurrentTrackMetaData.val.item.album"), Some(&"Test Album".to_string()));
+            assert_eq!(av_data.track_title(), Some("Test Song Title"));
+            assert_eq!(av_data.track_artist(), Some("Test Artist"));
+            assert_eq!(av_data.track_album(), Some("Test Album"));
+            
+            // Verify current play mode through the instance field
+            assert_eq!(
+                av_data.property.last_change.instance.current_play_mode.as_ref().map(|v| v.val.as_str()),
+                Some("NORMAL")
+            );
         }
         _ => panic!("Expected ServiceEvent, got {:?}", event),
     }
@@ -839,25 +843,15 @@ async fn test_multiple_real_upnp_subscriptions() {
         .find(|(id, _)| id == "RINCON_MULTI_SPEAKER2")
         .expect("Missing event from speaker 2");
 
-    // Verify speaker 1 event data
-    assert_eq!(
-        speaker1_event.1.data().get("property.LastChange.InstanceID.TransportState.@val"),
-        Some(&"PLAYING".to_string())
-    );
-    assert_eq!(
-        speaker1_event.1.data().get("property.LastChange.InstanceID.CurrentTrackMetaData.val.item.title"),
-        Some(&"Speaker 1 Song".to_string())
-    );
+    // Verify speaker 1 event data using typed access
+    let speaker1_av_data = speaker1_event.1.av_transport_data().unwrap();
+    assert_eq!(speaker1_av_data.transport_state(), "PLAYING");
+    assert_eq!(speaker1_av_data.track_title(), Some("Speaker 1 Song"));
 
-    // Verify speaker 2 event data
-    assert_eq!(
-        speaker2_event.1.data().get("property.LastChange.InstanceID.TransportState.@val"),
-        Some(&"PAUSED_PLAYBACK".to_string())
-    );
-    assert_eq!(
-        speaker2_event.1.data().get("property.LastChange.InstanceID.CurrentTrackMetaData.val.item.title"),
-        Some(&"Speaker 2 Song".to_string())
-    );
+    // Verify speaker 2 event data using typed access
+    let speaker2_av_data = speaker2_event.1.av_transport_data().unwrap();
+    assert_eq!(speaker2_av_data.transport_state(), "PAUSED_PLAYBACK");
+    assert_eq!(speaker2_av_data.track_title(), Some("Speaker 2 Song"));
 
     // Unsubscribe from both speakers
     broker

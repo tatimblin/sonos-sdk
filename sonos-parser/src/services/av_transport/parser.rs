@@ -17,7 +17,7 @@ use crate::common::{DidlLite, ValueAttribute, NestedAttribute, xml_decode};
 ///   </e:property>
 /// </e:propertyset>
 /// ```
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename = "propertyset")]
 pub struct AVTransportParser {
     /// The property element containing LastChange
@@ -26,7 +26,7 @@ pub struct AVTransportParser {
 }
 
 /// Property wrapper containing the LastChange element.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Property {
     /// The LastChange element with nested XML content
     #[serde(
@@ -47,7 +47,7 @@ pub struct Property {
 ///   </InstanceID>
 /// </Event>
 /// ```
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename = "Event")]
 pub struct LastChangeEvent {
     /// The instance containing all state variables
@@ -56,7 +56,7 @@ pub struct LastChangeEvent {
 }
 
 /// Instance containing AVTransport state variables.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct InstanceID {
     /// Instance ID (usually "0")
     #[serde(rename = "@val")]

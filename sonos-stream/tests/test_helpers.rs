@@ -4,7 +4,6 @@
 //! - Mock UPnP servers for simulating device endpoints
 //! - Custom test strategies for different scenarios
 //! - Helper functions for creating test data
-//! - JSON to string map conversion utilities
 
 use sonos_stream::{
     ParsedEvent, ServiceType, SpeakerId, Speaker, SubscriptionConfig, SubscriptionScope,
@@ -204,11 +203,7 @@ impl SubscriptionStrategy for TestAVTransportStrategy {
         let parsed = AVTransportParser::from_xml(event_xml)
             .map_err(|e| StrategyError::EventParseFailed(format!("Failed to parse AVTransport event: {}", e)))?;
         
-        let json_value = serde_json::to_value(&parsed)
-            .map_err(|e| StrategyError::EventParseFailed(format!("Failed to serialize parsed data: {}", e)))?;
-
-        let data = json_to_string_map(json_value);
-        let event = ParsedEvent::custom("av_transport_event", data);
+        let event = ParsedEvent::av_transport("av_transport_event", parsed);
         Ok(vec![event])
     }
 }
@@ -270,57 +265,8 @@ impl SubscriptionStrategy for MultiTestAVTransportStrategy {
         let parsed = AVTransportParser::from_xml(event_xml)
             .map_err(|e| StrategyError::EventParseFailed(format!("Failed to parse AVTransport event: {}", e)))?;
         
-        let json_value = serde_json::to_value(&parsed)
-            .map_err(|e| StrategyError::EventParseFailed(format!("Failed to serialize parsed data: {}", e)))?;
-
-        let data = json_to_string_map(json_value);
-        let event = ParsedEvent::custom("av_transport_event", data);
+        let event = ParsedEvent::av_transport("av_transport_event", parsed);
         Ok(vec![event])
     }
 }
 
-/// Convert a JSON value to a flat HashMap<String, String> for use in ParsedEvent.
-pub fn json_to_string_map(value: serde_json::Value) -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    json_to_string_map_recursive("", value, &mut map);
-    map
-}
-
-fn json_to_string_map_recursive(prefix: &str, value: serde_json::Value, map: &mut HashMap<String, String>) {
-    match value {
-        serde_json::Value::Null => {
-            if !prefix.is_empty() {
-                map.insert(prefix.to_string(), "null".to_string());
-            }
-        }
-        serde_json::Value::Bool(b) => {
-            map.insert(prefix.to_string(), b.to_string());
-        }
-        serde_json::Value::Number(n) => {
-            map.insert(prefix.to_string(), n.to_string());
-        }
-        serde_json::Value::String(s) => {
-            map.insert(prefix.to_string(), s);
-        }
-        serde_json::Value::Array(arr) => {
-            let array_str = arr.iter()
-                .map(|v| match v {
-                    serde_json::Value::String(s) => s.clone(),
-                    _ => v.to_string(),
-                })
-                .collect::<Vec<_>>()
-                .join(",");
-            map.insert(prefix.to_string(), array_str);
-        }
-        serde_json::Value::Object(obj) => {
-            for (key, val) in obj {
-                let new_prefix = if prefix.is_empty() {
-                    key
-                } else {
-                    format!("{}.{}", prefix, key)
-                };
-                json_to_string_map_recursive(&new_prefix, val, map);
-            }
-        }
-    }
-}

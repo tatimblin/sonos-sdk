@@ -5,7 +5,7 @@
 //! service handles media transport operations like play, pause, stop, and provides
 //! events for playback state changes and track information.
 
-use std::collections::HashMap;
+
 
 use crate::error::StrategyError;
 use crate::event::ParsedEvent;
@@ -55,55 +55,7 @@ impl Default for AVTransportStrategy {
     }
 }
 
-/// Convert a JSON value to a flat HashMap<String, String> for use in ParsedEvent.
-/// 
-/// This function recursively flattens nested JSON objects using dot notation for keys.
-/// Arrays are converted to comma-separated strings.
-fn json_to_string_map(value: serde_json::Value) -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    json_to_string_map_recursive("", value, &mut map);
-    map
-}
 
-fn json_to_string_map_recursive(prefix: &str, value: serde_json::Value, map: &mut HashMap<String, String>) {
-    match value {
-        serde_json::Value::Null => {
-            if !prefix.is_empty() {
-                map.insert(prefix.to_string(), "null".to_string());
-            }
-        }
-        serde_json::Value::Bool(b) => {
-            map.insert(prefix.to_string(), b.to_string());
-        }
-        serde_json::Value::Number(n) => {
-            map.insert(prefix.to_string(), n.to_string());
-        }
-        serde_json::Value::String(s) => {
-            map.insert(prefix.to_string(), s);
-        }
-        serde_json::Value::Array(arr) => {
-            // Convert array to comma-separated string
-            let array_str = arr.iter()
-                .map(|v| match v {
-                    serde_json::Value::String(s) => s.clone(),
-                    _ => v.to_string(),
-                })
-                .collect::<Vec<_>>()
-                .join(",");
-            map.insert(prefix.to_string(), array_str);
-        }
-        serde_json::Value::Object(obj) => {
-            for (key, val) in obj {
-                let new_prefix = if prefix.is_empty() {
-                    key
-                } else {
-                    format!("{}.{}", prefix, key)
-                };
-                json_to_string_map_recursive(&new_prefix, val, map);
-            }
-        }
-    }
-}
 
 #[async_trait]
 impl SubscriptionStrategy for AVTransportStrategy {
@@ -124,18 +76,12 @@ impl SubscriptionStrategy for AVTransportStrategy {
         _speaker_id: &SpeakerId,
         event_xml: &str,
     ) -> Result<Vec<ParsedEvent>, StrategyError> {
-        // Parse using serde-based parser
+        // Parse using AVTransportParser and return typed data directly
         let parsed = AVTransportParser::from_xml(event_xml)
             .map_err(|e| StrategyError::EventParseFailed(format!("Failed to parse AVTransport event: {}", e)))?;
         
-        // Serialize the entire parsed structure to JSON, then convert to HashMap<String, String>
-        let json_value = serde_json::to_value(&parsed)
-            .map_err(|e| StrategyError::EventParseFailed(format!("Failed to serialize parsed data: {}", e)))?;
-
-        let data = json_to_string_map(json_value);
-        
-        // Create a single event with the entire parsed structure
-        let event = ParsedEvent::custom("av_transport_event", data);
+        // Create a single event with typed AVTransport data
+        let event = ParsedEvent::av_transport("av_transport_event", parsed);
         Ok(vec![event])
     }
 }
@@ -248,12 +194,17 @@ mod tests {
         let events = result.unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type(), "av_transport_event");
-        assert_eq!(events[0].data().get("property.LastChange.InstanceID.@val"), Some(&"0".to_string()));
-        assert_eq!(events[0].data().get("property.LastChange.InstanceID.TransportState.@val"), Some(&"PAUSED_PLAYBACK".to_string()));
+        
+        // Verify we have typed AVTransport data
+        let av_data = events[0].av_transport_data().unwrap();
+        assert_eq!(av_data.transport_state(), "PAUSED_PLAYBACK");
+        
+        // Verify data() returns None for AVTransport events
+        assert!(events[0].data().is_none());
     }
 
     #[test]
-    fn test_json_serialization_approach() {
+    fn test_typed_data_approach() {
         let event_xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><LastChange>&lt;Event xmlns="urn:schemas-upnp-org:metadata-1-0/AVT/"&gt;&lt;InstanceID val="0"&gt;&lt;TransportState val="PLAYING"/&gt;&lt;CurrentPlayMode val="REPEAT_ALL"/&gt;&lt;/InstanceID&gt;&lt;/Event&gt;</LastChange></e:property></e:propertyset>"#;
         
         let strategy = AVTransportStrategy::new();
@@ -267,19 +218,18 @@ mod tests {
         let event = &events[0];
         assert_eq!(event.event_type(), "av_transport_event");
         
-        // Verify we have the complete parsed structure
-        assert_eq!(event.data().get("property.LastChange.InstanceID.@val"), Some(&"0".to_string()));
-        assert_eq!(event.data().get("property.LastChange.InstanceID.TransportState.@val"), Some(&"PLAYING".to_string()));
-        assert_eq!(event.data().get("property.LastChange.InstanceID.CurrentPlayMode.@val"), Some(&"REPEAT_ALL".to_string()));
+        // Verify we have typed AVTransport data
+        let av_data = event.av_transport_data().unwrap();
+        assert_eq!(av_data.transport_state(), "PLAYING");
         
-        // Verify null fields are handled correctly
-        assert_eq!(event.data().get("property.LastChange.InstanceID.CurrentTrackURI"), Some(&"null".to_string()));
+        // Check current play mode through the instance field
+        assert_eq!(
+            av_data.property.last_change.instance.current_play_mode.as_ref().map(|v| v.val.as_str()),
+            Some("REPEAT_ALL")
+        );
         
-        // Print all keys for debugging
-        println!("All event data keys:");
-        for key in event.data().keys() {
-            println!("  {}", key);
-        }
+        // Verify data() returns None for AVTransport events
+        assert!(event.data().is_none());
     }
 
     #[test]
@@ -295,12 +245,24 @@ mod tests {
         assert_eq!(events.len(), 1);
         
         // Single event with all parsed data
-        assert_eq!(events[0].event_type(), "av_transport_event");
-        assert_eq!(events[0].data().get("property.LastChange.InstanceID.@val"), Some(&"0".to_string()));
-        assert_eq!(events[0].data().get("property.LastChange.InstanceID.TransportState.@val"), Some(&"PLAYING".to_string()));
-        assert_eq!(events[0].data().get("property.LastChange.InstanceID.CurrentTrackURI.@val"), Some(&"x-sonos-spotify:track123".to_string()));
-        assert_eq!(events[0].data().get("property.LastChange.InstanceID.CurrentTrackDuration.@val"), Some(&"0:04:32".to_string()));
-        assert_eq!(events[0].data().get("property.LastChange.InstanceID.CurrentTrackMetaData.val.item.title"), Some(&"Test Song".to_string()));
-        assert_eq!(events[0].data().get("property.LastChange.InstanceID.CurrentTrackMetaData.val.item.creator"), Some(&"Test Artist".to_string()));
+        let event = &events[0];
+        assert_eq!(event.event_type(), "av_transport_event");
+        
+        // Verify we have typed AVTransport data
+        let av_data = event.av_transport_data().unwrap();
+        assert_eq!(av_data.transport_state(), "PLAYING");
+        assert_eq!(av_data.current_track_uri(), Some("x-sonos-spotify:track123"));
+        assert_eq!(av_data.current_track_duration(), Some("0:04:32"));
+        
+        // Verify track metadata
+        if let Some(metadata) = av_data.track_metadata() {
+            assert_eq!(metadata.item.title, Some("Test Song".to_string()));
+            assert_eq!(metadata.item.creator, Some("Test Artist".to_string()));
+        } else {
+            panic!("Expected track metadata to be present");
+        }
+        
+        // Verify data() returns None for AVTransport events
+        assert!(event.data().is_none());
     }
 }

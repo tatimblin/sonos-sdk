@@ -436,7 +436,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type(), "test_event");
         assert_eq!(
-            events[0].data().get("speaker_id").map(|s| s.as_str()),
+            events[0].data().unwrap().get("speaker_id").map(|s| s.as_str()),
             Some("RINCON_TEST123")
         );
     }
@@ -460,8 +460,8 @@ mod tests {
         let events = result.unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type(), "volume_changed");
-        assert_eq!(events[0].data().get("volume").map(|s| s.as_str()), Some("50"));
-        assert_eq!(events[0].data().get("channel").map(|s| s.as_str()), Some("Master"));
+        assert_eq!(events[0].data().unwrap().get("volume").map(|s| s.as_str()), Some("50"));
+        assert_eq!(events[0].data().unwrap().get("channel").map(|s| s.as_str()), Some("Master"));
     }
 
     #[test]
