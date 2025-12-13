@@ -7,7 +7,6 @@
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-use crate::callback::CallbackServer;
 use crate::event::Event;
 use crate::types::ServiceType;
 
@@ -66,7 +65,7 @@ use super::subscription_manager::SubscriptionManager;
 /// ```
 pub struct EventBroker {
     /// Callback server for receiving UPnP events
-    callback_server: Arc<CallbackServer>,
+    callback_server: Arc<callback_server::CallbackServer>,
     /// Sender for emitting events to the application
     event_sender: mpsc::Sender<Event>,
     /// Receiver for the event stream (taken by event_stream())
@@ -94,7 +93,7 @@ impl EventBroker {
     /// * `renewal_manager` - Manager for automatic renewal
     /// * `event_processor` - Manager for event routing and parsing
     pub(crate) fn new(
-        callback_server: Arc<CallbackServer>,
+        callback_server: Arc<callback_server::CallbackServer>,
         event_sender: mpsc::Sender<Event>,
         event_receiver: mpsc::Receiver<Event>,
         subscription_manager: SubscriptionManager,

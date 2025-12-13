@@ -26,8 +26,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
 
 // Use new broker module structure
-use crate::broker::{EventBroker, EventProcessor, RenewalManager, SubscriptionManager};
-use crate::callback::CallbackServer;
+use crate::broker::{CallbackAdapter, EventBroker, EventProcessor, RenewalManager, SubscriptionManager};
 use crate::error::{BrokerError, Result};
 use crate::strategy::SubscriptionStrategy;
 use crate::types::{BrokerConfig, ServiceType};
@@ -317,15 +316,21 @@ impl EventBrokerBuilder {
             ));
         }
 
-        // Create raw event channel for callback server -> event processor communication
+        // Create notification channel for callback server -> adapter communication
+        let (notification_tx, notification_rx) = mpsc::unbounded_channel();
+
+        // Create raw event channel for adapter -> event processor communication
         let (raw_event_tx, raw_event_rx) = mpsc::unbounded_channel();
 
         // Create and start callback server
-        let callback_server = CallbackServer::new(self.config.callback_port_range, raw_event_tx)
+        let callback_server = callback_server::CallbackServer::new(self.config.callback_port_range, notification_tx)
             .await
             .map_err(|e| {
                 BrokerError::CallbackServerError(format!("Failed to start callback server: {e}"))
             })?;
+
+        // Create callback adapter to convert notifications to raw events
+        let callback_adapter = CallbackAdapter::new(notification_rx, raw_event_tx);
 
         // Wrap callback server in Arc for sharing between components
         let callback_server_arc = Arc::new(callback_server);
@@ -344,6 +349,7 @@ impl EventBrokerBuilder {
             subscriptions.clone(),
             strategies_arc.clone(),
             callback_server_arc.clone(),
+            callback_adapter,
             event_tx.clone(),
             self.config.clone(),
         );

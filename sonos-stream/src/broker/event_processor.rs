@@ -27,9 +27,9 @@ use std::time::SystemTime;
 use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 
-use crate::callback::RawEvent;
 use crate::event::Event;
 use crate::strategy::SubscriptionStrategy;
+use crate::types::RawEvent;
 use crate::types::{ServiceType, SubscriptionKey};
 
 use super::subscription_manager::ActiveSubscription;

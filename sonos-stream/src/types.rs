@@ -126,6 +126,23 @@ impl Default for BrokerConfig {
     }
 }
 
+/// Raw event received from the callback server with Sonos-specific context.
+///
+/// This represents an unparsed UPnP event notification that has been received
+/// via HTTP callback and enriched with Sonos-specific information (speaker ID
+/// and service type). It needs to be processed by the event processor.
+#[derive(Debug, Clone)]
+pub struct RawEvent {
+    /// The subscription ID this event is for
+    pub subscription_id: String,
+    /// The speaker ID
+    pub speaker_id: SpeakerId,
+    /// The service type
+    pub service_type: ServiceType,
+    /// The raw XML event body
+    pub event_xml: String,
+}
+
 /// Configuration for individual subscriptions.
 #[derive(Debug, Clone)]
 pub struct SubscriptionConfig {

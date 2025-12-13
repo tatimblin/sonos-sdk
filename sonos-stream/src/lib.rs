@@ -176,7 +176,6 @@
 // Module declarations
 mod broker;
 mod builder;
-mod callback;
 mod error;
 mod event;
 mod strategy;
@@ -187,8 +186,8 @@ mod types;
 pub use broker::{ActiveSubscription, EventBroker};
 pub use builder::EventBrokerBuilder;
 
-// Re-export callback types
-pub use callback::{CallbackServer, EventRouter, RawEvent};
+// Re-export callback types from callback-server crate
+pub use callback_server::{CallbackServer, EventRouter};
 
 // Re-export event types
 pub use event::{Event, ParsedEvent};
@@ -202,7 +201,7 @@ pub use error::{BrokerError, StrategyError, SubscriptionError};
 
 // Re-export core types
 pub use types::{
-    BrokerConfig, ServiceType, Speaker, SpeakerId, SubscriptionConfig, SubscriptionKey,
+    BrokerConfig, RawEvent, ServiceType, Speaker, SpeakerId, SubscriptionConfig, SubscriptionKey,
     SubscriptionScope,
 };
 
