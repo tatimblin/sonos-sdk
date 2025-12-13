@@ -243,9 +243,8 @@ impl CallbackServer {
                             }
 
                             // Extract subscription ID from SID header or path
-                            let sub_id = sid
-                                .and_then(|s| Self::extract_subscription_id(&s))
-                                .unwrap_or(subscription_id);
+                            // Use the full SID header value if present, otherwise use path parameter
+                            let sub_id = sid.unwrap_or(subscription_id);
 
                             // Convert body to string
                             let event_xml = String::from_utf8_lossy(&body).to_string();
@@ -311,14 +310,7 @@ impl CallbackServer {
         true
     }
 
-    /// Extract subscription ID from SID header.
-    ///
-    /// UPnP SID headers have the format `uuid:subscription-UUID`. This method
-    /// strips the `uuid:` prefix and returns the subscription ID.
-    fn extract_subscription_id(sid: &str) -> Option<String> {
-        // SID format: uuid:subscription-UUID
-        sid.strip_prefix("uuid:").map(|s| s.to_string())
-    }
+
 }
 
 /// Custom rejection for invalid UPnP headers.
@@ -385,16 +377,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_extract_subscription_id() {
-        let sid = "uuid:12345-67890-abcdef";
-        let extracted = CallbackServer::extract_subscription_id(sid);
-        assert_eq!(extracted, Some("12345-67890-abcdef".to_string()));
 
-        let invalid_sid = "12345-67890-abcdef";
-        let extracted = CallbackServer::extract_subscription_id(invalid_sid);
-        assert_eq!(extracted, None);
-    }
 
     #[test]
     fn test_validate_upnp_headers() {
