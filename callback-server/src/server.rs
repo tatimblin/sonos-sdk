@@ -101,8 +101,16 @@ impl CallbackServer {
         // Create shutdown channel
         let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>(1);
 
+        // Create ready signal channel
+        let (ready_tx, mut ready_rx) = mpsc::channel::<()>(1);
+
         // Start the HTTP server
-        let server_handle = Self::start_server(port, event_router.clone(), shutdown_rx);
+        let server_handle = Self::start_server(port, event_router.clone(), shutdown_rx, ready_tx);
+
+        // Wait for server to be ready
+        ready_rx.recv().await.ok_or_else(|| {
+            "Server failed to start".to_string()
+        })?;
 
         Ok(Self {
             port,
@@ -210,6 +218,7 @@ impl CallbackServer {
         port: u16,
         event_router: Arc<EventRouter>,
         mut shutdown_rx: mpsc::Receiver<()>,
+        ready_tx: mpsc::Sender<()>,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             // Create the NOTIFY endpoint
@@ -269,6 +278,8 @@ impl CallbackServer {
                 );
 
             eprintln!("CallbackServer listening on {addr}");
+            // Signal that server is ready
+            let _ = ready_tx.send(()).await;
             server.await;
         })
     }

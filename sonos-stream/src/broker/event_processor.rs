@@ -501,6 +501,7 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
     impl Subscription for MockSubscription {
         fn speaker_id(&self) -> &SpeakerId {
             &self.speaker_id
@@ -522,11 +523,11 @@ mod tests {
             Some(Duration::from_secs(300))
         }
 
-        fn renew(&mut self) -> Result<(), crate::error::SubscriptionError> {
+        async fn renew(&mut self) -> Result<(), crate::error::SubscriptionError> {
             Ok(())
         }
 
-        fn unsubscribe(&mut self) -> Result<(), crate::error::SubscriptionError> {
+        async fn unsubscribe(&mut self) -> Result<(), crate::error::SubscriptionError> {
             Ok(())
         }
     }

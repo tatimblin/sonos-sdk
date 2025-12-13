@@ -358,14 +358,15 @@ mod tests {
         service_type: ServiceType,
     }
 
+    #[async_trait::async_trait]
     impl crate::subscription::Subscription for MockSub {
         fn subscription_id(&self) -> &str {
             &self.id
         }
-        fn renew(&mut self) -> std::result::Result<(), crate::error::SubscriptionError> {
+        async fn renew(&mut self) -> std::result::Result<(), crate::error::SubscriptionError> {
             Ok(())
         }
-        fn unsubscribe(&mut self) -> std::result::Result<(), crate::error::SubscriptionError> {
+        async fn unsubscribe(&mut self) -> std::result::Result<(), crate::error::SubscriptionError> {
             Ok(())
         }
         fn is_active(&self) -> bool {

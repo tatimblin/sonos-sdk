@@ -21,6 +21,7 @@ use sonos_stream::{
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::Duration;
+use async_trait::async_trait;
 
 /// Simple mock strategy that returns hardcoded events
 struct SimpleStrategy;
@@ -66,16 +67,17 @@ struct SimpleSubscription {
     speaker_id: SpeakerId,
 }
 
+#[async_trait]
 impl Subscription for SimpleSubscription {
     fn subscription_id(&self) -> &str {
         &self.id
     }
 
-    fn renew(&mut self) -> Result<(), SubscriptionError> {
+    async fn renew(&mut self) -> Result<(), SubscriptionError> {
         Ok(())
     }
 
-    fn unsubscribe(&mut self) -> Result<(), SubscriptionError> {
+    async fn unsubscribe(&mut self) -> Result<(), SubscriptionError> {
         Ok(())
     }
 

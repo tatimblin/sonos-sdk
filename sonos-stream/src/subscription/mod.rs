@@ -250,8 +250,8 @@ mod tests {
         assert!(time_until.unwrap() <= Duration::from_secs(200));
     }
 
-    #[test]
-    fn test_time_until_renewal_inactive() {
+    #[tokio::test]
+    async fn test_time_until_renewal_inactive() {
         let mut sub = MockSubscription::new(
             "uuid:sub-123".to_string(),
             SpeakerId::new("speaker1"),

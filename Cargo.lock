@@ -171,6 +171,7 @@ name = "callback-server"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "reqwest",
  "tokio",
  "warp",
 ]
