@@ -1,0 +1,171 @@
+2025-12-14T05:55:02.377182Z  INFO integration_example: Discovered 8 Sonos device(s)
+2025-12-14T05:55:02.377189Z  INFO integration_example: Found device: '192.168.4.102 - Sonos Connect:Amp - RINCON_5CAAFDEFEE7E01400' (Bedroom) at 192.168.4.102 [Sonos Connect:Amp]
+2025-12-14T05:55:02.377194Z  INFO integration_example: Found device: '192.168.4.30 - Sonos One - RINCON_7828CAFB9D9C01400' (Basement) at 192.168.4.30 [Sonos One]
+2025-12-14T05:55:02.377199Z  INFO integration_example: Found device: '192.168.4.48 - Sonos Amp - RINCON_804AF2AA2FA201400' (Living Room) at 192.168.4.48 [Sonos Amp]
+2025-12-14T05:55:02.377205Z  INFO integration_example: Found device: '192.168.4.40 - Sonos Playbar - RINCON_5CAAFDAE58BD01400' (Basement) at 192.168.4.40 [Sonos Playbar]
+2025-12-14T05:55:02.377210Z  INFO integration_example: Found device: '192.168.4.29 - Sonos One - RINCON_7828CA128F0001400' (Basement) at 192.168.4.29 [Sonos One]
+2025-12-14T05:55:02.377216Z  INFO integration_example: Found device: '192.168.4.45 - Sonos Connect:Amp - RINCON_B8E937A84F0601400' (Bathroom) at 192.168.4.45 [Sonos Connect:Amp]
+2025-12-14T05:55:02.377221Z  INFO integration_example: Found device: '192.168.4.46 - Sonos Connect:Amp - RINCON_000E583FEE3401400' (Kitchen) at 192.168.4.46 [Sonos Connect:Amp]
+2025-12-14T05:55:02.377226Z  INFO integration_example: Found device: '192.168.4.39 - Sonos Roam 2 - RINCON_C43875CA135801400' (Roam / Office) at 192.168.4.39 [Sonos Roam 2]
+2025-12-14T05:55:02.377233Z  INFO integration_example: Phase 2: Selecting target device...
+2025-12-14T05:55:02.377237Z  INFO integration_example: Looking for target device: 'Sonos Roam 2'
+2025-12-14T05:55:02.377260Z  INFO integration_example::device_selection: Exact match not found for 'Sonos Roam 2', using partial match: '192.168.4.39 - Sonos Roam 2 - RINCON_C43875CA135801400'
+2025-12-14T05:55:02.377301Z  INFO integration_example: Successfully selected device: '192.168.4.39 - Sonos Roam 2 - RINCON_C43875CA135801400' (uuid:RINCON_C43875CA135801400)
+2025-12-14T05:55:02.377308Z  INFO integration_example: Selected device: '192.168.4.39 - Sonos Roam 2 - RINCON_C43875CA135801400' (Roam / Office) at 192.168.4.39
+2025-12-14T05:55:02.377314Z  INFO integration_example: Phase 3: Setting up event broker...
+2025-12-14T05:55:02.377318Z  INFO integration_example: Creating event broker with port range 3400-3500
+2025-12-14T05:55:02.377323Z  INFO integration_example::event_broker: Initializing event broker with AVTransport strategy
+2025-12-14T05:55:02.377328Z  INFO integration_example::event_broker: Broker configuration: port_range=(3400, 3500), timeout=1800s, renewal_threshold=300s, max_retries=3, buffer_size=100
+2025-12-14T05:55:02.377344Z  INFO integration_example::event_broker: Created AVTransport strategy for media transport events
+CallbackServer listening on 0.0.0.0:3400
+2025-12-14T05:55:02.377942Z  INFO integration_example::event_broker: Event broker initialized successfully with callback server on port range (3400, 3500)
+2025-12-14T05:55:02.377948Z  INFO integration_example: Event broker created successfully
+2025-12-14T05:55:02.377953Z  INFO integration_example: Phase 4: Establishing AVTransport subscription...
+2025-12-14T05:55:02.377957Z  INFO integration_example: Creating AVTransport subscription for device '192.168.4.39 - Sonos Roam 2 - RINCON_C43875CA135801400'
+2025-12-14T05:55:02.378002Z  INFO integration_example::subscription: Creating AVTransport subscription for speaker '192.168.4.39 - Sonos Roam 2 - RINCON_C43875CA135801400' (uuid:RINCON_C43875CA135801400)
+2025-12-14T05:55:02.378009Z DEBUG integration_example::subscription: Subscription config: timeout=30s, max_retries=3, retry_delay=2s
+2025-12-14T05:55:02.378013Z  INFO integration_example::subscription: Subscription attempt 1 of 3 for speaker '192.168.4.39 - Sonos Roam 2 - RINCON_C43875CA135801400'
+🔗 Using callback URL: http://192.168.4.64:3400
+2025-12-14T05:55:02.378097Z TRACE hyper::client::pool: checkout waiting for idle connection: ("http", 192.168.4.39:1400)
+2025-12-14T05:55:02.378112Z DEBUG reqwest::connect: starting new connection: http://192.168.4.39:1400/
+2025-12-14T05:55:02.378121Z TRACE hyper::client::connect::http: Http::connect; scheme=Some("http"), host=Some("192.168.4.39"), port=Some(Port(1400))
+2025-12-14T05:55:02.378129Z DEBUG hyper::client::connect::http: connecting to 192.168.4.39:1400
+2025-12-14T05:55:02.384327Z DEBUG hyper::client::connect::http: connected to 192.168.4.39:1400
+2025-12-14T05:55:02.384338Z TRACE hyper::client::conn: client handshake Http1
+2025-12-14T05:55:02.384344Z TRACE hyper::client::client: handshake complete, spawning background dispatcher task
+2025-12-14T05:55:02.384367Z TRACE hyper::proto::h1::conn: flushed({role=client}): State { reading: Init, writing: Init, keep_alive: Busy }
+2025-12-14T05:55:02.384372Z TRACE hyper::client::pool: checkout dropped for ("http", 192.168.4.39:1400)
+2025-12-14T05:55:02.384422Z TRACE encode_headers: hyper::proto::h1::role: Client::encode method=SUBSCRIBE, body=None
+2025-12-14T05:55:02.384446Z DEBUG hyper::proto::h1::io: flushed 169 bytes
+2025-12-14T05:55:02.384451Z TRACE hyper::proto::h1::conn: flushed({role=client}): State { reading: Init, writing: KeepAlive, keep_alive: Busy }
+2025-12-14T05:55:02.390328Z TRACE hyper::proto::h1::conn: Conn::read_head
+2025-12-14T05:55:02.390365Z TRACE hyper::proto::h1::io: received 159 bytes
+2025-12-14T05:55:02.390401Z TRACE parse_headers: hyper::proto::h1::role: Response.parse bytes=159
+2025-12-14T05:55:02.390414Z TRACE parse_headers: hyper::proto::h1::role: Response.parse Complete(159)
+2025-12-14T05:55:02.390429Z TRACE parse_headers: hyper::proto::h1::role: neither Transfer-Encoding nor Content-Length
+2025-12-14T05:55:02.390438Z DEBUG hyper::proto::h1::io: parsed 4 headers
+2025-12-14T05:55:02.390442Z DEBUG hyper::proto::h1::conn: incoming body is close-delimited
+2025-12-14T05:55:02.390445Z TRACE hyper::proto::h1::conn: remote disabling keep-alive
+2025-12-14T05:55:02.390459Z TRACE hyper::proto::h1::decode: decode; state=Eof(false)
+2025-12-14T05:55:02.390464Z TRACE hyper::proto::h1::conn: flushed({role=client}): State { reading: Body(Eof(false)), writing: KeepAlive, keep_alive: Disabled }
+2025-12-14T05:55:02.390527Z TRACE hyper::proto::h1::dispatch: body receiver dropped before eof, draining or closing
+2025-12-14T05:55:02.390534Z TRACE hyper::proto::h1::decode: decode; state=Eof(false)
+2025-12-14T05:55:02.390540Z TRACE hyper::proto::h1::conn: State::close_read()
+2025-12-14T05:55:02.390541Z DEBUG integration_example::subscription: Subscription request sent successfully for speaker '192.168.4.39 - Sonos Roam 2 - RINCON_C43875CA135801400'
+2025-12-14T05:55:02.390547Z TRACE hyper::proto::h1::conn: State::close()
+2025-12-14T05:55:02.390548Z  INFO integration_example::subscription: Successfully created AVTransport subscription for speaker '192.168.4.39 - Sonos Roam 2 - RINCON_C43875CA135801400' on attempt 1
+2025-12-14T05:55:02.390550Z TRACE hyper::proto::h1::conn: flushed({role=client}): State { reading: Closed, writing: Closed, keep_alive: Disabled }
+2025-12-14T05:55:02.390555Z  INFO integration_example: AVTransport subscription established successfully
+2025-12-14T05:55:02.390562Z  INFO integration_example: Subscription established successfully
+2025-12-14T05:55:02.390567Z  INFO integration_example: Phase 5: Starting event stream consumption...
+2025-12-14T05:55:02.390571Z TRACE hyper::proto::h1::conn: shut down IO complete
+2025-12-14T05:55:02.390572Z  INFO integration_example: Starting event stream consumption
+
+=== Event Stream Started ===
+Listening for AVTransport events... (Press Ctrl+C to stop)
+
+2025-12-14T05:55:02.390589Z  INFO integration_example::event_processing: Starting event stream consumer
+2025-12-14T05:55:02.390598Z  INFO integration_example::event_processing: Subscription established speaker_id=uuid:RINCON_C43875CA135801400 service_type=AVTransport subscription_id=uuid:RINCON_C43875CA135801400_sub0000000197
+[2025-12-13 21:55:02.390] SUBSCRIPTION_ESTABLISHED: AVTransport on uuid:RINCON_C43875CA135801400 (uuid:RINCON_C43875CA135801400_sub0000000197)
+2025-12-14T05:55:02.399466Z TRACE hyper::proto::h1::conn: Conn::read_head
+2025-12-14T05:55:02.399484Z TRACE hyper::proto::h1::conn: flushed({role=server}): State { reading: Init, writing: Init, keep_alive: Busy }
+2025-12-14T05:55:02.399503Z TRACE hyper::proto::h1::conn: Conn::read_head
+2025-12-14T05:55:02.399510Z TRACE hyper::proto::h1::io: received 1448 bytes
+2025-12-14T05:55:02.399532Z TRACE parse_headers: hyper::proto::h1::role: Request.parse bytes=1448
+2025-12-14T05:55:02.399549Z TRACE parse_headers: hyper::proto::h1::role: Request.parse Complete(241)
+2025-12-14T05:55:02.399575Z DEBUG hyper::proto::h1::io: parsed 9 headers
+2025-12-14T05:55:02.399579Z DEBUG hyper::proto::h1::conn: incoming body is content-length (2211 bytes)
+2025-12-14T05:55:02.399583Z TRACE hyper::proto::h1::conn: remote disabling keep-alive
+2025-12-14T05:55:02.399603Z TRACE warp::filters::method: method::POST?: NOTIFY
+2025-12-14T05:55:02.399611Z TRACE hyper::proto::h1::decode: decode; state=Length(2211)
+2025-12-14T05:55:02.399642Z TRACE encode_headers: hyper::proto::h1::role: Server::encode status=500, body=Some(Known(21)), req_method=Some(NOTIFY)
+2025-12-14T05:55:02.399674Z TRACE hyper::proto::h1::io: buffer.queue self.len=136 buf.len=21
+2025-12-14T05:55:02.399711Z DEBUG hyper::proto::h1::io: flushed 157 bytes
+2025-12-14T05:55:02.399716Z TRACE hyper::proto::h1::conn: flushed({role=server}): State { reading: Body(Length(1004)), writing: Closed, keep_alive: Disabled }
+2025-12-14T05:55:02.399729Z TRACE hyper::proto::h1::dispatch: body receiver dropped before eof, draining or closing
+2025-12-14T05:55:02.399734Z TRACE hyper::proto::h1::decode: decode; state=Length(1004)
+2025-12-14T05:55:02.399739Z TRACE hyper::proto::h1::conn: State::close_read()
+2025-12-14T05:55:02.399745Z TRACE hyper::proto::h1::conn: flushed({role=server}): State { reading: Closed, writing: Closed, keep_alive: Disabled }
+2025-12-14T05:55:02.399756Z TRACE hyper::proto::h1::conn: shut down IO complete
+2025-12-14T05:55:06.491567Z TRACE hyper::proto::h1::conn: Conn::read_head
+2025-12-14T05:55:06.491647Z TRACE hyper::proto::h1::conn: flushed({role=server}): State { reading: Init, writing: Init, keep_alive: Busy }
+2025-12-14T05:55:06.491714Z TRACE hyper::proto::h1::conn: Conn::read_head
+2025-12-14T05:55:06.491741Z TRACE hyper::proto::h1::io: received 1448 bytes
+2025-12-14T05:55:06.491816Z TRACE parse_headers: hyper::proto::h1::role: Request.parse bytes=1448
+2025-12-14T05:55:06.491880Z TRACE parse_headers: hyper::proto::h1::role: Request.parse Complete(241)
+2025-12-14T05:55:06.492079Z DEBUG hyper::proto::h1::io: parsed 9 headers
+2025-12-14T05:55:06.492122Z DEBUG hyper::proto::h1::conn: incoming body is content-length (2211 bytes)
+2025-12-14T05:55:06.492158Z TRACE hyper::proto::h1::conn: remote disabling keep-alive
+2025-12-14T05:55:06.492240Z TRACE warp::filters::method: method::POST?: NOTIFY
+2025-12-14T05:55:06.492292Z TRACE hyper::proto::h1::decode: decode; state=Length(2211)
+2025-12-14T05:55:06.492453Z TRACE encode_headers: hyper::proto::h1::role: Server::encode status=500, body=Some(Known(21)), req_method=Some(NOTIFY)
+2025-12-14T05:55:06.492568Z TRACE hyper::proto::h1::io: buffer.queue self.len=136 buf.len=21
+2025-12-14T05:55:06.492701Z DEBUG hyper::proto::h1::io: flushed 157 bytes
+2025-12-14T05:55:06.492730Z TRACE hyper::proto::h1::conn: flushed({role=server}): State { reading: Body(Length(1004)), writing: Closed, keep_alive: Disabled }
+2025-12-14T05:55:06.492862Z TRACE hyper::proto::h1::dispatch: body receiver dropped before eof, draining or closing
+2025-12-14T05:55:06.492902Z TRACE hyper::proto::h1::decode: decode; state=Length(1004)
+2025-12-14T05:55:06.492946Z TRACE hyper::proto::h1::io: received 1004 bytes
+2025-12-14T05:55:06.492974Z DEBUG hyper::proto::h1::conn: incoming body completed
+2025-12-14T05:55:06.493000Z TRACE hyper::proto::h1::conn: State::close()
+2025-12-14T05:55:06.493022Z TRACE hyper::proto::h1::conn: State::close_read()
+2025-12-14T05:55:06.493068Z TRACE hyper::proto::h1::conn: flushed({role=server}): State { reading: Closed, writing: Closed, keep_alive: Disabled }
+2025-12-14T05:55:06.493158Z TRACE hyper::proto::h1::conn: shut down IO complete
+2025-12-14T05:55:14.508668Z TRACE hyper::proto::h1::conn: Conn::read_head
+2025-12-14T05:55:14.508831Z TRACE hyper::proto::h1::conn: flushed({role=server}): State { reading: Init, writing: Init, keep_alive: Busy }
+2025-12-14T05:55:14.508972Z TRACE hyper::proto::h1::conn: Conn::read_head
+2025-12-14T05:55:14.509023Z TRACE hyper::proto::h1::io: received 1448 bytes
+2025-12-14T05:55:14.509157Z TRACE parse_headers: hyper::proto::h1::role: Request.parse bytes=1448
+2025-12-14T05:55:14.509293Z TRACE parse_headers: hyper::proto::h1::role: Request.parse Complete(241)
+2025-12-14T05:55:14.509538Z DEBUG hyper::proto::h1::io: parsed 9 headers
+2025-12-14T05:55:14.509576Z DEBUG hyper::proto::h1::conn: incoming body is content-length (2211 bytes)
+2025-12-14T05:55:14.509663Z TRACE hyper::proto::h1::conn: remote disabling keep-alive
+2025-12-14T05:55:14.509775Z TRACE warp::filters::method: method::POST?: NOTIFY
+2025-12-14T05:55:14.509829Z TRACE hyper::proto::h1::decode: decode; state=Length(2211)
+2025-12-14T05:55:14.510008Z TRACE encode_headers: hyper::proto::h1::role: Server::encode status=500, body=Some(Known(21)), req_method=Some(NOTIFY)
+2025-12-14T05:55:14.510130Z TRACE hyper::proto::h1::io: buffer.queue self.len=136 buf.len=21
+2025-12-14T05:55:14.510251Z DEBUG hyper::proto::h1::io: flushed 157 bytes
+2025-12-14T05:55:14.510280Z TRACE hyper::proto::h1::conn: flushed({role=server}): State { reading: Body(Length(1004)), writing: Closed, keep_alive: Disabled }
+2025-12-14T05:55:14.510394Z TRACE hyper::proto::h1::dispatch: body receiver dropped before eof, draining or closing
+2025-12-14T05:55:14.510432Z TRACE hyper::proto::h1::decode: decode; state=Length(1004)
+2025-12-14T05:55:14.510474Z TRACE hyper::proto::h1::io: received 1004 bytes
+2025-12-14T05:55:14.510504Z DEBUG hyper::proto::h1::conn: incoming body completed
+2025-12-14T05:55:14.510529Z TRACE hyper::proto::h1::conn: State::close()
+2025-12-14T05:55:14.510562Z TRACE hyper::proto::h1::conn: State::close_read()
+2025-12-14T05:55:14.510602Z TRACE hyper::proto::h1::conn: flushed({role=server}): State { reading: Closed, writing: Closed, keep_alive: Disabled }
+2025-12-14T05:55:14.510687Z TRACE hyper::proto::h1::conn: shut down IO complete
+2025-12-14T05:55:38.538215Z TRACE hyper::proto::h1::conn: Conn::read_head
+2025-12-14T05:55:38.538288Z TRACE hyper::proto::h1::conn: flushed({role=server}): State { reading: Init, writing: Init, keep_alive: Busy }
+2025-12-14T05:55:38.538358Z TRACE hyper::proto::h1::conn: Conn::read_head
+2025-12-14T05:55:38.538394Z TRACE hyper::proto::h1::io: received 2452 bytes
+2025-12-14T05:55:38.538452Z TRACE parse_headers: hyper::proto::h1::role: Request.parse bytes=2452
+2025-12-14T05:55:38.538523Z TRACE parse_headers: hyper::proto::h1::role: Request.parse Complete(241)
+2025-12-14T05:55:38.538640Z DEBUG hyper::proto::h1::io: parsed 9 headers
+2025-12-14T05:55:38.538657Z DEBUG hyper::proto::h1::conn: incoming body is content-length (2211 bytes)
+2025-12-14T05:55:38.538674Z TRACE hyper::proto::h1::conn: remote disabling keep-alive
+2025-12-14T05:55:38.538713Z TRACE warp::filters::method: method::POST?: NOTIFY
+2025-12-14T05:55:38.538747Z TRACE hyper::proto::h1::decode: decode; state=Length(2211)
+2025-12-14T05:55:38.538767Z DEBUG hyper::proto::h1::conn: incoming body completed
+2025-12-14T05:55:38.538875Z TRACE encode_headers: hyper::proto::h1::role: Server::encode status=500, body=Some(Known(21)), req_method=Some(NOTIFY)
+2025-12-14T05:55:38.538940Z TRACE hyper::proto::h1::io: buffer.queue self.len=136 buf.len=21
+2025-12-14T05:55:38.539033Z DEBUG hyper::proto::h1::io: flushed 157 bytes
+2025-12-14T05:55:38.539049Z TRACE hyper::proto::h1::conn: State::close()
+2025-12-14T05:55:38.539061Z TRACE hyper::proto::h1::conn: flushed({role=server}): State { reading: Closed, writing: Closed, keep_alive: Disabled }
+2025-12-14T05:55:38.539109Z TRACE hyper::proto::h1::conn: shut down IO complete
+2025-12-14T05:56:10.596731Z TRACE hyper::proto::h1::conn: Conn::read_head
+2025-12-14T05:56:10.596907Z TRACE hyper::proto::h1::conn: flushed({role=server}): State { reading: Init, writing: Init, keep_alive: Busy }
+2025-12-14T05:56:10.597032Z TRACE hyper::proto::h1::conn: Conn::read_head
+2025-12-14T05:56:10.597080Z TRACE hyper::proto::h1::io: received 2452 bytes
+2025-12-14T05:56:10.597230Z TRACE parse_headers: hyper::proto::h1::role: Request.parse bytes=2452
+2025-12-14T05:56:10.597373Z TRACE parse_headers: hyper::proto::h1::role: Request.parse Complete(241)
+2025-12-14T05:56:10.597610Z DEBUG hyper::proto::h1::io: parsed 9 headers
+2025-12-14T05:56:10.597643Z DEBUG hyper::proto::h1::conn: incoming body is content-length (2211 bytes)
+2025-12-14T05:56:10.597675Z TRACE hyper::proto::h1::conn: remote disabling keep-alive
+2025-12-14T05:56:10.597749Z TRACE warp::filters::method: method::POST?: NOTIFY
+2025-12-14T05:56:10.597800Z TRACE hyper::proto::h1::decode: decode; state=Length(2211)
+2025-12-14T05:56:10.597839Z DEBUG hyper::proto::h1::conn: incoming body completed
+2025-12-14T05:56:10.598018Z TRACE encode_headers: hyper::proto::h1::role: Server::encode status=500, body=Some(Known(21)), req_method=Some(NOTIFY)
+2025-12-14T05:56:10.598134Z TRACE hyper::proto::h1::io: buffer.queue self.len=136 buf.len=21
+2025-12-14T05:56:10.598256Z DEBUG hyper::proto::h1::io: flushed 157 bytes
+2025-12-14T05:56:10.598285Z TRACE hyper::proto::h1::conn: State::close()
+2025-12-14T05:56:10.598306Z TRACE hyper::proto::h1::conn: flushed({role=server}): State { reading: Closed, writing: Closed, keep_alive: Disabled }
+2025-12-14T05:56:10.598387Z TRACE hyper::proto::h1::conn: shut down IO complet
