@@ -221,16 +221,16 @@ impl CallbackServer {
         ready_tx: mpsc::Sender<()>,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
-            // Create the NOTIFY endpoint
-            let notify_route = warp::path!("notify" / String)
-                .and(warp::post())
+            // Create the NOTIFY endpoint that accepts any path (like the old code)
+            let notify_route = warp::post()
+                .and(warp::path::full())
                 .and(warp::header::optional::<String>("sid"))
                 .and(warp::header::optional::<String>("nt"))
                 .and(warp::header::optional::<String>("nts"))
                 .and(warp::body::bytes())
                 .and_then({
                     let router = event_router.clone();
-                    move |subscription_id: String,
+                    move |path: warp::path::FullPath,
                           sid: Option<String>,
                           nt: Option<String>,
                           nts: Option<String>,
@@ -242,9 +242,8 @@ impl CallbackServer {
                                 return Err(warp::reject::custom(InvalidUpnpHeaders));
                             }
 
-                            // Extract subscription ID from SID header or path
-                            // Use the full SID header value if present, otherwise use path parameter
-                            let sub_id = sid.unwrap_or(subscription_id);
+                            // Extract subscription ID from SID header (required for UPnP events)
+                            let sub_id = sid.ok_or_else(|| warp::reject::custom(InvalidUpnpHeaders))?;
 
                             // Convert body to string
                             let event_xml = String::from_utf8_lossy(&body).to_string();
@@ -292,16 +291,14 @@ impl CallbackServer {
         nt: &Option<String>,
         nts: &Option<String>,
     ) -> bool {
-        // SID header should be present for event notifications
+        // SID header is required for event notifications
         if sid.is_none() {
             return false;
         }
 
-        // For initial subscription, NT and NTS should be present
-        // For events, they may not be present
-        // We'll be lenient and accept both cases
+        // For UPnP events, NT and NTS headers are typically present
+        // If present, validate they have expected values
         if let (Some(nt_val), Some(nts_val)) = (nt, nts) {
-            // If present, validate they have expected values
             if nt_val != "upnp:event" || nts_val != "upnp:propchange" {
                 return false;
             }
