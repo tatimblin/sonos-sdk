@@ -5,14 +5,40 @@
 //! The mock implementations support configurable failure modes to test error paths.
 
 use sonos_stream::{
-    ParsedEvent, ServiceType, SpeakerId, Speaker, SubscriptionConfig, SubscriptionScope,
-    StrategyError, Subscription, SubscriptionError, SubscriptionStrategy,
+    EventData, ServiceType, SpeakerId, Speaker, SubscriptionConfig, SubscriptionScope,
+    StrategyError, Subscription, SubscriptionError, SubscriptionStrategy, TypedEvent,
 };
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use async_trait::async_trait;
+
+/// Shared mock event data for testing
+#[derive(Debug, Clone)]
+pub struct MockEventData {
+    pub event_type: String,
+    pub service_type: ServiceType,
+    pub data: HashMap<String, String>,
+}
+
+impl EventData for MockEventData {
+    fn event_type(&self) -> &str {
+        &self.event_type
+    }
+
+    fn service_type(&self) -> ServiceType {
+        self.service_type
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn clone_box(&self) -> Box<dyn EventData> {
+        Box::new(self.clone())
+    }
+}
 
 /// Mock strategy for testing that doesn't make real UPnP calls.
 ///
@@ -124,7 +150,9 @@ impl SubscriptionStrategy for MockStrategy {
         &self,
         speaker_id: &SpeakerId,
         event_xml: &str,
-    ) -> Result<Vec<ParsedEvent>, StrategyError> {
+    ) -> Result<TypedEvent, StrategyError> {
+
+        
         self.parse_count.fetch_add(1, Ordering::Relaxed);
 
         if self.should_fail_parsing.load(Ordering::Relaxed) {
@@ -161,7 +189,21 @@ impl SubscriptionStrategy for MockStrategy {
             }
         }
 
-        Ok(vec![ParsedEvent::custom(event_type, data)])
+        // Add volume and channel for volume_changed events
+        if event_type == "volume_changed" {
+            data.insert("volume".to_string(), "50".to_string());
+            data.insert("channel".to_string(), "Master".to_string());
+        }
+
+
+
+        let mock_data = MockEventData {
+            event_type: event_type.to_string(),
+            service_type: self.service_type,
+            data,
+        };
+
+        Ok(TypedEvent::new(Box::new(mock_data)))
     }
 }
 
@@ -432,13 +474,18 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(strategy.parse_count(), 1);
 
-        let events = result.unwrap();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].event_type(), "test_event");
-        assert_eq!(
-            events[0].data().unwrap().get("speaker_id").map(|s| s.as_str()),
-            Some("RINCON_TEST123")
-        );
+        let typed_event = result.unwrap();
+        assert_eq!(typed_event.event_type(), "test_event");
+        
+        // Downcast to MockEventData to access the data
+        if let Some(mock_data) = typed_event.downcast_ref::<MockEventData>() {
+            assert_eq!(
+                mock_data.data.get("speaker_id").map(|s| s.as_str()),
+                Some("RINCON_TEST123")
+            );
+        } else {
+            panic!("Failed to downcast to MockEventData");
+        }
     }
 
     #[test]
@@ -457,11 +504,16 @@ mod tests {
         let result = strategy.parse_event(&speaker_id, event_xml);
 
         assert!(result.is_ok());
-        let events = result.unwrap();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].event_type(), "volume_changed");
-        assert_eq!(events[0].data().unwrap().get("volume").map(|s| s.as_str()), Some("50"));
-        assert_eq!(events[0].data().unwrap().get("channel").map(|s| s.as_str()), Some("Master"));
+        let typed_event = result.unwrap();
+        assert_eq!(typed_event.event_type(), "volume_changed");
+        
+        // Downcast to MockEventData to access the data
+        if let Some(mock_data) = typed_event.downcast_ref::<MockEventData>() {
+            assert_eq!(mock_data.data.get("volume").map(|s| s.as_str()), Some("50"));
+            assert_eq!(mock_data.data.get("channel").map(|s| s.as_str()), Some("Master"));
+        } else {
+            panic!("Failed to downcast to MockEventData");
+        }
     }
 
     #[test]

@@ -97,7 +97,7 @@ pub mod av_transport;
 pub use av_transport::AVTransportStrategy;
 
 use crate::error::StrategyError;
-use crate::event::ParsedEvent;
+use crate::event::TypedEvent;
 use async_trait::async_trait;
 use crate::subscription::{Subscription, UPnPSubscription};
 use crate::types::{ServiceType, SpeakerId, Speaker, SubscriptionConfig, SubscriptionScope};
@@ -194,12 +194,12 @@ pub trait SubscriptionStrategy: Send + Sync {
         self.create_subscription_with_endpoint(speaker, callback_url, config, &endpoint_url).await
     }
 
-    /// Parse a raw UPnP event into structured event data.
+    /// Parse a raw UPnP event into a typed event.
     ///
     /// This method receives the raw XML body of a UPnP NOTIFY request and should:
     /// 1. Parse the XML to extract state variables
     /// 2. Convert the state variables into service-specific event types
-    /// 3. Return a vector of parsed events (one event may contain multiple state changes)
+    /// 3. Return exactly one typed event per UPnP notification
     ///
     /// # Parameters
     ///
@@ -208,9 +208,10 @@ pub trait SubscriptionStrategy: Send + Sync {
     ///
     /// # Returns
     ///
-    /// A vector of `ParsedEvent` instances. Multiple events may be returned if the XML
-    /// contains multiple state variable changes. An empty vector is valid if the event
-    /// contains no actionable state changes.
+    /// A single `TypedEvent` instance containing strategy-specific event data.
+    /// Each UPnP notification produces exactly one typed event, even if the XML
+    /// contains multiple state variable changes (they are consolidated into a
+    /// single event object).
     ///
     /// # Errors
     ///
@@ -240,22 +241,23 @@ pub trait SubscriptionStrategy: Send + Sync {
     ///     &self,
     ///     speaker_id: &SpeakerId,
     ///     event_xml: &str,
-    /// ) -> Result<Vec<ParsedEvent>, StrategyError> {
+    /// ) -> Result<TypedEvent, StrategyError> {
     ///     use quick_xml::Reader;
     ///     
     ///     let mut reader = Reader::from_str(event_xml);
     ///     // Parse XML...
     ///     // Extract state variables...
-    ///     // Create ParsedEvent instances...
+    ///     // Create strategy-specific event data...
+    ///     // Wrap in TypedEvent...
     ///     
-    ///     Ok(events)
+    ///     Ok(typed_event)
     /// }
     /// ```
     fn parse_event(
         &self,
         speaker_id: &SpeakerId,
         event_xml: &str,
-    ) -> Result<Vec<ParsedEvent>, StrategyError>;
+    ) -> Result<TypedEvent, StrategyError>;
 
     /// Helper method to create a UPnP subscription with a specific endpoint URL.
     ///
@@ -381,8 +383,33 @@ mod tests {
             &self,
             _speaker_id: &SpeakerId,
             _event_xml: &str,
-        ) -> Result<Vec<ParsedEvent>, StrategyError> {
-            Ok(vec![])
+        ) -> Result<TypedEvent, StrategyError> {
+            // Create a mock event data for testing
+            use crate::event::{EventData, TypedEvent};
+            use std::any::Any;
+            
+            #[derive(Debug, Clone)]
+            struct MockEventData;
+            
+            impl EventData for MockEventData {
+                fn event_type(&self) -> &str {
+                    "mock_event"
+                }
+                
+                fn service_type(&self) -> crate::types::ServiceType {
+                    crate::types::ServiceType::AVTransport
+                }
+                
+                fn as_any(&self) -> &dyn Any {
+                    self
+                }
+                
+                fn clone_box(&self) -> Box<dyn EventData> {
+                    Box::new(self.clone())
+                }
+            }
+            
+            Ok(TypedEvent::new(Box::new(MockEventData)))
         }
     }
 
@@ -402,7 +429,10 @@ mod tests {
         let strategy = MockStrategy;
         let result = strategy.parse_event(&SpeakerId::new("test"), "<xml></xml>");
         assert!(result.is_ok());
-        assert_eq!(result.unwrap().len(), 0);
+        
+        let typed_event = result.unwrap();
+        assert_eq!(typed_event.event_type(), "mock_event");
+        assert_eq!(typed_event.service_type(), ServiceType::AVTransport);
     }
 
     #[test]

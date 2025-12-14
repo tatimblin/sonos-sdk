@@ -34,6 +34,8 @@ use crate::types::{ServiceType, SubscriptionKey};
 
 use super::subscription_manager::ActiveSubscription;
 
+
+
 /// Event processor that routes raw events to strategies for parsing.
 ///
 /// The processor runs a background task that continuously processes events until
@@ -195,17 +197,15 @@ impl EventProcessor {
 
         // Parse the event using the strategy
         match strategy.parse_event(&speaker_id, &event_xml) {
-            Ok(parsed_events) => {
-                // Emit ServiceEvent for each parsed event
-                for parsed_event in parsed_events {
-                    let _ = event_sender
-                        .send(Event::ServiceEvent {
-                            speaker_id: speaker_id.clone(),
-                            service_type,
-                            event: parsed_event,
-                        })
-                        .await;
-                }
+            Ok(typed_event) => {
+                // Emit ServiceEvent with TypedEvent directly
+                let _ = event_sender
+                    .send(Event::ServiceEvent {
+                        speaker_id: speaker_id.clone(),
+                        service_type,
+                        event: typed_event,
+                    })
+                    .await;
 
                 // Update subscription's last event timestamp
                 let key = SubscriptionKey::new(speaker_id, service_type);
@@ -231,7 +231,7 @@ impl EventProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::ParsedEvent;
+
     use crate::subscription::Subscription;
     use crate::types::{ServiceType, SpeakerId, SubscriptionScope};
     use crate::error::StrategyError;
@@ -276,14 +276,39 @@ mod tests {
             &self,
             _speaker_id: &SpeakerId,
             _event_xml: &str,
-        ) -> Result<Vec<ParsedEvent>, StrategyError> {
+        ) -> Result<crate::event::TypedEvent, StrategyError> {
+            use crate::event::{EventData, TypedEvent};
+            use std::any::Any;
+            
             if self.should_succeed {
-                Ok(vec![ParsedEvent::custom(
-                    "test_event",
-                    std::collections::HashMap::from([
-                        ("key".to_string(), "value".to_string()),
-                    ]),
-                )])
+                #[derive(Debug, Clone)]
+                struct MockEventData {
+                    key: String,
+                }
+                
+                impl EventData for MockEventData {
+                    fn event_type(&self) -> &str {
+                        "test_event"
+                    }
+                    
+                    fn service_type(&self) -> crate::types::ServiceType {
+                        crate::types::ServiceType::AVTransport
+                    }
+                    
+                    fn as_any(&self) -> &dyn Any {
+                        self
+                    }
+                    
+                    fn clone_box(&self) -> Box<dyn EventData> {
+                        Box::new(self.clone())
+                    }
+                }
+                
+                let mock_data = MockEventData {
+                    key: "value".to_string(),
+                };
+                
+                Ok(TypedEvent::new(Box::new(mock_data)))
             } else {
                 Err(StrategyError::EventParseFailed("test error".to_string()))
             }
@@ -346,11 +371,11 @@ mod tests {
             Event::ServiceEvent {
                 speaker_id: sid,
                 service_type: st,
-                event: parsed,
+                event: typed_event,
             } => {
                 assert_eq!(sid, speaker_id);
                 assert_eq!(st, ServiceType::AVTransport);
-                assert_eq!(parsed.event_type(), "test_event");
+                assert_eq!(typed_event.event_type(), "test_event");
             }
             _ => panic!("Expected ServiceEvent"),
         }

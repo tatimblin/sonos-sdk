@@ -17,7 +17,7 @@
 use sonos_stream::{
     EventBrokerBuilder, Event, ServiceType, Speaker, SpeakerId, 
     SubscriptionStrategy, Subscription, SubscriptionScope, SubscriptionConfig,
-    StrategyError, SubscriptionError, ParsedEvent,
+    StrategyError, SubscriptionError, TypedEvent,
 };
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -78,7 +78,10 @@ impl SubscriptionStrategy for MockStrategy {
         &self,
         speaker_id: &SpeakerId,
         event_xml: &str,
-    ) -> Result<Vec<ParsedEvent>, StrategyError> {
+    ) -> Result<TypedEvent, StrategyError> {
+        use sonos_stream::{EventData, TypedEvent};
+        use std::any::Any;
+        
         // Simple parsing: just extract the event type from XML
         let event_type = if event_xml.contains("PLAYING") {
             "playing"
@@ -92,7 +95,36 @@ impl SubscriptionStrategy for MockStrategy {
         data.insert("speaker".to_string(), speaker_id.as_str().to_string());
         data.insert("state".to_string(), event_type.to_string());
 
-        Ok(vec![ParsedEvent::custom(event_type, data)])
+        #[derive(Debug, Clone)]
+        struct MockEventData {
+            event_type: String,
+            data: HashMap<String, String>,
+        }
+
+        impl EventData for MockEventData {
+            fn event_type(&self) -> &str {
+                &self.event_type
+            }
+
+            fn service_type(&self) -> ServiceType {
+                ServiceType::AVTransport
+            }
+
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+
+            fn clone_box(&self) -> Box<dyn EventData> {
+                Box::new(self.clone())
+            }
+        }
+
+        let mock_data = MockEventData {
+            event_type: event_type.to_string(),
+            data,
+        };
+
+        Ok(TypedEvent::new(Box::new(mock_data)))
     }
 }
 
@@ -264,7 +296,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!("  Speaker: {}", speaker_id.as_str());
                         println!("  Service: {:?}", service_type);
                         println!("  Type: {}", event.event_type());
-                        println!("  Data: {:?}\n", event.data());
+                        println!("  Data: {:?}\n", event.debug());
                         event_count += 1;
                         
                         if event_count >= max_events {

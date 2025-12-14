@@ -8,7 +8,7 @@
 
 
 use crate::error::StrategyError;
-use crate::event::ParsedEvent;
+use crate::event::{TypedEvent, AVTransportEvent};
 use crate::types::{ServiceType, SpeakerId, SubscriptionScope};
 use sonos_parser::services::av_transport::AVTransportParser;
 use async_trait::async_trait;
@@ -75,14 +75,14 @@ impl SubscriptionStrategy for AVTransportStrategy {
         &self,
         _speaker_id: &SpeakerId,
         event_xml: &str,
-    ) -> Result<Vec<ParsedEvent>, StrategyError> {
-        // Parse using AVTransportParser and return typed data directly
+    ) -> Result<TypedEvent, StrategyError> {
+        // Parse using AVTransportParser and convert to AVTransportEvent
         let parsed = AVTransportParser::from_xml(event_xml)
             .map_err(|e| StrategyError::EventParseFailed(format!("Failed to parse AVTransport event: {}", e)))?;
         
-        // Create a single event with typed AVTransport data
-        let event = ParsedEvent::av_transport("av_transport_event", parsed);
-        Ok(vec![event])
+        // Create AVTransportEvent from parser and wrap in TypedEvent
+        let av_event = AVTransportEvent::from_parser(parsed);
+        Ok(TypedEvent::new(Box::new(av_event)))
     }
 }
 
@@ -191,16 +191,13 @@ mod tests {
         let result = strategy.parse_event(&speaker_id, event_xml);
         
         assert!(result.is_ok(), "Parse failed: {:?}", result.err());
-        let events = result.unwrap();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].event_type(), "av_transport_event");
+        let typed_event = result.unwrap();
+        assert_eq!(typed_event.event_type(), "av_transport_event");
+        assert_eq!(typed_event.service_type(), ServiceType::AVTransport);
         
-        // Verify we have typed AVTransport data
-        let av_data = events[0].av_transport_data().unwrap();
-        assert_eq!(av_data.transport_state(), "PAUSED_PLAYBACK");
-        
-        // Verify data() returns None for AVTransport events
-        assert!(events[0].data().is_none());
+        // Verify we can downcast to AVTransportEvent
+        let av_data = typed_event.downcast_ref::<AVTransportEvent>().unwrap();
+        assert_eq!(av_data.transport_state, "PAUSED_PLAYBACK");
     }
 
     #[test]
@@ -212,24 +209,14 @@ mod tests {
         let result = strategy.parse_event(&speaker_id, event_xml);
         
         assert!(result.is_ok(), "Parse failed: {:?}", result.err());
-        let events = result.unwrap();
-        assert_eq!(events.len(), 1);
+        let typed_event = result.unwrap();
+        assert_eq!(typed_event.event_type(), "av_transport_event");
+        assert_eq!(typed_event.service_type(), ServiceType::AVTransport);
         
-        let event = &events[0];
-        assert_eq!(event.event_type(), "av_transport_event");
-        
-        // Verify we have typed AVTransport data
-        let av_data = event.av_transport_data().unwrap();
-        assert_eq!(av_data.transport_state(), "PLAYING");
-        
-        // Check current play mode through the instance field
-        assert_eq!(
-            av_data.property.last_change.instance.current_play_mode.as_ref().map(|v| v.val.as_str()),
-            Some("REPEAT_ALL")
-        );
-        
-        // Verify data() returns None for AVTransport events
-        assert!(event.data().is_none());
+        // Verify we can downcast to AVTransportEvent
+        let av_data = typed_event.downcast_ref::<AVTransportEvent>().unwrap();
+        assert_eq!(av_data.transport_state, "PLAYING");
+        assert_eq!(av_data.current_play_mode, Some("REPEAT_ALL".to_string()));
     }
 
     #[test]
@@ -241,28 +228,21 @@ mod tests {
         let result = strategy.parse_event(&speaker_id, event_xml);
         
         assert!(result.is_ok(), "Parse failed: {:?}", result.err());
-        let events = result.unwrap();
-        assert_eq!(events.len(), 1);
+        let typed_event = result.unwrap();
+        assert_eq!(typed_event.event_type(), "av_transport_event");
+        assert_eq!(typed_event.service_type(), ServiceType::AVTransport);
         
-        // Single event with all parsed data
-        let event = &events[0];
-        assert_eq!(event.event_type(), "av_transport_event");
+        // Verify we can downcast to AVTransportEvent
+        let av_data = typed_event.downcast_ref::<AVTransportEvent>().unwrap();
+        assert_eq!(av_data.transport_state, "PLAYING");
+        assert_eq!(av_data.track_uri, Some("x-sonos-spotify:track123".to_string()));
+        assert_eq!(av_data.current_track_duration, Some("0:04:32".to_string()));
         
-        // Verify we have typed AVTransport data
-        let av_data = event.av_transport_data().unwrap();
-        assert_eq!(av_data.transport_state(), "PLAYING");
-        assert_eq!(av_data.current_track_uri(), Some("x-sonos-spotify:track123"));
-        assert_eq!(av_data.current_track_duration(), Some("0:04:32"));
+        // Verify track metadata using convenience methods
+        assert_eq!(av_data.track_title(), Some("Test Song"));
+        assert_eq!(av_data.track_artist(), Some("Test Artist"));
         
-        // Verify track metadata
-        if let Some(metadata) = av_data.track_metadata() {
-            assert_eq!(metadata.item.title, Some("Test Song".to_string()));
-            assert_eq!(metadata.item.creator, Some("Test Artist".to_string()));
-        } else {
-            panic!("Expected track metadata to be present");
-        }
-        
-        // Verify data() returns None for AVTransport events
-        assert!(event.data().is_none());
+        // Verify track metadata is present
+        assert!(av_data.track_metadata.is_some());
     }
 }
