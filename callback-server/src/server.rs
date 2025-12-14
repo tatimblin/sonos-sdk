@@ -222,7 +222,7 @@ impl CallbackServer {
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             // Create the NOTIFY endpoint that accepts any path (like the old code)
-            let notify_route = warp::post()
+            let notify_route = warp::method("NOTIFY")
                 .and(warp::path::full())
                 .and(warp::header::optional::<String>("sid"))
                 .and(warp::header::optional::<String>("nt"))
@@ -237,26 +237,50 @@ impl CallbackServer {
                           body: bytes::Bytes| {
                         let router = router.clone();
                         async move {
+                            // Log incoming request details
+                            eprintln!("\n🌐 === INCOMING NOTIFY REQUEST ===");
+                            eprintln!("📡 Path: {}", path.as_str());
+                            eprintln!("📏 Body size: {} bytes", body.len());
+                            eprintln!("📋 Headers:");
+                            if let Some(ref sid_val) = sid {
+                                eprintln!("   SID: {}", sid_val);
+                            }
+                            if let Some(ref nt_val) = nt {
+                                eprintln!("   NT: {}", nt_val);
+                            }
+                            if let Some(ref nts_val) = nts {
+                                eprintln!("   NTS: {}", nts_val);
+                            }
+
+                            // Convert body to string and log it
+                            let event_xml = String::from_utf8_lossy(&body).to_string();
+                            eprintln!("📄 Body content:");
+                            eprintln!("{}", event_xml);
+                            eprintln!("🌐 === END NOTIFY REQUEST ===\n");
+
                             // Validate UPnP headers
                             if !Self::validate_upnp_headers(&sid, &nt, &nts) {
+                                eprintln!("❌ Invalid UPnP headers");
                                 return Err(warp::reject::custom(InvalidUpnpHeaders));
                             }
 
                             // Extract subscription ID from SID header (required for UPnP events)
-                            let sub_id = sid.ok_or_else(|| warp::reject::custom(InvalidUpnpHeaders))?;
-
-                            // Convert body to string
-                            let event_xml = String::from_utf8_lossy(&body).to_string();
+                            let sub_id = sid.ok_or_else(|| {
+                                eprintln!("❌ Missing SID header");
+                                warp::reject::custom(InvalidUpnpHeaders)
+                            })?;
 
                             // Route the event
                             let routed = router.route_event(sub_id, event_xml).await;
 
                             if routed {
+                                eprintln!("✅ Event routed successfully");
                                 Ok::<_, warp::Rejection>(warp::reply::with_status(
                                     "",
                                     warp::http::StatusCode::OK,
                                 ))
                             } else {
+                                eprintln!("❌ Event routing failed - subscription not found");
                                 Err(warp::reject::not_found())
                             }
                         }
