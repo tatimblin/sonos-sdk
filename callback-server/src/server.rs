@@ -222,7 +222,7 @@ impl CallbackServer {
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             // Create the NOTIFY endpoint that accepts any path (like the old code)
-            let notify_route = warp::method("NOTIFY")
+            let notify_route = warp::method()
                 .and(warp::path::full())
                 .and(warp::header::optional::<String>("sid"))
                 .and(warp::header::optional::<String>("nt"))
@@ -230,15 +230,22 @@ impl CallbackServer {
                 .and(warp::body::bytes())
                 .and_then({
                     let router = event_router.clone();
-                    move |path: warp::path::FullPath,
+                    move |method: warp::http::Method,
+                          path: warp::path::FullPath,
                           sid: Option<String>,
                           nt: Option<String>,
                           nts: Option<String>,
                           body: bytes::Bytes| {
                         let router = router.clone();
                         async move {
+                            // Only handle NOTIFY method
+                            if method != warp::http::Method::from_bytes(b"NOTIFY").unwrap() {
+                                return Err(warp::reject::not_found());
+                            }
+
                             // Log incoming request details
                             eprintln!("\n🌐 === INCOMING NOTIFY REQUEST ===");
+                            eprintln!("📡 Method: {}", method);
                             eprintln!("📡 Path: {}", path.as_str());
                             eprintln!("📏 Body size: {} bytes", body.len());
                             eprintln!("📋 Headers:");
@@ -275,7 +282,7 @@ impl CallbackServer {
 
                             if routed {
                                 eprintln!("✅ Event routed successfully");
-                                Ok::<_, warp::Rejection>(warp::reply::with_status(
+                                Ok::<_ , warp::Rejection>(warp::reply::with_status(
                                     "",
                                     warp::http::StatusCode::OK,
                                 ))
