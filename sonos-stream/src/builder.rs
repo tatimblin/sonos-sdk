@@ -26,8 +26,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
 
 // Use new broker module structure
-use crate::broker::{EventBroker, EventProcessor, RenewalManager, SubscriptionManager};
-use crate::callback::CallbackServer;
+use crate::broker::{CallbackAdapter, EventBroker, EventProcessor, RenewalManager, SubscriptionManager};
 use crate::error::{BrokerError, Result};
 use crate::strategy::SubscriptionStrategy;
 use crate::types::{BrokerConfig, ServiceType};
@@ -317,15 +316,21 @@ impl EventBrokerBuilder {
             ));
         }
 
-        // Create raw event channel for callback server -> event processor communication
+        // Create notification channel for callback server -> adapter communication
+        let (notification_tx, notification_rx) = mpsc::unbounded_channel();
+
+        // Create raw event channel for adapter -> event processor communication
         let (raw_event_tx, raw_event_rx) = mpsc::unbounded_channel();
 
         // Create and start callback server
-        let callback_server = CallbackServer::new(self.config.callback_port_range, raw_event_tx)
+        let callback_server = callback_server::CallbackServer::new(self.config.callback_port_range, notification_tx)
             .await
             .map_err(|e| {
                 BrokerError::CallbackServerError(format!("Failed to start callback server: {e}"))
             })?;
+
+        // Create callback adapter to convert notifications to raw events
+        let callback_adapter = CallbackAdapter::new(notification_rx, raw_event_tx);
 
         // Wrap callback server in Arc for sharing between components
         let callback_server_arc = Arc::new(callback_server);
@@ -344,6 +349,7 @@ impl EventBrokerBuilder {
             subscriptions.clone(),
             strategies_arc.clone(),
             callback_server_arc.clone(),
+            callback_adapter,
             event_tx.clone(),
             self.config.clone(),
         );
@@ -385,8 +391,7 @@ impl Default for EventBrokerBuilder {
 mod tests {
     use super::*;
     use crate::error::StrategyError;
-    use crate::subscription::Subscription;
-    use crate::types::{SpeakerId, Speaker, SubscriptionConfig, SubscriptionScope};
+    use crate::types::{SpeakerId, SubscriptionScope};
 
     // Mock strategy for testing
     struct MockStrategy {
@@ -408,50 +413,8 @@ mod tests {
             SubscriptionScope::PerSpeaker
         }
 
-        fn create_subscription(
-            &self,
-            speaker: &Speaker,
-            _callback_url: String,
-            _config: &SubscriptionConfig,
-        ) -> std::result::Result<Box<dyn Subscription>, StrategyError> {
-            // Mock subscription
-            struct MockSub {
-                id: String,
-                speaker_id: SpeakerId,
-                service_type: ServiceType,
-            }
-
-            impl Subscription for MockSub {
-                fn subscription_id(&self) -> &str {
-                    &self.id
-                }
-                fn renew(&mut self) -> std::result::Result<(), crate::error::SubscriptionError> {
-                    Ok(())
-                }
-                fn unsubscribe(
-                    &mut self,
-                ) -> std::result::Result<(), crate::error::SubscriptionError> {
-                    Ok(())
-                }
-                fn is_active(&self) -> bool {
-                    true
-                }
-                fn time_until_renewal(&self) -> Option<Duration> {
-                    None
-                }
-                fn speaker_id(&self) -> &SpeakerId {
-                    &self.speaker_id
-                }
-                fn service_type(&self) -> ServiceType {
-                    self.service_type
-                }
-            }
-
-            Ok(Box::new(MockSub {
-                id: format!("mock-sub-{}", speaker.id.as_str()),
-                speaker_id: speaker.id.clone(),
-                service_type: self.service_type,
-            }))
+        fn service_endpoint_path(&self) -> &'static str {
+            "/MockService/Event"
         }
 
         fn parse_event(

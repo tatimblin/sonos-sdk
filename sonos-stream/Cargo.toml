@@ -5,14 +5,19 @@ edition = "2021"
 
 [dependencies]
 callback-server = { path = "../callback-server" }
+sonos-parser = { path = "../sonos-parser" }
 tokio = { version = "1.0", features = ["full"] }
 warp = "0.3"
-reqwest = { version = "0.11", features = ["blocking"] }
+reqwest = "0.11"
 quick-xml = { version = "0.31", features = ["serialize"] }
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 thiserror = "1.0"
 uuid = { version = "1.0", features = ["v4"] }
 bytes = "1.0"
+url = "2.4"
+async-trait = "0.1"
 
 [dev-dependencies]
 rstest = "0.18"
+proptest = "1.0"

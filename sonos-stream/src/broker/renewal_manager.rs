@@ -202,7 +202,7 @@ impl RenewalManager {
             let renewal_result = {
                 let mut subs = subscriptions.write().await;
                 if let Some(active_sub) = subs.get_mut(key) {
-                    active_sub.subscription.renew()
+                    active_sub.subscription.renew().await
                 } else {
                     // Subscription was removed, nothing to do
                     return;

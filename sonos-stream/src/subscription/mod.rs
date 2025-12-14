@@ -1,8 +1,13 @@
 //! Subscription trait and related types for managing UPnP event subscriptions.
 
+pub mod upnp;
+
+pub use upnp::UPnPSubscription;
+
 use crate::error::SubscriptionError;
 use crate::types::{ServiceType, SpeakerId};
 use std::time::Duration;
+use async_trait::async_trait;
 
 /// Trait representing an active UPnP event subscription.
 ///
@@ -14,6 +19,7 @@ use std::time::Duration;
 ///
 /// Implementations must be `Send + Sync` to allow the broker to manage subscriptions
 /// across async tasks.
+#[async_trait]
 pub trait Subscription: Send + Sync {
     /// Get the UPnP subscription ID.
     ///
@@ -32,7 +38,7 @@ pub trait Subscription: Send + Sync {
     /// Returns `SubscriptionError::RenewalFailed` if the renewal request fails.
     /// Returns `SubscriptionError::NetworkError` if a network error occurs.
     /// Returns `SubscriptionError::Expired` if the subscription has already expired.
-    fn renew(&mut self) -> Result<(), SubscriptionError>;
+    async fn renew(&mut self) -> Result<(), SubscriptionError>;
 
     /// Unsubscribe and clean up the subscription.
     ///
@@ -44,7 +50,7 @@ pub trait Subscription: Send + Sync {
     ///
     /// Returns `SubscriptionError::UnsubscribeFailed` if the unsubscribe request fails.
     /// Returns `SubscriptionError::NetworkError` if a network error occurs.
-    fn unsubscribe(&mut self) -> Result<(), SubscriptionError>;
+    async fn unsubscribe(&mut self) -> Result<(), SubscriptionError>;
 
     /// Check if the subscription is still active.
     ///
@@ -101,12 +107,13 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl Subscription for MockSubscription {
         fn subscription_id(&self) -> &str {
             &self.id
         }
 
-        fn renew(&mut self) -> Result<(), SubscriptionError> {
+        async fn renew(&mut self) -> Result<(), SubscriptionError> {
             if !self.active {
                 return Err(SubscriptionError::Expired);
             }
@@ -115,7 +122,7 @@ mod tests {
             Ok(())
         }
 
-        fn unsubscribe(&mut self) -> Result<(), SubscriptionError> {
+        async fn unsubscribe(&mut self) -> Result<(), SubscriptionError> {
             if !self.active {
                 return Err(SubscriptionError::UnsubscribeFailed(
                     "Already unsubscribed".to_string(),
@@ -171,8 +178,8 @@ mod tests {
         assert!(sub.is_active());
     }
 
-    #[test]
-    fn test_subscription_renewal() {
+    #[tokio::test]
+    async fn test_subscription_renewal() {
         let mut sub = MockSubscription::new(
             "uuid:sub-123".to_string(),
             SpeakerId::new("speaker1"),
@@ -180,12 +187,12 @@ mod tests {
             Duration::from_secs(1800),
         );
 
-        assert!(sub.renew().is_ok());
+        assert!(sub.renew().await.is_ok());
         assert!(sub.is_active());
     }
 
-    #[test]
-    fn test_subscription_unsubscribe() {
+    #[tokio::test]
+    async fn test_subscription_unsubscribe() {
         let mut sub = MockSubscription::new(
             "uuid:sub-123".to_string(),
             SpeakerId::new("speaker1"),
@@ -193,15 +200,15 @@ mod tests {
             Duration::from_secs(1800),
         );
 
-        assert!(sub.unsubscribe().is_ok());
+        assert!(sub.unsubscribe().await.is_ok());
         assert!(!sub.is_active());
 
         // Second unsubscribe should fail
-        assert!(sub.unsubscribe().is_err());
+        assert!(sub.unsubscribe().await.is_err());
     }
 
-    #[test]
-    fn test_subscription_renewal_after_unsubscribe() {
+    #[tokio::test]
+    async fn test_subscription_renewal_after_unsubscribe() {
         let mut sub = MockSubscription::new(
             "uuid:sub-123".to_string(),
             SpeakerId::new("speaker1"),
@@ -209,8 +216,8 @@ mod tests {
             Duration::from_secs(1800),
         );
 
-        sub.unsubscribe().unwrap();
-        let result = sub.renew();
+        sub.unsubscribe().await.unwrap();
+        let result = sub.renew().await;
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), SubscriptionError::Expired));
     }
@@ -243,8 +250,8 @@ mod tests {
         assert!(time_until.unwrap() <= Duration::from_secs(200));
     }
 
-    #[test]
-    fn test_time_until_renewal_inactive() {
+    #[tokio::test]
+    async fn test_time_until_renewal_inactive() {
         let mut sub = MockSubscription::new(
             "uuid:sub-123".to_string(),
             SpeakerId::new("speaker1"),
@@ -252,7 +259,7 @@ mod tests {
             Duration::from_secs(200),
         );
 
-        sub.unsubscribe().unwrap();
+        sub.unsubscribe().await.unwrap();
         assert!(sub.time_until_renewal().is_none());
     }
 }

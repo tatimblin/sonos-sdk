@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::{mpsc, RwLock};
 
-use crate::callback::CallbackServer;
+use super::CallbackAdapter;
 use crate::error::{BrokerError, Result};
 use crate::event::Event;
 use crate::strategy::SubscriptionStrategy;
@@ -65,8 +65,10 @@ pub struct SubscriptionManager {
     subscriptions: Arc<RwLock<HashMap<SubscriptionKey, ActiveSubscription>>>,
     /// Registered strategies by service type
     strategies: Arc<HashMap<ServiceType, Box<dyn SubscriptionStrategy>>>,
-    /// Callback server for event routing
-    callback_server: Arc<CallbackServer>,
+    /// Callback server for HTTP routing
+    callback_server: Arc<callback_server::CallbackServer>,
+    /// Callback adapter for Sonos-specific event conversion
+    callback_adapter: CallbackAdapter,
     /// Event sender for emitting lifecycle events
     event_sender: mpsc::Sender<Event>,
     /// Broker configuration
@@ -81,12 +83,14 @@ impl SubscriptionManager {
     /// * `subscriptions` - Shared subscription state
     /// * `strategies` - Map of service type to strategy implementation
     /// * `callback_server` - The callback server for receiving events
+    /// * `callback_adapter` - The adapter for converting notifications to raw events
     /// * `event_sender` - Channel sender for emitting events
     /// * `config` - Broker configuration
     pub fn new(
         subscriptions: Arc<RwLock<HashMap<SubscriptionKey, ActiveSubscription>>>,
         strategies: Arc<HashMap<ServiceType, Box<dyn SubscriptionStrategy>>>,
-        callback_server: Arc<CallbackServer>,
+        callback_server: Arc<callback_server::CallbackServer>,
+        callback_adapter: CallbackAdapter,
         event_sender: mpsc::Sender<Event>,
         config: BrokerConfig,
     ) -> Self {
@@ -94,6 +98,7 @@ impl SubscriptionManager {
             subscriptions,
             strategies,
             callback_server,
+            callback_adapter,
             event_sender,
             config,
         }
@@ -150,6 +155,7 @@ impl SubscriptionManager {
 
         // Generate callback URL using callback server base URL
         let callback_url = self.callback_server.base_url().to_string();
+        println!("🔗 Using callback URL: {}", callback_url);
 
         // Create subscription config
         let config = SubscriptionConfig::new(
@@ -158,14 +164,18 @@ impl SubscriptionManager {
         );
 
         // Call strategy to create subscription
-        let subscription_result = strategy.create_subscription(speaker, callback_url, &config);
+        let subscription_result = strategy.create_subscription(speaker, callback_url, &config).await;
 
         match subscription_result {
             Ok(subscription) => {
                 let subscription_id = subscription.subscription_id().to_string();
 
-                // Register subscription with callback server
+                // Register subscription with callback server and adapter
                 self.callback_server
+                    .router()
+                    .register(subscription_id.clone())
+                    .await;
+                self.callback_adapter
                     .register_subscription(
                         subscription_id.clone(),
                         speaker.id.clone(),
@@ -246,7 +256,7 @@ impl SubscriptionManager {
 
             // Call unsubscribe() on subscription instance
             // Log errors but don't propagate them - we still want to clean up
-            if let Err(e) = active_sub.subscription.unsubscribe() {
+            if let Err(e) = active_sub.subscription.unsubscribe().await {
                 eprintln!(
                     "Warning: Failed to unsubscribe {}/{:?}: {}",
                     speaker.id.as_str(),
@@ -255,8 +265,12 @@ impl SubscriptionManager {
                 );
             }
 
-            // Unregister from callback server
+            // Unregister from callback server and adapter
             self.callback_server
+                .router()
+                .unregister(&subscription_id)
+                .await;
+            self.callback_adapter
                 .unregister_subscription(&subscription_id)
                 .await;
 
@@ -303,7 +317,7 @@ impl SubscriptionManager {
 
                 // Call unsubscribe() on subscription instance
                 // Log errors but don't fail shutdown
-                if let Err(e) = active_sub.subscription.unsubscribe() {
+                if let Err(e) = active_sub.subscription.unsubscribe().await {
                     eprintln!(
                         "Warning: Failed to unsubscribe {}/{:?} during shutdown: {}",
                         key.speaker_id.as_str(),
@@ -312,8 +326,12 @@ impl SubscriptionManager {
                     );
                 }
 
-                // Unregister from callback server
+                // Unregister from callback server and adapter
                 self.callback_server
+                    .router()
+                    .unregister(&subscription_id)
+                    .await;
+                self.callback_adapter
                     .unregister_subscription(&subscription_id)
                     .await;
             }
@@ -332,7 +350,7 @@ impl SubscriptionManager {
     ///
     /// This method is used by other components that need access to the callback server.
     #[allow(dead_code)]
-    pub fn callback_server(&self) -> &Arc<CallbackServer> {
+    pub fn callback_server(&self) -> &Arc<callback_server::CallbackServer> {
         &self.callback_server
     }
 
@@ -357,14 +375,15 @@ mod tests {
         service_type: ServiceType,
     }
 
+    #[async_trait::async_trait]
     impl crate::subscription::Subscription for MockSub {
         fn subscription_id(&self) -> &str {
             &self.id
         }
-        fn renew(&mut self) -> std::result::Result<(), crate::error::SubscriptionError> {
+        async fn renew(&mut self) -> std::result::Result<(), crate::error::SubscriptionError> {
             Ok(())
         }
-        fn unsubscribe(&mut self) -> std::result::Result<(), crate::error::SubscriptionError> {
+        async fn unsubscribe(&mut self) -> std::result::Result<(), crate::error::SubscriptionError> {
             Ok(())
         }
         fn is_active(&self) -> bool {

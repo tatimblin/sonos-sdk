@@ -101,8 +101,16 @@ impl CallbackServer {
         // Create shutdown channel
         let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>(1);
 
+        // Create ready signal channel
+        let (ready_tx, mut ready_rx) = mpsc::channel::<()>(1);
+
         // Start the HTTP server
-        let server_handle = Self::start_server(port, event_router.clone(), shutdown_rx);
+        let server_handle = Self::start_server(port, event_router.clone(), shutdown_rx, ready_tx);
+
+        // Wait for server to be ready
+        ready_rx.recv().await.ok_or_else(|| {
+            "Server failed to start".to_string()
+        })?;
 
         Ok(Self {
             port,
@@ -210,6 +218,7 @@ impl CallbackServer {
         port: u16,
         event_router: Arc<EventRouter>,
         mut shutdown_rx: mpsc::Receiver<()>,
+        ready_tx: mpsc::Sender<()>,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             // Create the NOTIFY endpoint
@@ -234,9 +243,8 @@ impl CallbackServer {
                             }
 
                             // Extract subscription ID from SID header or path
-                            let sub_id = sid
-                                .and_then(|s| Self::extract_subscription_id(&s))
-                                .unwrap_or(subscription_id);
+                            // Use the full SID header value if present, otherwise use path parameter
+                            let sub_id = sid.unwrap_or(subscription_id);
 
                             // Convert body to string
                             let event_xml = String::from_utf8_lossy(&body).to_string();
@@ -269,6 +277,8 @@ impl CallbackServer {
                 );
 
             eprintln!("CallbackServer listening on {addr}");
+            // Signal that server is ready
+            let _ = ready_tx.send(()).await;
             server.await;
         })
     }
@@ -300,14 +310,7 @@ impl CallbackServer {
         true
     }
 
-    /// Extract subscription ID from SID header.
-    ///
-    /// UPnP SID headers have the format `uuid:subscription-UUID`. This method
-    /// strips the `uuid:` prefix and returns the subscription ID.
-    fn extract_subscription_id(sid: &str) -> Option<String> {
-        // SID format: uuid:subscription-UUID
-        sid.strip_prefix("uuid:").map(|s| s.to_string())
-    }
+
 }
 
 /// Custom rejection for invalid UPnP headers.
@@ -374,16 +377,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_extract_subscription_id() {
-        let sid = "uuid:12345-67890-abcdef";
-        let extracted = CallbackServer::extract_subscription_id(sid);
-        assert_eq!(extracted, Some("12345-67890-abcdef".to_string()));
 
-        let invalid_sid = "12345-67890-abcdef";
-        let extracted = CallbackServer::extract_subscription_id(invalid_sid);
-        assert_eq!(extracted, None);
-    }
 
     #[test]
     fn test_validate_upnp_headers() {

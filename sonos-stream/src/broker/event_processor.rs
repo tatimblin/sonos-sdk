@@ -27,9 +27,9 @@ use std::time::SystemTime;
 use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 
-use crate::callback::RawEvent;
 use crate::event::Event;
 use crate::strategy::SubscriptionStrategy;
+use crate::types::RawEvent;
 use crate::types::{ServiceType, SubscriptionKey};
 
 use super::subscription_manager::ActiveSubscription;
@@ -233,7 +233,7 @@ mod tests {
     use super::*;
     use crate::event::ParsedEvent;
     use crate::subscription::Subscription;
-    use crate::types::{ServiceType, SpeakerId, Speaker, SubscriptionConfig, SubscriptionScope};
+    use crate::types::{ServiceType, SpeakerId, SubscriptionScope};
     use crate::error::StrategyError;
     use std::time::Duration;
 
@@ -268,13 +268,8 @@ mod tests {
             SubscriptionScope::PerSpeaker
         }
 
-        fn create_subscription(
-            &self,
-            _speaker: &Speaker,
-            _callback_url: String,
-            _config: &SubscriptionConfig,
-        ) -> Result<Box<dyn Subscription>, StrategyError> {
-            unimplemented!("Not needed for event processor tests")
+        fn service_endpoint_path(&self) -> &'static str {
+            "/MockService/Event"
         }
 
         fn parse_event(
@@ -506,6 +501,7 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
     impl Subscription for MockSubscription {
         fn speaker_id(&self) -> &SpeakerId {
             &self.speaker_id
@@ -527,11 +523,11 @@ mod tests {
             Some(Duration::from_secs(300))
         }
 
-        fn renew(&mut self) -> Result<(), crate::error::SubscriptionError> {
+        async fn renew(&mut self) -> Result<(), crate::error::SubscriptionError> {
             Ok(())
         }
 
-        fn unsubscribe(&mut self) -> Result<(), crate::error::SubscriptionError> {
+        async fn unsubscribe(&mut self) -> Result<(), crate::error::SubscriptionError> {
             Ok(())
         }
     }

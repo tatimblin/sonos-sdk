@@ -2,6 +2,7 @@
 members = [
     "callback-server",
     "sonos-discovery",
+    "sonos-parser",
     "sonos-stream",
     "soap-client",
     "sonos-api",

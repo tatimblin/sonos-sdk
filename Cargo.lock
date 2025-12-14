@@ -28,6 +28,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-trait"
+version = "0.1.89"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9035ad2d096bed7955a320ee7e2230574d28fd3c3a0f186cbea1ff3c7eed5dbb"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -89,6 +100,7 @@ name = "callback-server"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "reqwest",
  "tokio",
  "warp",
 ]
@@ -1520,17 +1532,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "sonos-parser"
+version = "0.1.0"
+dependencies = [
+ "quick-xml",
+ "rstest",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "sonos-stream"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bytes",
  "callback-server",
  "quick-xml",
  "reqwest",
  "rstest",
  "serde",
+ "serde_json",
+ "sonos-parser",
  "thiserror",
  "tokio",
+ "url",
  "uuid",
  "warp",
 ]

@@ -28,18 +28,14 @@
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! // Create a broker with a custom strategy (implementation not shown)
 //! # struct MyStrategy;
+//! # #[async_trait::async_trait]
 //! # impl sonos_stream::SubscriptionStrategy for MyStrategy {
 //! #     fn service_type(&self) -> ServiceType { ServiceType::AVTransport }
 //! #     fn subscription_scope(&self) -> sonos_stream::SubscriptionScope {
 //! #         sonos_stream::SubscriptionScope::PerSpeaker
 //! #     }
-//! #     fn create_subscription(
-//! #         &self,
-//! #         _speaker: &Speaker,
-//! #         _callback_url: String,
-//! #         _config: &sonos_stream::SubscriptionConfig,
-//! #     ) -> Result<Box<dyn sonos_stream::Subscription>, sonos_stream::StrategyError> {
-//! #         unimplemented!()
+//! #     fn service_endpoint_path(&self) -> &'static str {
+//! #         "/MediaRenderer/AVTransport/Event"
 //! #     }
 //! #     fn parse_event(
 //! #         &self,
@@ -106,6 +102,7 @@
 //!
 //! struct MyServiceStrategy;
 //!
+//! #[async_trait::async_trait]
 //! impl SubscriptionStrategy for MyServiceStrategy {
 //!     fn service_type(&self) -> ServiceType {
 //!         ServiceType::AVTransport
@@ -115,30 +112,8 @@
 //!         SubscriptionScope::PerSpeaker
 //!     }
 //!
-//!     fn create_subscription(
-//!         &self,
-//!         speaker: &Speaker,
-//!         callback_url: String,
-//!         config: &SubscriptionConfig,
-//!     ) -> Result<Box<dyn Subscription>, StrategyError> {
-//!         // 1. Construct the service endpoint URL
-//!         let endpoint = format!("http://{}:1400/MediaRenderer/AVTransport/Event", speaker.ip);
-//!         
-//!         // 2. Send SUBSCRIBE request with callback URL and timeout
-//!         // 3. Parse response to get subscription ID and timeout
-//!         // 4. Create and return a Subscription instance
-//!         
-//!         # struct MySubscription;
-//!         # impl Subscription for MySubscription {
-//!         #     fn subscription_id(&self) -> &str { "uuid:123" }
-//!         #     fn renew(&mut self) -> Result<(), SubscriptionError> { Ok(()) }
-//!         #     fn unsubscribe(&mut self) -> Result<(), SubscriptionError> { Ok(()) }
-//!         #     fn is_active(&self) -> bool { true }
-//!         #     fn time_until_renewal(&self) -> Option<Duration> { None }
-//!         #     fn speaker_id(&self) -> &SpeakerId { unimplemented!() }
-//!         #     fn service_type(&self) -> ServiceType { ServiceType::AVTransport }
-//!         # }
-//!         Ok(Box::new(MySubscription))
+//!     fn service_endpoint_path(&self) -> &'static str {
+//!         "/MediaRenderer/AVTransport/Event"
 //!     }
 //!
 //!     fn parse_event(
@@ -201,7 +176,6 @@
 // Module declarations
 mod broker;
 mod builder;
-mod callback;
 mod error;
 mod event;
 mod strategy;
@@ -212,21 +186,24 @@ mod types;
 pub use broker::{ActiveSubscription, EventBroker};
 pub use builder::EventBrokerBuilder;
 
-// Re-export callback types
-pub use callback::{CallbackServer, EventRouter, RawEvent};
+// Re-export callback types from callback-server crate
+pub use callback_server::{CallbackServer, EventRouter};
 
 // Re-export event types
-pub use event::{Event, ParsedEvent};
+pub use event::{Event, EventData, ParsedEvent, TypedEvent};
 
 // Re-export trait definitions
-pub use strategy::SubscriptionStrategy;
-pub use subscription::Subscription;
+pub use strategy::{SubscriptionStrategy, AVTransportStrategy};
+pub use subscription::{Subscription, UPnPSubscription};
 
 // Re-export error types
 pub use error::{BrokerError, StrategyError, SubscriptionError};
 
 // Re-export core types
 pub use types::{
-    BrokerConfig, ServiceType, Speaker, SpeakerId, SubscriptionConfig, SubscriptionKey,
+    BrokerConfig, RawEvent, ServiceType, Speaker, SpeakerId, SubscriptionConfig, SubscriptionKey,
     SubscriptionScope,
 };
+
+// Re-export parser types from sonos-parser crate
+pub use sonos_parser;

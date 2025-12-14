@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
+use async_trait::async_trait;
 
 /// Mock strategy for testing that doesn't make real UPnP calls.
 ///
@@ -79,6 +80,7 @@ impl MockStrategy {
     }
 }
 
+#[async_trait]
 impl SubscriptionStrategy for MockStrategy {
     fn service_type(&self) -> ServiceType {
         self.service_type
@@ -88,7 +90,11 @@ impl SubscriptionStrategy for MockStrategy {
         self.subscription_scope
     }
 
-    fn create_subscription(
+    fn service_endpoint_path(&self) -> &'static str {
+        "/MockService/Event"
+    }
+
+    async fn create_subscription(
         &self,
         speaker: &Speaker,
         callback_url: String,
@@ -251,12 +257,13 @@ impl MockSubscription {
     }
 }
 
+#[async_trait]
 impl Subscription for MockSubscription {
     fn subscription_id(&self) -> &str {
         &self.subscription_id
     }
 
-    fn renew(&mut self) -> Result<(), SubscriptionError> {
+    async fn renew(&mut self) -> Result<(), SubscriptionError> {
         let mut state = self.state.lock().map_err(|_| {
             SubscriptionError::RenewalFailed("Failed to acquire lock".to_string())
         })?;
@@ -278,7 +285,7 @@ impl Subscription for MockSubscription {
         Ok(())
     }
 
-    fn unsubscribe(&mut self) -> Result<(), SubscriptionError> {
+    async fn unsubscribe(&mut self) -> Result<(), SubscriptionError> {
         let mut state = self.state.lock().map_err(|_| {
             SubscriptionError::UnsubscribeFailed("Failed to acquire lock".to_string())
         })?;
@@ -366,8 +373,8 @@ mod tests {
         assert_eq!(strategy.subscription_scope(), SubscriptionScope::NetworkWide);
     }
 
-    #[test]
-    fn test_mock_strategy_create_subscription_success() {
+    #[tokio::test]
+    async fn test_mock_strategy_create_subscription_success() {
         let strategy = MockStrategy::new(ServiceType::AVTransport);
         let speaker = create_test_speaker();
         let config = SubscriptionConfig::new(1800, "http://192.168.1.50:3400/notify".to_string());
@@ -376,7 +383,7 @@ mod tests {
             &speaker,
             "http://192.168.1.50:3400".to_string(),
             &config,
-        );
+        ).await;
 
         assert!(result.is_ok());
         assert_eq!(strategy.creation_count(), 1);
@@ -387,8 +394,8 @@ mod tests {
         assert_eq!(subscription.service_type(), ServiceType::AVTransport);
     }
 
-    #[test]
-    fn test_mock_strategy_create_subscription_failure() {
+    #[tokio::test]
+    async fn test_mock_strategy_create_subscription_failure() {
         let strategy = MockStrategy::new(ServiceType::RenderingControl);
         strategy.set_fail_creation(true);
 
@@ -399,7 +406,7 @@ mod tests {
             &speaker,
             "http://192.168.1.50:3400".to_string(),
             &config,
-        );
+        ).await;
 
         assert!(result.is_err());
         assert_eq!(strategy.creation_count(), 1);
@@ -429,7 +436,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type(), "test_event");
         assert_eq!(
-            events[0].data().get("speaker_id").map(|s| s.as_str()),
+            events[0].data().unwrap().get("speaker_id").map(|s| s.as_str()),
             Some("RINCON_TEST123")
         );
     }
@@ -453,8 +460,8 @@ mod tests {
         let events = result.unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type(), "volume_changed");
-        assert_eq!(events[0].data().get("volume").map(|s| s.as_str()), Some("50"));
-        assert_eq!(events[0].data().get("channel").map(|s| s.as_str()), Some("Master"));
+        assert_eq!(events[0].data().unwrap().get("volume").map(|s| s.as_str()), Some("50"));
+        assert_eq!(events[0].data().unwrap().get("channel").map(|s| s.as_str()), Some("Master"));
     }
 
     #[test]
@@ -497,8 +504,8 @@ mod tests {
         assert!(subscription.is_active());
     }
 
-    #[test]
-    fn test_mock_subscription_renewal() {
+    #[tokio::test]
+    async fn test_mock_subscription_renewal() {
         let mut subscription = MockSubscription::new(
             "uuid:test-123".to_string(),
             SpeakerId::new("RINCON_TEST123"),
@@ -508,13 +515,13 @@ mod tests {
         );
 
         assert_eq!(subscription.renewal_count(), 0);
-        assert!(subscription.renew().is_ok());
+        assert!(subscription.renew().await.is_ok());
         assert_eq!(subscription.renewal_count(), 1);
         assert!(subscription.is_active());
     }
 
-    #[test]
-    fn test_mock_subscription_renewal_failure() {
+    #[tokio::test]
+    async fn test_mock_subscription_renewal_failure() {
         let mut subscription = MockSubscription::new(
             "uuid:test-123".to_string(),
             SpeakerId::new("RINCON_TEST123"),
@@ -524,7 +531,7 @@ mod tests {
         );
 
         subscription.set_fail_renewal(true);
-        let result = subscription.renew();
+        let result = subscription.renew().await;
 
         assert!(result.is_err());
         assert_eq!(subscription.renewal_count(), 1);
@@ -537,8 +544,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_mock_subscription_unsubscribe() {
+    #[tokio::test]
+    async fn test_mock_subscription_unsubscribe() {
         let mut subscription = MockSubscription::new(
             "uuid:test-123".to_string(),
             SpeakerId::new("RINCON_TEST123"),
@@ -548,18 +555,18 @@ mod tests {
         );
 
         assert_eq!(subscription.unsubscribe_count(), 0);
-        assert!(subscription.unsubscribe().is_ok());
+        assert!(subscription.unsubscribe().await.is_ok());
         assert_eq!(subscription.unsubscribe_count(), 1);
         assert!(!subscription.is_active());
 
         // Second unsubscribe should fail
-        let result = subscription.unsubscribe();
+        let result = subscription.unsubscribe().await;
         assert!(result.is_err());
         assert_eq!(subscription.unsubscribe_count(), 2);
     }
 
-    #[test]
-    fn test_mock_subscription_unsubscribe_failure() {
+    #[tokio::test]
+    async fn test_mock_subscription_unsubscribe_failure() {
         let mut subscription = MockSubscription::new(
             "uuid:test-123".to_string(),
             SpeakerId::new("RINCON_TEST123"),
@@ -569,7 +576,7 @@ mod tests {
         );
 
         subscription.set_fail_unsubscribe(true);
-        let result = subscription.unsubscribe();
+        let result = subscription.unsubscribe().await;
 
         assert!(result.is_err());
         assert_eq!(subscription.unsubscribe_count(), 1);
@@ -611,8 +618,8 @@ mod tests {
         assert!(time_until.unwrap() <= Duration::from_secs(200));
     }
 
-    #[test]
-    fn test_mock_subscription_renewal_after_unsubscribe() {
+    #[tokio::test]
+    async fn test_mock_subscription_renewal_after_unsubscribe() {
         let mut subscription = MockSubscription::new(
             "uuid:test-123".to_string(),
             SpeakerId::new("RINCON_TEST123"),
@@ -621,8 +628,8 @@ mod tests {
             "http://192.168.1.50:3400/notify".to_string(),
         );
 
-        subscription.unsubscribe().unwrap();
-        let result = subscription.renew();
+        subscription.unsubscribe().await.unwrap();
+        let result = subscription.renew().await;
 
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -631,8 +638,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_mock_strategy_counters() {
+    #[tokio::test]
+    async fn test_mock_strategy_counters() {
         let strategy = MockStrategy::new(ServiceType::AVTransport);
         let speaker = create_test_speaker();
         let config = SubscriptionConfig::new(1800, "http://192.168.1.50:3400/notify".to_string());
@@ -640,7 +647,7 @@ mod tests {
         assert_eq!(strategy.creation_count(), 0);
         assert_eq!(strategy.parse_count(), 0);
 
-        let _ = strategy.create_subscription(&speaker, "http://192.168.1.50:3400".to_string(), &config);
+        let _ = strategy.create_subscription(&speaker, "http://192.168.1.50:3400".to_string(), &config).await;
         assert_eq!(strategy.creation_count(), 1);
 
         let _ = strategy.parse_event(&SpeakerId::new("test"), "<event/>");
