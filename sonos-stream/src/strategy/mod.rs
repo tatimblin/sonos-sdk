@@ -61,7 +61,7 @@
 //! ```rust,ignore
 //! use sonos_stream::{
 //!     SubscriptionStrategy, Subscription, Speaker, ServiceType, SubscriptionScope,
-//!     SubscriptionConfig, StrategyError, ParsedEvent,
+//!     SubscriptionConfig, StrategyError, TypedEvent,
 //! };
 //!
 //! struct MyCustomStrategy;
@@ -83,7 +83,7 @@
 //!         &self,
 //!         speaker_id: &SpeakerId,
 //!         event_xml: &str,
-//!     ) -> Result<Vec<ParsedEvent>, StrategyError> {
+//!     ) -> Result<TypedEvent, StrategyError> {
 //!         // Parse XML using quick-xml
 //!         // Extract service-specific state variables
 //!         // Return structured events

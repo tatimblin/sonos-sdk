@@ -17,9 +17,8 @@
 use sonos_stream::{
     EventBrokerBuilder, Event, ServiceType, Speaker, SpeakerId, 
     SubscriptionStrategy, Subscription, SubscriptionScope, SubscriptionConfig,
-    StrategyError, SubscriptionError, TypedEvent,
+    StrategyError, SubscriptionError, TypedEvent, AVTransportEvent,
 };
-use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::{Duration, SystemTime};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -76,55 +75,32 @@ impl SubscriptionStrategy for MockStrategy {
 
     fn parse_event(
         &self,
-        speaker_id: &SpeakerId,
+        _speaker_id: &SpeakerId,
         event_xml: &str,
     ) -> Result<TypedEvent, StrategyError> {
-        use sonos_stream::{EventData, TypedEvent};
-        use std::any::Any;
+        use sonos_stream::{AVTransportEvent, TypedEvent};
         
-        // Simple parsing: just extract the event type from XML
-        let event_type = if event_xml.contains("PLAYING") {
-            "playing"
+        // Create a mock AVTransportEvent based on the XML content
+        let transport_state = if event_xml.contains("PLAYING") {
+            "PLAYING"
         } else if event_xml.contains("PAUSED") {
-            "paused"
+            "PAUSED_PLAYBACK"
         } else {
-            "unknown"
+            "STOPPED"
         };
 
-        let mut data = HashMap::new();
-        data.insert("speaker".to_string(), speaker_id.as_str().to_string());
-        data.insert("state".to_string(), event_type.to_string());
-
-        #[derive(Debug, Clone)]
-        struct MockEventData {
-            event_type: String,
-            data: HashMap<String, String>,
-        }
-
-        impl EventData for MockEventData {
-            fn event_type(&self) -> &str {
-                &self.event_type
-            }
-
-            fn service_type(&self) -> ServiceType {
-                ServiceType::AVTransport
-            }
-
-            fn as_any(&self) -> &dyn Any {
-                self
-            }
-
-            fn clone_box(&self) -> Box<dyn EventData> {
-                Box::new(self.clone())
-            }
-        }
-
-        let mock_data = MockEventData {
-            event_type: event_type.to_string(),
-            data,
+        // Create a realistic AVTransportEvent for demonstration
+        let av_event = AVTransportEvent {
+            transport_state: transport_state.to_string(),
+            track_uri: Some("x-sonos-spotify:spotify%3atrack%3aexample123".to_string()),
+            track_metadata: None, // Could parse DIDL-Lite here in a real implementation
+            current_track_duration: Some("0:03:45".to_string()),
+            current_track: Some(1),
+            number_of_tracks: Some(12),
+            current_play_mode: Some("NORMAL".to_string()),
         };
 
-        Ok(TypedEvent::new(Box::new(mock_data)))
+        Ok(TypedEvent::new(Box::new(av_event)))
     }
 }
 
@@ -296,7 +272,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!("  Speaker: {}", speaker_id.as_str());
                         println!("  Service: {:?}", service_type);
                         println!("  Type: {}", event.event_type());
-                        println!("  Data: {:?}\n", event.debug());
+                        
+                        // Demonstrate type-safe downcasting to AVTransportEvent
+                        if let Some(av_event) = event.downcast_ref::<AVTransportEvent>() {
+                            println!("  Transport State: {}", av_event.transport_state);
+                            if let Some(track_uri) = &av_event.track_uri {
+                                println!("  Track URI: {}", track_uri);
+                            }
+                            if let Some(duration) = &av_event.current_track_duration {
+                                println!("  Duration: {}", duration);
+                            }
+                            if let Some(play_mode) = &av_event.current_play_mode {
+                                println!("  Play Mode: {}", play_mode);
+                            }
+                        } else {
+                            println!("  Data: {:?}", event.debug());
+                        }
+                        println!();
+                        
                         event_count += 1;
                         
                         if event_count >= max_events {

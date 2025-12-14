@@ -190,7 +190,7 @@ pub use builder::EventBrokerBuilder;
 pub use callback_server::{CallbackServer, EventRouter};
 
 // Re-export event types
-pub use event::{AVTransportEvent, Event, EventData, ParsedEvent, TypedEvent};
+pub use event::{AVTransportEvent, Event, EventData, TypedEvent};
 
 // Re-export trait definitions
 pub use strategy::{SubscriptionStrategy, AVTransportStrategy};

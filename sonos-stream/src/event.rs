@@ -3,8 +3,6 @@
 //! This module defines the event types emitted by the broker and the parsed event
 //! types returned by strategies.
 
-use std::collections::HashMap;
-
 use crate::types::{ServiceType, SpeakerId};
 use sonos_parser::services::av_transport::AVTransportParser;
 use sonos_parser::common::DidlLite;
@@ -91,10 +89,9 @@ pub trait EventData: Send + Sync + std::fmt::Debug {
 
 /// Container for strategy-specific typed event data.
 ///
-/// This struct replaces ParsedEvent and holds trait objects that can be
-/// downcast to specific strategy event types. It provides a uniform interface
-/// for handling events from different strategies while preserving type safety
-/// through downcasting.
+/// This struct holds trait objects that can be downcast to specific strategy 
+/// event types. It provides a uniform interface for handling events from 
+/// different strategies while preserving type safety through downcasting.
 ///
 /// # Examples
 ///
@@ -541,198 +538,9 @@ pub enum Event {
     },
 }
 
-/// Parsed event data from a service.
-///
-/// This enum represents the structured data extracted from UPnP event notifications.
-/// Strategies parse raw XML events into this format for consumption by applications.
-///
-/// # Extensibility
-///
-/// The `Custom` variant allows strategies to return arbitrary key-value data without
-/// requiring changes to this enum. Service-specific crates can define their own
-/// strongly-typed event structures and convert them to/from this representation.
-///
-/// # Examples
-///
-/// ```rust
-/// use sonos_stream::ParsedEvent;
-/// use std::collections::HashMap;
-///
-/// // Create a custom event
-/// let event = ParsedEvent::custom(
-///     "volume_changed",
-///     HashMap::from([
-///         ("volume".to_string(), "50".to_string()),
-///         ("channel".to_string(), "Master".to_string()),
-///     ]),
-/// );
-///
-/// assert_eq!(event.event_type(), "volume_changed");
-/// assert_eq!(event.data().unwrap().get("volume").map(|s| s.as_str()), Some("50"));
-/// ```
-#[derive(Debug, Clone)]
-pub enum ParsedEvent {
-    /// A custom event with arbitrary key-value data.
-    ///
-    /// This variant allows strategies to return any structured data without
-    /// requiring changes to the core event types. The `event_type` field
-    /// identifies the type of event, and the `data` field contains the
-    /// event-specific data as key-value pairs.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// ParsedEvent::Custom {
-    ///     event_type: "transport_state_changed".to_string(),
-    ///     data: HashMap::from([
-    ///         ("state".to_string(), "PLAYING".to_string()),
-    ///         ("track".to_string(), "1".to_string()),
-    ///     ]),
-    /// }
-    /// ```
-    Custom {
-        /// The type of event (e.g., "volume_changed", "transport_state_changed")
-        event_type: String,
-        /// Event-specific data as key-value pairs
-        data: HashMap<String, String>,
-    },
 
-    /// A typed AVTransport event with strongly-typed data.
-    ///
-    /// This variant provides direct access to parsed AVTransport data without
-    /// the overhead of JSON serialization and HashMap conversion. The parsed
-    /// data maintains all type information and provides convenient accessor
-    /// methods for common fields.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// ParsedEvent::AVTransport {
-    ///     event_type: "av_transport_event".to_string(),
-    ///     data: parsed_av_transport_data,
-    /// }
-    /// ```
-    AVTransport {
-        /// The type of event (e.g., "av_transport_event")
-        event_type: String,
-        /// Strongly-typed AVTransport data
-        data: AVTransportParser,
-    },
-}
 
-impl ParsedEvent {
-    /// Create a new custom event.
-    ///
-    /// # Arguments
-    ///
-    /// * `event_type` - The type of event (e.g., "volume_changed")
-    /// * `data` - Event-specific data as key-value pairs
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use sonos_stream::ParsedEvent;
-    /// use std::collections::HashMap;
-    ///
-    /// let event = ParsedEvent::custom(
-    ///     "volume_changed",
-    ///     HashMap::from([("volume".to_string(), "50".to_string())]),
-    /// );
-    /// ```
-    pub fn custom(event_type: impl Into<String>, data: HashMap<String, String>) -> Self {
-        Self::Custom {
-            event_type: event_type.into(),
-            data,
-        }
-    }
 
-    /// Create a new AVTransport event with typed data.
-    ///
-    /// # Arguments
-    ///
-    /// * `event_type` - The type of event (e.g., "av_transport_event")
-    /// * `data` - Parsed AVTransport data
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// use sonos_stream::ParsedEvent;
-    /// use sonos_parser::services::av_transport::AVTransportParser;
-    ///
-    /// let parsed_data = AVTransportParser::from_xml(xml_string)?;
-    /// let event = ParsedEvent::av_transport("av_transport_event", parsed_data);
-    /// ```
-    pub fn av_transport(event_type: impl Into<String>, data: AVTransportParser) -> Self {
-        Self::AVTransport {
-            event_type: event_type.into(),
-            data,
-        }
-    }
-
-    /// Get the event type.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use sonos_stream::ParsedEvent;
-    /// use std::collections::HashMap;
-    ///
-    /// let event = ParsedEvent::custom("test_event", HashMap::new());
-    /// assert_eq!(event.event_type(), "test_event");
-    /// ```
-    pub fn event_type(&self) -> &str {
-        match self {
-            Self::Custom { event_type, .. } => event_type,
-            Self::AVTransport { event_type, .. } => event_type,
-        }
-    }
-
-    /// Get the event data as HashMap (for Custom events only).
-    ///
-    /// Returns `None` for AVTransport events since they use typed data.
-    /// Use `av_transport_data()` to access typed AVTransport data.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use sonos_stream::ParsedEvent;
-    /// use std::collections::HashMap;
-    ///
-    /// let data = HashMap::from([("key".to_string(), "value".to_string())]);
-    /// let event = ParsedEvent::custom("test", data.clone());
-    /// assert_eq!(event.data().unwrap().get("key").map(|s| s.as_str()), Some("value"));
-    /// ```
-    pub fn data(&self) -> Option<&HashMap<String, String>> {
-        match self {
-            Self::Custom { data, .. } => Some(data),
-            Self::AVTransport { .. } => None,
-        }
-    }
-
-    /// Get the typed AVTransport data (for AVTransport events only).
-    ///
-    /// Returns `None` for Custom events. Use `data()` to access HashMap data
-    /// for Custom events.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// use sonos_stream::ParsedEvent;
-    ///
-    /// if let Some(av_data) = event.av_transport_data() {
-    ///     println!("Transport state: {}", av_data.transport_state());
-    ///     if let Some(title) = av_data.track_title() {
-    ///         println!("Track title: {}", title);
-    ///     }
-    /// }
-    /// ```
-    pub fn av_transport_data(&self) -> Option<&AVTransportParser> {
-        match self {
-            Self::Custom { .. } => None,
-            Self::AVTransport { data, .. } => Some(data),
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -936,90 +744,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_parsed_event_custom() {
-        let data = HashMap::from([
-            ("state".to_string(), "PLAYING".to_string()),
-            ("track".to_string(), "1".to_string()),
-        ]);
 
-        let event = ParsedEvent::custom("state_changed", data.clone());
-
-        assert_eq!(event.event_type(), "state_changed");
-        assert_eq!(event.data().unwrap().get("state").map(|s| s.as_str()), Some("PLAYING"));
-        assert_eq!(event.data().unwrap().get("track").map(|s| s.as_str()), Some("1"));
-        assert!(event.av_transport_data().is_none());
-    }
-
-    #[test]
-    fn test_parsed_event_empty_data() {
-        let event = ParsedEvent::custom("empty_event", HashMap::new());
-
-        assert_eq!(event.event_type(), "empty_event");
-        assert!(event.data().unwrap().is_empty());
-        assert!(event.av_transport_data().is_none());
-    }
-
-    #[test]
-    fn test_parsed_event_clone() {
-        let data = HashMap::from([("key".to_string(), "value".to_string())]);
-        let event = ParsedEvent::custom("test", data);
-
-        let cloned = event.clone();
-
-        assert_eq!(event.event_type(), cloned.event_type());
-        assert_eq!(event.data(), cloned.data());
-    }
-
-    #[test]
-    fn test_parsed_event_debug() {
-        let event = ParsedEvent::custom("debug_test", HashMap::new());
-        let debug_str = format!("{event:?}");
-        assert!(debug_str.contains("Custom"));
-        assert!(debug_str.contains("debug_test"));
-    }
-
-    #[test]
-    fn test_parsed_event_av_transport() {
-        let xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><LastChange>&lt;Event xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/AVT/&quot;&gt;&lt;InstanceID val=&quot;0&quot;&gt;&lt;TransportState val=&quot;PLAYING&quot;/&gt;&lt;/InstanceID&gt;&lt;/Event&gt;</LastChange></e:property></e:propertyset>"#;
-        
-        let parsed_data = AVTransportParser::from_xml(xml).unwrap();
-        let event = ParsedEvent::av_transport("av_transport_event", parsed_data);
-
-        assert_eq!(event.event_type(), "av_transport_event");
-        assert!(event.data().is_none());
-        
-        let av_data = event.av_transport_data().unwrap();
-        assert_eq!(av_data.transport_state(), "PLAYING");
-    }
-
-    #[test]
-    fn test_parsed_event_av_transport_clone() {
-        let xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><LastChange>&lt;Event xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/AVT/&quot;&gt;&lt;InstanceID val=&quot;0&quot;&gt;&lt;TransportState val=&quot;STOPPED&quot;/&gt;&lt;/InstanceID&gt;&lt;/Event&gt;</LastChange></e:property></e:propertyset>"#;
-        
-        let parsed_data = AVTransportParser::from_xml(xml).unwrap();
-        let event = ParsedEvent::av_transport("test_event", parsed_data);
-
-        let cloned = event.clone();
-
-        assert_eq!(event.event_type(), cloned.event_type());
-        assert_eq!(
-            event.av_transport_data().unwrap().transport_state(),
-            cloned.av_transport_data().unwrap().transport_state()
-        );
-    }
-
-    #[test]
-    fn test_parsed_event_av_transport_debug() {
-        let xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><LastChange>&lt;Event xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/AVT/&quot;&gt;&lt;InstanceID val=&quot;0&quot;&gt;&lt;TransportState val=&quot;PAUSED_PLAYBACK&quot;/&gt;&lt;/InstanceID&gt;&lt;/Event&gt;</LastChange></e:property></e:propertyset>"#;
-        
-        let parsed_data = AVTransportParser::from_xml(xml).unwrap();
-        let event = ParsedEvent::av_transport("debug_test", parsed_data);
-        
-        let debug_str = format!("{event:?}");
-        assert!(debug_str.contains("AVTransport"));
-        assert!(debug_str.contains("debug_test"));
-    }
 
     // Tests for EventData trait and TypedEvent
 

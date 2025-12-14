@@ -109,6 +109,17 @@ async fn test_end_to_end_subscription() {
             assert_eq!(speaker_id.as_str(), "RINCON_TEST123");
             assert_eq!(service_type, ServiceType::AVTransport);
             assert_eq!(event.event_type(), "test_event");
+            
+            // Demonstrate type-safe downcasting to MockEventData
+            if let Some(mock_data) = event.downcast_ref::<mock_strategy::MockEventData>() {
+                assert_eq!(mock_data.service_type, ServiceType::AVTransport);
+                assert_eq!(
+                    mock_data.data.get("speaker_id").map(|s| s.as_str()),
+                    Some("RINCON_TEST123")
+                );
+            } else {
+                panic!("Failed to downcast to MockEventData");
+            }
         }
         _ => panic!("Expected ServiceEvent, got {:?}", event),
     }
