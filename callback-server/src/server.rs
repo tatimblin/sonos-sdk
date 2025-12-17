@@ -221,43 +221,73 @@ impl CallbackServer {
         ready_tx: mpsc::Sender<()>,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
-            // Create the NOTIFY endpoint
-            let notify_route = warp::path!("notify" / String)
-                .and(warp::post())
+            // Create the NOTIFY endpoint that accepts any path (like the old code)
+            let notify_route = warp::method()
+                .and(warp::path::full())
                 .and(warp::header::optional::<String>("sid"))
                 .and(warp::header::optional::<String>("nt"))
                 .and(warp::header::optional::<String>("nts"))
                 .and(warp::body::bytes())
                 .and_then({
                     let router = event_router.clone();
-                    move |subscription_id: String,
+                    move |method: warp::http::Method,
+                          path: warp::path::FullPath,
                           sid: Option<String>,
                           nt: Option<String>,
                           nts: Option<String>,
                           body: bytes::Bytes| {
                         let router = router.clone();
                         async move {
+                            // Only handle NOTIFY method
+                            if method != warp::http::Method::from_bytes(b"NOTIFY").unwrap() {
+                                return Err(warp::reject::not_found());
+                            }
+
+                            // Log incoming request details
+                            eprintln!("\n🌐 === INCOMING NOTIFY REQUEST ===");
+                            eprintln!("📡 Method: {}", method);
+                            eprintln!("📡 Path: {}", path.as_str());
+                            eprintln!("📏 Body size: {} bytes", body.len());
+                            eprintln!("📋 Headers:");
+                            if let Some(ref sid_val) = sid {
+                                eprintln!("   SID: {}", sid_val);
+                            }
+                            if let Some(ref nt_val) = nt {
+                                eprintln!("   NT: {}", nt_val);
+                            }
+                            if let Some(ref nts_val) = nts {
+                                eprintln!("   NTS: {}", nts_val);
+                            }
+
+                            // Convert body to string and log it
+                            let event_xml = String::from_utf8_lossy(&body).to_string();
+                            eprintln!("📄 Body content:");
+                            eprintln!("{}", event_xml);
+                            eprintln!("🌐 === END NOTIFY REQUEST ===\n");
+
                             // Validate UPnP headers
                             if !Self::validate_upnp_headers(&sid, &nt, &nts) {
+                                eprintln!("❌ Invalid UPnP headers");
                                 return Err(warp::reject::custom(InvalidUpnpHeaders));
                             }
 
-                            // Extract subscription ID from SID header or path
-                            // Use the full SID header value if present, otherwise use path parameter
-                            let sub_id = sid.unwrap_or(subscription_id);
-
-                            // Convert body to string
-                            let event_xml = String::from_utf8_lossy(&body).to_string();
+                            // Extract subscription ID from SID header (required for UPnP events)
+                            let sub_id = sid.ok_or_else(|| {
+                                eprintln!("❌ Missing SID header");
+                                warp::reject::custom(InvalidUpnpHeaders)
+                            })?;
 
                             // Route the event
                             let routed = router.route_event(sub_id, event_xml).await;
 
                             if routed {
-                                Ok::<_, warp::Rejection>(warp::reply::with_status(
+                                eprintln!("✅ Event routed successfully");
+                                Ok::<_ , warp::Rejection>(warp::reply::with_status(
                                     "",
                                     warp::http::StatusCode::OK,
                                 ))
                             } else {
+                                eprintln!("❌ Event routing failed - subscription not found");
                                 Err(warp::reject::not_found())
                             }
                         }
@@ -292,16 +322,14 @@ impl CallbackServer {
         nt: &Option<String>,
         nts: &Option<String>,
     ) -> bool {
-        // SID header should be present for event notifications
+        // SID header is required for event notifications
         if sid.is_none() {
             return false;
         }
 
-        // For initial subscription, NT and NTS should be present
-        // For events, they may not be present
-        // We'll be lenient and accept both cases
+        // For UPnP events, NT and NTS headers are typically present
+        // If present, validate they have expected values
         if let (Some(nt_val), Some(nts_val)) = (nt, nts) {
-            // If present, validate they have expected values
             if nt_val != "upnp:event" || nts_val != "upnp:propchange" {
                 return false;
             }

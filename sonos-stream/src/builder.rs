@@ -421,8 +421,32 @@ mod tests {
             &self,
             _speaker_id: &SpeakerId,
             _event_xml: &str,
-        ) -> std::result::Result<Vec<crate::event::ParsedEvent>, StrategyError> {
-            Ok(vec![])
+        ) -> std::result::Result<crate::event::TypedEvent, StrategyError> {
+            use crate::event::{EventData, TypedEvent};
+            use std::any::Any;
+            
+            #[derive(Debug, Clone)]
+            struct MockEventData;
+            
+            impl EventData for MockEventData {
+                fn event_type(&self) -> &str {
+                    "mock_event"
+                }
+                
+                fn service_type(&self) -> crate::types::ServiceType {
+                    crate::types::ServiceType::AVTransport
+                }
+                
+                fn as_any(&self) -> &dyn Any {
+                    self
+                }
+                
+                fn clone_box(&self) -> Box<dyn EventData> {
+                    Box::new(self.clone())
+                }
+            }
+            
+            Ok(TypedEvent::new(Box::new(MockEventData)))
         }
     }
 

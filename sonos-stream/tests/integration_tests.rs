@@ -109,6 +109,17 @@ async fn test_end_to_end_subscription() {
             assert_eq!(speaker_id.as_str(), "RINCON_TEST123");
             assert_eq!(service_type, ServiceType::AVTransport);
             assert_eq!(event.event_type(), "test_event");
+            
+            // Demonstrate type-safe downcasting to MockEventData
+            if let Some(mock_data) = event.downcast_ref::<mock_strategy::MockEventData>() {
+                assert_eq!(mock_data.service_type, ServiceType::AVTransport);
+                assert_eq!(
+                    mock_data.data.get("speaker_id").map(|s| s.as_str()),
+                    Some("RINCON_TEST123")
+                );
+            } else {
+                panic!("Failed to downcast to MockEventData");
+            }
         }
         _ => panic!("Expected ServiceEvent, got {:?}", event),
     }
@@ -603,18 +614,18 @@ async fn test_real_upnp_event_reception() {
             assert_eq!(event.event_type(), "av_transport_event");
             
             // Verify parsed AVTransport data using typed access
-            let av_data = event.av_transport_data().unwrap();
-            assert_eq!(av_data.transport_state(), "PLAYING");
-            assert_eq!(av_data.current_track_duration(), Some("0:03:45"));
+            let av_data = event.downcast_ref::<sonos_stream::AVTransportEvent>().unwrap();
+            assert_eq!(av_data.transport_state, "PLAYING");
+            assert_eq!(av_data.current_track_duration, Some("0:03:45".to_string()));
             
             // Verify DIDL-Lite metadata was parsed
             assert_eq!(av_data.track_title(), Some("Test Song Title"));
             assert_eq!(av_data.track_artist(), Some("Test Artist"));
             assert_eq!(av_data.track_album(), Some("Test Album"));
             
-            // Verify current play mode through the instance field
+            // Verify current play mode through the typed field
             assert_eq!(
-                av_data.property.last_change.instance.current_play_mode.as_ref().map(|v| v.val.as_str()),
+                av_data.current_play_mode.as_deref(),
                 Some("NORMAL")
             );
         }
@@ -844,13 +855,13 @@ async fn test_multiple_real_upnp_subscriptions() {
         .expect("Missing event from speaker 2");
 
     // Verify speaker 1 event data using typed access
-    let speaker1_av_data = speaker1_event.1.av_transport_data().unwrap();
-    assert_eq!(speaker1_av_data.transport_state(), "PLAYING");
+    let speaker1_av_data = speaker1_event.1.downcast_ref::<sonos_stream::AVTransportEvent>().unwrap();
+    assert_eq!(speaker1_av_data.transport_state, "PLAYING");
     assert_eq!(speaker1_av_data.track_title(), Some("Speaker 1 Song"));
 
     // Verify speaker 2 event data using typed access
-    let speaker2_av_data = speaker2_event.1.av_transport_data().unwrap();
-    assert_eq!(speaker2_av_data.transport_state(), "PAUSED_PLAYBACK");
+    let speaker2_av_data = speaker2_event.1.downcast_ref::<sonos_stream::AVTransportEvent>().unwrap();
+    assert_eq!(speaker2_av_data.transport_state, "PAUSED_PLAYBACK");
     assert_eq!(speaker2_av_data.track_title(), Some("Speaker 2 Song"));
 
     // Unsubscribe from both speakers

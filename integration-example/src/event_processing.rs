@@ -6,7 +6,7 @@
 
 use anyhow::Result;
 use chrono::{DateTime, Local};
-use sonos_stream::{Event, ParsedEvent};
+use sonos_stream::{Event, TypedEvent, AVTransportEvent};
 use tokio::sync::mpsc;
 use tokio::signal;
 use tracing::{info, warn, error, debug};
@@ -261,11 +261,11 @@ impl EventStreamConsumer {
     /// Display raw event data for debugging.
     fn display_raw_event_data(&self, event: &Event) {
         match event {
-            Event::ServiceEvent { event: parsed_event, .. } => {
+            Event::ServiceEvent { event: typed_event, .. } => {
                 println!("  Raw event data:");
-                for (key, value) in parsed_event.data() {
-                    println!("    {}: {}", key, value);
-                }
+                println!("    Event Type: {}", typed_event.event_type());
+                println!("    Service Type: {:?}", typed_event.service_type());
+                println!("    Debug: {:?}", typed_event.debug());
             }
             _ => {
                 println!("  Raw data: {:?}", event);
@@ -412,48 +412,49 @@ impl EventFormatter {
     }
 
     /// Format a service event with human-readable information.
-    fn format_service_event(&self, event: &ParsedEvent) -> String {
+    fn format_service_event(&self, event: &TypedEvent) -> String {
         match event.event_type() {
             "av_transport_event" => self.format_av_transport_event(event),
-            _ => format!("{}: {} fields", event.event_type(), event.data().len()),
+            _ => format!("{}: TypedEvent", event.event_type()),
         }
     }
 
     /// Format AVTransport events with specific state information.
-    fn format_av_transport_event(&self, event: &ParsedEvent) -> String {
-        let data = event.data();
-        let mut parts = Vec::new();
+    fn format_av_transport_event(&self, event: &TypedEvent) -> String {
+        if let Some(av_event) = event.downcast_ref::<AVTransportEvent>() {
+            let mut parts = Vec::new();
 
-        // Extract transport state
-        if let Some(state) = data.get("property.LastChange.InstanceID.TransportState.@val") {
-            parts.push(format!("State: {}", state));
-        }
+            // Extract transport state
+            parts.push(format!("State: {}", av_event.transport_state));
 
-        // Extract track information
-        if let Some(title) = data.get("property.LastChange.InstanceID.CurrentTrackMetaData.val.item.title") {
-            if let Some(artist) = data.get("property.LastChange.InstanceID.CurrentTrackMetaData.val.item.creator") {
-                parts.push(format!("Track: \"{}\" by \"{}\"", title, artist));
+            // Extract track information
+            if let Some(title) = av_event.track_title() {
+                if let Some(artist) = av_event.track_artist() {
+                    parts.push(format!("Track: \"{}\" by \"{}\"", title, artist));
+                } else {
+                    parts.push(format!("Track: \"{}\"", title));
+                }
+            }
+
+            // Extract duration
+            if let Some(duration) = &av_event.current_track_duration {
+                parts.push(format!("Duration: {}", duration));
+            }
+
+            // Extract URI
+            if let Some(uri) = &av_event.track_uri {
+                if !uri.is_empty() {
+                    parts.push(format!("URI: {}", uri));
+                }
+            }
+
+            if parts.is_empty() {
+                "AVTransport event".to_string()
             } else {
-                parts.push(format!("Track: \"{}\"", title));
+                parts.join(", ")
             }
-        }
-
-        // Extract duration
-        if let Some(duration) = data.get("property.LastChange.InstanceID.CurrentTrackDuration.@val") {
-            parts.push(format!("Duration: {}", duration));
-        }
-
-        // Extract URI
-        if let Some(uri) = data.get("property.LastChange.InstanceID.CurrentTrackURI.@val") {
-            if !uri.is_empty() {
-                parts.push(format!("URI: {}", uri));
-            }
-        }
-
-        if parts.is_empty() {
-            format!("AVTransport event with {} fields", data.len())
         } else {
-            parts.join(", ")
+            "AVTransport event (unable to downcast)".to_string()
         }
     }
 
@@ -476,19 +477,38 @@ impl EventFormatter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sonos_stream::{ServiceType, SpeakerId};
-    use std::collections::HashMap;
+    use sonos_stream::{ServiceType, SpeakerId, TypedEvent};
 
     fn create_test_service_event() -> Event {
-        let mut data = HashMap::new();
-        data.insert("property.LastChange.InstanceID.TransportState.@val".to_string(), "PLAYING".to_string());
-        data.insert("property.LastChange.InstanceID.CurrentTrackMetaData.val.item.title".to_string(), "Test Song".to_string());
-        data.insert("property.LastChange.InstanceID.CurrentTrackMetaData.val.item.creator".to_string(), "Test Artist".to_string());
+        use sonos_parser::common::DidlLite;
+        
+        let av_event = AVTransportEvent {
+            transport_state: "PLAYING".to_string(),
+            track_uri: Some("test-uri".to_string()),
+            track_metadata: Some(DidlLite {
+                item: sonos_parser::common::DidlItem {
+                    id: "test-id".to_string(),
+                    parent_id: "test-parent".to_string(),
+                    restricted: None,
+                    res: None,
+                    album_art_uri: None,
+                    class: None,
+                    title: Some("Test Song".to_string()),
+                    creator: Some("Test Artist".to_string()),
+                    album: None,
+                    stream_info: None,
+                },
+            }),
+            current_track_duration: Some("0:03:30".to_string()),
+            current_track: Some(1),
+            number_of_tracks: Some(10),
+            current_play_mode: Some("NORMAL".to_string()),
+        };
 
         Event::ServiceEvent {
             speaker_id: SpeakerId::new("RINCON_TEST123456"),
             service_type: ServiceType::AVTransport,
-            event: ParsedEvent::custom("av_transport_event", data),
+            event: TypedEvent::new(Box::new(av_event)),
         }
     }
 
@@ -569,12 +589,18 @@ mod tests {
         let config = EventProcessingConfig::default();
         let formatter = EventFormatter::new(config);
         
-        let mut data = HashMap::new();
-        data.insert("property.LastChange.InstanceID.TransportState.@val".to_string(), "PAUSED_PLAYBACK".to_string());
-        data.insert("property.LastChange.InstanceID.CurrentTrackDuration.@val".to_string(), "0:03:45".to_string());
+        let av_event = AVTransportEvent {
+            transport_state: "PAUSED_PLAYBACK".to_string(),
+            track_uri: None,
+            track_metadata: None,
+            current_track_duration: Some("0:03:45".to_string()),
+            current_track: None,
+            number_of_tracks: None,
+            current_play_mode: None,
+        };
         
-        let event = ParsedEvent::custom("av_transport_event", data);
-        let formatted = formatter.format_av_transport_event(&event);
+        let typed_event = TypedEvent::new(Box::new(av_event));
+        let formatted = formatter.format_av_transport_event(&typed_event);
         
         assert!(formatted.contains("State: PAUSED_PLAYBACK"));
         assert!(formatted.contains("Duration: 0:03:45"));

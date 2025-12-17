@@ -41,7 +41,7 @@
 //! #         &self,
 //! #         _speaker_id: &SpeakerId,
 //! #         _event_xml: &str,
-//! #     ) -> Result<Vec<sonos_stream::ParsedEvent>, sonos_stream::StrategyError> {
+//! #     ) -> Result<sonos_stream::TypedEvent, sonos_stream::StrategyError> {
 //! #         unimplemented!()
 //! #     }
 //! # }
@@ -96,7 +96,7 @@
 //! ```rust,no_run
 //! use sonos_stream::{
 //!     SubscriptionStrategy, Subscription, Speaker, ServiceType, SubscriptionScope,
-//!     SubscriptionConfig, StrategyError, ParsedEvent, SpeakerId, SubscriptionError,
+//!     SubscriptionConfig, StrategyError, TypedEvent, SpeakerId, SubscriptionError,
 //! };
 //! use std::time::Duration;
 //!
@@ -120,10 +120,10 @@
 //!         &self,
 //!         speaker_id: &SpeakerId,
 //!         event_xml: &str,
-//!     ) -> Result<Vec<ParsedEvent>, StrategyError> {
+//!     ) -> Result<TypedEvent, StrategyError> {
 //!         // Parse the XML and extract state variables
-//!         // Convert to ParsedEvent instances
-//!         Ok(vec![])
+//!         // Convert to TypedEvent instance
+//!         unimplemented!()
 //!     }
 //! }
 //! ```
@@ -190,7 +190,7 @@ pub use builder::EventBrokerBuilder;
 pub use callback_server::{CallbackServer, EventRouter};
 
 // Re-export event types
-pub use event::{Event, EventData, ParsedEvent, TypedEvent};
+pub use event::{AVTransportEvent, Event, EventData, TypedEvent};
 
 // Re-export trait definitions
 pub use strategy::{SubscriptionStrategy, AVTransportStrategy};

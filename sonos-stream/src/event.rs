@@ -3,10 +3,9 @@
 //! This module defines the event types emitted by the broker and the parsed event
 //! types returned by strategies.
 
-use std::collections::HashMap;
-
 use crate::types::{ServiceType, SpeakerId};
 use sonos_parser::services::av_transport::AVTransportParser;
+use sonos_parser::common::DidlLite;
 
 /// Trait for strategy-specific event data.
 ///
@@ -90,10 +89,9 @@ pub trait EventData: Send + Sync + std::fmt::Debug {
 
 /// Container for strategy-specific typed event data.
 ///
-/// This struct replaces ParsedEvent and holds trait objects that can be
-/// downcast to specific strategy event types. It provides a uniform interface
-/// for handling events from different strategies while preserving type safety
-/// through downcasting.
+/// This struct holds trait objects that can be downcast to specific strategy 
+/// event types. It provides a uniform interface for handling events from 
+/// different strategies while preserving type safety through downcasting.
 ///
 /// # Examples
 ///
@@ -245,6 +243,179 @@ impl Clone for TypedEvent {
     }
 }
 
+/// AVTransport event data with strongly-typed fields.
+///
+/// This struct provides a strongly-typed representation of AVTransport events,
+/// extracting commonly used fields from the AVTransportParser for easier access.
+/// It implements the EventData trait to work with the new typed event system.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use sonos_stream::{AVTransportEvent, TypedEvent};
+///
+/// // Create from parser
+/// let parser = AVTransportParser::from_xml(xml_string)?;
+/// let av_event = AVTransportEvent::from_parser(parser);
+/// let typed_event = TypedEvent::new(Box::new(av_event));
+///
+/// // Access typed data
+/// if let Some(av_data) = typed_event.downcast_ref::<AVTransportEvent>() {
+///     println!("Transport state: {}", av_data.transport_state);
+///     if let Some(uri) = &av_data.track_uri {
+///         println!("Playing: {}", uri);
+///     }
+/// }
+/// ```
+#[derive(Debug, Clone)]
+pub struct AVTransportEvent {
+    /// Current transport state (PLAYING, PAUSED_PLAYBACK, STOPPED, TRANSITIONING)
+    pub transport_state: String,
+    
+    /// URI of the current track, if present
+    pub track_uri: Option<String>,
+    
+    /// DIDL-Lite metadata for the current track, if present
+    pub track_metadata: Option<DidlLite>,
+    
+    /// Duration of the current track in HH:MM:SS format, if present
+    pub current_track_duration: Option<String>,
+    
+    /// Current track number, if present
+    pub current_track: Option<u32>,
+    
+    /// Total number of tracks in queue, if present
+    pub number_of_tracks: Option<u32>,
+    
+    /// Current play mode (NORMAL, REPEAT_ALL, SHUFFLE, etc.), if present
+    pub current_play_mode: Option<String>,
+}
+
+impl AVTransportEvent {
+    /// Create a new AVTransportEvent from an AVTransportParser.
+    ///
+    /// This method extracts the commonly used fields from the parser and
+    /// converts them to a more convenient strongly-typed format.
+    ///
+    /// # Arguments
+    ///
+    /// * `parser` - The AVTransportParser containing the parsed event data
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let parser = AVTransportParser::from_xml(xml_string)?;
+    /// let event = AVTransportEvent::from_parser(parser);
+    /// ```
+    pub fn from_parser(parser: AVTransportParser) -> Self {
+        Self {
+            transport_state: parser.transport_state().to_string(),
+            track_uri: parser.current_track_uri().map(|s| s.to_string()),
+            track_metadata: parser.track_metadata().cloned(),
+            current_track_duration: parser.current_track_duration().map(|s| s.to_string()),
+            current_track: parser.property.last_change.instance.current_track
+                .as_ref()
+                .and_then(|v| v.val.parse().ok()),
+            number_of_tracks: parser.property.last_change.instance.number_of_tracks
+                .as_ref()
+                .and_then(|v| v.val.parse().ok()),
+            current_play_mode: parser.property.last_change.instance.current_play_mode
+                .as_ref()
+                .map(|v| v.val.clone()),
+        }
+    }
+    
+    /// Get the track title from metadata, if available.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// if let Some(title) = av_event.track_title() {
+    ///     println!("Now playing: {}", title);
+    /// }
+    /// ```
+    pub fn track_title(&self) -> Option<&str> {
+        self.track_metadata
+            .as_ref()
+            .and_then(|d| d.item.title.as_deref())
+    }
+    
+    /// Get the track artist from metadata, if available.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// if let Some(artist) = av_event.track_artist() {
+    ///     println!("Artist: {}", artist);
+    /// }
+    /// ```
+    pub fn track_artist(&self) -> Option<&str> {
+        self.track_metadata
+            .as_ref()
+            .and_then(|d| d.item.creator.as_deref())
+    }
+    
+    /// Get the track album from metadata, if available.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// if let Some(album) = av_event.track_album() {
+    ///     println!("Album: {}", album);
+    /// }
+    /// ```
+    pub fn track_album(&self) -> Option<&str> {
+        self.track_metadata
+            .as_ref()
+            .and_then(|d| d.item.album.as_deref())
+    }
+    
+    /// Parse the track duration to milliseconds, if available.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// if let Some(duration_ms) = av_event.track_duration_ms() {
+    ///     println!("Duration: {}ms", duration_ms);
+    /// }
+    /// ```
+    pub fn track_duration_ms(&self) -> Option<u64> {
+        self.current_track_duration
+            .as_ref()
+            .and_then(|d| AVTransportParser::parse_duration_to_ms(d))
+    }
+}
+
+impl EventData for AVTransportEvent {
+    /// Get the event type identifier.
+    ///
+    /// Returns "av_transport_event" for all AVTransport events.
+    fn event_type(&self) -> &str {
+        "av_transport_event"
+    }
+    
+    /// Get the service type that produced this event.
+    ///
+    /// Returns ServiceType::AVTransport for all AVTransport events.
+    fn service_type(&self) -> ServiceType {
+        ServiceType::AVTransport
+    }
+    
+    /// Convert to Any for downcasting.
+    ///
+    /// This enables type-safe downcasting from TypedEvent back to AVTransportEvent.
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    
+    /// Clone the event data for Clone support.
+    ///
+    /// Returns a boxed clone of this AVTransportEvent.
+    fn clone_box(&self) -> Box<dyn EventData> {
+        Box::new(self.clone())
+    }
+}
+
 /// Events emitted by the broker.
 ///
 /// These events represent the lifecycle of subscriptions and the parsed events
@@ -254,7 +425,7 @@ impl Clone for TypedEvent {
 /// # Examples
 ///
 /// ```rust,ignore
-/// use sonos_stream::{Event, EventBroker};
+/// use sonos_stream::{Event, EventBroker, AVTransportEvent};
 ///
 /// let mut event_rx = broker.event_stream();
 /// while let Some(event) = event_rx.recv().await {
@@ -264,6 +435,11 @@ impl Clone for TypedEvent {
 ///         }
 ///         Event::ServiceEvent { speaker_id, event, .. } => {
 ///             println!("Event from {}: {:?}", speaker_id.as_str(), event);
+///             
+///             // Downcast to specific event type for type-safe access
+///             if let Some(av_event) = event.downcast_ref::<AVTransportEvent>() {
+///                 println!("Transport state: {}", av_event.transport_state);
+///             }
 ///         }
 ///         Event::ParseError { error, .. } => {
 ///             eprintln!("Parse error: {}", error);
@@ -344,7 +520,7 @@ pub enum Event {
         /// The service type
         service_type: ServiceType,
         /// The parsed event data
-        event: ParsedEvent,
+        event: TypedEvent,
     },
 
     /// An error occurred parsing an event.
@@ -362,198 +538,9 @@ pub enum Event {
     },
 }
 
-/// Parsed event data from a service.
-///
-/// This enum represents the structured data extracted from UPnP event notifications.
-/// Strategies parse raw XML events into this format for consumption by applications.
-///
-/// # Extensibility
-///
-/// The `Custom` variant allows strategies to return arbitrary key-value data without
-/// requiring changes to this enum. Service-specific crates can define their own
-/// strongly-typed event structures and convert them to/from this representation.
-///
-/// # Examples
-///
-/// ```rust
-/// use sonos_stream::ParsedEvent;
-/// use std::collections::HashMap;
-///
-/// // Create a custom event
-/// let event = ParsedEvent::custom(
-///     "volume_changed",
-///     HashMap::from([
-///         ("volume".to_string(), "50".to_string()),
-///         ("channel".to_string(), "Master".to_string()),
-///     ]),
-/// );
-///
-/// assert_eq!(event.event_type(), "volume_changed");
-/// assert_eq!(event.data().unwrap().get("volume").map(|s| s.as_str()), Some("50"));
-/// ```
-#[derive(Debug, Clone)]
-pub enum ParsedEvent {
-    /// A custom event with arbitrary key-value data.
-    ///
-    /// This variant allows strategies to return any structured data without
-    /// requiring changes to the core event types. The `event_type` field
-    /// identifies the type of event, and the `data` field contains the
-    /// event-specific data as key-value pairs.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// ParsedEvent::Custom {
-    ///     event_type: "transport_state_changed".to_string(),
-    ///     data: HashMap::from([
-    ///         ("state".to_string(), "PLAYING".to_string()),
-    ///         ("track".to_string(), "1".to_string()),
-    ///     ]),
-    /// }
-    /// ```
-    Custom {
-        /// The type of event (e.g., "volume_changed", "transport_state_changed")
-        event_type: String,
-        /// Event-specific data as key-value pairs
-        data: HashMap<String, String>,
-    },
 
-    /// A typed AVTransport event with strongly-typed data.
-    ///
-    /// This variant provides direct access to parsed AVTransport data without
-    /// the overhead of JSON serialization and HashMap conversion. The parsed
-    /// data maintains all type information and provides convenient accessor
-    /// methods for common fields.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// ParsedEvent::AVTransport {
-    ///     event_type: "av_transport_event".to_string(),
-    ///     data: parsed_av_transport_data,
-    /// }
-    /// ```
-    AVTransport {
-        /// The type of event (e.g., "av_transport_event")
-        event_type: String,
-        /// Strongly-typed AVTransport data
-        data: AVTransportParser,
-    },
-}
 
-impl ParsedEvent {
-    /// Create a new custom event.
-    ///
-    /// # Arguments
-    ///
-    /// * `event_type` - The type of event (e.g., "volume_changed")
-    /// * `data` - Event-specific data as key-value pairs
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use sonos_stream::ParsedEvent;
-    /// use std::collections::HashMap;
-    ///
-    /// let event = ParsedEvent::custom(
-    ///     "volume_changed",
-    ///     HashMap::from([("volume".to_string(), "50".to_string())]),
-    /// );
-    /// ```
-    pub fn custom(event_type: impl Into<String>, data: HashMap<String, String>) -> Self {
-        Self::Custom {
-            event_type: event_type.into(),
-            data,
-        }
-    }
 
-    /// Create a new AVTransport event with typed data.
-    ///
-    /// # Arguments
-    ///
-    /// * `event_type` - The type of event (e.g., "av_transport_event")
-    /// * `data` - Parsed AVTransport data
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// use sonos_stream::ParsedEvent;
-    /// use sonos_parser::services::av_transport::AVTransportParser;
-    ///
-    /// let parsed_data = AVTransportParser::from_xml(xml_string)?;
-    /// let event = ParsedEvent::av_transport("av_transport_event", parsed_data);
-    /// ```
-    pub fn av_transport(event_type: impl Into<String>, data: AVTransportParser) -> Self {
-        Self::AVTransport {
-            event_type: event_type.into(),
-            data,
-        }
-    }
-
-    /// Get the event type.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use sonos_stream::ParsedEvent;
-    /// use std::collections::HashMap;
-    ///
-    /// let event = ParsedEvent::custom("test_event", HashMap::new());
-    /// assert_eq!(event.event_type(), "test_event");
-    /// ```
-    pub fn event_type(&self) -> &str {
-        match self {
-            Self::Custom { event_type, .. } => event_type,
-            Self::AVTransport { event_type, .. } => event_type,
-        }
-    }
-
-    /// Get the event data as HashMap (for Custom events only).
-    ///
-    /// Returns `None` for AVTransport events since they use typed data.
-    /// Use `av_transport_data()` to access typed AVTransport data.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use sonos_stream::ParsedEvent;
-    /// use std::collections::HashMap;
-    ///
-    /// let data = HashMap::from([("key".to_string(), "value".to_string())]);
-    /// let event = ParsedEvent::custom("test", data.clone());
-    /// assert_eq!(event.data().unwrap().get("key").map(|s| s.as_str()), Some("value"));
-    /// ```
-    pub fn data(&self) -> Option<&HashMap<String, String>> {
-        match self {
-            Self::Custom { data, .. } => Some(data),
-            Self::AVTransport { .. } => None,
-        }
-    }
-
-    /// Get the typed AVTransport data (for AVTransport events only).
-    ///
-    /// Returns `None` for Custom events. Use `data()` to access HashMap data
-    /// for Custom events.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// use sonos_stream::ParsedEvent;
-    ///
-    /// if let Some(av_data) = event.av_transport_data() {
-    ///     println!("Transport state: {}", av_data.transport_state());
-    ///     if let Some(title) = av_data.track_title() {
-    ///         println!("Track title: {}", title);
-    ///     }
-    /// }
-    /// ```
-    pub fn av_transport_data(&self) -> Option<&AVTransportParser> {
-        match self {
-            Self::Custom { .. } => None,
-            Self::AVTransport { data, .. } => Some(data),
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -708,15 +695,17 @@ mod tests {
 
     #[test]
     fn test_event_service_event() {
-        let parsed_event = ParsedEvent::custom(
-            "test_event",
-            HashMap::from([("key".to_string(), "value".to_string())]),
-        );
+        let mock_data = MockEventData {
+            event_type: "test_event".to_string(),
+            service_type: ServiceType::AVTransport,
+            data: "test_data".to_string(),
+        };
+        let typed_event = TypedEvent::new(Box::new(mock_data));
 
         let event = Event::ServiceEvent {
             speaker_id: SpeakerId::new("RINCON_GHI"),
             service_type: ServiceType::AVTransport,
-            event: parsed_event,
+            event: typed_event,
         };
 
         match event {
@@ -755,90 +744,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_parsed_event_custom() {
-        let data = HashMap::from([
-            ("state".to_string(), "PLAYING".to_string()),
-            ("track".to_string(), "1".to_string()),
-        ]);
 
-        let event = ParsedEvent::custom("state_changed", data.clone());
-
-        assert_eq!(event.event_type(), "state_changed");
-        assert_eq!(event.data().unwrap().get("state").map(|s| s.as_str()), Some("PLAYING"));
-        assert_eq!(event.data().unwrap().get("track").map(|s| s.as_str()), Some("1"));
-        assert!(event.av_transport_data().is_none());
-    }
-
-    #[test]
-    fn test_parsed_event_empty_data() {
-        let event = ParsedEvent::custom("empty_event", HashMap::new());
-
-        assert_eq!(event.event_type(), "empty_event");
-        assert!(event.data().unwrap().is_empty());
-        assert!(event.av_transport_data().is_none());
-    }
-
-    #[test]
-    fn test_parsed_event_clone() {
-        let data = HashMap::from([("key".to_string(), "value".to_string())]);
-        let event = ParsedEvent::custom("test", data);
-
-        let cloned = event.clone();
-
-        assert_eq!(event.event_type(), cloned.event_type());
-        assert_eq!(event.data(), cloned.data());
-    }
-
-    #[test]
-    fn test_parsed_event_debug() {
-        let event = ParsedEvent::custom("debug_test", HashMap::new());
-        let debug_str = format!("{event:?}");
-        assert!(debug_str.contains("Custom"));
-        assert!(debug_str.contains("debug_test"));
-    }
-
-    #[test]
-    fn test_parsed_event_av_transport() {
-        let xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><LastChange>&lt;Event xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/AVT/&quot;&gt;&lt;InstanceID val=&quot;0&quot;&gt;&lt;TransportState val=&quot;PLAYING&quot;/&gt;&lt;/InstanceID&gt;&lt;/Event&gt;</LastChange></e:property></e:propertyset>"#;
-        
-        let parsed_data = AVTransportParser::from_xml(xml).unwrap();
-        let event = ParsedEvent::av_transport("av_transport_event", parsed_data);
-
-        assert_eq!(event.event_type(), "av_transport_event");
-        assert!(event.data().is_none());
-        
-        let av_data = event.av_transport_data().unwrap();
-        assert_eq!(av_data.transport_state(), "PLAYING");
-    }
-
-    #[test]
-    fn test_parsed_event_av_transport_clone() {
-        let xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><LastChange>&lt;Event xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/AVT/&quot;&gt;&lt;InstanceID val=&quot;0&quot;&gt;&lt;TransportState val=&quot;STOPPED&quot;/&gt;&lt;/InstanceID&gt;&lt;/Event&gt;</LastChange></e:property></e:propertyset>"#;
-        
-        let parsed_data = AVTransportParser::from_xml(xml).unwrap();
-        let event = ParsedEvent::av_transport("test_event", parsed_data);
-
-        let cloned = event.clone();
-
-        assert_eq!(event.event_type(), cloned.event_type());
-        assert_eq!(
-            event.av_transport_data().unwrap().transport_state(),
-            cloned.av_transport_data().unwrap().transport_state()
-        );
-    }
-
-    #[test]
-    fn test_parsed_event_av_transport_debug() {
-        let xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><LastChange>&lt;Event xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/AVT/&quot;&gt;&lt;InstanceID val=&quot;0&quot;&gt;&lt;TransportState val=&quot;PAUSED_PLAYBACK&quot;/&gt;&lt;/InstanceID&gt;&lt;/Event&gt;</LastChange></e:property></e:propertyset>"#;
-        
-        let parsed_data = AVTransportParser::from_xml(xml).unwrap();
-        let event = ParsedEvent::av_transport("debug_test", parsed_data);
-        
-        let debug_str = format!("{event:?}");
-        assert!(debug_str.contains("AVTransport"));
-        assert!(debug_str.contains("debug_test"));
-    }
 
     // Tests for EventData trait and TypedEvent
 
@@ -1010,6 +916,142 @@ mod tests {
         assert_eq!(cloned_box.service_type(), ServiceType::ZoneGroupTopology);
     }
 
+    // Tests for AVTransportEvent
+
+    #[test]
+    fn test_av_transport_event_from_parser() {
+        let xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><LastChange>&lt;Event xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/AVT/&quot;&gt;&lt;InstanceID val=&quot;0&quot;&gt;&lt;TransportState val=&quot;PLAYING&quot;/&gt;&lt;CurrentTrackURI val=&quot;x-sonos-spotify:track123&quot;/&gt;&lt;CurrentTrackDuration val=&quot;0:04:32&quot;/&gt;&lt;CurrentTrack val=&quot;5&quot;/&gt;&lt;NumberOfTracks val=&quot;12&quot;/&gt;&lt;CurrentPlayMode val=&quot;REPEAT_ALL&quot;/&gt;&lt;CurrentTrackMetaData val=&quot;&amp;lt;DIDL-Lite xmlns:dc=&amp;quot;http://purl.org/dc/elements/1.1/&amp;quot;&amp;gt;&amp;lt;item id=&amp;quot;-1&amp;quot; parentID=&amp;quot;-1&amp;quot;&amp;gt;&amp;lt;dc:title&amp;gt;Test Song&amp;lt;/dc:title&amp;gt;&amp;lt;dc:creator&amp;gt;Test Artist&amp;lt;/dc:creator&amp;gt;&amp;lt;upnp:album&amp;gt;Test Album&amp;lt;/upnp:album&amp;gt;&amp;lt;/item&amp;gt;&amp;lt;/DIDL-Lite&amp;gt;&quot;/&gt;&lt;/InstanceID&gt;&lt;/Event&gt;</LastChange></e:property></e:propertyset>"#;
+        
+        let parser = AVTransportParser::from_xml(xml).unwrap();
+        let av_event = AVTransportEvent::from_parser(parser);
+
+        assert_eq!(av_event.transport_state, "PLAYING");
+        assert_eq!(av_event.track_uri, Some("x-sonos-spotify:track123".to_string()));
+        assert_eq!(av_event.current_track_duration, Some("0:04:32".to_string()));
+        assert_eq!(av_event.current_track, Some(5));
+        assert_eq!(av_event.number_of_tracks, Some(12));
+        assert_eq!(av_event.current_play_mode, Some("REPEAT_ALL".to_string()));
+        
+        // Test metadata access
+        assert!(av_event.track_metadata.is_some());
+        assert_eq!(av_event.track_title(), Some("Test Song"));
+        assert_eq!(av_event.track_artist(), Some("Test Artist"));
+        assert_eq!(av_event.track_album(), Some("Test Album"));
+        
+        // Test duration parsing
+        assert_eq!(av_event.track_duration_ms(), Some(272000));
+    }
+
+    #[test]
+    fn test_av_transport_event_minimal() {
+        let xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><LastChange>&lt;Event xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/AVT/&quot;&gt;&lt;InstanceID val=&quot;0&quot;&gt;&lt;TransportState val=&quot;STOPPED&quot;/&gt;&lt;/InstanceID&gt;&lt;/Event&gt;</LastChange></e:property></e:propertyset>"#;
+        
+        let parser = AVTransportParser::from_xml(xml).unwrap();
+        let av_event = AVTransportEvent::from_parser(parser);
+
+        assert_eq!(av_event.transport_state, "STOPPED");
+        assert_eq!(av_event.track_uri, None);
+        assert_eq!(av_event.current_track_duration, None);
+        assert_eq!(av_event.current_track, None);
+        assert_eq!(av_event.number_of_tracks, None);
+        assert_eq!(av_event.current_play_mode, None);
+        assert!(av_event.track_metadata.is_none());
+        
+        // Test metadata access with no metadata
+        assert_eq!(av_event.track_title(), None);
+        assert_eq!(av_event.track_artist(), None);
+        assert_eq!(av_event.track_album(), None);
+        assert_eq!(av_event.track_duration_ms(), None);
+    }
+
+    #[test]
+    fn test_av_transport_event_data_trait() {
+        let xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><LastChange>&lt;Event xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/AVT/&quot;&gt;&lt;InstanceID val=&quot;0&quot;&gt;&lt;TransportState val=&quot;PAUSED_PLAYBACK&quot;/&gt;&lt;/InstanceID&gt;&lt;/Event&gt;</LastChange></e:property></e:propertyset>"#;
+        
+        let parser = AVTransportParser::from_xml(xml).unwrap();
+        let av_event = AVTransportEvent::from_parser(parser);
+
+        // Test EventData trait methods
+        assert_eq!(av_event.event_type(), "av_transport_event");
+        assert_eq!(av_event.service_type(), ServiceType::AVTransport);
+
+        // Test as_any method
+        let any_ref = av_event.as_any();
+        let downcast_result = any_ref.downcast_ref::<AVTransportEvent>();
+        assert!(downcast_result.is_some());
+
+        // Test clone_box method
+        let cloned_box = av_event.clone_box();
+        assert_eq!(cloned_box.event_type(), "av_transport_event");
+        assert_eq!(cloned_box.service_type(), ServiceType::AVTransport);
+    }
+
+    #[test]
+    fn test_av_transport_event_in_typed_event() {
+        let xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><LastChange>&lt;Event xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/AVT/&quot;&gt;&lt;InstanceID val=&quot;0&quot;&gt;&lt;TransportState val=&quot;PLAYING&quot;/&gt;&lt;CurrentTrackURI val=&quot;test-uri&quot;/&gt;&lt;/InstanceID&gt;&lt;/Event&gt;</LastChange></e:property></e:propertyset>"#;
+        
+        let parser = AVTransportParser::from_xml(xml).unwrap();
+        let av_event = AVTransportEvent::from_parser(parser);
+        let typed_event = TypedEvent::new(Box::new(av_event));
+
+        // Test TypedEvent interface
+        assert_eq!(typed_event.event_type(), "av_transport_event");
+        assert_eq!(typed_event.service_type(), ServiceType::AVTransport);
+
+        // Test successful downcast
+        let downcast_result = typed_event.downcast_ref::<AVTransportEvent>();
+        assert!(downcast_result.is_some());
+        
+        let downcast_data = downcast_result.unwrap();
+        assert_eq!(downcast_data.transport_state, "PLAYING");
+        assert_eq!(downcast_data.track_uri, Some("test-uri".to_string()));
+
+        // Test failed downcast to wrong type
+        let wrong_downcast = typed_event.downcast_ref::<MockEventData>();
+        assert!(wrong_downcast.is_none());
+    }
+
+    #[test]
+    fn test_av_transport_event_clone() {
+        let xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><LastChange>&lt;Event xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/AVT/&quot;&gt;&lt;InstanceID val=&quot;0&quot;&gt;&lt;TransportState val=&quot;PLAYING&quot;/&gt;&lt;CurrentTrackURI val=&quot;clone-test&quot;/&gt;&lt;/InstanceID&gt;&lt;/Event&gt;</LastChange></e:property></e:propertyset>"#;
+        
+        let parser = AVTransportParser::from_xml(xml).unwrap();
+        let av_event = AVTransportEvent::from_parser(parser);
+        let typed_event = TypedEvent::new(Box::new(av_event));
+
+        let cloned_event = typed_event.clone();
+
+        // Verify both events have the same data
+        assert_eq!(typed_event.event_type(), cloned_event.event_type());
+        assert_eq!(typed_event.service_type(), cloned_event.service_type());
+
+        // Verify they can both be downcast successfully
+        let original_data = typed_event.downcast_ref::<AVTransportEvent>().unwrap();
+        let cloned_data = cloned_event.downcast_ref::<AVTransportEvent>().unwrap();
+
+        assert_eq!(original_data.transport_state, cloned_data.transport_state);
+        assert_eq!(original_data.track_uri, cloned_data.track_uri);
+    }
+
+    #[test]
+    fn test_av_transport_event_debug() {
+        let xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><LastChange>&lt;Event xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/AVT/&quot;&gt;&lt;InstanceID val=&quot;0&quot;&gt;&lt;TransportState val=&quot;PLAYING&quot;/&gt;&lt;/InstanceID&gt;&lt;/Event&gt;</LastChange></e:property></e:propertyset>"#;
+        
+        let parser = AVTransportParser::from_xml(xml).unwrap();
+        let av_event = AVTransportEvent::from_parser(parser);
+        let typed_event = TypedEvent::new(Box::new(av_event));
+
+        // Test debug output
+        let debug_str = format!("{:?}", typed_event);
+        assert!(debug_str.contains("TypedEvent"));
+
+        // Test debug method
+        let debug_ref = typed_event.debug();
+        let debug_str2 = format!("{:?}", debug_ref);
+        assert!(debug_str2.contains("AVTransportEvent"));
+        assert!(debug_str2.contains("PLAYING"));
+    }
+
     // Property-based tests
     mod property_tests {
         use super::*;
@@ -1116,6 +1158,94 @@ mod tests {
         }
 
         proptest! {
+            /// **Feature: strategy-driven-events, Property 2: Safe downcasting behavior**
+            /// 
+            /// Property: For any TypedEvent containing data of type T, downcasting to type T 
+            /// should succeed and downcasting to any incompatible type U should return None.
+            /// 
+            /// This test verifies that:
+            /// 1. Downcasting to the correct type always succeeds
+            /// 2. Downcasting to incorrect types always returns None
+            /// 3. Successful downcasts preserve all original data
+            /// 4. Failed downcasts don't cause panics or undefined behavior
+            #[test]
+            fn prop_safe_downcasting_behavior(
+                mock_events in prop::collection::vec(arb_mock_event_data(), 1..=5),
+                rendering_events in prop::collection::vec(arb_rendering_control_event(), 1..=5),
+                zone_events in prop::collection::vec(arb_zone_group_event(), 1..=5)
+            ) {
+                // Test MockEventData downcasting
+                for mock_data in mock_events {
+                    let original_event_type = mock_data.event_type.clone();
+                    let original_service_type = mock_data.service_type;
+                    let original_data = mock_data.data.clone();
+                    
+                    let typed_event = TypedEvent::new(Box::new(mock_data));
+                    
+                    // Downcasting to correct type should succeed
+                    let downcast_result = typed_event.downcast_ref::<MockEventData>();
+                    prop_assert!(downcast_result.is_some(), "Downcasting to correct type should succeed");
+                    
+                    let downcast_data = downcast_result.unwrap();
+                    prop_assert_eq!(&downcast_data.event_type, &original_event_type, "Downcast should preserve event_type");
+                    prop_assert_eq!(downcast_data.service_type, original_service_type, "Downcast should preserve service_type");
+                    prop_assert_eq!(&downcast_data.data, &original_data, "Downcast should preserve data");
+                    
+                    // Downcasting to incorrect types should return None
+                    let wrong_downcast1 = typed_event.downcast_ref::<MockRenderingControlEvent>();
+                    prop_assert!(wrong_downcast1.is_none(), "Downcasting to wrong type should return None");
+                    
+                    let wrong_downcast2 = typed_event.downcast_ref::<MockZoneGroupEvent>();
+                    prop_assert!(wrong_downcast2.is_none(), "Downcasting to wrong type should return None");
+                }
+                
+                // Test MockRenderingControlEvent downcasting
+                for rendering_data in rendering_events {
+                    let original_event_type = rendering_data.event_type.clone();
+                    let original_volume = rendering_data.volume;
+                    
+                    let typed_event = TypedEvent::new(Box::new(rendering_data));
+                    
+                    // Downcasting to correct type should succeed
+                    let downcast_result = typed_event.downcast_ref::<MockRenderingControlEvent>();
+                    prop_assert!(downcast_result.is_some(), "Downcasting to correct type should succeed");
+                    
+                    let downcast_data = downcast_result.unwrap();
+                    prop_assert_eq!(&downcast_data.event_type, &original_event_type, "Downcast should preserve event_type");
+                    prop_assert_eq!(downcast_data.volume, original_volume, "Downcast should preserve volume");
+                    
+                    // Downcasting to incorrect types should return None
+                    let wrong_downcast1 = typed_event.downcast_ref::<MockEventData>();
+                    prop_assert!(wrong_downcast1.is_none(), "Downcasting to wrong type should return None");
+                    
+                    let wrong_downcast2 = typed_event.downcast_ref::<MockZoneGroupEvent>();
+                    prop_assert!(wrong_downcast2.is_none(), "Downcasting to wrong type should return None");
+                }
+                
+                // Test MockZoneGroupEvent downcasting
+                for zone_data in zone_events {
+                    let original_event_type = zone_data.event_type.clone();
+                    let original_zone_count = zone_data.zone_count;
+                    
+                    let typed_event = TypedEvent::new(Box::new(zone_data));
+                    
+                    // Downcasting to correct type should succeed
+                    let downcast_result = typed_event.downcast_ref::<MockZoneGroupEvent>();
+                    prop_assert!(downcast_result.is_some(), "Downcasting to correct type should succeed");
+                    
+                    let downcast_data = downcast_result.unwrap();
+                    prop_assert_eq!(&downcast_data.event_type, &original_event_type, "Downcast should preserve event_type");
+                    prop_assert_eq!(downcast_data.zone_count, original_zone_count, "Downcast should preserve zone_count");
+                    
+                    // Downcasting to incorrect types should return None
+                    let wrong_downcast1 = typed_event.downcast_ref::<MockEventData>();
+                    prop_assert!(wrong_downcast1.is_none(), "Downcasting to wrong type should return None");
+                    
+                    let wrong_downcast2 = typed_event.downcast_ref::<MockRenderingControlEvent>();
+                    prop_assert!(wrong_downcast2.is_none(), "Downcasting to wrong type should return None");
+                }
+            }
+
             /// **Feature: strategy-driven-events, Property 3: Uniform interface handling**
             /// 
             /// Property: For any collection of events from different strategies, all events 

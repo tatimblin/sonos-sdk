@@ -6,8 +6,8 @@
 //! - Helper functions for creating test data
 
 use sonos_stream::{
-    ParsedEvent, ServiceType, SpeakerId, Speaker, SubscriptionConfig, SubscriptionScope,
-    StrategyError, SubscriptionStrategy,
+    ServiceType, SpeakerId, Speaker, SubscriptionConfig, SubscriptionScope,
+    StrategyError, SubscriptionStrategy, TypedEvent,
 };
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -196,15 +196,16 @@ impl SubscriptionStrategy for TestAVTransportStrategy {
         &self,
         _speaker_id: &SpeakerId,
         event_xml: &str,
-    ) -> Result<Vec<ParsedEvent>, StrategyError> {
+    ) -> Result<TypedEvent, StrategyError> {
         // Use the same parsing logic as AVTransportStrategy
         use sonos_parser::services::av_transport::AVTransportParser;
+        use sonos_stream::{AVTransportEvent, TypedEvent};
 
         let parsed = AVTransportParser::from_xml(event_xml)
             .map_err(|e| StrategyError::EventParseFailed(format!("Failed to parse AVTransport event: {}", e)))?;
         
-        let event = ParsedEvent::av_transport("av_transport_event", parsed);
-        Ok(vec![event])
+        let av_event = AVTransportEvent::from_parser(parsed);
+        Ok(TypedEvent::new(Box::new(av_event)))
     }
 }
 
@@ -259,14 +260,15 @@ impl SubscriptionStrategy for MultiTestAVTransportStrategy {
         &self,
         _speaker_id: &SpeakerId,
         event_xml: &str,
-    ) -> Result<Vec<ParsedEvent>, StrategyError> {
+    ) -> Result<TypedEvent, StrategyError> {
         use sonos_parser::services::av_transport::AVTransportParser;
+        use sonos_stream::{AVTransportEvent, TypedEvent};
 
         let parsed = AVTransportParser::from_xml(event_xml)
             .map_err(|e| StrategyError::EventParseFailed(format!("Failed to parse AVTransport event: {}", e)))?;
         
-        let event = ParsedEvent::av_transport("av_transport_event", parsed);
-        Ok(vec![event])
+        let av_event = AVTransportEvent::from_parser(parsed);
+        Ok(TypedEvent::new(Box::new(av_event)))
     }
 }
 

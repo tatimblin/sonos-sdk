@@ -14,6 +14,7 @@ path = "src/main.rs"
 sonos-discovery = { path = "../sonos-discovery" }
 sonos-stream = { path = "../sonos-stream" }
 sonos-api = { path = "../sonos-api" }
+sonos-parser = { path = "../sonos-parser" }
 
 # Async runtime
 tokio = { version = "1.0", features = ["full"] }
