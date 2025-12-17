@@ -94,7 +94,7 @@
 
 pub mod av_transport;
 
-pub use av_transport::AVTransportStrategy;
+pub use av_transport::{AVTransportStrategy, AVTransportEvent};
 
 use crate::error::StrategyError;
 use crate::event::TypedEvent;

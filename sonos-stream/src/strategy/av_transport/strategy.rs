@@ -1,19 +1,11 @@
-//! AVTransport strategy implementation.
-//!
-//! This module provides the AVTransport strategy for subscribing to and parsing
-//! events from the AVTransport UPnP service on Sonos devices. The AVTransport
-//! service handles media transport operations like play, pause, stop, and provides
-//! events for playback state changes and track information.
-
-
-
+use async_trait::async_trait;
+use crate::event::TypedEvent;
 use crate::error::StrategyError;
-use crate::event::{TypedEvent, AVTransportEvent};
 use crate::types::{ServiceType, SpeakerId, SubscriptionScope};
 use sonos_parser::services::av_transport::AVTransportParser;
-use async_trait::async_trait;
 
-use super::SubscriptionStrategy;
+use super::super::SubscriptionStrategy;
+use super::AVTransportEvent;
 
 /// Strategy for handling AVTransport service subscriptions and events.
 ///
@@ -55,8 +47,6 @@ impl Default for AVTransportStrategy {
     }
 }
 
-
-
 #[async_trait]
 impl SubscriptionStrategy for AVTransportStrategy {
     fn service_type(&self) -> ServiceType {
@@ -85,7 +75,6 @@ impl SubscriptionStrategy for AVTransportStrategy {
         Ok(TypedEvent::new(Box::new(av_event)))
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
