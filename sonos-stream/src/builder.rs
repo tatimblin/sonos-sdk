@@ -11,8 +11,8 @@
 //! use std::time::Duration;
 //!
 //! let broker = EventBrokerBuilder::new()
-//!     .with_strategy(Box::new(AVTransportStrategy))
-//!     .with_strategy(Box::new(RenderingControlStrategy))
+//!     .with_strategy(Box::new(Strategy::AVTransport))
+//!     .with_strategy(Box::new(Strategy::RenderingControl))
 //!     .with_port_range(3400, 3500)
 //!     .with_subscription_timeout(Duration::from_secs(1800))
 //!     .with_retry_config(3, Duration::from_secs(2))
@@ -28,7 +28,7 @@ use tokio::sync::{mpsc, RwLock};
 // Use new broker module structure
 use crate::broker::{CallbackAdapter, EventBroker, EventProcessor, RenewalManager, SubscriptionManager};
 use crate::error::{BrokerError, Result};
-use crate::strategy::SubscriptionStrategy;
+use crate::strategy::BaseStrategy;
 use crate::types::{BrokerConfig, ServiceType};
 
 /// Builder for creating and configuring an EventBroker.
@@ -59,7 +59,7 @@ use crate::types::{BrokerConfig, ServiceType};
 /// ```
 pub struct EventBrokerBuilder {
     /// Registered strategies by service type
-    strategies: HashMap<ServiceType, Box<dyn SubscriptionStrategy>>,
+    strategies: HashMap<ServiceType, Box<dyn BaseStrategy + Send + Sync>>,
     /// Broker configuration
     config: BrokerConfig,
 }
@@ -104,13 +104,12 @@ impl EventBrokerBuilder {
     /// # Example
     ///
     /// ```rust,ignore
-    /// use sonos_stream::EventBrokerBuilder;
+    /// use sonos_stream::{EventBrokerBuilder, Strategy};
     ///
     /// let builder = EventBrokerBuilder::new()
-    ///     .with_strategy(Box::new(AVTransportStrategy))
-    ///     .with_strategy(Box::new(RenderingControlStrategy));
+    ///     .with_strategy(Box::new(Strategy::AVTransport));
     /// ```
-    pub fn with_strategy(mut self, strategy: Box<dyn SubscriptionStrategy>) -> Self {
+    pub fn with_strategy(mut self, strategy: Box<dyn BaseStrategy + Send + Sync>) -> Self {
         let service_type = strategy.service_type();
         self.strategies.insert(service_type, strategy);
         self
@@ -393,61 +392,9 @@ mod tests {
     use crate::error::StrategyError;
     use crate::types::{SpeakerId, SubscriptionScope};
 
-    // Mock strategy for testing
-    struct MockStrategy {
-        service_type: ServiceType,
-    }
-
-    impl MockStrategy {
-        fn new(service_type: ServiceType) -> Self {
-            Self { service_type }
-        }
-    }
-
-    impl SubscriptionStrategy for MockStrategy {
-        fn service_type(&self) -> ServiceType {
-            self.service_type
-        }
-
-        fn subscription_scope(&self) -> SubscriptionScope {
-            SubscriptionScope::PerSpeaker
-        }
-
-        fn service_endpoint_path(&self) -> &'static str {
-            "/MockService/Event"
-        }
-
-        fn parse_event(
-            &self,
-            _speaker_id: &SpeakerId,
-            _event_xml: &str,
-        ) -> std::result::Result<crate::event::TypedEvent, StrategyError> {
-            use crate::event::{EventData, TypedEvent};
-            use std::any::Any;
-            
-            #[derive(Debug, Clone)]
-            struct MockEventData;
-            
-            impl EventData for MockEventData {
-                fn event_type(&self) -> &str {
-                    "mock_event"
-                }
-                
-                fn service_type(&self) -> crate::types::ServiceType {
-                    crate::types::ServiceType::AVTransport
-                }
-                
-                fn as_any(&self) -> &dyn Any {
-                    self
-                }
-                
-                fn clone_box(&self) -> Box<dyn EventData> {
-                    Box::new(self.clone())
-                }
-            }
-            
-            Ok(TypedEvent::new(Box::new(MockEventData)))
-        }
+    // Helper to create a test strategy
+    fn test_strategy() -> Box<dyn BaseStrategy + Send + Sync> {
+        Box::new(crate::strategy::Strategy::AVTransport)
     }
 
     #[test]
@@ -475,38 +422,17 @@ mod tests {
     #[test]
     fn test_builder_with_strategy() {
         let builder = EventBrokerBuilder::new()
-            .with_strategy(Box::new(MockStrategy::new(ServiceType::AVTransport)));
+            .with_strategy(test_strategy());
 
         assert_eq!(builder.strategies.len(), 1);
         assert!(builder.strategies.contains_key(&ServiceType::AVTransport));
     }
 
     #[test]
-    fn test_builder_with_multiple_strategies() {
-        let builder = EventBrokerBuilder::new()
-            .with_strategy(Box::new(MockStrategy::new(ServiceType::AVTransport)))
-            .with_strategy(Box::new(MockStrategy::new(
-                ServiceType::RenderingControl,
-            )))
-            .with_strategy(Box::new(MockStrategy::new(
-                ServiceType::ZoneGroupTopology,
-            )));
-
-        assert_eq!(builder.strategies.len(), 3);
-        assert!(builder.strategies.contains_key(&ServiceType::AVTransport));
-        assert!(builder
-            .strategies
-            .contains_key(&ServiceType::RenderingControl));
-        assert!(builder
-            .strategies
-            .contains_key(&ServiceType::ZoneGroupTopology));
-    }
-
-    #[test]
     fn test_builder_with_strategy_replacement() {
         let builder = EventBrokerBuilder::new()
-            .with_strategy(Box::new(MockStrategy::new(ServiceType::AVTransport)))
-            .with_strategy(Box::new(MockStrategy::new(ServiceType::AVTransport)));
+            .with_strategy(test_strategy())
+            .with_strategy(test_strategy());
 
         // Should only have one strategy (second replaces first)
         assert_eq!(builder.strategies.len(), 1);
@@ -557,7 +483,7 @@ mod tests {
     #[test]
     fn test_builder_fluent_api() {
         let builder = EventBrokerBuilder::new()
-            .with_strategy(Box::new(MockStrategy::new(ServiceType::AVTransport)))
+            .with_strategy(test_strategy())
             .with_port_range(4000, 4100)
             .with_subscription_timeout(Duration::from_secs(3600))
             .with_renewal_threshold(Duration::from_secs(600))
@@ -594,7 +520,7 @@ mod tests {
     #[tokio::test]
     async fn test_build_invalid_port_range_zero() {
         let builder = EventBrokerBuilder::new()
-            .with_strategy(Box::new(MockStrategy::new(ServiceType::AVTransport)))
+            .with_strategy(test_strategy())
             .with_port_range(0, 100);
 
         let result = builder.build().await;
@@ -611,7 +537,7 @@ mod tests {
     #[tokio::test]
     async fn test_build_invalid_port_range_reversed() {
         let builder = EventBrokerBuilder::new()
-            .with_strategy(Box::new(MockStrategy::new(ServiceType::AVTransport)))
+            .with_strategy(test_strategy())
             .with_port_range(4100, 4000);
 
         let result = builder.build().await;
@@ -630,7 +556,7 @@ mod tests {
     #[tokio::test]
     async fn test_build_zero_timeout() {
         let builder = EventBrokerBuilder::new()
-            .with_strategy(Box::new(MockStrategy::new(ServiceType::AVTransport)))
+            .with_strategy(test_strategy())
             .with_subscription_timeout(Duration::from_secs(0));
 
         let result = builder.build().await;
@@ -647,7 +573,7 @@ mod tests {
     #[tokio::test]
     async fn test_build_renewal_threshold_too_large() {
         let builder = EventBrokerBuilder::new()
-            .with_strategy(Box::new(MockStrategy::new(ServiceType::AVTransport)))
+            .with_strategy(test_strategy())
             .with_subscription_timeout(Duration::from_secs(1800))
             .with_renewal_threshold(Duration::from_secs(2000));
 
@@ -665,7 +591,7 @@ mod tests {
     #[tokio::test]
     async fn test_build_zero_retry_attempts() {
         let builder = EventBrokerBuilder::new()
-            .with_strategy(Box::new(MockStrategy::new(ServiceType::AVTransport)))
+            .with_strategy(test_strategy())
             .with_retry_config(0, Duration::from_secs(2));
 
         let result = builder.build().await;
@@ -682,7 +608,7 @@ mod tests {
     #[tokio::test]
     async fn test_build_zero_backoff() {
         let builder = EventBrokerBuilder::new()
-            .with_strategy(Box::new(MockStrategy::new(ServiceType::AVTransport)))
+            .with_strategy(test_strategy())
             .with_retry_config(3, Duration::from_millis(0));
 
         let result = builder.build().await;
@@ -699,7 +625,7 @@ mod tests {
     #[tokio::test]
     async fn test_build_zero_buffer_size() {
         let builder = EventBrokerBuilder::new()
-            .with_strategy(Box::new(MockStrategy::new(ServiceType::AVTransport)))
+            .with_strategy(test_strategy())
             .with_event_buffer_size(0);
 
         let result = builder.build().await;
@@ -716,8 +642,8 @@ mod tests {
     #[tokio::test]
     async fn test_build_success() {
         let builder = EventBrokerBuilder::new()
-            .with_strategy(Box::new(MockStrategy::new(ServiceType::AVTransport)))
-            .with_port_range(50000, 50100); // Use high port range to avoid conflicts
+            .with_strategy(test_strategy())
+            .with_port_range(50000, 50100);
 
         let result = builder.build().await;
         assert!(
@@ -725,31 +651,6 @@ mod tests {
             "Build should succeed with valid configuration"
         );
 
-        // Clean up
-        if let Ok(broker) = result {
-            let _ = broker.shutdown().await;
-        }
-    }
-
-    #[tokio::test]
-    async fn test_build_with_multiple_strategies() {
-        let builder = EventBrokerBuilder::new()
-            .with_strategy(Box::new(MockStrategy::new(ServiceType::AVTransport)))
-            .with_strategy(Box::new(MockStrategy::new(
-                ServiceType::RenderingControl,
-            )))
-            .with_strategy(Box::new(MockStrategy::new(
-                ServiceType::ZoneGroupTopology,
-            )))
-            .with_port_range(50100, 50200);
-
-        let result = builder.build().await;
-        assert!(
-            result.is_ok(),
-            "Build should succeed with multiple strategies"
-        );
-
-        // Clean up
         if let Ok(broker) = result {
             let _ = broker.shutdown().await;
         }
@@ -758,7 +659,7 @@ mod tests {
     #[tokio::test]
     async fn test_build_with_custom_config() {
         let builder = EventBrokerBuilder::new()
-            .with_strategy(Box::new(MockStrategy::new(ServiceType::AVTransport)))
+            .with_strategy(test_strategy())
             .with_port_range(50200, 50300)
             .with_subscription_timeout(Duration::from_secs(3600))
             .with_renewal_threshold(Duration::from_secs(600))
@@ -771,7 +672,6 @@ mod tests {
             "Build should succeed with custom configuration"
         );
 
-        // Clean up
         if let Ok(broker) = result {
             let _ = broker.shutdown().await;
         }

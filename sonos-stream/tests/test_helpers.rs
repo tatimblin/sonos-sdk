@@ -6,8 +6,8 @@
 //! - Helper functions for creating test data
 
 use sonos_stream::{
-    ServiceType, SpeakerId, Speaker, SubscriptionConfig, SubscriptionScope,
-    StrategyError, SubscriptionStrategy, TypedEvent,
+    BaseStrategy, ServiceType, SpeakerId, Speaker, SubscriptionConfig, SubscriptionScope,
+    StrategyError, TypedEvent,
 };
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -167,7 +167,7 @@ impl TestAVTransportStrategy {
 }
 
 #[async_trait::async_trait]
-impl SubscriptionStrategy for TestAVTransportStrategy {
+impl BaseStrategy for TestAVTransportStrategy {
     fn service_type(&self) -> ServiceType {
         ServiceType::AVTransport
     }
@@ -186,10 +186,28 @@ impl SubscriptionStrategy for TestAVTransportStrategy {
         callback_url: String,
         config: &SubscriptionConfig,
     ) -> Result<Box<dyn sonos_stream::Subscription>, StrategyError> {
+        use sonos_stream::UPnPSubscription;
+        
         // Override endpoint URL to use mock server instead of speaker IP:1400
         let endpoint_url = format!("{}{}", self.mock_server_url, self.service_endpoint_path());
+        let service_type = self.service_type();
         
-        self.create_subscription_with_endpoint(speaker, callback_url, config, &endpoint_url).await
+        let subscription = UPnPSubscription::create_subscription(
+            speaker.id.clone(),
+            service_type,
+            endpoint_url,
+            callback_url,
+            config.timeout_seconds,
+        )
+        .await
+        .map_err(|e| match e {
+            sonos_stream::SubscriptionError::NetworkError(msg) => StrategyError::NetworkError(msg),
+            sonos_stream::SubscriptionError::UnsubscribeFailed(msg) => StrategyError::SubscriptionCreationFailed(msg),
+            sonos_stream::SubscriptionError::RenewalFailed(msg) => StrategyError::SubscriptionCreationFailed(msg),
+            sonos_stream::SubscriptionError::Expired => StrategyError::SubscriptionCreationFailed("Subscription expired during creation".to_string()),
+        })?;
+
+        Ok(Box::new(subscription))
     }
 
     fn parse_event(
@@ -227,7 +245,7 @@ impl MultiTestAVTransportStrategy {
 }
 
 #[async_trait::async_trait]
-impl SubscriptionStrategy for MultiTestAVTransportStrategy {
+impl BaseStrategy for MultiTestAVTransportStrategy {
     fn service_type(&self) -> ServiceType {
         ServiceType::AVTransport
     }
@@ -246,6 +264,8 @@ impl SubscriptionStrategy for MultiTestAVTransportStrategy {
         callback_url: String,
         config: &SubscriptionConfig,
     ) -> Result<Box<dyn sonos_stream::Subscription>, StrategyError> {
+        use sonos_stream::UPnPSubscription;
+        
         // Get the mock server URL for this speaker
         let server_url = self.server_urls.get(speaker.id.as_str())
             .ok_or_else(|| StrategyError::SubscriptionCreationFailed(
@@ -253,7 +273,24 @@ impl SubscriptionStrategy for MultiTestAVTransportStrategy {
             ))?;
         
         let endpoint_url = format!("{}{}", server_url, self.service_endpoint_path());
-        self.create_subscription_with_endpoint(speaker, callback_url, config, &endpoint_url).await
+        let service_type = self.service_type();
+        
+        let subscription = UPnPSubscription::create_subscription(
+            speaker.id.clone(),
+            service_type,
+            endpoint_url,
+            callback_url,
+            config.timeout_seconds,
+        )
+        .await
+        .map_err(|e| match e {
+            sonos_stream::SubscriptionError::NetworkError(msg) => StrategyError::NetworkError(msg),
+            sonos_stream::SubscriptionError::UnsubscribeFailed(msg) => StrategyError::SubscriptionCreationFailed(msg),
+            sonos_stream::SubscriptionError::RenewalFailed(msg) => StrategyError::SubscriptionCreationFailed(msg),
+            sonos_stream::SubscriptionError::Expired => StrategyError::SubscriptionCreationFailed("Subscription expired during creation".to_string()),
+        })?;
+
+        Ok(Box::new(subscription))
     }
 
     fn parse_event(

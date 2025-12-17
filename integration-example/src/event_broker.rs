@@ -4,7 +4,7 @@
 //! with AVTransportStrategy for subscribing to Sonos device events.
 
 use anyhow::{Context, Result};
-use sonos_stream::{EventBroker, EventBrokerBuilder, AVTransportStrategy};
+use sonos_stream::{EventBroker, EventBrokerBuilder, Strategy};
 use std::time::Duration;
 use tracing::{info, warn, error};
 
@@ -85,7 +85,7 @@ pub async fn create_event_broker(config: BrokerConfig) -> Result<EventBroker> {
     );
 
     // Create AVTransport strategy
-    let av_transport_strategy = AVTransportStrategy::new();
+    let av_transport_strategy = Strategy::AVTransport;
     info!("Created AVTransport strategy for media transport events");
 
     // Build the event broker with configuration

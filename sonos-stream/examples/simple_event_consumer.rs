@@ -15,8 +15,8 @@
 //! Run with: cargo run --example simple_event_consumer
 
 use sonos_stream::{
-    EventBrokerBuilder, Event, ServiceType, Speaker, SpeakerId, 
-    SubscriptionStrategy, Subscription, SubscriptionScope, SubscriptionConfig,
+    BaseStrategy, EventBrokerBuilder, Event, ServiceType, Speaker, SpeakerId, 
+    Subscription, SubscriptionScope, SubscriptionConfig,
     StrategyError, SubscriptionError, TypedEvent, AVTransportEvent,
 };
 use std::net::IpAddr;
@@ -42,7 +42,7 @@ impl MockStrategy {
 }
 
 #[async_trait]
-impl SubscriptionStrategy for MockStrategy {
+impl BaseStrategy for MockStrategy {
     fn service_type(&self) -> ServiceType {
         self.service_type
     }

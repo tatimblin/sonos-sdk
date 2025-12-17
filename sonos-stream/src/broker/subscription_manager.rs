@@ -15,7 +15,7 @@ use tokio::sync::{mpsc, RwLock};
 use super::CallbackAdapter;
 use crate::error::{BrokerError, Result};
 use crate::event::Event;
-use crate::strategy::SubscriptionStrategy;
+use crate::strategy::BaseStrategy;
 use crate::subscription::Subscription;
 use crate::types::{BrokerConfig, ServiceType, Speaker, SubscriptionConfig, SubscriptionKey};
 
@@ -64,7 +64,7 @@ pub struct SubscriptionManager {
     /// Shared subscription state
     subscriptions: Arc<RwLock<HashMap<SubscriptionKey, ActiveSubscription>>>,
     /// Registered strategies by service type
-    strategies: Arc<HashMap<ServiceType, Box<dyn SubscriptionStrategy>>>,
+    strategies: Arc<HashMap<ServiceType, Box<dyn BaseStrategy + Send + Sync>>>,
     /// Callback server for HTTP routing
     callback_server: Arc<callback_server::CallbackServer>,
     /// Callback adapter for Sonos-specific event conversion
@@ -88,7 +88,7 @@ impl SubscriptionManager {
     /// * `config` - Broker configuration
     pub fn new(
         subscriptions: Arc<RwLock<HashMap<SubscriptionKey, ActiveSubscription>>>,
-        strategies: Arc<HashMap<ServiceType, Box<dyn SubscriptionStrategy>>>,
+        strategies: Arc<HashMap<ServiceType, Box<dyn BaseStrategy + Send + Sync>>>,
         callback_server: Arc<callback_server::CallbackServer>,
         callback_adapter: CallbackAdapter,
         event_sender: mpsc::Sender<Event>,

@@ -192,8 +192,8 @@ pub use callback_server::{CallbackServer, EventRouter};
 // Re-export event types
 pub use event::{Event, EventData, TypedEvent};
 
-// Re-export trait definitions
-pub use strategy::{SubscriptionStrategy, AVTransportStrategy, AVTransportEvent};
+// Re-export strategy types
+pub use strategy::{AVTransportEvent, BaseStrategy, EventParser, Strategy};
 pub use subscription::{Subscription, UPnPSubscription};
 
 // Re-export error types

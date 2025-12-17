@@ -9,8 +9,8 @@
 //! Run with: cargo run --example typed_event_handling
 
 use sonos_stream::{
-    EventBrokerBuilder, Event, ServiceType, Speaker, SpeakerId, 
-    SubscriptionStrategy, Subscription, SubscriptionScope, SubscriptionConfig,
+    BaseStrategy, EventBrokerBuilder, Event, ServiceType, Speaker, SpeakerId, 
+    Subscription, SubscriptionScope, SubscriptionConfig,
     StrategyError, SubscriptionError, TypedEvent, AVTransportEvent,
 };
 use std::net::IpAddr;
@@ -138,7 +138,7 @@ impl EnhancedMockStrategy {
 }
 
 #[async_trait]
-impl SubscriptionStrategy for EnhancedMockStrategy {
+impl BaseStrategy for EnhancedMockStrategy {
     fn service_type(&self) -> ServiceType {
         self.service_type
     }
