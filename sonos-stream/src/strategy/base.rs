@@ -4,104 +4,9 @@ use crate::error::StrategyError;
 use crate::event::{TypedEvent, EventData};
 use crate::subscription::{Subscription, UPnPSubscription};
 use crate::types::{ServiceType, SpeakerId, Speaker, SubscriptionConfig, SubscriptionScope};
-use sonos_parser::common::DidlLite;
 
-/// AVTransport event data with strongly-typed fields.
-///
-/// This struct provides a strongly-typed representation of AVTransport events,
-/// extracting commonly used fields from the AVTransportParser for easier access.
-/// It implements the EventData trait to work with the new typed event system.
-#[derive(Debug, Clone)]
-pub struct AVTransportEvent {
-    /// Current transport state (PLAYING, PAUSED_PLAYBACK, STOPPED, TRANSITIONING)
-    pub transport_state: String,
-    
-    /// URI of the current track, if present
-    pub track_uri: Option<String>,
-    
-    /// DIDL-Lite metadata for the current track, if present
-    pub track_metadata: Option<DidlLite>,
-    
-    /// Duration of the current track in HH:MM:SS format, if present
-    pub current_track_duration: Option<String>,
-    
-    /// Current track number, if present
-    pub current_track: Option<u32>,
-    
-    /// Total number of tracks in queue, if present
-    pub number_of_tracks: Option<u32>,
-    
-    /// Current play mode (NORMAL, REPEAT_ALL, SHUFFLE, etc.), if present
-    pub current_play_mode: Option<String>,
-}
 
-impl AVTransportEvent {
-    /// Create a new AVTransportEvent from an AVTransportParser.
-    pub fn from_parser(parser: sonos_parser::services::av_transport::AVTransportParser) -> Self {
-        Self {
-            transport_state: parser.transport_state().to_string(),
-            track_uri: parser.current_track_uri().map(|s| s.to_string()),
-            track_metadata: parser.track_metadata().cloned(),
-            current_track_duration: parser.current_track_duration().map(|s| s.to_string()),
-            current_track: parser.property.last_change.instance.current_track
-                .as_ref()
-                .and_then(|v| v.val.parse().ok()),
-            number_of_tracks: parser.property.last_change.instance.number_of_tracks
-                .as_ref()
-                .and_then(|v| v.val.parse().ok()),
-            current_play_mode: parser.property.last_change.instance.current_play_mode
-                .as_ref()
-                .map(|v| v.val.clone()),
-        }
-    }
-    
-    /// Get the track title from metadata, if available.
-    pub fn track_title(&self) -> Option<&str> {
-        self.track_metadata
-            .as_ref()
-            .and_then(|d| d.item.title.as_deref())
-    }
-    
-    /// Get the track artist from metadata, if available.
-    pub fn track_artist(&self) -> Option<&str> {
-        self.track_metadata
-            .as_ref()
-            .and_then(|d| d.item.creator.as_deref())
-    }
-    
-    /// Get the track album from metadata, if available.
-    pub fn track_album(&self) -> Option<&str> {
-        self.track_metadata
-            .as_ref()
-            .and_then(|d| d.item.album.as_deref())
-    }
-    
-    /// Parse the track duration to milliseconds, if available.
-    pub fn track_duration_ms(&self) -> Option<u64> {
-        use sonos_parser::services::av_transport::AVTransportParser;
-        self.current_track_duration
-            .as_ref()
-            .and_then(|d| AVTransportParser::parse_duration_to_ms(d))
-    }
-}
 
-impl EventData for AVTransportEvent {
-    fn event_type(&self) -> &str {
-        "av_transport_event"
-    }
-    
-    fn service_type(&self) -> ServiceType {
-        ServiceType::AVTransport
-    }
-    
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-    
-    fn clone_box(&self) -> Box<dyn EventData> {
-        Box::new(self.clone())
-    }
-}
 
 /// Trait for parsers that convert XML to event data.
 ///
@@ -115,14 +20,14 @@ pub trait EventParser: Sized {
 
 // Implement EventParser for AVTransportParser
 impl EventParser for sonos_parser::services::av_transport::AVTransportParser {
-    type EventType = AVTransportEvent;
+    type EventType = Self;
 
     fn from_xml(xml: &str) -> Result<Self, String> {
         Self::from_xml(xml).map_err(|e| e.to_string())
     }
 
     fn into_event(self) -> Self::EventType {
-        AVTransportEvent::from_parser(self)
+        self
     }
 }
 

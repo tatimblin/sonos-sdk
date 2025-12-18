@@ -217,13 +217,12 @@ impl BaseStrategy for TestAVTransportStrategy {
     ) -> Result<TypedEvent, StrategyError> {
         // Use the same parsing logic as AVTransportStrategy
         use sonos_parser::services::av_transport::AVTransportParser;
-        use sonos_stream::{AVTransportEvent, TypedEvent};
+        use sonos_stream::TypedEvent;
 
         let parsed = AVTransportParser::from_xml(event_xml)
             .map_err(|e| StrategyError::EventParseFailed(format!("Failed to parse AVTransport event: {}", e)))?;
         
-        let av_event = AVTransportEvent::from_parser(parsed);
-        Ok(TypedEvent::new(Box::new(av_event)))
+        Ok(TypedEvent::new(Box::new(parsed)))
     }
 }
 
@@ -299,13 +298,12 @@ impl BaseStrategy for MultiTestAVTransportStrategy {
         event_xml: &str,
     ) -> Result<TypedEvent, StrategyError> {
         use sonos_parser::services::av_transport::AVTransportParser;
-        use sonos_stream::{AVTransportEvent, TypedEvent};
+        use sonos_stream::TypedEvent;
 
         let parsed = AVTransportParser::from_xml(event_xml)
             .map_err(|e| StrategyError::EventParseFailed(format!("Failed to parse AVTransport event: {}", e)))?;
         
-        let av_event = AVTransportEvent::from_parser(parsed);
-        Ok(TypedEvent::new(Box::new(av_event)))
+        Ok(TypedEvent::new(Box::new(parsed)))
     }
 }
 

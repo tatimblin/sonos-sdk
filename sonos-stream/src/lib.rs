@@ -178,6 +178,7 @@ mod broker;
 mod builder;
 mod error;
 mod event;
+mod parser_impls;
 mod strategy;
 mod subscription;
 mod types;
@@ -193,7 +194,7 @@ pub use callback_server::{CallbackServer, EventRouter};
 pub use event::{Event, EventData, TypedEvent};
 
 // Re-export strategy types
-pub use strategy::{AVTransportEvent, BaseStrategy, EventParser, Strategy};
+pub use strategy::{BaseStrategy, EventParser, Strategy};
 pub use subscription::{Subscription, UPnPSubscription};
 
 // Re-export error types

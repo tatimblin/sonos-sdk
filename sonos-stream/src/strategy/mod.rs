@@ -109,4 +109,4 @@
 
 mod base;
 
-pub use base::{AVTransportEvent, BaseStrategy, EventParser, Strategy};
+pub use base::{BaseStrategy, EventParser, Strategy};
