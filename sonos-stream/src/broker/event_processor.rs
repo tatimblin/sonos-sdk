@@ -28,7 +28,7 @@ use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 
 use crate::event::Event;
-use crate::strategy::BaseStrategy;
+use crate::services::ServiceStrategy;
 use crate::types::RawEvent;
 use crate::types::{ServiceType, SubscriptionKey};
 
@@ -66,7 +66,7 @@ impl EventProcessor {
     /// Returns an `EventProcessor` instance with a handle to the background task.
     pub fn start(
         raw_event_rx: mpsc::UnboundedReceiver<RawEvent>,
-        strategies: Arc<HashMap<ServiceType, Box<dyn BaseStrategy + Send + Sync>>>,
+        strategies: Arc<HashMap<ServiceType, Box<dyn ServiceStrategy + Send + Sync>>>,
         subscriptions: Arc<RwLock<HashMap<SubscriptionKey, ActiveSubscription>>>,
         event_sender: mpsc::Sender<Event>,
     ) -> Self {
@@ -136,7 +136,7 @@ impl EventProcessor {
     /// closed (which happens during broker shutdown).
     fn start_processing_task(
         mut raw_event_rx: mpsc::UnboundedReceiver<RawEvent>,
-        strategies: Arc<HashMap<ServiceType, Box<dyn BaseStrategy + Send + Sync>>>,
+        strategies: Arc<HashMap<ServiceType, Box<dyn ServiceStrategy + Send + Sync>>>,
         subscriptions: Arc<RwLock<HashMap<SubscriptionKey, ActiveSubscription>>>,
         event_sender: mpsc::Sender<Event>,
     ) -> JoinHandle<()> {
@@ -171,7 +171,7 @@ impl EventProcessor {
     /// * `event_sender` - Channel for emitting parsed events and errors
     async fn process_raw_event(
         raw_event: RawEvent,
-        strategies: &Arc<HashMap<ServiceType, Box<dyn BaseStrategy + Send + Sync>>>,
+        strategies: &Arc<HashMap<ServiceType, Box<dyn ServiceStrategy + Send + Sync>>>,
         subscriptions: &Arc<RwLock<HashMap<SubscriptionKey, ActiveSubscription>>>,
         event_sender: &mpsc::Sender<Event>,
     ) {
@@ -233,41 +233,20 @@ mod tests {
     use super::*;
 
     use crate::subscription::Subscription;
-    use crate::types::{ServiceType, SpeakerId, SubscriptionScope};
-    use crate::error::StrategyError;
+    use crate::types::{ServiceType, SpeakerId};
     use std::time::Duration;
 
-    // Mock strategy for testing
-    struct MockStrategy {
-        service_type: ServiceType,
-        should_succeed: bool,
-    }
 
-    impl MockStrategy {
-        fn new_success(service_type: ServiceType) -> Self {
-            Self {
-                service_type,
-                should_succeed: true,
-            }
-        }
-
-        fn new_failure(service_type: ServiceType) -> Self {
-            Self {
-                service_type,
-                should_succeed: false,
-            }
-        }
-    }
 
     #[tokio::test]
     async fn test_process_raw_event_success() {
         let (event_tx, mut event_rx) = mpsc::channel(10);
         let (_raw_event_tx, _raw_event_rx) = mpsc::unbounded_channel::<RawEvent>();
 
-        let mut strategies: HashMap<ServiceType, Box<dyn BaseStrategy + Send + Sync>> = HashMap::new();
+        let mut strategies: HashMap<ServiceType, Box<dyn ServiceStrategy + Send + Sync>> = HashMap::new();
         strategies.insert(
             ServiceType::AVTransport,
-            Box::new(crate::strategy::Strategy::AVTransport),
+            Box::new(crate::services::AVTransportProvider::new()),
         );
         let strategies = Arc::new(strategies);
 
@@ -336,10 +315,10 @@ mod tests {
     async fn test_process_raw_event_parse_error() {
         let (event_tx, mut event_rx) = mpsc::channel(10);
 
-        let mut strategies: HashMap<ServiceType, Box<dyn BaseStrategy + Send + Sync>> = HashMap::new();
+        let mut strategies: HashMap<ServiceType, Box<dyn ServiceStrategy + Send + Sync>> = HashMap::new();
         strategies.insert(
             ServiceType::AVTransport,
-            Box::new(crate::strategy::Strategy::AVTransport),
+            Box::new(crate::services::AVTransportProvider::new()),
         );
         let strategies = Arc::new(strategies);
 
@@ -383,7 +362,7 @@ mod tests {
     async fn test_process_raw_event_no_strategy() {
         let (event_tx, mut event_rx) = mpsc::channel(10);
 
-        let strategies: HashMap<ServiceType, Box<dyn BaseStrategy + Send + Sync>> = HashMap::new();
+        let strategies: HashMap<ServiceType, Box<dyn ServiceStrategy + Send + Sync>> = HashMap::new();
         let strategies = Arc::new(strategies);
 
         let subscriptions = Arc::new(RwLock::new(HashMap::new()));
@@ -427,7 +406,7 @@ mod tests {
         let (event_tx, _event_rx) = mpsc::channel(10);
         let (raw_event_tx, raw_event_rx) = mpsc::unbounded_channel();
 
-        let strategies: HashMap<ServiceType, Box<dyn BaseStrategy + Send + Sync>> = HashMap::new();
+        let strategies: HashMap<ServiceType, Box<dyn ServiceStrategy + Send + Sync>> = HashMap::new();
         let strategies = Arc::new(strategies);
 
         let subscriptions = Arc::new(RwLock::new(HashMap::new()));

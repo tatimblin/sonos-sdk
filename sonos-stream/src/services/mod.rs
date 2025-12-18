@@ -12,7 +12,7 @@
 //!
 //! This module provides the following strategy implementations:
 //!
-//! - [`Strategy::AVTransport`]: Handles playback state changes and track information events
+//! - [`AVTransportProvider`]: Handles playback state changes and track information events
 //!   from the AVTransport UPnP service. Emits `transport_state_changed` and `track_changed`
 //!   events with parsed metadata.
 //!
@@ -32,16 +32,16 @@
 //! Strategies are shared across all subscriptions of their service type, so they must be
 //! thread-safe (`Send + Sync`).
 //!
-//! # Using Strategy::AVTransport
+//! # Using AVTransportProvider
 //!
 //! ```rust,no_run
-//! use sonos_stream::{EventBrokerBuilder, Strategy, ServiceType, Speaker, SpeakerId};
+//! use sonos_stream::{EventBrokerBuilder, AVTransportProvider, ServiceType, Speaker, SpeakerId};
 //! use std::net::IpAddr;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! // Create a broker with the AVTransport strategy
+//! // Create a broker with the AVTransport provider
 //! let mut broker = EventBrokerBuilder::new()
-//!     .with_strategy(Box::new(Strategy::AVTransport))
+//!     .with_strategy(Box::new(AVTransportProvider::new()))
 //!     .build().await?;
 //!
 //! // Subscribe to AVTransport events from a speaker
@@ -58,32 +58,20 @@
 //!
 //! # Implementing a Custom Strategy
 //!
-//! Strategies can use the `parse_event_generic` helper function to reduce boilerplate.
-//! Simply implement the `EventParser` trait for your parser type, then call the helper:
+//! To add support for a new UPnP service, implement the `ServiceStrategy` trait:
 //!
 //! ```rust,ignore
 //! use sonos_stream::{
-//!     SubscriptionStrategy, EventParser, parse_event_generic,
-//!     Speaker, ServiceType, SubscriptionScope, StrategyError, TypedEvent,
+//!     ServiceStrategy, Subscription, Speaker, ServiceType, SubscriptionScope,
+//!     SubscriptionConfig, StrategyError, TypedEvent, SpeakerId, SubscriptionError,
 //! };
-//! use sonos_parser::services::rendering_control::RenderingControlParser;
+//! use std::time::Duration;
 //!
-//! // Implement EventParser for your parser type
-//! impl EventParser for RenderingControlParser {
-//!     type EventType = RenderingControlEvent;
+//! #[derive(Debug, Clone)]
+//! struct MyServiceProvider;
 //!
-//!     fn from_xml(xml: &str) -> Result<Self, String> {
-//!         RenderingControlParser::from_xml(xml).map_err(|e| e.to_string())
-//!     }
-//!
-//!     fn into_event(self) -> Self::EventType {
-//!         RenderingControlEvent::from_parser(self)
-//!     }
-//! }
-//!
-//! struct MyCustomStrategy;
-//!
-//! impl SubscriptionStrategy for MyCustomStrategy {
+//! #[async_trait::async_trait]
+//! impl ServiceStrategy for MyServiceProvider {
 //!     fn service_type(&self) -> ServiceType {
 //!         ServiceType::RenderingControl
 //!     }
@@ -98,15 +86,18 @@
 //!
 //!     fn parse_event(
 //!         &self,
-//!         _speaker_id: &SpeakerId,
+//!         speaker_id: &SpeakerId,
 //!         event_xml: &str,
 //!     ) -> Result<TypedEvent, StrategyError> {
-//!         // Use the generic helper - just specify the parser type!
-//!         parse_event_generic::<RenderingControlParser>(event_xml)
+//!         // Parse the XML and extract state variables
+//!         // Convert to TypedEvent instance
+//!         unimplemented!()
 //!     }
 //! }
 //! ```
 
-mod base;
+mod service_strategy;
+mod av_transport_provider;
 
-pub use base::{BaseStrategy, EventParser, Strategy};
+pub use service_strategy::ServiceStrategy;
+pub use av_transport_provider::AVTransportProvider;

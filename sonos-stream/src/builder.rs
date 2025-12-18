@@ -11,8 +11,8 @@
 //! use std::time::Duration;
 //!
 //! let broker = EventBrokerBuilder::new()
-//!     .with_strategy(Box::new(Strategy::AVTransport))
-//!     .with_strategy(Box::new(Strategy::RenderingControl))
+//!     .with_strategy(Box::new(AVTransportProvider::new()))
+//!     .with_strategy(Box::new(RenderingControlProvider::new()))
 //!     .with_port_range(3400, 3500)
 //!     .with_subscription_timeout(Duration::from_secs(1800))
 //!     .with_retry_config(3, Duration::from_secs(2))
@@ -28,7 +28,7 @@ use tokio::sync::{mpsc, RwLock};
 // Use new broker module structure
 use crate::broker::{CallbackAdapter, EventBroker, EventProcessor, RenewalManager, SubscriptionManager};
 use crate::error::{BrokerError, Result};
-use crate::strategy::BaseStrategy;
+use crate::services::ServiceStrategy;
 use crate::types::{BrokerConfig, ServiceType};
 
 /// Builder for creating and configuring an EventBroker.
@@ -59,7 +59,7 @@ use crate::types::{BrokerConfig, ServiceType};
 /// ```
 pub struct EventBrokerBuilder {
     /// Registered strategies by service type
-    strategies: HashMap<ServiceType, Box<dyn BaseStrategy + Send + Sync>>,
+    strategies: HashMap<ServiceType, Box<dyn ServiceStrategy + Send + Sync>>,
     /// Broker configuration
     config: BrokerConfig,
 }
@@ -107,9 +107,9 @@ impl EventBrokerBuilder {
     /// use sonos_stream::{EventBrokerBuilder, Strategy};
     ///
     /// let builder = EventBrokerBuilder::new()
-    ///     .with_strategy(Box::new(Strategy::AVTransport));
+    ///     .with_strategy(Box::new(AVTransportProvider::new()));
     /// ```
-    pub fn with_strategy(mut self, strategy: Box<dyn BaseStrategy + Send + Sync>) -> Self {
+    pub fn with_strategy(mut self, strategy: Box<dyn ServiceStrategy + Send + Sync>) -> Self {
         let service_type = strategy.service_type();
         self.strategies.insert(service_type, strategy);
         self
@@ -389,12 +389,11 @@ impl Default for EventBrokerBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::StrategyError;
-    use crate::types::{SpeakerId, SubscriptionScope};
+
 
     // Helper to create a test strategy
-    fn test_strategy() -> Box<dyn BaseStrategy + Send + Sync> {
-        Box::new(crate::strategy::Strategy::AVTransport)
+    fn test_strategy() -> Box<dyn ServiceStrategy + Send + Sync> {
+        Box::new(crate::services::AVTransportProvider::new())
     }
 
     #[test]

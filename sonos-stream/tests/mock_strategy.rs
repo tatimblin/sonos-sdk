@@ -1,11 +1,11 @@
 //! Mock strategy and subscription implementations for testing.
 //!
-//! This module provides mock implementations of the `BaseStrategy` and
+//! This module provides mock implementations of the `ServiceStrategy` and
 //! `Subscription` traits that can be used in tests without making real UPnP calls.
 //! The mock implementations support configurable failure modes to test error paths.
 
 use sonos_stream::{
-    BaseStrategy, EventData, ServiceType, SpeakerId, Speaker, SubscriptionConfig, SubscriptionScope,
+    ServiceStrategy, EventData, ServiceType, SpeakerId, Speaker, SubscriptionConfig, SubscriptionScope,
     StrategyError, Subscription, SubscriptionError, TypedEvent,
 };
 use std::collections::HashMap;
@@ -45,6 +45,7 @@ impl EventData for MockEventData {
 /// This strategy can be configured to simulate various failure scenarios
 /// for testing error handling paths.
 #[derive(Clone)]
+#[derive(Debug)]
 pub struct MockStrategy {
     service_type: ServiceType,
     subscription_scope: SubscriptionScope,
@@ -107,7 +108,7 @@ impl MockStrategy {
 }
 
 #[async_trait]
-impl BaseStrategy for MockStrategy {
+impl ServiceStrategy for MockStrategy {
     fn service_type(&self) -> ServiceType {
         self.service_type
     }

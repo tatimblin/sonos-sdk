@@ -15,7 +15,7 @@
 //! Run with: cargo run --example simple_event_consumer
 
 use sonos_stream::{
-    BaseStrategy, EventBrokerBuilder, Event, ServiceType, Speaker, SpeakerId, 
+    ServiceStrategy, EventBrokerBuilder, Event, ServiceType, Speaker, SpeakerId, 
     Subscription, SubscriptionScope, SubscriptionConfig,
     StrategyError, SubscriptionError, TypedEvent,
 };
@@ -28,6 +28,7 @@ use async_trait::async_trait;
 
 /// Mock strategy that creates fake subscriptions without real UPnP calls
 #[derive(Clone)]
+#[derive(Debug)]
 struct MockStrategy {
     service_type: ServiceType,
     counter: Arc<AtomicU32>,
@@ -43,7 +44,7 @@ impl MockStrategy {
 }
 
 #[async_trait]
-impl BaseStrategy for MockStrategy {
+impl ServiceStrategy for MockStrategy {
     fn service_type(&self) -> ServiceType {
         self.service_type
     }

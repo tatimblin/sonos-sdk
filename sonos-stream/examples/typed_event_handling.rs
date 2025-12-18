@@ -9,7 +9,7 @@
 //! Run with: cargo run --example typed_event_handling
 
 use sonos_stream::{
-    BaseStrategy, EventBrokerBuilder, Event, ServiceType, Speaker, SpeakerId, 
+    ServiceStrategy, EventBrokerBuilder, Event, ServiceType, Speaker, SpeakerId, 
     Subscription, SubscriptionScope, SubscriptionConfig,
     StrategyError, SubscriptionError, TypedEvent,
 };
@@ -124,6 +124,7 @@ impl TypedEventProcessor {
 
 /// Enhanced mock strategy that creates different types of events
 #[derive(Clone)]
+#[derive(Debug)]
 struct EnhancedMockStrategy {
     service_type: ServiceType,
     counter: Arc<AtomicU32>,
@@ -139,7 +140,7 @@ impl EnhancedMockStrategy {
 }
 
 #[async_trait]
-impl BaseStrategy for EnhancedMockStrategy {
+impl ServiceStrategy for EnhancedMockStrategy {
     fn service_type(&self) -> ServiceType {
         self.service_type
     }

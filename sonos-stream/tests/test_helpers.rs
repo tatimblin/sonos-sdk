@@ -6,7 +6,7 @@
 //! - Helper functions for creating test data
 
 use sonos_stream::{
-    BaseStrategy, ServiceType, SpeakerId, Speaker, SubscriptionConfig, SubscriptionScope,
+    ServiceStrategy, ServiceType, SpeakerId, Speaker, SubscriptionConfig, SubscriptionScope,
     StrategyError, TypedEvent,
 };
 use std::collections::HashMap;
@@ -156,6 +156,7 @@ impl UPnPMockServer {
 }
 
 /// Custom AVTransport strategy for testing that uses mock server URLs
+#[derive(Debug)]
 pub struct TestAVTransportStrategy {
     mock_server_url: String,
 }
@@ -167,7 +168,7 @@ impl TestAVTransportStrategy {
 }
 
 #[async_trait::async_trait]
-impl BaseStrategy for TestAVTransportStrategy {
+impl ServiceStrategy for TestAVTransportStrategy {
     fn service_type(&self) -> ServiceType {
         ServiceType::AVTransport
     }
@@ -227,6 +228,7 @@ impl BaseStrategy for TestAVTransportStrategy {
 }
 
 /// Custom strategy for multiple server testing
+#[derive(Debug)]
 pub struct MultiTestAVTransportStrategy {
     server_urls: HashMap<String, String>, // speaker_id -> server_url
 }
@@ -244,7 +246,7 @@ impl MultiTestAVTransportStrategy {
 }
 
 #[async_trait::async_trait]
-impl BaseStrategy for MultiTestAVTransportStrategy {
+impl ServiceStrategy for MultiTestAVTransportStrategy {
     fn service_type(&self) -> ServiceType {
         ServiceType::AVTransport
     }
