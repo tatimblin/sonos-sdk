@@ -5,7 +5,7 @@
 //! The mock implementations support configurable failure modes to test error paths.
 
 use sonos_stream::{
-    ServiceStrategy, EventData, ServiceType, SpeakerId, Speaker, SubscriptionConfig, SubscriptionScope,
+    ServiceStrategy, ServiceType, SpeakerId, Speaker, SubscriptionConfig, SubscriptionScope,
     StrategyError, Subscription, SubscriptionError, TypedEvent,
 };
 use std::collections::HashMap;
@@ -14,29 +14,19 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use async_trait::async_trait;
 
-/// Shared mock event data for testing
+/// Shared mock parser for testing
 #[derive(Debug, Clone)]
-pub struct MockEventData {
-    pub event_type: String,
-    pub service_type: ServiceType,
+pub struct MockParser {
     pub data: HashMap<String, String>,
 }
 
-impl EventData for MockEventData {
-    fn event_type(&self) -> &str {
-        &self.event_type
+impl MockParser {
+    pub fn new(data: HashMap<String, String>) -> Self {
+        Self { data }
     }
-
-    fn service_type(&self) -> ServiceType {
-        self.service_type
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn clone_box(&self) -> Box<dyn EventData> {
-        Box::new(self.clone())
+    
+    pub fn get_data(&self, key: &str) -> Option<&str> {
+        self.data.get(key).map(|s| s.as_str())
     }
 }
 
@@ -168,13 +158,13 @@ impl ServiceStrategy for MockStrategy {
             data.insert("channel".to_string(), "Master".to_string());
         }
 
-        let mock_data = MockEventData {
-            event_type: event_type.to_string(),
-            service_type: self.service_type,
-            data,
-        };
+        let mock_parser = MockParser::new(data);
 
-        Ok(TypedEvent::new(Box::new(mock_data)))
+        Ok(TypedEvent::new_parser(
+            mock_parser,
+            event_type,
+            self.service_type,
+        ))
     }
 
     // Override create_subscription to add mock-specific behavior
@@ -475,14 +465,14 @@ mod tests {
         let typed_event = result.unwrap();
         assert_eq!(typed_event.event_type(), "test_event");
         
-        // Downcast to MockEventData to access the data
-        if let Some(mock_data) = typed_event.downcast_ref::<MockEventData>() {
+        // Downcast to MockParser to access the data
+        if let Some(mock_parser) = typed_event.downcast_ref::<MockParser>() {
             assert_eq!(
-                mock_data.data.get("speaker_id").map(|s| s.as_str()),
+                mock_parser.get_data("speaker_id"),
                 Some("RINCON_TEST123")
             );
         } else {
-            panic!("Failed to downcast to MockEventData");
+            panic!("Failed to downcast to MockParser");
         }
     }
 
@@ -505,12 +495,12 @@ mod tests {
         let typed_event = result.unwrap();
         assert_eq!(typed_event.event_type(), "volume_changed");
         
-        // Downcast to MockEventData to access the data
-        if let Some(mock_data) = typed_event.downcast_ref::<MockEventData>() {
-            assert_eq!(mock_data.data.get("volume").map(|s| s.as_str()), Some("50"));
-            assert_eq!(mock_data.data.get("channel").map(|s| s.as_str()), Some("Master"));
+        // Downcast to MockParser to access the data
+        if let Some(mock_parser) = typed_event.downcast_ref::<MockParser>() {
+            assert_eq!(mock_parser.get_data("volume"), Some("50"));
+            assert_eq!(mock_parser.get_data("channel"), Some("Master"));
         } else {
-            panic!("Failed to downcast to MockEventData");
+            panic!("Failed to downcast to MockParser");
         }
     }
 

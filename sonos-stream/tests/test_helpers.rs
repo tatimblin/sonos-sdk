@@ -223,7 +223,11 @@ impl ServiceStrategy for TestAVTransportStrategy {
         let parsed = AVTransportParser::from_xml(event_xml)
             .map_err(|e| StrategyError::EventParseFailed(format!("Failed to parse AVTransport event: {}", e)))?;
         
-        Ok(TypedEvent::new(Box::new(parsed)))
+        Ok(TypedEvent::new_parser(
+            parsed,
+            "av_transport_event",
+            ServiceType::AVTransport,
+        ))
     }
 }
 
@@ -305,7 +309,11 @@ impl ServiceStrategy for MultiTestAVTransportStrategy {
         let parsed = AVTransportParser::from_xml(event_xml)
             .map_err(|e| StrategyError::EventParseFailed(format!("Failed to parse AVTransport event: {}", e)))?;
         
-        Ok(TypedEvent::new(Box::new(parsed)))
+        Ok(TypedEvent::new_parser(
+            parsed,
+            "av_transport_event",
+            ServiceType::AVTransport,
+        ))
     }
 }
 

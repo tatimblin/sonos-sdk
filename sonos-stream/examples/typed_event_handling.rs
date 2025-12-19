@@ -113,7 +113,7 @@ impl TypedEventProcessor {
     /// Process unknown events using generic debug output
     fn process_unknown_event(&self, event: &TypedEvent) {
         println!("  Generic event processing:");
-        println!("    Debug: {:?}", event.debug());
+        println!("    Debug: {:?}", event);
     }
 
     /// Get processing statistics
@@ -201,7 +201,11 @@ impl ServiceStrategy for EnhancedMockStrategy {
                 );
                 let av_event = AVTransportParser::from_xml(&xml).unwrap();
 
-                Ok(TypedEvent::new(Box::new(av_event)))
+                Ok(TypedEvent::new_parser(
+                    av_event,
+                    "av_transport_event",
+                    ServiceType::AVTransport,
+                ))
             }
             _ => {
                 // For other service types, we would create their specific event types

@@ -84,7 +84,11 @@ impl ServiceStrategy for MockStrategy {
         let av_event = AVTransportParser::from_xml(event_xml)
             .map_err(|e| StrategyError::EventParseFailed(e.to_string()))?;
 
-        Ok(TypedEvent::new(Box::new(av_event)))
+        Ok(TypedEvent::new_parser(
+            av_event,
+            "av_transport_event",
+            ServiceType::AVTransport,
+        ))
     }
 }
 
@@ -270,7 +274,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 println!("  Play Mode: {}", play_mode.val);
                             }
                         } else {
-                            println!("  Data: {:?}", event.debug());
+                            println!("  Data: {:?}", event);
                         }
                         println!();
                         

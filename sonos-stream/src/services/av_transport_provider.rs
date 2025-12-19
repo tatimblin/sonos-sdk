@@ -73,8 +73,12 @@ impl ServiceStrategy for AVTransportProvider {
         let parser = sonos_parser::services::av_transport::AVTransportParser::from_xml(event_xml)
             .map_err(|e| StrategyError::EventParseFailed(format!("Failed to parse AVTransport event: {}", e)))?;
         
-        // Create TypedEvent with the parsed data
-        Ok(TypedEvent::new(Box::new(parser)))
+        // Create TypedEvent with the parser instance directly
+        Ok(TypedEvent::new_parser(
+            parser,
+            "av_transport_event",
+            ServiceType::AVTransport,
+        ))
     }
 
     async fn create_subscription(
@@ -164,6 +168,13 @@ mod tests {
         let typed_event = result.unwrap();
         assert_eq!(typed_event.event_type(), "av_transport_event");
         assert_eq!(typed_event.service_type(), ServiceType::AVTransport);
+        
+        // Test downcasting to the parser type
+        let parser = typed_event.downcast_ref::<sonos_parser::services::av_transport::AVTransportParser>();
+        assert!(parser.is_some(), "Should be able to downcast to AVTransportParser");
+        
+        let parser = parser.unwrap();
+        assert_eq!(parser.transport_state(), "PLAYING");
     }
 
     #[test]

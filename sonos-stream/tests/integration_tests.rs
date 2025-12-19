@@ -110,11 +110,10 @@ async fn test_end_to_end_subscription() {
             assert_eq!(service_type, ServiceType::AVTransport);
             assert_eq!(event.event_type(), "test_event");
             
-            // Demonstrate type-safe downcasting to MockEventData
-            if let Some(mock_data) = event.downcast_ref::<mock_strategy::MockEventData>() {
-                assert_eq!(mock_data.service_type, ServiceType::AVTransport);
+            // Demonstrate type-safe downcasting to MockParser
+            if let Some(mock_parser) = event.downcast_ref::<mock_strategy::MockParser>() {
                 assert_eq!(
-                    mock_data.data.get("speaker_id").map(|s| s.as_str()),
+                    mock_parser.get_data("speaker_id"),
                     Some("RINCON_TEST123")
                 );
             } else {
