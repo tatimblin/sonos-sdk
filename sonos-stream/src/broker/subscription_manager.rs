@@ -153,24 +153,32 @@ impl SubscriptionManager {
             .get(&service_type)
             .ok_or(BrokerError::NoStrategyForService(service_type))?;
 
-        // Generate callback URL using callback server base URL
-        let callback_url = self.callback_server.base_url().to_string();
-        println!("🔗 Using callback URL: {}", callback_url);
+        // Generate unified callback URL for all subscriptions
+        // This is the core of the unified event stream processing pattern:
+        // all speakers and services use the same callback URL, and events
+        // are routed based on subscription IDs
+        let unified_callback_url = self.callback_server.base_url().to_string();
+        println!("🔗 Using unified callback URL for all subscriptions: {}", unified_callback_url);
+        println!("📡 Creating subscription for speaker {} service {:?}", speaker.id.as_str(), service_type);
 
-        // Create subscription config
+        // Create subscription config with unified callback URL
         let config = SubscriptionConfig::new(
             self.config.subscription_timeout.as_secs() as u32,
-            callback_url.clone(),
+            unified_callback_url.clone(),
         );
 
-        // Call strategy to create subscription
-        let subscription_result = strategy.create_subscription(speaker, callback_url, &config).await;
+        // Call strategy to create subscription using unified callback URL
+        let subscription_result = strategy.create_subscription(speaker, unified_callback_url, &config).await;
 
         match subscription_result {
             Ok(subscription) => {
                 let subscription_id = subscription.subscription_id().to_string();
 
-                // Register subscription with callback server and adapter
+                // Register subscription with unified callback server and adapter
+                // This enables the unified event stream processing:
+                // 1. Callback server routes HTTP notifications by subscription ID
+                // 2. Adapter adds Sonos-specific context (speaker ID, service type)
+                // 3. Events flow into the unified stream for processing
                 self.callback_server
                     .router()
                     .register(subscription_id.clone())
@@ -182,6 +190,9 @@ impl SubscriptionManager {
                         service_type,
                     )
                     .await;
+
+                println!("✅ Subscription registered: {} for speaker {} service {:?}", 
+                    subscription_id, speaker.id.as_str(), service_type);
 
                 // Store subscription in internal map
                 let active_sub = ActiveSubscription::new(key.clone(), subscription);

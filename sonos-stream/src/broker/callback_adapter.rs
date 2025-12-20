@@ -4,6 +4,17 @@
 //! and the Sonos-specific event processing. It maintains a mapping from subscription IDs
 //! to Sonos context (speaker ID and service type) and converts generic `NotificationPayload`
 //! events into `RawEvent` instances with Sonos-specific context.
+//!
+//! # Unified Event Stream Processing
+//!
+//! The CallbackAdapter is a key component in the unified event stream processing pattern:
+//! 
+//! 1. **Generic Input**: Receives `NotificationPayload` from the unified callback server
+//! 2. **Context Enrichment**: Adds Sonos-specific context (speaker ID, service type)
+//! 3. **Unified Output**: Produces `RawEvent` instances for the event stream processor
+//!
+//! This design allows the callback server to remain generic while enabling Sonos-specific
+//! event processing downstream.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -18,6 +29,14 @@ use crate::types::{RawEvent, ServiceType, SpeakerId};
 /// a background task that listens for generic notifications and converts them to
 /// Sonos-specific raw events.
 ///
+/// # Unified Event Stream Processing
+///
+/// This adapter is essential for the unified event stream processing pattern:
+/// - **Single Entry Point**: All UPnP notifications flow through one callback server
+/// - **Context Mapping**: Maps subscription IDs to speaker and service context
+/// - **Event Enrichment**: Converts generic notifications to Sonos-specific events
+/// - **Stream Integration**: Feeds the unified event stream processor
+///
 /// The adapter task will automatically terminate when the notification channel is closed,
 /// which happens when the callback server shuts down.
 pub struct CallbackAdapter {
@@ -26,10 +45,18 @@ pub struct CallbackAdapter {
 }
 
 impl CallbackAdapter {
-    /// Create and start a new callback adapter.
+    /// Create and start a new callback adapter for unified event stream processing.
     ///
     /// This creates the adapter and spawns a background task that converts generic
-    /// notifications into Sonos-specific raw events.
+    /// notifications into Sonos-specific raw events. The adapter is a critical
+    /// component in the unified event stream processing architecture.
+    ///
+    /// # Unified Event Stream Processing Flow
+    ///
+    /// 1. **Unified Callback Server** receives HTTP notifications from all speakers/services
+    /// 2. **Event Router** routes notifications by subscription ID to this adapter
+    /// 3. **Callback Adapter** (this component) enriches with Sonos-specific context
+    /// 4. **Event Stream Processor** processes the enriched events through strategies
     ///
     /// # Arguments
     ///
@@ -39,6 +66,16 @@ impl CallbackAdapter {
     /// # Returns
     ///
     /// Returns the callback adapter instance.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let (notification_tx, notification_rx) = mpsc::unbounded_channel();
+    /// let (raw_event_tx, raw_event_rx) = mpsc::unbounded_channel();
+    /// 
+    /// let adapter = CallbackAdapter::new(notification_rx, raw_event_tx);
+    /// // Adapter now processes notifications in the background
+    /// ```
     pub fn new(
         mut notification_rx: mpsc::UnboundedReceiver<NotificationPayload>,
         raw_event_sender: mpsc::UnboundedSender<RawEvent>,
@@ -48,47 +85,84 @@ impl CallbackAdapter {
             Arc::new(RwLock::new(HashMap::new()));
 
         // Spawn adapter task to convert NotificationPayload to RawEvent
+        // This is the core of the unified event stream processing:
+        // - Receives generic notifications from the unified callback server
+        // - Looks up Sonos-specific context (speaker ID, service type)
+        // - Produces enriched RawEvent instances for the event stream processor
         // The task will automatically terminate when notification_rx is closed
         {
             let subscription_map = subscription_map.clone();
 
             tokio::spawn(async move {
+                println!("🔄 CallbackAdapter: Starting unified event processing task");
+                
                 while let Some(notification) = notification_rx.recv().await {
+                    println!("📨 CallbackAdapter: Processing notification for subscription {}", 
+                        notification.subscription_id);
+                    
                     // Look up Sonos context for this subscription
                     let subs = subscription_map.read().await;
                     if let Some((speaker_id, service_type)) =
                         subs.get(&notification.subscription_id)
                     {
-                        // Create RawEvent with Sonos-specific context
+                        // Create RawEvent with Sonos-specific context for unified processing
                         let raw_event = RawEvent {
-                            subscription_id: notification.subscription_id,
+                            subscription_id: notification.subscription_id.clone(),
                             speaker_id: speaker_id.clone(),
                             service_type: *service_type,
                             event_xml: notification.event_xml,
                         };
 
-                        // Send to broker (ignore errors if receiver is dropped)
-                        let _ = raw_event_sender.send(raw_event);
+                        println!("✅ CallbackAdapter: Enriched event for speaker {} service {:?}", 
+                            speaker_id.as_str(), service_type);
+
+                        // Send to unified event stream processor (ignore errors if receiver is dropped)
+                        if let Err(_) = raw_event_sender.send(raw_event) {
+                            println!("⚠️  CallbackAdapter: Event stream processor channel closed");
+                            break;
+                        }
+                    } else {
+                        println!("❌ CallbackAdapter: Unknown subscription {}, dropping event", 
+                            notification.subscription_id);
                     }
                     // If subscription not found, drop the event silently
                 }
+                
+                println!("🔄 CallbackAdapter: Unified event processing task terminated");
             });
         }
 
         Self { subscription_map }
     }
 
-    /// Register a subscription for event routing with Sonos-specific context.
+    /// Register a subscription for unified event routing with Sonos-specific context.
     ///
     /// This stores the Sonos-specific context (speaker ID and service type) for
     /// the given subscription ID, allowing future events to be enriched with
-    /// this information.
+    /// this information as part of the unified event stream processing.
+    ///
+    /// # Unified Event Stream Processing
+    ///
+    /// This registration is essential for the unified pattern because:
+    /// - The callback server receives generic HTTP notifications
+    /// - This mapping provides the Sonos-specific context needed
+    /// - Events can be properly routed to the correct service strategies
     ///
     /// # Arguments
     ///
     /// * `subscription_id` - The UPnP subscription ID
     /// * `speaker_id` - The ID of the speaker this subscription is for
     /// * `service_type` - The type of service being subscribed to
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// adapter.register_subscription(
+    ///     "uuid:sub-123".to_string(),
+    ///     SpeakerId::new("RINCON_123"),
+    ///     ServiceType::AVTransport,
+    /// ).await;
+    /// ```
     pub async fn register_subscription(
         &self,
         subscription_id: String,
@@ -96,19 +170,30 @@ impl CallbackAdapter {
         service_type: ServiceType,
     ) {
         let mut subs = self.subscription_map.write().await;
-        subs.insert(subscription_id, (speaker_id, service_type));
+        subs.insert(subscription_id.clone(), (speaker_id.clone(), service_type));
+        println!("📝 CallbackAdapter: Registered subscription {} for speaker {} service {:?}", 
+            subscription_id, speaker_id.as_str(), service_type);
     }
 
-    /// Unregister a subscription.
+    /// Unregister a subscription from the unified event stream.
     ///
-    /// This removes the Sonos-specific context for the given subscription ID.
+    /// This removes the Sonos-specific context for the given subscription ID,
+    /// ensuring that future events for this subscription will be dropped.
     ///
     /// # Arguments
     ///
     /// * `subscription_id` - The subscription ID to unregister
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// adapter.unregister_subscription("uuid:sub-123").await;
+    /// ```
     pub async fn unregister_subscription(&self, subscription_id: &str) {
         let mut subs = self.subscription_map.write().await;
-        subs.remove(subscription_id);
+        if subs.remove(subscription_id).is_some() {
+            println!("📝 CallbackAdapter: Unregistered subscription {}", subscription_id);
+        }
     }
 
 
