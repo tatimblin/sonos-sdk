@@ -69,9 +69,36 @@ impl ServiceStrategy for AVTransportProvider {
         _speaker_id: &SpeakerId,
         event_xml: &str,
     ) -> Result<TypedEvent, StrategyError> {
-        // Parse XML using AVTransportParser
+        // Validate XML input
+        if event_xml.is_empty() {
+            return Err(StrategyError::InvalidInput(
+                "Cannot parse empty XML event".to_string()
+            ));
+        }
+        
+        if event_xml.len() > 1_000_000 {  // 1MB limit
+            return Err(StrategyError::InvalidInput(
+                format!("XML event too large: {} bytes (limit: 1MB)", event_xml.len())
+            ));
+        }
+        
+        // Parse XML using AVTransportParser with enhanced error context
         let parser = sonos_parser::services::av_transport::AVTransportParser::from_xml(event_xml)
-            .map_err(|e| StrategyError::EventParseFailed(format!("Failed to parse AVTransport event: {}", e)))?;
+            .map_err(|e| {
+                // Provide more context about the parsing failure
+                let xml_preview = if event_xml.len() > 200 {
+                    format!("{}...", &event_xml[..200])
+                } else {
+                    event_xml.to_string()
+                };
+                
+                StrategyError::EventParseFailed(format!(
+                    "Failed to parse AVTransport event (XML length: {} bytes): {}. XML preview: {}",
+                    event_xml.len(),
+                    e,
+                    xml_preview
+                ))
+            })?;
         
         // Create TypedEvent with the parser instance directly
         Ok(TypedEvent::new_parser(
@@ -190,6 +217,42 @@ mod tests {
                 assert!(msg.contains("Failed to parse AVTransport event"));
             }
             _ => panic!("Expected EventParseFailed error"),
+        }
+    }
+
+    #[test]
+    fn test_parse_event_empty_xml() {
+        let provider = AVTransportProvider::new();
+        let speaker_id = SpeakerId::new("test_speaker");
+        
+        let result = provider.parse_event(&speaker_id, "");
+        assert!(result.is_err(), "Should fail on empty XML");
+        
+        match result {
+            Err(StrategyError::InvalidInput(msg)) => {
+                assert!(msg.contains("Cannot parse empty XML event"));
+            }
+            _ => panic!("Expected InvalidInput error"),
+        }
+    }
+
+    #[test]
+    fn test_parse_event_oversized_xml() {
+        let provider = AVTransportProvider::new();
+        let speaker_id = SpeakerId::new("test_speaker");
+        
+        // Create XML larger than 1MB
+        let large_xml = "x".repeat(1_000_001);
+        
+        let result = provider.parse_event(&speaker_id, &large_xml);
+        assert!(result.is_err(), "Should fail on oversized XML");
+        
+        match result {
+            Err(StrategyError::InvalidInput(msg)) => {
+                assert!(msg.contains("XML event too large"));
+                assert!(msg.contains("1000001 bytes"));
+            }
+            _ => panic!("Expected InvalidInput error"),
         }
     }
 

@@ -100,6 +100,18 @@ impl CallbackAdapter {
                     println!("📨 CallbackAdapter: Processing notification for subscription {}", 
                         notification.subscription_id);
                     
+                    // Validate notification data before processing
+                    if notification.subscription_id.is_empty() {
+                        eprintln!("❌ CallbackAdapter: Received notification with empty subscription ID, dropping");
+                        continue;
+                    }
+                    
+                    if notification.event_xml.is_empty() {
+                        eprintln!("❌ CallbackAdapter: Received notification with empty XML for subscription {}, dropping", 
+                            notification.subscription_id);
+                        continue;
+                    }
+                    
                     // Look up Sonos context for this subscription
                     let subs = subscription_map.read().await;
                     if let Some((speaker_id, service_type)) =
@@ -122,8 +134,9 @@ impl CallbackAdapter {
                             break;
                         }
                     } else {
-                        println!("❌ CallbackAdapter: Unknown subscription {}, dropping event", 
-                            notification.subscription_id);
+                        eprintln!("❌ CallbackAdapter: Unknown subscription {}, dropping event. Registered subscriptions: {}", 
+                            notification.subscription_id,
+                            subs.len());
                     }
                     // If subscription not found, drop the event silently
                 }
@@ -255,6 +268,57 @@ mod tests {
         drop(notification_tx);
 
         // Should not receive any raw events
+        assert!(raw_event_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_adapter_validates_empty_subscription_id() {
+        let (notification_tx, notification_rx) = mpsc::unbounded_channel();
+        let (raw_event_tx, mut raw_event_rx) = mpsc::unbounded_channel();
+
+        let _adapter = CallbackAdapter::new(notification_rx, raw_event_tx);
+
+        // Send notification with empty subscription ID
+        let notification = NotificationPayload {
+            subscription_id: "".to_string(),
+            event_xml: "<event>test</event>".to_string(),
+        };
+        notification_tx.send(notification).unwrap();
+
+        // Close notification channel to end adapter task
+        drop(notification_tx);
+
+        // Should not receive any raw events
+        assert!(raw_event_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_adapter_validates_empty_xml() {
+        let (notification_tx, notification_rx) = mpsc::unbounded_channel();
+        let (raw_event_tx, mut raw_event_rx) = mpsc::unbounded_channel();
+
+        let adapter = CallbackAdapter::new(notification_rx, raw_event_tx);
+
+        let speaker_id = SpeakerId::new("RINCON_123");
+        let service_type = ServiceType::AVTransport;
+        let subscription_id = "uuid:sub-123".to_string();
+
+        // Register subscription
+        adapter
+            .register_subscription(subscription_id.clone(), speaker_id, service_type)
+            .await;
+
+        // Send notification with empty XML
+        let notification = NotificationPayload {
+            subscription_id: subscription_id.clone(),
+            event_xml: "".to_string(),
+        };
+        notification_tx.send(notification).unwrap();
+
+        // Close notification channel to end adapter task
+        drop(notification_tx);
+
+        // Should not receive any raw events due to empty XML validation
         assert!(raw_event_rx.try_recv().is_err());
     }
 

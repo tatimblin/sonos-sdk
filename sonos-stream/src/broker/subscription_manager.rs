@@ -224,14 +224,28 @@ impl SubscriptionManager {
                 Ok(())
             }
             Err(e) => {
-                // Emit SubscriptionFailed event on error
-                let error_msg = e.to_string();
+                // Log detailed error information for debugging
+                eprintln!(
+                    "❌ SubscriptionManager: Failed to create subscription for speaker {} service {:?}: {}",
+                    speaker.id.as_str(),
+                    service_type,
+                    e
+                );
+                
+                // Emit SubscriptionFailed event on error with enhanced context
+                let error_msg = format!(
+                    "Subscription creation failed for speaker {} ({}): {}",
+                    speaker.id.as_str(),
+                    speaker.ip,
+                    e
+                );
+                
                 let _ = self
                     .event_sender
                     .send(Event::SubscriptionFailed {
                         speaker_id: speaker.id.clone(),
                         service_type,
-                        error: error_msg.clone(),
+                        error: error_msg,
                         timestamp: SystemTime::now(),
                     })
                     .await;
@@ -280,10 +294,16 @@ impl SubscriptionManager {
             // Log errors but don't propagate them - we still want to clean up
             if let Err(e) = active_sub.subscription.unsubscribe().await {
                 eprintln!(
-                    "Warning: Failed to unsubscribe {}/{:?}: {}",
+                    "⚠️  SubscriptionManager: Failed to unsubscribe {}/{:?}: {}. Continuing with cleanup.",
                     speaker.id.as_str(),
                     service_type,
                     e
+                );
+            } else {
+                println!(
+                    "✅ SubscriptionManager: Successfully unsubscribed {}/{:?}",
+                    speaker.id.as_str(),
+                    service_type
                 );
             }
 
@@ -342,10 +362,16 @@ impl SubscriptionManager {
                 // Log errors but don't fail shutdown
                 if let Err(e) = active_sub.subscription.unsubscribe().await {
                     eprintln!(
-                        "Warning: Failed to unsubscribe {}/{:?} during shutdown: {}",
+                        "⚠️  SubscriptionManager: Failed to unsubscribe {}/{:?} during shutdown: {}. Continuing cleanup.",
                         key.speaker_id.as_str(),
                         key.service_type,
                         e
+                    );
+                } else {
+                    println!(
+                        "✅ SubscriptionManager: Shutdown unsubscribed {}/{:?}",
+                        key.speaker_id.as_str(),
+                        key.service_type
                     );
                 }
 

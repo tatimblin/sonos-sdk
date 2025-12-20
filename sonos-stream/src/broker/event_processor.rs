@@ -183,12 +183,22 @@ impl EventProcessor {
         let strategy = match strategies.get(&service_type) {
             Some(s) => s,
             None => {
-                // No strategy registered - emit parse error
+                // No strategy registered - emit parse error with detailed context
+                eprintln!(
+                    "⚠️  EventProcessor: No strategy registered for service type {:?} from speaker {}. Available strategies: {:?}",
+                    service_type,
+                    speaker_id.as_str(),
+                    strategies.keys().collect::<Vec<_>>()
+                );
+                
                 let _ = event_sender
                     .send(Event::ParseError {
                         speaker_id,
                         service_type,
-                        error: format!("No strategy registered for service type: {service_type:?}"),
+                        error: format!(
+                            "No strategy registered for service type: {service_type:?}. Available strategies: {:?}",
+                            strategies.keys().collect::<Vec<_>>()
+                        ),
                         timestamp: SystemTime::now(),
                     })
                     .await;
@@ -217,12 +227,32 @@ impl EventProcessor {
                 }
             }
             Err(e) => {
-                // Emit ParseError event
+                // Log parse error with context for debugging
+                eprintln!(
+                    "❌ EventProcessor: Parse error for speaker {} service {:?}: {}. XML length: {} bytes",
+                    speaker_id.as_str(),
+                    service_type,
+                    e,
+                    event_xml.len()
+                );
+                
+                // Emit ParseError event with enhanced error information
+                let enhanced_error = format!(
+                    "Parse failed for {} bytes of XML: {}. Original error: {}",
+                    event_xml.len(),
+                    if event_xml.len() > 100 {
+                        format!("{}...", &event_xml[..100])
+                    } else {
+                        event_xml.clone()
+                    },
+                    e
+                );
+                
                 let _ = event_sender
                     .send(Event::ParseError {
                         speaker_id,
                         service_type,
-                        error: e.to_string(),
+                        error: enhanced_error,
                         timestamp: SystemTime::now(),
                     })
                     .await;
@@ -390,7 +420,7 @@ mod tests {
         )
         .await;
 
-        // Verify ParseError was emitted
+        // Verify ParseError was emitted with enhanced error message
         let event = event_rx.recv().await.unwrap();
         match event {
             Event::ParseError {
@@ -402,6 +432,57 @@ mod tests {
                 assert_eq!(sid, speaker_id);
                 assert_eq!(st, ServiceType::AVTransport);
                 assert!(error.contains("No strategy registered"));
+                assert!(error.contains("Available strategies"));
+            }
+            _ => panic!("Expected ParseError"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_process_raw_event_enhanced_parse_error() {
+        let (event_tx, mut event_rx) = mpsc::channel(10);
+
+        let mut strategies: HashMap<ServiceType, Box<dyn ServiceStrategy + Send + Sync>> = HashMap::new();
+        strategies.insert(
+            ServiceType::AVTransport,
+            Box::new(crate::services::AVTransportProvider::new()),
+        );
+        let strategies = Arc::new(strategies);
+
+        let subscriptions = Arc::new(RwLock::new(HashMap::new()));
+        let speaker_id = SpeakerId::new("speaker1");
+
+        // Create raw event with invalid XML
+        let raw_event = RawEvent {
+            subscription_id: "sub-123".to_string(),
+            speaker_id: speaker_id.clone(),
+            service_type: ServiceType::AVTransport,
+            event_xml: "<invalid>xml</invalid>".to_string(),
+        };
+
+        // Process the event
+        EventProcessor::process_raw_event(
+            raw_event,
+            &strategies,
+            &subscriptions,
+            &event_tx,
+        )
+        .await;
+
+        // Verify ParseError was emitted with enhanced error information
+        let event = event_rx.recv().await.unwrap();
+        match event {
+            Event::ParseError {
+                speaker_id: sid,
+                service_type: st,
+                error,
+                ..
+            } => {
+                assert_eq!(sid, speaker_id);
+                assert_eq!(st, ServiceType::AVTransport);
+                assert!(error.contains("Parse failed for"));
+                assert!(error.contains("bytes of XML"));
+                assert!(error.contains("Original error"));
             }
             _ => panic!("Expected ParseError"),
         }
