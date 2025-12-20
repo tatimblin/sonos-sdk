@@ -217,6 +217,7 @@ impl SubscriptionManager {
                         speaker_id: speaker.id.clone(),
                         service_type,
                         subscription_id,
+                        timestamp: SystemTime::now(),
                     })
                     .await;
 
@@ -231,6 +232,7 @@ impl SubscriptionManager {
                         speaker_id: speaker.id.clone(),
                         service_type,
                         error: error_msg.clone(),
+                        timestamp: SystemTime::now(),
                     })
                     .await;
 
@@ -300,6 +302,7 @@ impl SubscriptionManager {
                 .send(Event::SubscriptionRemoved {
                     speaker_id: speaker.id.clone(),
                     service_type,
+                    timestamp: SystemTime::now(),
                 })
                 .await;
         }

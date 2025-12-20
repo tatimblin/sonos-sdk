@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 use tokio::time::{interval, timeout};
@@ -216,6 +216,7 @@ impl RenewalManager {
                         .send(Event::SubscriptionRenewed {
                             speaker_id: key.speaker_id.clone(),
                             service_type: key.service_type,
+                            timestamp: SystemTime::now(),
                         })
                         .await;
                     return;
@@ -271,6 +272,7 @@ impl RenewalManager {
             .send(Event::SubscriptionExpired {
                 speaker_id: key.speaker_id.clone(),
                 service_type: key.service_type,
+                timestamp: SystemTime::now(),
             })
             .await;
 

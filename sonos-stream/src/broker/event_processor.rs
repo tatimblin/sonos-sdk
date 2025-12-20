@@ -189,6 +189,7 @@ impl EventProcessor {
                         speaker_id,
                         service_type,
                         error: format!("No strategy registered for service type: {service_type:?}"),
+                        timestamp: SystemTime::now(),
                     })
                     .await;
                 return;
@@ -204,6 +205,7 @@ impl EventProcessor {
                         speaker_id: speaker_id.clone(),
                         service_type,
                         event: typed_event,
+                        timestamp: SystemTime::now(),
                     })
                     .await;
 
@@ -221,6 +223,7 @@ impl EventProcessor {
                         speaker_id,
                         service_type,
                         error: e.to_string(),
+                        timestamp: SystemTime::now(),
                     })
                     .await;
             }
@@ -297,6 +300,7 @@ mod tests {
                 speaker_id: sid,
                 service_type: st,
                 event: typed_event,
+                ..
             } => {
                 assert_eq!(sid, speaker_id);
                 assert_eq!(st, ServiceType::AVTransport);
@@ -349,6 +353,7 @@ mod tests {
                 speaker_id: sid,
                 service_type: st,
                 error,
+                ..
             } => {
                 assert_eq!(sid, speaker_id);
                 assert_eq!(st, ServiceType::AVTransport);
@@ -392,6 +397,7 @@ mod tests {
                 speaker_id: sid,
                 service_type: st,
                 error,
+                ..
             } => {
                 assert_eq!(sid, speaker_id);
                 assert_eq!(st, ServiceType::AVTransport);

@@ -255,7 +255,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::select! {
             Some(event) = event_stream.recv() => {
                 match event {
-                    Event::ServiceEvent { speaker_id, service_type, event } => {
+                    Event::ServiceEvent { speaker_id, service_type, event, .. } => {
                         println!("→ Event received:");
                         println!("  Speaker: {}", speaker_id.as_str());
                         println!("  Service: {:?}", service_type);
@@ -285,29 +285,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             break;
                         }
                     }
-                    Event::SubscriptionFailed { speaker_id, service_type, error } => {
+                    Event::SubscriptionFailed { speaker_id, service_type, error, .. } => {
                         eprintln!("✗ Subscription failed:");
                         eprintln!("  Speaker: {}", speaker_id.as_str());
                         eprintln!("  Service: {:?}", service_type);
                         eprintln!("  Error: {}\n", error);
                     }
-                    Event::SubscriptionRenewed { speaker_id, service_type } => {
+                    Event::SubscriptionRenewed { speaker_id, service_type, .. } => {
                         println!("↻ Subscription renewed:");
                         println!("  Speaker: {}", speaker_id.as_str());
                         println!("  Service: {:?}\n", service_type);
                     }
-                    Event::SubscriptionExpired { speaker_id, service_type } => {
+                    Event::SubscriptionExpired { speaker_id, service_type, .. } => {
                         println!("⏱ Subscription expired:");
                         println!("  Speaker: {}", speaker_id.as_str());
                         println!("  Service: {:?}\n", service_type);
                     }
-                    Event::SubscriptionRemoved { speaker_id, service_type } => {
+                    Event::SubscriptionRemoved { speaker_id, service_type, .. } => {
                         println!("✓ Subscription removed:");
                         println!("  Speaker: {}", speaker_id.as_str());
                         println!("  Service: {:?}\n", service_type);
                         break;
                     }
-                    Event::ParseError { speaker_id, service_type, error } => {
+                    Event::ParseError { speaker_id, service_type, error, .. } => {
                         eprintln!("✗ Parse error:");
                         eprintln!("  Speaker: {}", speaker_id.as_str());
                         eprintln!("  Service: {:?}", service_type);

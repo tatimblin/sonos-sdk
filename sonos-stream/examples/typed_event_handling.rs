@@ -376,7 +376,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::select! {
             Some(event) = event_stream.recv() => {
                 match event {
-                    Event::ServiceEvent { speaker_id, service_type: _, event } => {
+                    Event::ServiceEvent { speaker_id, service_type: _, event, .. } => {
                         processor.process_event(&speaker_id, &event);
                         event_count += 1;
                         
@@ -385,7 +385,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             break;
                         }
                     }
-                    Event::ParseError { speaker_id, service_type, error } => {
+                    Event::ParseError { speaker_id, service_type, error, .. } => {
                         println!("✗ Parse error (demonstrating error handling):");
                         println!("  Speaker: {}", speaker_id.as_str());
                         println!("  Service: {:?}", service_type);

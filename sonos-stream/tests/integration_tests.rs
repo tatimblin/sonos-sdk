@@ -63,6 +63,7 @@ async fn test_end_to_end_subscription() {
             speaker_id,
             service_type,
             subscription_id,
+            ..
         } => {
             assert_eq!(speaker_id.as_str(), "RINCON_TEST123");
             assert_eq!(service_type, ServiceType::AVTransport);
@@ -105,6 +106,7 @@ async fn test_end_to_end_subscription() {
             speaker_id,
             service_type,
             event,
+            ..
         } => {
             assert_eq!(speaker_id.as_str(), "RINCON_TEST123");
             assert_eq!(service_type, ServiceType::AVTransport);
@@ -139,6 +141,7 @@ async fn test_end_to_end_subscription() {
         Event::SubscriptionRemoved {
             speaker_id,
             service_type,
+            ..
         } => {
             assert_eq!(speaker_id.as_str(), "RINCON_TEST123");
             assert_eq!(service_type, ServiceType::AVTransport);
@@ -239,6 +242,7 @@ async fn test_multiple_subscriptions() {
         Event::SubscriptionRemoved {
             speaker_id,
             service_type,
+            ..
         } => {
             assert_eq!(speaker_id.as_str(), "RINCON_SPEAKER1");
             assert_eq!(service_type, ServiceType::AVTransport);
@@ -538,6 +542,7 @@ async fn test_real_upnp_event_reception() {
             speaker_id,
             service_type,
             subscription_id,
+            ..
         } => {
             assert_eq!(speaker_id.as_str(), "RINCON_REAL_TEST");
             assert_eq!(service_type, ServiceType::AVTransport);
@@ -605,6 +610,7 @@ async fn test_real_upnp_event_reception() {
             speaker_id,
             service_type,
             event,
+            ..
         } => {
             assert_eq!(speaker_id.as_str(), "RINCON_REAL_TEST");
             assert_eq!(service_type, ServiceType::AVTransport);
@@ -645,6 +651,7 @@ async fn test_real_upnp_event_reception() {
         Event::SubscriptionRemoved {
             speaker_id,
             service_type,
+            ..
         } => {
             assert_eq!(speaker_id.as_str(), "RINCON_REAL_TEST");
             assert_eq!(service_type, ServiceType::AVTransport);
@@ -746,6 +753,7 @@ async fn test_multiple_real_upnp_subscriptions() {
                 speaker_id,
                 service_type,
                 subscription_id,
+                ..
             } => {
                 assert_eq!(service_type, ServiceType::AVTransport);
                 subscription_ids.insert(speaker_id.as_str().to_string(), subscription_id);
@@ -828,6 +836,7 @@ async fn test_multiple_real_upnp_subscriptions() {
                 speaker_id,
                 service_type,
                 event,
+                ..
             } => {
                 assert_eq!(service_type, ServiceType::AVTransport);
                 assert_eq!(event.event_type(), "av_transport_event");
@@ -883,6 +892,7 @@ async fn test_multiple_real_upnp_subscriptions() {
             Event::SubscriptionRemoved {
                 speaker_id,
                 service_type,
+                ..
             } => {
                 assert_eq!(service_type, ServiceType::AVTransport);
                 assert!(
