@@ -76,8 +76,8 @@ async fn test_end_to_end_subscription() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Simulate UPnP event notification via HTTP
-    // Extract port from subscription ID or use a known test port
-    let callback_url = format!("http://127.0.0.1:40000/notify/{}", subscription_id);
+    // Use the actual callback server URL from the broker
+    let callback_url = broker.callback_url();
     let event_xml = r#"<event><test_event>data</test_event></event>"#;
 
     // Send HTTP POST to callback server
@@ -566,10 +566,8 @@ async fn test_real_upnp_event_reception() {
 </e:propertyset>"#;
 
     // Send HTTP POST to callback server (simulating UPnP device NOTIFY)
-    // Use the clean subscription ID in the URL path (without uuid: prefix)
-    // but include the full ID in the SID header
-    let clean_sub_id = subscription_id.strip_prefix("uuid:").unwrap_or(&subscription_id);
-    let callback_url = format!("http://127.0.0.1:40500/notify/{}", clean_sub_id);
+    // Use the actual callback server URL from the broker
+    let callback_url = broker.callback_url();
     println!("Sending NOTIFY to: {}", callback_url);
     println!("Subscription ID: {}", subscription_id);
     
@@ -792,12 +790,12 @@ async fn test_multiple_real_upnp_subscriptions() {
     let sub1_id = subscription_ids.get("RINCON_MULTI_SPEAKER1").unwrap();
     let sub2_id = subscription_ids.get("RINCON_MULTI_SPEAKER2").unwrap();
     
-    let callback_url1 = format!("http://127.0.0.1:40600/notify/{}", sub1_id);
-    let callback_url2 = format!("http://127.0.0.1:40600/notify/{}", sub2_id);
+    // Use the actual callback server URL from the broker
+    let callback_url = broker.callback_url();
 
     let (response1, response2) = tokio::join!(
         client
-            .post(&callback_url1)
+            .post(&callback_url)
             .header("NT", "upnp:event")
             .header("NTS", "upnp:propchange")
             .header("SID", sub1_id)
@@ -805,7 +803,7 @@ async fn test_multiple_real_upnp_subscriptions() {
             .body(speaker1_event_xml.to_string())
             .send(),
         client
-            .post(&callback_url2)
+            .post(&callback_url)
             .header("NT", "upnp:event")
             .header("NTS", "upnp:propchange")
             .header("SID", sub2_id)

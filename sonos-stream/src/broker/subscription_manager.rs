@@ -55,16 +55,25 @@ impl ActiveSubscription {
 /// Manager for subscription lifecycle operations.
 ///
 /// The SubscriptionManager handles:
-/// - Creating subscriptions via strategies
+/// - Creating subscriptions via service providers (ServiceStrategy implementations)
 /// - Duplicate detection
 /// - Callback server registration
 /// - Unsubscription and cleanup
 /// - Emitting lifecycle events
+///
+/// # Service Provider Integration
+///
+/// The manager now works with service providers that implement the ServiceStrategy trait.
+/// Each provider encapsulates all service-specific logic including:
+/// - Service endpoint configuration
+/// - Subscription scope requirements
+/// - XML event parsing
+/// - Subscription creation and management
 pub struct SubscriptionManager {
     /// Shared subscription state
     subscriptions: Arc<RwLock<HashMap<SubscriptionKey, ActiveSubscription>>>,
-    /// Registered strategies by service type
-    strategies: Arc<HashMap<ServiceType, Box<dyn ServiceStrategy + Send + Sync>>>,
+    /// Registered service providers by service type
+    service_providers: Arc<HashMap<ServiceType, Box<dyn ServiceStrategy + Send + Sync>>>,
     /// Callback server for HTTP routing
     callback_server: Arc<callback_server::CallbackServer>,
     /// Callback adapter for Sonos-specific event conversion
@@ -81,14 +90,14 @@ impl SubscriptionManager {
     /// # Arguments
     ///
     /// * `subscriptions` - Shared subscription state
-    /// * `strategies` - Map of service type to strategy implementation
+    /// * `service_providers` - Map of service type to service provider implementation
     /// * `callback_server` - The callback server for receiving events
     /// * `callback_adapter` - The adapter for converting notifications to raw events
     /// * `event_sender` - Channel sender for emitting events
     /// * `config` - Broker configuration
     pub fn new(
         subscriptions: Arc<RwLock<HashMap<SubscriptionKey, ActiveSubscription>>>,
-        strategies: Arc<HashMap<ServiceType, Box<dyn ServiceStrategy + Send + Sync>>>,
+        service_providers: Arc<HashMap<ServiceType, Box<dyn ServiceStrategy + Send + Sync>>>,
         callback_server: Arc<callback_server::CallbackServer>,
         callback_adapter: CallbackAdapter,
         event_sender: mpsc::Sender<Event>,
@@ -96,7 +105,7 @@ impl SubscriptionManager {
     ) -> Self {
         Self {
             subscriptions,
-            strategies,
+            service_providers,
             callback_server,
             callback_adapter,
             event_sender,
@@ -112,9 +121,9 @@ impl SubscriptionManager {
     /// # Process
     ///
     /// 1. Check for duplicate subscriptions
-    /// 2. Look up the strategy for the service type
-    /// 3. Generate a callback URL using the callback server
-    /// 4. Call the strategy to create the subscription
+    /// 2. Look up the service provider for the service type
+    /// 3. Generate a callback URL using the unified callback server
+    /// 4. Call the service provider to create the subscription
     /// 5. Register the subscription with the callback server
     /// 6. Store the subscription in the internal map
     /// 7. Emit a `SubscriptionEstablished` event on success
@@ -131,8 +140,8 @@ impl SubscriptionManager {
     /// # Errors
     ///
     /// * `BrokerError::SubscriptionAlreadyExists` - A subscription already exists
-    /// * `BrokerError::NoStrategyForService` - No strategy is registered
-    /// * `BrokerError::StrategyError` - The strategy failed to create the subscription
+    /// * `BrokerError::NoStrategyForService` - No service provider is registered
+    /// * `BrokerError::StrategyError` - The service provider failed to create the subscription
     pub async fn subscribe(&self, speaker: &Speaker, service_type: ServiceType) -> Result<()> {
         let key = SubscriptionKey::new(speaker.id.clone(), service_type);
 
@@ -147,9 +156,9 @@ impl SubscriptionManager {
             }
         }
 
-        // Look up strategy for service type
-        let strategy = self
-            .strategies
+        // Look up service provider for service type
+        let service_provider = self
+            .service_providers
             .get(&service_type)
             .ok_or(BrokerError::NoStrategyForService(service_type))?;
 
@@ -161,14 +170,14 @@ impl SubscriptionManager {
         println!("🔗 Using unified callback URL for all subscriptions: {}", unified_callback_url);
         println!("📡 Creating subscription for speaker {} service {:?}", speaker.id.as_str(), service_type);
 
-        // Create subscription config with unified callback URL
+        // Create subscription config with provider-supplied configuration
         let config = SubscriptionConfig::new(
             self.config.subscription_timeout.as_secs() as u32,
             unified_callback_url.clone(),
         );
 
-        // Call strategy to create subscription using unified callback URL
-        let subscription_result = strategy.create_subscription(speaker, unified_callback_url, &config).await;
+        // Call service provider to create subscription using unified callback URL
+        let subscription_result = service_provider.create_subscription(speaker, unified_callback_url, &config).await;
 
         match subscription_result {
             Ok(subscription) => {
