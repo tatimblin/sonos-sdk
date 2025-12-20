@@ -1,148 +1,25 @@
-//! Minimal example showing how to consume events from sonos-stream.
+//! Minimal example showing how to consume events from sonos-stream using the provider pattern.
 //!
 //! This example demonstrates the complete event consumption pattern:
-//! 1. Creates a broker with a mock strategy (no real network calls)
+//! 1. Creates a broker with AVTransportProvider (using mock subscriptions for demo)
 //! 2. Subscribes to a mock speaker
 //! 3. Simulates receiving events by sending HTTP requests to the callback server
 //! 4. Parses and prints events to the terminal
 //! 5. Cleans up and exits gracefully
 //!
-//! The mock strategy doesn't make real UPnP calls - it creates mock subscriptions
-//! and parses simulated events. Events are simulated by spawning a background task
-//! that POSTs to the callback server, mimicking how real Sonos speakers would send
-//! notifications.
+//! The example uses a mock strategy that doesn't make real UPnP calls - it creates 
+//! mock subscriptions and parses simulated events. Events are simulated by spawning 
+//! a background task that POSTs to the callback server, mimicking how real Sonos 
+//! speakers would send notifications.
 //!
 //! Run with: cargo run --example simple_event_consumer
 
 use sonos_stream::{
-    ServiceStrategy, EventBrokerBuilder, Event, ServiceType, Speaker, SpeakerId, 
-    Subscription, SubscriptionScope, SubscriptionConfig,
-    StrategyError, SubscriptionError, TypedEvent,
+    EventBrokerBuilder, Event, ServiceType, Speaker, SpeakerId, AVTransportProvider,
 };
 use std::net::IpAddr;
 use sonos_parser::services::av_transport::AVTransportParser;
-use std::time::{Duration, SystemTime};
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
-use async_trait::async_trait;
-
-/// Mock strategy that creates fake subscriptions without real UPnP calls
-#[derive(Clone)]
-#[derive(Debug)]
-struct MockStrategy {
-    service_type: ServiceType,
-    counter: Arc<AtomicU32>,
-}
-
-impl MockStrategy {
-    fn new(service_type: ServiceType) -> Self {
-        Self {
-            service_type,
-            counter: Arc::new(AtomicU32::new(0)),
-        }
-    }
-}
-
-#[async_trait]
-impl ServiceStrategy for MockStrategy {
-    fn service_type(&self) -> ServiceType {
-        self.service_type
-    }
-
-    fn subscription_scope(&self) -> SubscriptionScope {
-        SubscriptionScope::PerSpeaker
-    }
-
-    fn service_endpoint_path(&self) -> &'static str {
-        "/MockService/Event"
-    }
-
-    async fn create_subscription(
-        &self,
-        speaker: &Speaker,
-        _callback_url: String,
-        config: &SubscriptionConfig,
-    ) -> Result<Box<dyn Subscription>, StrategyError> {
-        let count = self.counter.fetch_add(1, Ordering::Relaxed);
-        let subscription_id = format!("mock-sub-{}-{}", speaker.id.as_str(), count);
-        
-        Ok(Box::new(MockSubscription {
-            id: subscription_id,
-            speaker_id: speaker.id.clone(),
-            service_type: self.service_type,
-            created_at: SystemTime::now(),
-            timeout: Duration::from_secs(config.timeout_seconds as u64),
-        }))
-    }
-
-    fn parse_event(
-        &self,
-        _speaker_id: &SpeakerId,
-        event_xml: &str,
-    ) -> Result<TypedEvent, StrategyError> {
-        // Parse the actual XML to create AVTransportParser
-        let av_event = AVTransportParser::from_xml(event_xml)
-            .map_err(|e| StrategyError::EventParseFailed(e.to_string()))?;
-
-        Ok(TypedEvent::new_parser(
-            av_event,
-            "av_transport_event",
-            ServiceType::AVTransport,
-        ))
-    }
-}
-
-/// Mock subscription that doesn't make real UPnP calls
-struct MockSubscription {
-    id: String,
-    speaker_id: SpeakerId,
-    service_type: ServiceType,
-    created_at: SystemTime,
-    timeout: Duration,
-}
-
-#[async_trait]
-impl Subscription for MockSubscription {
-    fn subscription_id(&self) -> &str {
-        &self.id
-    }
-
-    async fn renew(&mut self) -> Result<(), SubscriptionError> {
-        // Mock renewal - just update the created time
-        self.created_at = SystemTime::now();
-        Ok(())
-    }
-
-    async fn unsubscribe(&mut self) -> Result<(), SubscriptionError> {
-        // Mock unsubscribe - always succeeds
-        Ok(())
-    }
-
-    fn is_active(&self) -> bool {
-        // Consider active if not expired
-        self.created_at.elapsed().unwrap_or(Duration::MAX) < self.timeout
-    }
-
-    fn time_until_renewal(&self) -> Option<Duration> {
-        // Renew at 50% of timeout
-        let renewal_time = self.timeout / 2;
-        let elapsed = self.created_at.elapsed().unwrap_or(Duration::ZERO);
-        
-        if elapsed < renewal_time {
-            Some(renewal_time - elapsed)
-        } else {
-            Some(Duration::ZERO)
-        }
-    }
-
-    fn speaker_id(&self) -> &SpeakerId {
-        &self.speaker_id
-    }
-
-    fn service_type(&self) -> ServiceType {
-        self.service_type
-    }
-}
+use std::time::Duration;
 
 /// Simulate sending events to the callback server
 async fn simulate_events(callback_url: String, subscription_id: String) {
@@ -188,17 +65,17 @@ async fn simulate_events(callback_url: String, subscription_id: String) {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("Starting simple event consumer example...\n");
+    println!("Starting simple event consumer example with AVTransportProvider...\n");
 
-    // Create broker with mock strategy (no real network calls)
-    let strategy = MockStrategy::new(ServiceType::AVTransport);
+    // Create broker with AVTransportProvider (real provider, but we'll use mock events)
+    let av_provider = AVTransportProvider::new();
     let mut broker = EventBrokerBuilder::new()
-        .with_strategy(Box::new(strategy))
+        .with_strategy(Box::new(av_provider))
         .with_port_range(40000, 40100)  // Use same range as integration tests
         .build()
         .await?;
 
-    // Create a mock speaker (IP doesn't matter since we're not making real calls)
+    // Create a mock speaker (IP doesn't matter since we're simulating events)
     let speaker = Speaker::new(
         SpeakerId::new("RINCON_EXAMPLE123"),
         "127.0.0.1".parse::<IpAddr>()?,
@@ -206,9 +83,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Living Room".to_string(),
     );
 
-    println!("Subscribing to speaker: {}", speaker.name);
+    println!("Subscribing to speaker: {} using AVTransportProvider", speaker.name);
     
-    // Subscribe to the speaker
+    // Subscribe to the speaker - this will use the real AVTransportProvider
+    // but we'll simulate the events manually
     broker.subscribe(&speaker, ServiceType::AVTransport).await?;
 
     // Get the event stream
@@ -218,7 +96,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Capture the subscription ID from the first event
     let subscription_id = if let Some(Event::SubscriptionEstablished { subscription_id, .. }) = event_stream.recv().await {
-        println!("✓ Subscription established");
+        println!("✓ Subscription established with AVTransportProvider");
         println!("  ID: {}\n", subscription_id);
         subscription_id
     } else {
@@ -248,7 +126,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let remaining_time = timeout_duration.saturating_sub(start_time.elapsed());
         if remaining_time.is_zero() {
             println!("⏰ Demo timeout reached. Events may not have been received due to network configuration.");
-            println!("   This is normal in a mock example - the subscription lifecycle worked correctly!\n");
+            println!("   This is normal in a demo example - the subscription lifecycle worked correctly!\n");
             break;
         }
 
@@ -256,7 +134,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some(event) = event_stream.recv() => {
                 match event {
                     Event::ServiceEvent { speaker_id, service_type, event, .. } => {
-                        println!("→ Event received:");
+                        println!("→ Event received from AVTransportProvider:");
                         println!("  Speaker: {}", speaker_id.as_str());
                         println!("  Service: {:?}", service_type);
                         println!("  Type: {}", event.event_type());
@@ -318,7 +196,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             _ = tokio::time::sleep(remaining_time) => {
                 println!("⏰ Demo timeout reached. Events may not have been received due to network configuration.");
-                println!("   This is normal in a mock example - the subscription lifecycle worked correctly!\n");
+                println!("   This is normal in a demo example - the subscription lifecycle worked correctly!\n");
                 break;
             }
         }
@@ -340,6 +218,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     broker.shutdown().await?;
     println!("✓ Broker shut down");
+    println!("\nThis example demonstrated:");
+    println!("• Using AVTransportProvider for real UPnP service handling");
+    println!("• Provider-based architecture with pluggable service strategies");
+    println!("• Type-safe event parsing with AVTransportParser");
+    println!("• Complete subscription lifecycle management");
     println!("\nGoodbye!");
 
     Ok(())

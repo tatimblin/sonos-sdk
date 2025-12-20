@@ -1,7 +1,9 @@
-//! Event broker setup and configuration module.
+//! Event broker setup and configuration module using the provider pattern.
 //!
 //! This module provides functionality for creating and configuring the EventBroker
-//! with AVTransportStrategy for subscribing to Sonos device events.
+//! with AVTransportProvider for subscribing to Sonos device events. The provider
+//! pattern allows for pluggable service strategies where each provider encapsulates
+//! all service-specific logic including endpoints, parsing, and subscription management.
 
 use anyhow::{Context, Result};
 use sonos_stream::{EventBroker, EventBrokerBuilder, AVTransportProvider};
@@ -38,12 +40,20 @@ impl Default for BrokerConfig {
     }
 }
 
-/// Creates and configures an EventBroker with AVTransportStrategy.
+/// Creates and configures an EventBroker with AVTransportProvider.
 ///
-/// This function handles the complete broker initialization process:
-/// - Creates EventBrokerBuilder with AVTransportStrategy
+/// This function handles the complete broker initialization process using the
+/// provider pattern:
+/// - Creates EventBrokerBuilder with AVTransportProvider (encapsulates all AVTransport logic)
 /// - Configures callback server port range and timeouts
 /// - Handles broker creation errors gracefully
+/// - Demonstrates the pluggable provider architecture
+///
+/// The AVTransportProvider encapsulates:
+/// - Service endpoint configuration (/MediaRenderer/AVTransport/Event)
+/// - Per-speaker subscription scope
+/// - XML event parsing using AVTransportParser
+/// - Subscription creation and management
 ///
 /// # Arguments
 ///
@@ -58,7 +68,7 @@ impl Default for BrokerConfig {
 /// Returns an error if:
 /// - Broker configuration is invalid
 /// - Callback server fails to start (all ports in range are in use)
-/// - Strategy registration fails
+/// - Provider registration fails
 ///
 /// # Example
 ///
@@ -72,7 +82,7 @@ impl Default for BrokerConfig {
 /// # }
 /// ```
 pub async fn create_event_broker(config: BrokerConfig) -> Result<EventBroker> {
-    info!("Initializing event broker with AVTransport strategy");
+    info!("Initializing event broker with AVTransport provider using provider pattern");
     
     // Log configuration details
     info!(
@@ -84,11 +94,11 @@ pub async fn create_event_broker(config: BrokerConfig) -> Result<EventBroker> {
         config.event_buffer_size
     );
 
-    // Create AVTransport provider
+    // Create AVTransport provider - encapsulates all AVTransport service logic
     let av_transport_provider = AVTransportProvider::new();
-    info!("Created AVTransport provider for media transport events");
+    info!("Created AVTransport provider - encapsulates endpoint, parsing, and subscription logic");
 
-    // Build the event broker with configuration
+    // Build the event broker with the provider
     let broker = EventBrokerBuilder::new()
         .with_strategy(Box::new(av_transport_provider))
         .with_port_range(config.callback_port_range.0, config.callback_port_range.1)
@@ -98,10 +108,10 @@ pub async fn create_event_broker(config: BrokerConfig) -> Result<EventBroker> {
         .with_event_buffer_size(config.event_buffer_size)
         .build()
         .await
-        .context("Failed to create event broker")?;
+        .context("Failed to create event broker with provider pattern")?;
 
     info!(
-        "Event broker initialized successfully with callback server on port range {:?}",
+        "Event broker initialized successfully with provider pattern - callback server on port range {:?}",
         config.callback_port_range
     );
 

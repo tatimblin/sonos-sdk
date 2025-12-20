@@ -1,24 +1,20 @@
-//! Advanced example demonstrating type-safe event handling with TypedEvent.
+//! Advanced example demonstrating type-safe event handling with the provider pattern.
 //!
 //! This example shows how to:
-//! 1. Handle multiple event types safely using downcasting
-//! 2. Create custom event processors for different service types
-//! 3. Implement event filtering and routing based on event types
-//! 4. Demonstrate error handling for invalid downcasts
+//! 1. Use AVTransportProvider for real service strategy implementation
+//! 2. Handle multiple event types safely using downcasting
+//! 3. Create custom event processors for different service types
+//! 4. Implement event filtering and routing based on event types
+//! 5. Demonstrate error handling for invalid downcasts
 //!
 //! Run with: cargo run --example typed_event_handling
 
 use sonos_stream::{
-    ServiceStrategy, EventBrokerBuilder, Event, ServiceType, Speaker, SpeakerId, 
-    Subscription, SubscriptionScope, SubscriptionConfig,
-    StrategyError, SubscriptionError, TypedEvent,
+    EventBrokerBuilder, Event, ServiceType, Speaker, SpeakerId, AVTransportProvider, TypedEvent,
 };
 use std::net::IpAddr;
 use sonos_parser::services::av_transport::AVTransportParser;
-use std::time::{Duration, SystemTime};
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
-use async_trait::async_trait;
+use std::time::Duration;
 
 /// Event processor that handles different event types with type safety
 struct TypedEventProcessor {
@@ -110,159 +106,9 @@ impl TypedEventProcessor {
         // if let Some(zgt_event) = event.downcast_ref::<ZoneGroupTopologyEvent>() { ... }
     }
 
-    /// Process unknown events using generic debug output
-    fn process_unknown_event(&self, event: &TypedEvent) {
-        println!("  Generic event processing:");
-        println!("    Debug: {:?}", event);
-    }
-
     /// Get processing statistics
     fn get_stats(&self) -> (u32, u32) {
         (self.av_transport_count, self.unknown_count)
-    }
-}
-
-/// Enhanced mock strategy that creates different types of events
-#[derive(Clone)]
-#[derive(Debug)]
-struct EnhancedMockStrategy {
-    service_type: ServiceType,
-    counter: Arc<AtomicU32>,
-}
-
-impl EnhancedMockStrategy {
-    fn new(service_type: ServiceType) -> Self {
-        Self {
-            service_type,
-            counter: Arc::new(AtomicU32::new(0)),
-        }
-    }
-}
-
-#[async_trait]
-impl ServiceStrategy for EnhancedMockStrategy {
-    fn service_type(&self) -> ServiceType {
-        self.service_type
-    }
-
-    fn subscription_scope(&self) -> SubscriptionScope {
-        SubscriptionScope::PerSpeaker
-    }
-
-    fn service_endpoint_path(&self) -> &'static str {
-        match self.service_type {
-            ServiceType::AVTransport => "/MediaRenderer/AVTransport/Event",
-            ServiceType::RenderingControl => "/MediaRenderer/RenderingControl/Event",
-            ServiceType::ZoneGroupTopology => "/ZoneGroupTopology/Event",
-        }
-    }
-
-    async fn create_subscription(
-        &self,
-        speaker: &Speaker,
-        _callback_url: String,
-        config: &SubscriptionConfig,
-    ) -> Result<Box<dyn Subscription>, StrategyError> {
-        let count = self.counter.fetch_add(1, Ordering::Relaxed);
-        let subscription_id = format!("enhanced-mock-{}-{}-{}", 
-            self.service_type as u32, speaker.id.as_str(), count);
-        
-        Ok(Box::new(EnhancedMockSubscription {
-            id: subscription_id,
-            speaker_id: speaker.id.clone(),
-            service_type: self.service_type,
-            created_at: SystemTime::now(),
-            timeout: Duration::from_secs(config.timeout_seconds as u64),
-        }))
-    }
-
-    fn parse_event(
-        &self,
-        _speaker_id: &SpeakerId,
-        event_xml: &str,
-    ) -> Result<TypedEvent, StrategyError> {
-        match self.service_type {
-            ServiceType::AVTransport => {
-                // Create realistic AVTransport events based on XML content
-                let (transport_state, track_info) = if event_xml.contains("PLAYING") {
-                    ("PLAYING", Some(("Bohemian Rhapsody", "Queen", "A Night at the Opera")))
-                } else if event_xml.contains("PAUSED") {
-                    ("PAUSED_PLAYBACK", Some(("Hotel California", "Eagles", "Hotel California")))
-                } else if event_xml.contains("STOPPED") {
-                    ("STOPPED", None)
-                } else {
-                    ("TRANSITIONING", None)
-                };
-
-                let xml = format!(
-                    r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><LastChange>&lt;Event xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/AVT/&quot;&gt;&lt;InstanceID val=&quot;0&quot;&gt;&lt;TransportState val=&quot;{}&quot;/&gt;{}&lt;/InstanceID&gt;&lt;/Event&gt;</LastChange></e:property></e:propertyset>"#,
-                    transport_state,
-                    track_info.map(|_| "&lt;CurrentTrackURI val=&quot;x-sonos-spotify:track123&quot;/&gt;").unwrap_or("")
-                );
-                let av_event = AVTransportParser::from_xml(&xml).unwrap();
-
-                Ok(TypedEvent::new_parser(
-                    av_event,
-                    "av_transport_event",
-                    ServiceType::AVTransport,
-                ))
-            }
-            _ => {
-                // For other service types, we would create their specific event types
-                // For now, return an error to demonstrate error handling
-                Err(StrategyError::EventParseFailed(
-                    format!("Event parsing not implemented for {:?}", self.service_type)
-                ))
-            }
-        }
-    }
-}
-
-/// Enhanced mock subscription
-struct EnhancedMockSubscription {
-    id: String,
-    speaker_id: SpeakerId,
-    service_type: ServiceType,
-    created_at: SystemTime,
-    timeout: Duration,
-}
-
-#[async_trait]
-impl Subscription for EnhancedMockSubscription {
-    fn subscription_id(&self) -> &str {
-        &self.id
-    }
-
-    async fn renew(&mut self) -> Result<(), SubscriptionError> {
-        self.created_at = SystemTime::now();
-        Ok(())
-    }
-
-    async fn unsubscribe(&mut self) -> Result<(), SubscriptionError> {
-        Ok(())
-    }
-
-    fn is_active(&self) -> bool {
-        self.created_at.elapsed().unwrap_or(Duration::MAX) < self.timeout
-    }
-
-    fn time_until_renewal(&self) -> Option<Duration> {
-        let renewal_time = self.timeout / 2;
-        let elapsed = self.created_at.elapsed().unwrap_or(Duration::ZERO);
-        
-        if elapsed < renewal_time {
-            Some(renewal_time - elapsed)
-        } else {
-            Some(Duration::ZERO)
-        }
-    }
-
-    fn speaker_id(&self) -> &SpeakerId {
-        &self.speaker_id
-    }
-
-    fn service_type(&self) -> ServiceType {
-        self.service_type
     }
 }
 
@@ -308,12 +154,12 @@ async fn simulate_typed_events(callback_url: String, subscription_id: String) {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("Starting typed event handling example...\n");
+    println!("Starting typed event handling example with AVTransportProvider...\n");
 
-    // Create broker with enhanced mock strategy
-    let strategy = EnhancedMockStrategy::new(ServiceType::AVTransport);
+    // Create broker with AVTransportProvider (real provider implementation)
+    let av_provider = AVTransportProvider::new();
     let mut broker = EventBrokerBuilder::new()
-        .with_strategy(Box::new(strategy))
+        .with_strategy(Box::new(av_provider))
         .with_port_range(41000, 41100)
         .build()
         .await?;
@@ -326,9 +172,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Demo Room".to_string(),
     );
 
-    println!("Subscribing to speaker: {}", speaker.name);
+    println!("Subscribing to speaker: {} using AVTransportProvider", speaker.name);
     
-    // Subscribe to the speaker
+    // Subscribe to the speaker using the real AVTransportProvider
     broker.subscribe(&speaker, ServiceType::AVTransport).await?;
 
     // Get the event stream
@@ -341,7 +187,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Capture the subscription ID from the first event
     let subscription_id = if let Some(Event::SubscriptionEstablished { subscription_id, .. }) = event_stream.recv().await {
-        println!("✓ Subscription established");
+        println!("✓ Subscription established with AVTransportProvider");
         println!("  ID: {}\n", subscription_id);
         subscription_id
     } else {
@@ -426,11 +272,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     broker.shutdown().await?;
     println!("✓ Broker shut down");
     println!("\nThis example demonstrated:");
-    println!("• Type-safe event downcasting with AVTransportParser");
+    println!("• Type-safe event downcasting with AVTransportParser from AVTransportProvider");
     println!("• Conditional processing based on event and service types");
     println!("• Safe handling of optional fields in typed events");
     println!("• Error handling for unsupported event types");
     println!("• Event processing statistics and monitoring");
+    println!("• Using real provider implementations instead of mock strategies");
 
     Ok(())
 }
