@@ -135,8 +135,10 @@
 //! This crate is intended for internal use within the workspace and is not published
 //! to crates.io. It provides the foundation for device-specific event handling layers.
 
+pub mod plugin;
 pub mod router;
 mod server;
 
+pub use plugin::{Plugin, PluginContext, PluginError, PluginRegistry};
 pub use router::{EventRouter, NotificationPayload};
 pub use server::CallbackServer;
