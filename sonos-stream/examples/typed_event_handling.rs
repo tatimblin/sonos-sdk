@@ -9,12 +9,11 @@
 //! Run with: cargo run --example typed_event_handling
 
 use sonos_stream::{
-    ServiceStrategy, EventBrokerBuilder, Event, ServiceType, Speaker, SpeakerId, 
-    Subscription, SubscriptionScope, SubscriptionConfig,
-    StrategyError, SubscriptionError, TypedEvent,
+    EventBrokerBuilder, Event, ServiceType, Speaker, SpeakerId, 
+    SubscriptionStrategy, Subscription, SubscriptionScope, SubscriptionConfig,
+    StrategyError, SubscriptionError, TypedEvent, AVTransportEvent,
 };
 use std::net::IpAddr;
-use sonos_parser::services::av_transport::AVTransportParser;
 use std::time::{Duration, SystemTime};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -58,36 +57,36 @@ impl TypedEventProcessor {
 
     /// Process AVTransport events with full type safety
     fn process_av_transport_event(&self, event: &TypedEvent) {
-        if let Some(av_event) = event.downcast_ref::<AVTransportParser>() {
-            println!("  ✓ Successfully downcast to AVTransportParser");
-            println!("    Transport State: {}", av_event.transport_state());
+        if let Some(av_event) = event.downcast_ref::<AVTransportEvent>() {
+            println!("  ✓ Successfully downcast to AVTransportEvent");
+            println!("    Transport State: {}", av_event.transport_state);
             
             // Demonstrate accessing optional fields safely
-            if let Some(track_uri) = av_event.current_track_uri() {
+            if let Some(track_uri) = &av_event.track_uri {
                 println!("    Track URI: {}", track_uri);
             }
             
-            if let Some(duration) = av_event.current_track_duration() {
+            if let Some(duration) = &av_event.current_track_duration {
                 println!("    Duration: {}", duration);
             }
             
-            if let Some(track_num) = av_event.property.last_change.instance.current_track.as_ref().and_then(|v| v.val.parse::<u32>().ok()) {
-                if let Some(total_tracks) = av_event.property.last_change.instance.number_of_tracks.as_ref().and_then(|v| v.val.parse::<u32>().ok()) {
+            if let Some(track_num) = av_event.current_track {
+                if let Some(total_tracks) = av_event.number_of_tracks {
                     println!("    Track: {} of {}", track_num, total_tracks);
                 }
             }
             
-            if let Some(play_mode) = av_event.property.last_change.instance.current_play_mode.as_ref() {
-                println!("    Play Mode: {}", play_mode.val);
+            if let Some(play_mode) = &av_event.current_play_mode {
+                println!("    Play Mode: {}", play_mode);
             }
 
             // Demonstrate conditional logic based on transport state
-            match av_event.transport_state() {
+            match av_event.transport_state.as_str() {
                 "PLAYING" => println!("    → Music is currently playing"),
                 "PAUSED_PLAYBACK" => println!("    → Music is paused"),
                 "STOPPED" => println!("    → Playback is stopped"),
                 "TRANSITIONING" => println!("    → Transport state is changing"),
-                _ => println!("    → Unknown transport state: {}", av_event.transport_state()),
+                _ => println!("    → Unknown transport state: {}", av_event.transport_state),
             }
         } else {
             println!("  ✗ Failed to downcast AVTransport event - unexpected event type");
@@ -124,7 +123,6 @@ impl TypedEventProcessor {
 
 /// Enhanced mock strategy that creates different types of events
 #[derive(Clone)]
-#[derive(Debug)]
 struct EnhancedMockStrategy {
     service_type: ServiceType,
     counter: Arc<AtomicU32>,
@@ -140,7 +138,7 @@ impl EnhancedMockStrategy {
 }
 
 #[async_trait]
-impl ServiceStrategy for EnhancedMockStrategy {
+impl SubscriptionStrategy for EnhancedMockStrategy {
     fn service_type(&self) -> ServiceType {
         self.service_type
     }
@@ -194,12 +192,15 @@ impl ServiceStrategy for EnhancedMockStrategy {
                     ("TRANSITIONING", None)
                 };
 
-                let xml = format!(
-                    r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><LastChange>&lt;Event xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/AVT/&quot;&gt;&lt;InstanceID val=&quot;0&quot;&gt;&lt;TransportState val=&quot;{}&quot;/&gt;{}&lt;/InstanceID&gt;&lt;/Event&gt;</LastChange></e:property></e:propertyset>"#,
-                    transport_state,
-                    track_info.map(|_| "&lt;CurrentTrackURI val=&quot;x-sonos-spotify:track123&quot;/&gt;").unwrap_or("")
-                );
-                let av_event = AVTransportParser::from_xml(&xml).unwrap();
+                let av_event = AVTransportEvent {
+                    transport_state: transport_state.to_string(),
+                    track_uri: track_info.map(|_| "x-sonos-spotify:track123".to_string()),
+                    track_metadata: None, // Could create DIDL-Lite metadata here
+                    current_track_duration: track_info.map(|_| "0:04:32".to_string()),
+                    current_track: Some(3),
+                    number_of_tracks: Some(15),
+                    current_play_mode: Some("NORMAL".to_string()),
+                };
 
                 Ok(TypedEvent::new(Box::new(av_event)))
             }
@@ -422,7 +423,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     broker.shutdown().await?;
     println!("✓ Broker shut down");
     println!("\nThis example demonstrated:");
-    println!("• Type-safe event downcasting with AVTransportParser");
+    println!("• Type-safe event downcasting with AVTransportEvent");
     println!("• Conditional processing based on event and service types");
     println!("• Safe handling of optional fields in typed events");
     println!("• Error handling for unsupported event types");

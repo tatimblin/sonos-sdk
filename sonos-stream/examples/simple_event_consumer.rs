@@ -15,12 +15,11 @@
 //! Run with: cargo run --example simple_event_consumer
 
 use sonos_stream::{
-    ServiceStrategy, EventBrokerBuilder, Event, ServiceType, Speaker, SpeakerId, 
-    Subscription, SubscriptionScope, SubscriptionConfig,
-    StrategyError, SubscriptionError, TypedEvent,
+    EventBrokerBuilder, Event, ServiceType, Speaker, SpeakerId, 
+    SubscriptionStrategy, Subscription, SubscriptionScope, SubscriptionConfig,
+    StrategyError, SubscriptionError, TypedEvent, AVTransportEvent,
 };
 use std::net::IpAddr;
-use sonos_parser::services::av_transport::AVTransportParser;
 use std::time::{Duration, SystemTime};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -28,7 +27,6 @@ use async_trait::async_trait;
 
 /// Mock strategy that creates fake subscriptions without real UPnP calls
 #[derive(Clone)]
-#[derive(Debug)]
 struct MockStrategy {
     service_type: ServiceType,
     counter: Arc<AtomicU32>,
@@ -44,7 +42,7 @@ impl MockStrategy {
 }
 
 #[async_trait]
-impl ServiceStrategy for MockStrategy {
+impl SubscriptionStrategy for MockStrategy {
     fn service_type(&self) -> ServiceType {
         self.service_type
     }
@@ -80,9 +78,27 @@ impl ServiceStrategy for MockStrategy {
         _speaker_id: &SpeakerId,
         event_xml: &str,
     ) -> Result<TypedEvent, StrategyError> {
-        // Parse the actual XML to create AVTransportParser
-        let av_event = AVTransportParser::from_xml(event_xml)
-            .map_err(|e| StrategyError::EventParseFailed(e.to_string()))?;
+        use sonos_stream::{AVTransportEvent, TypedEvent};
+        
+        // Create a mock AVTransportEvent based on the XML content
+        let transport_state = if event_xml.contains("PLAYING") {
+            "PLAYING"
+        } else if event_xml.contains("PAUSED") {
+            "PAUSED_PLAYBACK"
+        } else {
+            "STOPPED"
+        };
+
+        // Create a realistic AVTransportEvent for demonstration
+        let av_event = AVTransportEvent {
+            transport_state: transport_state.to_string(),
+            track_uri: Some("x-sonos-spotify:spotify%3atrack%3aexample123".to_string()),
+            track_metadata: None, // Could parse DIDL-Lite here in a real implementation
+            current_track_duration: Some("0:03:45".to_string()),
+            current_track: Some(1),
+            number_of_tracks: Some(12),
+            current_play_mode: Some("NORMAL".to_string()),
+        };
 
         Ok(TypedEvent::new(Box::new(av_event)))
     }
@@ -257,17 +273,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!("  Service: {:?}", service_type);
                         println!("  Type: {}", event.event_type());
                         
-                        // Demonstrate type-safe downcasting to AVTransportParser
-                        if let Some(av_event) = event.downcast_ref::<AVTransportParser>() {
-                            println!("  Transport State: {}", av_event.transport_state());
-                            if let Some(track_uri) = av_event.current_track_uri() {
+                        // Demonstrate type-safe downcasting to AVTransportEvent
+                        if let Some(av_event) = event.downcast_ref::<AVTransportEvent>() {
+                            println!("  Transport State: {}", av_event.transport_state);
+                            if let Some(track_uri) = &av_event.track_uri {
                                 println!("  Track URI: {}", track_uri);
                             }
-                            if let Some(duration) = av_event.current_track_duration() {
+                            if let Some(duration) = &av_event.current_track_duration {
                                 println!("  Duration: {}", duration);
                             }
-                            if let Some(play_mode) = av_event.property.last_change.instance.current_play_mode.as_ref() {
-                                println!("  Play Mode: {}", play_mode.val);
+                            if let Some(play_mode) = &av_event.current_play_mode {
+                                println!("  Play Mode: {}", play_mode);
                             }
                         } else {
                             println!("  Data: {:?}", event.debug());

@@ -614,9 +614,9 @@ async fn test_real_upnp_event_reception() {
             assert_eq!(event.event_type(), "av_transport_event");
             
             // Verify parsed AVTransport data using typed access
-            let av_data = event.downcast_ref::<sonos_parser::services::av_transport::AVTransportParser>().unwrap();
-            assert_eq!(av_data.transport_state(), "PLAYING");
-            assert_eq!(av_data.current_track_duration(), Some("0:03:45"));
+            let av_data = event.downcast_ref::<sonos_stream::AVTransportEvent>().unwrap();
+            assert_eq!(av_data.transport_state, "PLAYING");
+            assert_eq!(av_data.current_track_duration, Some("0:03:45".to_string()));
             
             // Verify DIDL-Lite metadata was parsed
             assert_eq!(av_data.track_title(), Some("Test Song Title"));
@@ -625,7 +625,7 @@ async fn test_real_upnp_event_reception() {
             
             // Verify current play mode through the typed field
             assert_eq!(
-                av_data.property.last_change.instance.current_play_mode.as_ref().map(|v| v.val.as_str()),
+                av_data.current_play_mode.as_deref(),
                 Some("NORMAL")
             );
         }
@@ -855,13 +855,13 @@ async fn test_multiple_real_upnp_subscriptions() {
         .expect("Missing event from speaker 2");
 
     // Verify speaker 1 event data using typed access
-    let speaker1_av_data = speaker1_event.1.downcast_ref::<sonos_parser::services::av_transport::AVTransportParser>().unwrap();
-    assert_eq!(speaker1_av_data.transport_state(), "PLAYING");
+    let speaker1_av_data = speaker1_event.1.downcast_ref::<sonos_stream::AVTransportEvent>().unwrap();
+    assert_eq!(speaker1_av_data.transport_state, "PLAYING");
     assert_eq!(speaker1_av_data.track_title(), Some("Speaker 1 Song"));
 
     // Verify speaker 2 event data using typed access
-    let speaker2_av_data = speaker2_event.1.downcast_ref::<sonos_parser::services::av_transport::AVTransportParser>().unwrap();
-    assert_eq!(speaker2_av_data.transport_state(), "PAUSED_PLAYBACK");
+    let speaker2_av_data = speaker2_event.1.downcast_ref::<sonos_stream::AVTransportEvent>().unwrap();
+    assert_eq!(speaker2_av_data.transport_state, "PAUSED_PLAYBACK");
     assert_eq!(speaker2_av_data.track_title(), Some("Speaker 2 Song"));
 
     // Unsubscribe from both speakers

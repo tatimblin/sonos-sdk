@@ -1,12 +1,12 @@
 //! Mock strategy and subscription implementations for testing.
 //!
-//! This module provides mock implementations of the `ServiceStrategy` and
+//! This module provides mock implementations of the `SubscriptionStrategy` and
 //! `Subscription` traits that can be used in tests without making real UPnP calls.
 //! The mock implementations support configurable failure modes to test error paths.
 
 use sonos_stream::{
-    ServiceStrategy, EventData, ServiceType, SpeakerId, Speaker, SubscriptionConfig, SubscriptionScope,
-    StrategyError, Subscription, SubscriptionError, TypedEvent,
+    EventData, ServiceType, SpeakerId, Speaker, SubscriptionConfig, SubscriptionScope,
+    StrategyError, Subscription, SubscriptionError, SubscriptionStrategy, TypedEvent,
 };
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -45,7 +45,6 @@ impl EventData for MockEventData {
 /// This strategy can be configured to simulate various failure scenarios
 /// for testing error handling paths.
 #[derive(Clone)]
-#[derive(Debug)]
 pub struct MockStrategy {
     service_type: ServiceType,
     subscription_scope: SubscriptionScope,
@@ -108,7 +107,7 @@ impl MockStrategy {
 }
 
 #[async_trait]
-impl ServiceStrategy for MockStrategy {
+impl SubscriptionStrategy for MockStrategy {
     fn service_type(&self) -> ServiceType {
         self.service_type
     }
@@ -121,11 +120,39 @@ impl ServiceStrategy for MockStrategy {
         "/MockService/Event"
     }
 
+    async fn create_subscription(
+        &self,
+        speaker: &Speaker,
+        callback_url: String,
+        config: &SubscriptionConfig,
+    ) -> Result<Box<dyn Subscription>, StrategyError> {
+        self.creation_count.fetch_add(1, Ordering::Relaxed);
+
+        if self.should_fail_creation.load(Ordering::Relaxed) {
+            return Err(StrategyError::SubscriptionCreationFailed(
+                "Mock failure: subscription creation disabled".to_string(),
+            ));
+        }
+
+        // Generate a mock subscription ID
+        let subscription_id = format!("uuid:mock-sub-{}-{}", speaker.id.as_str(), self.service_type as u32);
+
+        Ok(Box::new(MockSubscription::new(
+            subscription_id,
+            speaker.id.clone(),
+            self.service_type,
+            Duration::from_secs(config.timeout_seconds as u64),
+            callback_url,
+        )))
+    }
+
     fn parse_event(
         &self,
         speaker_id: &SpeakerId,
         event_xml: &str,
     ) -> Result<TypedEvent, StrategyError> {
+
+        
         self.parse_count.fetch_add(1, Ordering::Relaxed);
 
         if self.should_fail_parsing.load(Ordering::Relaxed) {
@@ -168,6 +195,8 @@ impl ServiceStrategy for MockStrategy {
             data.insert("channel".to_string(), "Master".to_string());
         }
 
+
+
         let mock_data = MockEventData {
             event_type: event_type.to_string(),
             service_type: self.service_type,
@@ -175,33 +204,6 @@ impl ServiceStrategy for MockStrategy {
         };
 
         Ok(TypedEvent::new(Box::new(mock_data)))
-    }
-
-    // Override create_subscription to add mock-specific behavior
-    async fn create_subscription(
-        &self,
-        speaker: &Speaker,
-        callback_url: String,
-        config: &SubscriptionConfig,
-    ) -> Result<Box<dyn Subscription>, StrategyError> {
-        self.creation_count.fetch_add(1, Ordering::Relaxed);
-
-        if self.should_fail_creation.load(Ordering::Relaxed) {
-            return Err(StrategyError::SubscriptionCreationFailed(
-                "Mock failure: subscription creation disabled".to_string(),
-            ));
-        }
-
-        // Generate a mock subscription ID
-        let subscription_id = format!("uuid:mock-sub-{}-{}", speaker.id.as_str(), self.service_type as u32);
-
-        Ok(Box::new(MockSubscription::new(
-            subscription_id,
-            speaker.id.clone(),
-            self.service_type,
-            Duration::from_secs(config.timeout_seconds as u64),
-            callback_url,
-        )))
     }
 }
 
