@@ -6,8 +6,8 @@
 //! - Helper functions for creating test data
 
 use sonos_stream::{
-    ServiceType, SpeakerId, Speaker, SubscriptionConfig, SubscriptionScope,
-    StrategyError, SubscriptionStrategy, TypedEvent,
+    ServiceStrategy, ServiceType, SpeakerId, Speaker, SubscriptionConfig, SubscriptionScope,
+    StrategyError, TypedEvent,
 };
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -156,6 +156,7 @@ impl UPnPMockServer {
 }
 
 /// Custom AVTransport strategy for testing that uses mock server URLs
+#[derive(Debug)]
 pub struct TestAVTransportStrategy {
     mock_server_url: String,
 }
@@ -167,7 +168,7 @@ impl TestAVTransportStrategy {
 }
 
 #[async_trait::async_trait]
-impl SubscriptionStrategy for TestAVTransportStrategy {
+impl ServiceStrategy for TestAVTransportStrategy {
     fn service_type(&self) -> ServiceType {
         ServiceType::AVTransport
     }
@@ -186,10 +187,28 @@ impl SubscriptionStrategy for TestAVTransportStrategy {
         callback_url: String,
         config: &SubscriptionConfig,
     ) -> Result<Box<dyn sonos_stream::Subscription>, StrategyError> {
+        use sonos_stream::UPnPSubscription;
+        
         // Override endpoint URL to use mock server instead of speaker IP:1400
         let endpoint_url = format!("{}{}", self.mock_server_url, self.service_endpoint_path());
+        let service_type = self.service_type();
         
-        self.create_subscription_with_endpoint(speaker, callback_url, config, &endpoint_url).await
+        let subscription = UPnPSubscription::create_subscription(
+            speaker.id.clone(),
+            service_type,
+            endpoint_url,
+            callback_url,
+            config.timeout_seconds,
+        )
+        .await
+        .map_err(|e| match e {
+            sonos_stream::SubscriptionError::NetworkError(msg) => StrategyError::NetworkError(msg),
+            sonos_stream::SubscriptionError::UnsubscribeFailed(msg) => StrategyError::SubscriptionCreationFailed(msg),
+            sonos_stream::SubscriptionError::RenewalFailed(msg) => StrategyError::SubscriptionCreationFailed(msg),
+            sonos_stream::SubscriptionError::Expired => StrategyError::SubscriptionCreationFailed("Subscription expired during creation".to_string()),
+        })?;
+
+        Ok(Box::new(subscription))
     }
 
     fn parse_event(
@@ -199,17 +218,17 @@ impl SubscriptionStrategy for TestAVTransportStrategy {
     ) -> Result<TypedEvent, StrategyError> {
         // Use the same parsing logic as AVTransportStrategy
         use sonos_parser::services::av_transport::AVTransportParser;
-        use sonos_stream::{AVTransportEvent, TypedEvent};
+        use sonos_stream::TypedEvent;
 
         let parsed = AVTransportParser::from_xml(event_xml)
             .map_err(|e| StrategyError::EventParseFailed(format!("Failed to parse AVTransport event: {}", e)))?;
         
-        let av_event = AVTransportEvent::from_parser(parsed);
-        Ok(TypedEvent::new(Box::new(av_event)))
+        Ok(TypedEvent::new(Box::new(parsed)))
     }
 }
 
 /// Custom strategy for multiple server testing
+#[derive(Debug)]
 pub struct MultiTestAVTransportStrategy {
     server_urls: HashMap<String, String>, // speaker_id -> server_url
 }
@@ -227,7 +246,7 @@ impl MultiTestAVTransportStrategy {
 }
 
 #[async_trait::async_trait]
-impl SubscriptionStrategy for MultiTestAVTransportStrategy {
+impl ServiceStrategy for MultiTestAVTransportStrategy {
     fn service_type(&self) -> ServiceType {
         ServiceType::AVTransport
     }
@@ -246,6 +265,8 @@ impl SubscriptionStrategy for MultiTestAVTransportStrategy {
         callback_url: String,
         config: &SubscriptionConfig,
     ) -> Result<Box<dyn sonos_stream::Subscription>, StrategyError> {
+        use sonos_stream::UPnPSubscription;
+        
         // Get the mock server URL for this speaker
         let server_url = self.server_urls.get(speaker.id.as_str())
             .ok_or_else(|| StrategyError::SubscriptionCreationFailed(
@@ -253,7 +274,24 @@ impl SubscriptionStrategy for MultiTestAVTransportStrategy {
             ))?;
         
         let endpoint_url = format!("{}{}", server_url, self.service_endpoint_path());
-        self.create_subscription_with_endpoint(speaker, callback_url, config, &endpoint_url).await
+        let service_type = self.service_type();
+        
+        let subscription = UPnPSubscription::create_subscription(
+            speaker.id.clone(),
+            service_type,
+            endpoint_url,
+            callback_url,
+            config.timeout_seconds,
+        )
+        .await
+        .map_err(|e| match e {
+            sonos_stream::SubscriptionError::NetworkError(msg) => StrategyError::NetworkError(msg),
+            sonos_stream::SubscriptionError::UnsubscribeFailed(msg) => StrategyError::SubscriptionCreationFailed(msg),
+            sonos_stream::SubscriptionError::RenewalFailed(msg) => StrategyError::SubscriptionCreationFailed(msg),
+            sonos_stream::SubscriptionError::Expired => StrategyError::SubscriptionCreationFailed("Subscription expired during creation".to_string()),
+        })?;
+
+        Ok(Box::new(subscription))
     }
 
     fn parse_event(
@@ -262,13 +300,12 @@ impl SubscriptionStrategy for MultiTestAVTransportStrategy {
         event_xml: &str,
     ) -> Result<TypedEvent, StrategyError> {
         use sonos_parser::services::av_transport::AVTransportParser;
-        use sonos_stream::{AVTransportEvent, TypedEvent};
+        use sonos_stream::TypedEvent;
 
         let parsed = AVTransportParser::from_xml(event_xml)
             .map_err(|e| StrategyError::EventParseFailed(format!("Failed to parse AVTransport event: {}", e)))?;
         
-        let av_event = AVTransportEvent::from_parser(parsed);
-        Ok(TypedEvent::new(Box::new(av_event)))
+        Ok(TypedEvent::new(Box::new(parsed)))
     }
 }
 
