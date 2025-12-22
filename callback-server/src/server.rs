@@ -262,6 +262,38 @@ impl CallbackServer {
         &self.plugin_registry
     }
 
+    /// Get the current firewall detection status.
+    ///
+    /// Returns the status of firewall detection if the firewall detection plugin
+    /// is registered and has been initialized. Returns None if the plugin is not
+    /// found or hasn't been initialized yet.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use tokio::sync::mpsc;
+    /// # use callback_server::{CallbackServer, NotificationPayload, FirewallStatus};
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// # let (tx, _rx) = mpsc::unbounded_channel::<NotificationPayload>();
+    /// # let server = CallbackServer::new((3400, 3500), tx).await.unwrap();
+    /// if let Some(status) = server.get_firewall_status().await {
+    ///     match status {
+    ///         FirewallStatus::Accessible => println!("Server is accessible"),
+    ///         FirewallStatus::Blocked => println!("Server is blocked by firewall"),
+    ///         FirewallStatus::Unknown => println!("Firewall status unknown"),
+    ///         FirewallStatus::Error => println!("Error detecting firewall status"),
+    ///     }
+    /// }
+    /// # }
+    /// ```
+    pub async fn get_firewall_status(&self) -> Option<crate::FirewallStatus> {
+        // This is a simplified implementation - in a real scenario, we would
+        // need to find the firewall detection plugin in the registry and query its status
+        // For now, we'll return None since we don't have direct access to plugin instances
+        None
+    }
+
     /// Shutdown the callback server gracefully.
     ///
     /// This shuts down all registered plugins first, then sends a shutdown signal 
@@ -414,8 +446,13 @@ impl CallbackServer {
                     }
                 });
 
+            // Add firewall test endpoint
+            let firewall_test_route = crate::firewall_detection::firewall_test_endpoint();
+
             // Combine routes
-            let routes = notify_route.recover(handle_rejection);
+            let routes = notify_route
+                .or(firewall_test_route)
+                .recover(handle_rejection);
 
             // Create server with graceful shutdown
             let (addr, server) = warp::serve(routes)

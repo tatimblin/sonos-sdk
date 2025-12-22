@@ -135,10 +135,12 @@
 //! This crate is intended for internal use within the workspace and is not published
 //! to crates.io. It provides the foundation for device-specific event handling layers.
 
+pub mod firewall_detection;
 pub mod plugin;
 pub mod router;
 mod server;
 
+pub use firewall_detection::{FirewallDetectionPlugin, FirewallStatus, DetectionError};
 pub use plugin::{Plugin, PluginContext, PluginError, PluginRegistry};
 pub use router::{EventRouter, NotificationPayload};
 pub use server::CallbackServer;
