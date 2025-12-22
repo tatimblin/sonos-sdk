@@ -1,23 +1,20 @@
-//! Advanced example demonstrating type-safe event handling with TypedEvent.
+//! Advanced example demonstrating type-safe event handling with the provider pattern.
 //!
 //! This example shows how to:
-//! 1. Handle multiple event types safely using downcasting
-//! 2. Create custom event processors for different service types
-//! 3. Implement event filtering and routing based on event types
-//! 4. Demonstrate error handling for invalid downcasts
+//! 1. Use AVTransportProvider for real service strategy implementation
+//! 2. Handle multiple event types safely using downcasting
+//! 3. Create custom event processors for different service types
+//! 4. Implement event filtering and routing based on event types
+//! 5. Demonstrate error handling for invalid downcasts
 //!
 //! Run with: cargo run --example typed_event_handling
 
 use sonos_stream::{
-    EventBrokerBuilder, Event, ServiceType, Speaker, SpeakerId, 
-    SubscriptionStrategy, Subscription, SubscriptionScope, SubscriptionConfig,
-    StrategyError, SubscriptionError, TypedEvent, AVTransportEvent,
+    EventBrokerBuilder, Event, ServiceType, Speaker, SpeakerId, AVTransportProvider, TypedEvent,
 };
 use std::net::IpAddr;
-use std::time::{Duration, SystemTime};
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
-use async_trait::async_trait;
+use sonos_parser::services::av_transport::AVTransportParser;
+use std::time::Duration;
 
 /// Event processor that handles different event types with type safety
 struct TypedEventProcessor {
@@ -57,36 +54,36 @@ impl TypedEventProcessor {
 
     /// Process AVTransport events with full type safety
     fn process_av_transport_event(&self, event: &TypedEvent) {
-        if let Some(av_event) = event.downcast_ref::<AVTransportEvent>() {
-            println!("  ✓ Successfully downcast to AVTransportEvent");
-            println!("    Transport State: {}", av_event.transport_state);
+        if let Some(av_event) = event.downcast_ref::<AVTransportParser>() {
+            println!("  ✓ Successfully downcast to AVTransportParser");
+            println!("    Transport State: {}", av_event.transport_state());
             
             // Demonstrate accessing optional fields safely
-            if let Some(track_uri) = &av_event.track_uri {
+            if let Some(track_uri) = av_event.current_track_uri() {
                 println!("    Track URI: {}", track_uri);
             }
             
-            if let Some(duration) = &av_event.current_track_duration {
+            if let Some(duration) = av_event.current_track_duration() {
                 println!("    Duration: {}", duration);
             }
             
-            if let Some(track_num) = av_event.current_track {
-                if let Some(total_tracks) = av_event.number_of_tracks {
+            if let Some(track_num) = av_event.property.last_change.instance.current_track.as_ref().and_then(|v| v.val.parse::<u32>().ok()) {
+                if let Some(total_tracks) = av_event.property.last_change.instance.number_of_tracks.as_ref().and_then(|v| v.val.parse::<u32>().ok()) {
                     println!("    Track: {} of {}", track_num, total_tracks);
                 }
             }
             
-            if let Some(play_mode) = &av_event.current_play_mode {
-                println!("    Play Mode: {}", play_mode);
+            if let Some(play_mode) = av_event.property.last_change.instance.current_play_mode.as_ref() {
+                println!("    Play Mode: {}", play_mode.val);
             }
 
             // Demonstrate conditional logic based on transport state
-            match av_event.transport_state.as_str() {
+            match av_event.transport_state() {
                 "PLAYING" => println!("    → Music is currently playing"),
                 "PAUSED_PLAYBACK" => println!("    → Music is paused"),
                 "STOPPED" => println!("    → Playback is stopped"),
                 "TRANSITIONING" => println!("    → Transport state is changing"),
-                _ => println!("    → Unknown transport state: {}", av_event.transport_state),
+                _ => println!("    → Unknown transport state: {}", av_event.transport_state()),
             }
         } else {
             println!("  ✗ Failed to downcast AVTransport event - unexpected event type");
@@ -109,157 +106,9 @@ impl TypedEventProcessor {
         // if let Some(zgt_event) = event.downcast_ref::<ZoneGroupTopologyEvent>() { ... }
     }
 
-    /// Process unknown events using generic debug output
-    fn process_unknown_event(&self, event: &TypedEvent) {
-        println!("  Generic event processing:");
-        println!("    Debug: {:?}", event.debug());
-    }
-
     /// Get processing statistics
     fn get_stats(&self) -> (u32, u32) {
         (self.av_transport_count, self.unknown_count)
-    }
-}
-
-/// Enhanced mock strategy that creates different types of events
-#[derive(Clone)]
-struct EnhancedMockStrategy {
-    service_type: ServiceType,
-    counter: Arc<AtomicU32>,
-}
-
-impl EnhancedMockStrategy {
-    fn new(service_type: ServiceType) -> Self {
-        Self {
-            service_type,
-            counter: Arc::new(AtomicU32::new(0)),
-        }
-    }
-}
-
-#[async_trait]
-impl SubscriptionStrategy for EnhancedMockStrategy {
-    fn service_type(&self) -> ServiceType {
-        self.service_type
-    }
-
-    fn subscription_scope(&self) -> SubscriptionScope {
-        SubscriptionScope::PerSpeaker
-    }
-
-    fn service_endpoint_path(&self) -> &'static str {
-        match self.service_type {
-            ServiceType::AVTransport => "/MediaRenderer/AVTransport/Event",
-            ServiceType::RenderingControl => "/MediaRenderer/RenderingControl/Event",
-            ServiceType::ZoneGroupTopology => "/ZoneGroupTopology/Event",
-        }
-    }
-
-    async fn create_subscription(
-        &self,
-        speaker: &Speaker,
-        _callback_url: String,
-        config: &SubscriptionConfig,
-    ) -> Result<Box<dyn Subscription>, StrategyError> {
-        let count = self.counter.fetch_add(1, Ordering::Relaxed);
-        let subscription_id = format!("enhanced-mock-{}-{}-{}", 
-            self.service_type as u32, speaker.id.as_str(), count);
-        
-        Ok(Box::new(EnhancedMockSubscription {
-            id: subscription_id,
-            speaker_id: speaker.id.clone(),
-            service_type: self.service_type,
-            created_at: SystemTime::now(),
-            timeout: Duration::from_secs(config.timeout_seconds as u64),
-        }))
-    }
-
-    fn parse_event(
-        &self,
-        _speaker_id: &SpeakerId,
-        event_xml: &str,
-    ) -> Result<TypedEvent, StrategyError> {
-        match self.service_type {
-            ServiceType::AVTransport => {
-                // Create realistic AVTransport events based on XML content
-                let (transport_state, track_info) = if event_xml.contains("PLAYING") {
-                    ("PLAYING", Some(("Bohemian Rhapsody", "Queen", "A Night at the Opera")))
-                } else if event_xml.contains("PAUSED") {
-                    ("PAUSED_PLAYBACK", Some(("Hotel California", "Eagles", "Hotel California")))
-                } else if event_xml.contains("STOPPED") {
-                    ("STOPPED", None)
-                } else {
-                    ("TRANSITIONING", None)
-                };
-
-                let av_event = AVTransportEvent {
-                    transport_state: transport_state.to_string(),
-                    track_uri: track_info.map(|_| "x-sonos-spotify:track123".to_string()),
-                    track_metadata: None, // Could create DIDL-Lite metadata here
-                    current_track_duration: track_info.map(|_| "0:04:32".to_string()),
-                    current_track: Some(3),
-                    number_of_tracks: Some(15),
-                    current_play_mode: Some("NORMAL".to_string()),
-                };
-
-                Ok(TypedEvent::new(Box::new(av_event)))
-            }
-            _ => {
-                // For other service types, we would create their specific event types
-                // For now, return an error to demonstrate error handling
-                Err(StrategyError::EventParseFailed(
-                    format!("Event parsing not implemented for {:?}", self.service_type)
-                ))
-            }
-        }
-    }
-}
-
-/// Enhanced mock subscription
-struct EnhancedMockSubscription {
-    id: String,
-    speaker_id: SpeakerId,
-    service_type: ServiceType,
-    created_at: SystemTime,
-    timeout: Duration,
-}
-
-#[async_trait]
-impl Subscription for EnhancedMockSubscription {
-    fn subscription_id(&self) -> &str {
-        &self.id
-    }
-
-    async fn renew(&mut self) -> Result<(), SubscriptionError> {
-        self.created_at = SystemTime::now();
-        Ok(())
-    }
-
-    async fn unsubscribe(&mut self) -> Result<(), SubscriptionError> {
-        Ok(())
-    }
-
-    fn is_active(&self) -> bool {
-        self.created_at.elapsed().unwrap_or(Duration::MAX) < self.timeout
-    }
-
-    fn time_until_renewal(&self) -> Option<Duration> {
-        let renewal_time = self.timeout / 2;
-        let elapsed = self.created_at.elapsed().unwrap_or(Duration::ZERO);
-        
-        if elapsed < renewal_time {
-            Some(renewal_time - elapsed)
-        } else {
-            Some(Duration::ZERO)
-        }
-    }
-
-    fn speaker_id(&self) -> &SpeakerId {
-        &self.speaker_id
-    }
-
-    fn service_type(&self) -> ServiceType {
-        self.service_type
     }
 }
 
@@ -305,12 +154,12 @@ async fn simulate_typed_events(callback_url: String, subscription_id: String) {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("Starting typed event handling example...\n");
+    println!("Starting typed event handling example with AVTransportProvider...\n");
 
-    // Create broker with enhanced mock strategy
-    let strategy = EnhancedMockStrategy::new(ServiceType::AVTransport);
+    // Create broker with AVTransportProvider (real provider implementation)
+    let av_provider = AVTransportProvider::new();
     let mut broker = EventBrokerBuilder::new()
-        .with_strategy(Box::new(strategy))
+        .with_strategy(Box::new(av_provider))
         .with_port_range(41000, 41100)
         .build()
         .await?;
@@ -323,9 +172,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Demo Room".to_string(),
     );
 
-    println!("Subscribing to speaker: {}", speaker.name);
+    println!("Subscribing to speaker: {} using AVTransportProvider", speaker.name);
     
-    // Subscribe to the speaker
+    // Subscribe to the speaker using the real AVTransportProvider
     broker.subscribe(&speaker, ServiceType::AVTransport).await?;
 
     // Get the event stream
@@ -338,7 +187,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Capture the subscription ID from the first event
     let subscription_id = if let Some(Event::SubscriptionEstablished { subscription_id, .. }) = event_stream.recv().await {
-        println!("✓ Subscription established");
+        println!("✓ Subscription established with AVTransportProvider");
         println!("  ID: {}\n", subscription_id);
         subscription_id
     } else {
@@ -373,7 +222,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::select! {
             Some(event) = event_stream.recv() => {
                 match event {
-                    Event::ServiceEvent { speaker_id, service_type: _, event } => {
+                    Event::ServiceEvent { speaker_id, service_type: _, event, .. } => {
                         processor.process_event(&speaker_id, &event);
                         event_count += 1;
                         
@@ -382,7 +231,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             break;
                         }
                     }
-                    Event::ParseError { speaker_id, service_type, error } => {
+                    Event::ParseError { speaker_id, service_type, error, .. } => {
                         println!("✗ Parse error (demonstrating error handling):");
                         println!("  Speaker: {}", speaker_id.as_str());
                         println!("  Service: {:?}", service_type);
@@ -423,11 +272,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     broker.shutdown().await?;
     println!("✓ Broker shut down");
     println!("\nThis example demonstrated:");
-    println!("• Type-safe event downcasting with AVTransportEvent");
+    println!("• Type-safe event downcasting with AVTransportParser from AVTransportProvider");
     println!("• Conditional processing based on event and service types");
     println!("• Safe handling of optional fields in typed events");
     println!("• Error handling for unsupported event types");
     println!("• Event processing statistics and monitoring");
+    println!("• Using real provider implementations instead of mock strategies");
 
     Ok(())
 }

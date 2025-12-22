@@ -6,10 +6,12 @@
 
 use anyhow::Result;
 use chrono::{DateTime, Local};
-use sonos_stream::{Event, TypedEvent, AVTransportEvent};
+use sonos_stream::{Event, TypedEvent};
+use sonos_parser::services::av_transport::AVTransportParser;
 use tokio::sync::mpsc;
 use tokio::signal;
 use tracing::{info, warn, error, debug};
+use std::time::SystemTime;
 
 /// Configuration for event processing
 #[derive(Debug, Clone)]
@@ -202,7 +204,7 @@ impl EventStreamConsumer {
     /// Log an event to the tracing system.
     fn log_event(&self, event: &Event) {
         match event {
-            Event::SubscriptionEstablished { speaker_id, service_type, subscription_id } => {
+            Event::SubscriptionEstablished { speaker_id, service_type, subscription_id, .. } => {
                 info!(
                     speaker_id = %speaker_id.as_str(),
                     service_type = ?service_type,
@@ -210,7 +212,7 @@ impl EventStreamConsumer {
                     "Subscription established"
                 );
             }
-            Event::SubscriptionFailed { speaker_id, service_type, error } => {
+            Event::SubscriptionFailed { speaker_id, service_type, error, .. } => {
                 warn!(
                     speaker_id = %speaker_id.as_str(),
                     service_type = ?service_type,
@@ -218,7 +220,7 @@ impl EventStreamConsumer {
                     "Subscription failed"
                 );
             }
-            Event::ServiceEvent { speaker_id, service_type, event } => {
+            Event::ServiceEvent { speaker_id, service_type, event, .. } => {
                 debug!(
                     speaker_id = %speaker_id.as_str(),
                     service_type = ?service_type,
@@ -226,7 +228,7 @@ impl EventStreamConsumer {
                     "Service event received"
                 );
             }
-            Event::ParseError { speaker_id, service_type, error } => {
+            Event::ParseError { speaker_id, service_type, error, .. } => {
                 error!(
                     speaker_id = %speaker_id.as_str(),
                     service_type = ?service_type,
@@ -234,21 +236,21 @@ impl EventStreamConsumer {
                     "Parse error"
                 );
             }
-            Event::SubscriptionRenewed { speaker_id, service_type } => {
+            Event::SubscriptionRenewed { speaker_id, service_type, .. } => {
                 debug!(
                     speaker_id = %speaker_id.as_str(),
                     service_type = ?service_type,
                     "Subscription renewed"
                 );
             }
-            Event::SubscriptionExpired { speaker_id, service_type } => {
+            Event::SubscriptionExpired { speaker_id, service_type, .. } => {
                 warn!(
                     speaker_id = %speaker_id.as_str(),
                     service_type = ?service_type,
                     "Subscription expired"
                 );
             }
-            Event::SubscriptionRemoved { speaker_id, service_type } => {
+            Event::SubscriptionRemoved { speaker_id, service_type, .. } => {
                 info!(
                     speaker_id = %speaker_id.as_str(),
                     service_type = ?service_type,
@@ -265,7 +267,7 @@ impl EventStreamConsumer {
                 println!("  Raw event data:");
                 println!("    Event Type: {}", typed_event.event_type());
                 println!("    Service Type: {:?}", typed_event.service_type());
-                println!("    Debug: {:?}", typed_event.debug());
+                println!("    Debug: {:?}", typed_event);
             }
             _ => {
                 println!("  Raw data: {:?}", event);
@@ -326,7 +328,7 @@ impl EventFormatter {
         let timestamp = self.format_timestamp();
         
         match event {
-            Event::SubscriptionEstablished { speaker_id, service_type, subscription_id } => {
+            Event::SubscriptionEstablished { speaker_id, service_type, subscription_id, .. } => {
                 self.format_with_color(
                     &format!(
                         "[{}] SUBSCRIPTION_ESTABLISHED: {:?} on {} ({})",
@@ -338,7 +340,7 @@ impl EventFormatter {
                     "\x1b[32m", // Green
                 )
             }
-            Event::SubscriptionFailed { speaker_id, service_type, error } => {
+            Event::SubscriptionFailed { speaker_id, service_type, error, .. } => {
                 self.format_with_color(
                     &format!(
                         "[{}] SUBSCRIPTION_FAILED: {:?} on {} - {}",
@@ -350,7 +352,7 @@ impl EventFormatter {
                     "\x1b[31m", // Red
                 )
             }
-            Event::ServiceEvent { speaker_id, service_type, event } => {
+            Event::ServiceEvent { speaker_id, service_type, event, .. } => {
                 let formatted_event = self.format_service_event(event);
                 self.format_with_color(
                     &format!(
@@ -363,7 +365,7 @@ impl EventFormatter {
                     "\x1b[36m", // Cyan
                 )
             }
-            Event::ParseError { speaker_id, service_type, error } => {
+            Event::ParseError { speaker_id, service_type, error, .. } => {
                 self.format_with_color(
                     &format!(
                         "[{}] PARSE_ERROR: {} - {:?} - {}",
@@ -375,7 +377,7 @@ impl EventFormatter {
                     "\x1b[33m", // Yellow
                 )
             }
-            Event::SubscriptionRenewed { speaker_id, service_type } => {
+            Event::SubscriptionRenewed { speaker_id, service_type, .. } => {
                 self.format_with_color(
                     &format!(
                         "[{}] SUBSCRIPTION_RENEWED: {:?} on {}",
@@ -386,7 +388,7 @@ impl EventFormatter {
                     "\x1b[34m", // Blue
                 )
             }
-            Event::SubscriptionExpired { speaker_id, service_type } => {
+            Event::SubscriptionExpired { speaker_id, service_type, .. } => {
                 self.format_with_color(
                     &format!(
                         "[{}] SUBSCRIPTION_EXPIRED: {:?} on {}",
@@ -397,7 +399,7 @@ impl EventFormatter {
                     "\x1b[35m", // Magenta
                 )
             }
-            Event::SubscriptionRemoved { speaker_id, service_type } => {
+            Event::SubscriptionRemoved { speaker_id, service_type, .. } => {
                 self.format_with_color(
                     &format!(
                         "[{}] SUBSCRIPTION_REMOVED: {:?} on {}",
@@ -421,11 +423,11 @@ impl EventFormatter {
 
     /// Format AVTransport events with specific state information.
     fn format_av_transport_event(&self, event: &TypedEvent) -> String {
-        if let Some(av_event) = event.downcast_ref::<AVTransportEvent>() {
+        if let Some(av_event) = event.downcast_ref::<AVTransportParser>() {
             let mut parts = Vec::new();
 
             // Extract transport state
-            parts.push(format!("State: {}", av_event.transport_state));
+            parts.push(format!("State: {}", av_event.transport_state()));
 
             // Extract track information
             if let Some(title) = av_event.track_title() {
@@ -437,12 +439,12 @@ impl EventFormatter {
             }
 
             // Extract duration
-            if let Some(duration) = &av_event.current_track_duration {
+            if let Some(duration) = av_event.current_track_duration() {
                 parts.push(format!("Duration: {}", duration));
             }
 
             // Extract URI
-            if let Some(uri) = &av_event.track_uri {
+            if let Some(uri) = av_event.current_track_uri() {
                 if !uri.is_empty() {
                     parts.push(format!("URI: {}", uri));
                 }
@@ -480,35 +482,14 @@ mod tests {
     use sonos_stream::{ServiceType, SpeakerId, TypedEvent};
 
     fn create_test_service_event() -> Event {
-        use sonos_parser::common::DidlLite;
-        
-        let av_event = AVTransportEvent {
-            transport_state: "PLAYING".to_string(),
-            track_uri: Some("test-uri".to_string()),
-            track_metadata: Some(DidlLite {
-                item: sonos_parser::common::DidlItem {
-                    id: "test-id".to_string(),
-                    parent_id: "test-parent".to_string(),
-                    restricted: None,
-                    res: None,
-                    album_art_uri: None,
-                    class: None,
-                    title: Some("Test Song".to_string()),
-                    creator: Some("Test Artist".to_string()),
-                    album: None,
-                    stream_info: None,
-                },
-            }),
-            current_track_duration: Some("0:03:30".to_string()),
-            current_track: Some(1),
-            number_of_tracks: Some(10),
-            current_play_mode: Some("NORMAL".to_string()),
-        };
+        let xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><LastChange>&lt;Event xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/AVT/&quot;&gt;&lt;InstanceID val=&quot;0&quot;&gt;&lt;TransportState val=&quot;PLAYING&quot;/&gt;&lt;CurrentTrackURI val=&quot;test-uri&quot;/&gt;&lt;CurrentTrackDuration val=&quot;0:03:30&quot;/&gt;&lt;CurrentTrack val=&quot;1&quot;/&gt;&lt;NumberOfTracks val=&quot;10&quot;/&gt;&lt;CurrentPlayMode val=&quot;NORMAL&quot;/&gt;&lt;CurrentTrackMetaData val=&quot;&amp;lt;DIDL-Lite xmlns:dc=&amp;quot;http://purl.org/dc/elements/1.1/&amp;quot;&amp;gt;&amp;lt;item id=&amp;quot;test-id&amp;quot; parentID=&amp;quot;test-parent&amp;quot;&amp;gt;&amp;lt;dc:title&amp;gt;Test Song&amp;lt;/dc:title&amp;gt;&amp;lt;dc:creator&amp;gt;Test Artist&amp;lt;/dc:creator&amp;gt;&amp;lt;/item&amp;gt;&amp;lt;/DIDL-Lite&amp;gt;&quot;/&gt;&lt;/InstanceID&gt;&lt;/Event&gt;</LastChange></e:property></e:propertyset>"#;
+        let av_event = AVTransportParser::from_xml(xml).unwrap();
 
         Event::ServiceEvent {
             speaker_id: SpeakerId::new("RINCON_TEST123456"),
             service_type: ServiceType::AVTransport,
-            event: TypedEvent::new(Box::new(av_event)),
+            event: TypedEvent::new_parser(av_event, "av_transport_event", ServiceType::AVTransport),
+            timestamp: SystemTime::now(),
         }
     }
 
@@ -520,6 +501,7 @@ mod tests {
             speaker_id: SpeakerId::new("test"),
             service_type: ServiceType::AVTransport,
             subscription_id: "sub123".to_string(),
+            timestamp: SystemTime::now(),
         };
         
         stats.update(&event);
@@ -558,6 +540,7 @@ mod tests {
             speaker_id: SpeakerId::new("RINCON_TEST123456"),
             service_type: ServiceType::AVTransport,
             subscription_id: "sub123".to_string(),
+            timestamp: SystemTime::now(),
         };
         
         let formatted = formatter.format_event(&event);
@@ -589,17 +572,10 @@ mod tests {
         let config = EventProcessingConfig::default();
         let formatter = EventFormatter::new(config);
         
-        let av_event = AVTransportEvent {
-            transport_state: "PAUSED_PLAYBACK".to_string(),
-            track_uri: None,
-            track_metadata: None,
-            current_track_duration: Some("0:03:45".to_string()),
-            current_track: None,
-            number_of_tracks: None,
-            current_play_mode: None,
-        };
+        let xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><LastChange>&lt;Event xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/AVT/&quot;&gt;&lt;InstanceID val=&quot;0&quot;&gt;&lt;TransportState val=&quot;PAUSED_PLAYBACK&quot;/&gt;&lt;CurrentTrackDuration val=&quot;0:03:45&quot;/&gt;&lt;/InstanceID&gt;&lt;/Event&gt;</LastChange></e:property></e:propertyset>"#;
+        let av_event = AVTransportParser::from_xml(xml).unwrap();
         
-        let typed_event = TypedEvent::new(Box::new(av_event));
+        let typed_event = TypedEvent::new_parser(av_event, "av_transport_event", ServiceType::AVTransport);
         let formatted = formatter.format_av_transport_event(&typed_event);
         
         assert!(formatted.contains("State: PAUSED_PLAYBACK"));

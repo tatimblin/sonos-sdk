@@ -49,15 +49,26 @@ pub struct CallbackServer {
 }
 
 impl CallbackServer {
-    /// Create and start a new callback server.
+    /// Create and start a new unified callback server.
     ///
-    /// This method finds an available port in the specified range, detects the
-    /// local IP address, and starts an HTTP server to receive UPnP notifications.
+    /// This method creates a single HTTP server that efficiently handles all UPnP
+    /// event notifications from multiple speakers and services. The server:
+    /// - Finds an available port in the specified range
+    /// - Detects the local IP address for callback URLs
+    /// - Starts an HTTP server to receive all UPnP NOTIFY requests
+    /// - Routes events through a unified event router to registered handlers
+    ///
+    /// # Unified Event Stream Processing
+    ///
+    /// The callback server is designed to support the unified event stream processor
+    /// pattern where a single HTTP endpoint receives events from multiple UPnP
+    /// services and speakers, then routes them to appropriate handlers based on
+    /// subscription IDs.
     ///
     /// # Arguments
     ///
     /// * `port_range` - Range of ports to try binding to (start, end)
-    /// * `event_sender` - Channel for sending notification payloads
+    /// * `event_sender` - Channel for sending notification payloads to the unified processor
     ///
     /// # Returns
     ///
@@ -73,6 +84,7 @@ impl CallbackServer {
     /// # async fn main() {
     /// let (tx, _rx) = mpsc::unbounded_channel::<NotificationPayload>();
     /// let server = CallbackServer::new((3400, 3500), tx).await.unwrap();
+    /// println!("Unified callback server listening at: {}", server.base_url());
     /// # }
     /// ```
     pub async fn new(
@@ -121,10 +133,28 @@ impl CallbackServer {
         })
     }
 
-    /// Get the base URL for callback registration.
+    /// Get the unified callback URL for subscription registration.
     ///
-    /// This URL should be used when subscribing to UPnP events. The format is
-    /// `http://<local_ip>:<port>`.
+    /// This URL should be used when subscribing to UPnP events from any speaker
+    /// or service. The unified callback server will route all incoming events
+    /// based on their subscription IDs to the appropriate handlers.
+    ///
+    /// The format is `http://<local_ip>:<port>` and this same URL is used for
+    /// all subscriptions, enabling the unified event stream processing pattern.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use tokio::sync::mpsc;
+    /// # use callback_server::{CallbackServer, NotificationPayload};
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// # let (tx, _rx) = mpsc::unbounded_channel::<NotificationPayload>();
+    /// # let server = CallbackServer::new((3400, 3500), tx).await.unwrap();
+    /// let callback_url = server.base_url();
+    /// println!("Use this URL for all subscriptions: {}", callback_url);
+    /// # }
+    /// ```
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
@@ -243,8 +273,8 @@ impl CallbackServer {
                                 return Err(warp::reject::not_found());
                             }
 
-                            // Log incoming request details
-                            eprintln!("\n🌐 === INCOMING NOTIFY REQUEST ===");
+                            // Log incoming request details for unified event stream monitoring
+                            eprintln!("\n🌐 === UNIFIED CALLBACK SERVER: INCOMING NOTIFY ===");
                             eprintln!("📡 Method: {}", method);
                             eprintln!("📡 Path: {}", path.as_str());
                             eprintln!("📏 Body size: {} bytes", body.len());
@@ -261,9 +291,14 @@ impl CallbackServer {
 
                             // Convert body to string and log it
                             let event_xml = String::from_utf8_lossy(&body).to_string();
-                            eprintln!("📄 Body content:");
-                            eprintln!("{}", event_xml);
-                            eprintln!("🌐 === END NOTIFY REQUEST ===\n");
+                            eprintln!("📄 Event XML (first 200 chars):");
+                            let preview = if event_xml.len() > 200 {
+                                format!("{}...", &event_xml[..200])
+                            } else {
+                                event_xml.clone()
+                            };
+                            eprintln!("{}", preview);
+                            eprintln!("🌐 === END UNIFIED CALLBACK NOTIFICATION ===\n");
 
                             // Validate UPnP headers
                             if !Self::validate_upnp_headers(&sid, &nt, &nts) {
@@ -277,17 +312,17 @@ impl CallbackServer {
                                 warp::reject::custom(InvalidUpnpHeaders)
                             })?;
 
-                            // Route the event
+                            // Route the event through the unified event stream
                             let routed = router.route_event(sub_id, event_xml).await;
 
                             if routed {
-                                eprintln!("✅ Event routed successfully");
+                                eprintln!("✅ Unified event stream: Event routed successfully");
                                 Ok::<_ , warp::Rejection>(warp::reply::with_status(
                                     "",
                                     warp::http::StatusCode::OK,
                                 ))
                             } else {
-                                eprintln!("❌ Event routing failed - subscription not found");
+                                eprintln!("❌ Unified event stream: Event routing failed - subscription not found");
                                 Err(warp::reject::not_found())
                             }
                         }
@@ -306,7 +341,7 @@ impl CallbackServer {
                     },
                 );
 
-            eprintln!("CallbackServer listening on {addr}");
+            eprintln!("🌐 Unified CallbackServer listening on {addr} - ready to process events from all speakers and services");
             // Signal that server is ready
             let _ = ready_tx.send(()).await;
             server.await;

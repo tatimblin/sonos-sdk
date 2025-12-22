@@ -109,21 +109,33 @@ impl EventRouter {
         subs.remove(subscription_id);
     }
 
-    /// Route an incoming event to the channel.
+    /// Route an incoming event to the unified event stream.
     ///
-    /// Checks if the subscription ID is registered and sends a `NotificationPayload`
-    /// to the configured channel. If the subscription ID is not found, the event
-    /// is dropped and `false` is returned.
+    /// This method is the core of the unified event stream processing pattern.
+    /// It checks if the subscription ID is registered and sends a `NotificationPayload`
+    /// to the configured channel for further processing by the event stream processor.
+    ///
+    /// The unified approach means that all events from all speakers and services
+    /// flow through this single routing point, enabling efficient aggregation
+    /// and processing.
     ///
     /// # Arguments
     ///
-    /// * `subscription_id` - The subscription ID from the event notification
-    /// * `event_xml` - The raw XML event body
+    /// * `subscription_id` - The subscription ID from the UPnP SID header
+    /// * `event_xml` - The raw XML event body from the UPnP notification
     ///
     /// # Returns
     ///
-    /// Returns `true` if the event was successfully routed, `false` if the
-    /// subscription ID was not registered.
+    /// Returns `true` if the event was successfully routed to the unified stream,
+    /// `false` if the subscription ID was not registered.
+    ///
+    /// # Unified Event Processing
+    ///
+    /// This method enables the unified event stream processor pattern by:
+    /// 1. Validating that the subscription is registered and active
+    /// 2. Creating a generic notification payload with subscription context
+    /// 3. Forwarding to the unified event stream for service-specific processing
+    /// 4. Allowing downstream components to add speaker and service context
     ///
     /// # Example
     ///

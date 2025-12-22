@@ -28,7 +28,7 @@ use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 
 use crate::event::Event;
-use crate::strategy::SubscriptionStrategy;
+use crate::services::ServiceStrategy;
 use crate::types::RawEvent;
 use crate::types::{ServiceType, SubscriptionKey};
 
@@ -66,7 +66,7 @@ impl EventProcessor {
     /// Returns an `EventProcessor` instance with a handle to the background task.
     pub fn start(
         raw_event_rx: mpsc::UnboundedReceiver<RawEvent>,
-        strategies: Arc<HashMap<ServiceType, Box<dyn SubscriptionStrategy>>>,
+        strategies: Arc<HashMap<ServiceType, Box<dyn ServiceStrategy + Send + Sync>>>,
         subscriptions: Arc<RwLock<HashMap<SubscriptionKey, ActiveSubscription>>>,
         event_sender: mpsc::Sender<Event>,
     ) -> Self {
@@ -136,7 +136,7 @@ impl EventProcessor {
     /// closed (which happens during broker shutdown).
     fn start_processing_task(
         mut raw_event_rx: mpsc::UnboundedReceiver<RawEvent>,
-        strategies: Arc<HashMap<ServiceType, Box<dyn SubscriptionStrategy>>>,
+        strategies: Arc<HashMap<ServiceType, Box<dyn ServiceStrategy + Send + Sync>>>,
         subscriptions: Arc<RwLock<HashMap<SubscriptionKey, ActiveSubscription>>>,
         event_sender: mpsc::Sender<Event>,
     ) -> JoinHandle<()> {
@@ -171,7 +171,7 @@ impl EventProcessor {
     /// * `event_sender` - Channel for emitting parsed events and errors
     async fn process_raw_event(
         raw_event: RawEvent,
-        strategies: &Arc<HashMap<ServiceType, Box<dyn SubscriptionStrategy>>>,
+        strategies: &Arc<HashMap<ServiceType, Box<dyn ServiceStrategy + Send + Sync>>>,
         subscriptions: &Arc<RwLock<HashMap<SubscriptionKey, ActiveSubscription>>>,
         event_sender: &mpsc::Sender<Event>,
     ) {
@@ -183,12 +183,23 @@ impl EventProcessor {
         let strategy = match strategies.get(&service_type) {
             Some(s) => s,
             None => {
-                // No strategy registered - emit parse error
+                // No strategy registered - emit parse error with detailed context
+                eprintln!(
+                    "⚠️  EventProcessor: No strategy registered for service type {:?} from speaker {}. Available strategies: {:?}",
+                    service_type,
+                    speaker_id.as_str(),
+                    strategies.keys().collect::<Vec<_>>()
+                );
+                
                 let _ = event_sender
                     .send(Event::ParseError {
                         speaker_id,
                         service_type,
-                        error: format!("No strategy registered for service type: {service_type:?}"),
+                        error: format!(
+                            "No strategy registered for service type: {service_type:?}. Available strategies: {:?}",
+                            strategies.keys().collect::<Vec<_>>()
+                        ),
+                        timestamp: SystemTime::now(),
                     })
                     .await;
                 return;
@@ -204,6 +215,7 @@ impl EventProcessor {
                         speaker_id: speaker_id.clone(),
                         service_type,
                         event: typed_event,
+                        timestamp: SystemTime::now(),
                     })
                     .await;
 
@@ -215,12 +227,33 @@ impl EventProcessor {
                 }
             }
             Err(e) => {
-                // Emit ParseError event
+                // Log parse error with context for debugging
+                eprintln!(
+                    "❌ EventProcessor: Parse error for speaker {} service {:?}: {}. XML length: {} bytes",
+                    speaker_id.as_str(),
+                    service_type,
+                    e,
+                    event_xml.len()
+                );
+                
+                // Emit ParseError event with enhanced error information
+                let enhanced_error = format!(
+                    "Parse failed for {} bytes of XML: {}. Original error: {}",
+                    event_xml.len(),
+                    if event_xml.len() > 100 {
+                        format!("{}...", &event_xml[..100])
+                    } else {
+                        event_xml.clone()
+                    },
+                    e
+                );
+                
                 let _ = event_sender
                     .send(Event::ParseError {
                         speaker_id,
                         service_type,
-                        error: e.to_string(),
+                        error: enhanced_error,
+                        timestamp: SystemTime::now(),
                     })
                     .await;
             }
@@ -233,97 +266,20 @@ mod tests {
     use super::*;
 
     use crate::subscription::Subscription;
-    use crate::types::{ServiceType, SpeakerId, SubscriptionScope};
-    use crate::error::StrategyError;
+    use crate::types::{ServiceType, SpeakerId};
     use std::time::Duration;
 
-    // Mock strategy for testing
-    struct MockStrategy {
-        service_type: ServiceType,
-        should_succeed: bool,
-    }
 
-    impl MockStrategy {
-        fn new_success(service_type: ServiceType) -> Self {
-            Self {
-                service_type,
-                should_succeed: true,
-            }
-        }
-
-        fn new_failure(service_type: ServiceType) -> Self {
-            Self {
-                service_type,
-                should_succeed: false,
-            }
-        }
-    }
-
-    impl SubscriptionStrategy for MockStrategy {
-        fn service_type(&self) -> ServiceType {
-            self.service_type
-        }
-
-        fn subscription_scope(&self) -> SubscriptionScope {
-            SubscriptionScope::PerSpeaker
-        }
-
-        fn service_endpoint_path(&self) -> &'static str {
-            "/MockService/Event"
-        }
-
-        fn parse_event(
-            &self,
-            _speaker_id: &SpeakerId,
-            _event_xml: &str,
-        ) -> Result<crate::event::TypedEvent, StrategyError> {
-            use crate::event::{EventData, TypedEvent};
-            use std::any::Any;
-            
-            if self.should_succeed {
-                #[derive(Debug, Clone)]
-                struct MockEventData {
-                    key: String,
-                }
-                
-                impl EventData for MockEventData {
-                    fn event_type(&self) -> &str {
-                        "test_event"
-                    }
-                    
-                    fn service_type(&self) -> crate::types::ServiceType {
-                        crate::types::ServiceType::AVTransport
-                    }
-                    
-                    fn as_any(&self) -> &dyn Any {
-                        self
-                    }
-                    
-                    fn clone_box(&self) -> Box<dyn EventData> {
-                        Box::new(self.clone())
-                    }
-                }
-                
-                let mock_data = MockEventData {
-                    key: "value".to_string(),
-                };
-                
-                Ok(TypedEvent::new(Box::new(mock_data)))
-            } else {
-                Err(StrategyError::EventParseFailed("test error".to_string()))
-            }
-        }
-    }
 
     #[tokio::test]
     async fn test_process_raw_event_success() {
         let (event_tx, mut event_rx) = mpsc::channel(10);
         let (_raw_event_tx, _raw_event_rx) = mpsc::unbounded_channel::<RawEvent>();
 
-        let mut strategies: HashMap<ServiceType, Box<dyn SubscriptionStrategy>> = HashMap::new();
+        let mut strategies: HashMap<ServiceType, Box<dyn ServiceStrategy + Send + Sync>> = HashMap::new();
         strategies.insert(
             ServiceType::AVTransport,
-            Box::new(MockStrategy::new_success(ServiceType::AVTransport)),
+            Box::new(crate::services::AVTransportProvider::new()),
         );
         let strategies = Arc::new(strategies);
 
@@ -348,12 +304,14 @@ mod tests {
             );
         }
 
-        // Create raw event
+        // Create raw event with valid AVTransport XML
+        let event_xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><LastChange>&lt;Event xmlns="urn:schemas-upnp-org:metadata-1-0/AVT/"&gt;&lt;InstanceID val="0"&gt;&lt;TransportState val="PLAYING"/&gt;&lt;/InstanceID&gt;&lt;/Event&gt;</LastChange></e:property></e:propertyset>"#;
+        
         let raw_event = RawEvent {
             subscription_id: "sub-123".to_string(),
             speaker_id: speaker_id.clone(),
             service_type: ServiceType::AVTransport,
-            event_xml: "<event>test</event>".to_string(),
+            event_xml: event_xml.to_string(),
         };
 
         // Process the event
@@ -372,10 +330,11 @@ mod tests {
                 speaker_id: sid,
                 service_type: st,
                 event: typed_event,
+                ..
             } => {
                 assert_eq!(sid, speaker_id);
                 assert_eq!(st, ServiceType::AVTransport);
-                assert_eq!(typed_event.event_type(), "test_event");
+                assert_eq!(typed_event.event_type(), "av_transport_event");
             }
             _ => panic!("Expected ServiceEvent"),
         }
@@ -390,22 +349,22 @@ mod tests {
     async fn test_process_raw_event_parse_error() {
         let (event_tx, mut event_rx) = mpsc::channel(10);
 
-        let mut strategies: HashMap<ServiceType, Box<dyn SubscriptionStrategy>> = HashMap::new();
+        let mut strategies: HashMap<ServiceType, Box<dyn ServiceStrategy + Send + Sync>> = HashMap::new();
         strategies.insert(
             ServiceType::AVTransport,
-            Box::new(MockStrategy::new_failure(ServiceType::AVTransport)),
+            Box::new(crate::services::AVTransportProvider::new()),
         );
         let strategies = Arc::new(strategies);
 
         let subscriptions = Arc::new(RwLock::new(HashMap::new()));
         let speaker_id = SpeakerId::new("speaker1");
 
-        // Create raw event
+        // Create raw event with invalid XML
         let raw_event = RawEvent {
             subscription_id: "sub-123".to_string(),
             speaker_id: speaker_id.clone(),
             service_type: ServiceType::AVTransport,
-            event_xml: "<event>test</event>".to_string(),
+            event_xml: "<invalid>xml</invalid>".to_string(),
         };
 
         // Process the event
@@ -424,10 +383,11 @@ mod tests {
                 speaker_id: sid,
                 service_type: st,
                 error,
+                ..
             } => {
                 assert_eq!(sid, speaker_id);
                 assert_eq!(st, ServiceType::AVTransport);
-                assert!(error.contains("test error"));
+                assert!(error.contains("Failed to parse event"));
             }
             _ => panic!("Expected ParseError"),
         }
@@ -437,7 +397,7 @@ mod tests {
     async fn test_process_raw_event_no_strategy() {
         let (event_tx, mut event_rx) = mpsc::channel(10);
 
-        let strategies: HashMap<ServiceType, Box<dyn SubscriptionStrategy>> = HashMap::new();
+        let strategies: HashMap<ServiceType, Box<dyn ServiceStrategy + Send + Sync>> = HashMap::new();
         let strategies = Arc::new(strategies);
 
         let subscriptions = Arc::new(RwLock::new(HashMap::new()));
@@ -460,17 +420,69 @@ mod tests {
         )
         .await;
 
-        // Verify ParseError was emitted
+        // Verify ParseError was emitted with enhanced error message
         let event = event_rx.recv().await.unwrap();
         match event {
             Event::ParseError {
                 speaker_id: sid,
                 service_type: st,
                 error,
+                ..
             } => {
                 assert_eq!(sid, speaker_id);
                 assert_eq!(st, ServiceType::AVTransport);
                 assert!(error.contains("No strategy registered"));
+                assert!(error.contains("Available strategies"));
+            }
+            _ => panic!("Expected ParseError"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_process_raw_event_enhanced_parse_error() {
+        let (event_tx, mut event_rx) = mpsc::channel(10);
+
+        let mut strategies: HashMap<ServiceType, Box<dyn ServiceStrategy + Send + Sync>> = HashMap::new();
+        strategies.insert(
+            ServiceType::AVTransport,
+            Box::new(crate::services::AVTransportProvider::new()),
+        );
+        let strategies = Arc::new(strategies);
+
+        let subscriptions = Arc::new(RwLock::new(HashMap::new()));
+        let speaker_id = SpeakerId::new("speaker1");
+
+        // Create raw event with invalid XML
+        let raw_event = RawEvent {
+            subscription_id: "sub-123".to_string(),
+            speaker_id: speaker_id.clone(),
+            service_type: ServiceType::AVTransport,
+            event_xml: "<invalid>xml</invalid>".to_string(),
+        };
+
+        // Process the event
+        EventProcessor::process_raw_event(
+            raw_event,
+            &strategies,
+            &subscriptions,
+            &event_tx,
+        )
+        .await;
+
+        // Verify ParseError was emitted with enhanced error information
+        let event = event_rx.recv().await.unwrap();
+        match event {
+            Event::ParseError {
+                speaker_id: sid,
+                service_type: st,
+                error,
+                ..
+            } => {
+                assert_eq!(sid, speaker_id);
+                assert_eq!(st, ServiceType::AVTransport);
+                assert!(error.contains("Parse failed for"));
+                assert!(error.contains("bytes of XML"));
+                assert!(error.contains("Original error"));
             }
             _ => panic!("Expected ParseError"),
         }
@@ -481,7 +493,7 @@ mod tests {
         let (event_tx, _event_rx) = mpsc::channel(10);
         let (raw_event_tx, raw_event_rx) = mpsc::unbounded_channel();
 
-        let strategies: HashMap<ServiceType, Box<dyn SubscriptionStrategy>> = HashMap::new();
+        let strategies: HashMap<ServiceType, Box<dyn ServiceStrategy + Send + Sync>> = HashMap::new();
         let strategies = Arc::new(strategies);
 
         let subscriptions = Arc::new(RwLock::new(HashMap::new()));

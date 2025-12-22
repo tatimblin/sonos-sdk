@@ -141,6 +141,11 @@ impl EventBroker {
             .expect("event_stream() can only be called once")
     }
 
+    /// Get the callback URL for creating subscriptions.
+    pub fn callback_url(&self) -> String {
+        self.callback_server.base_url().to_string()
+    }
+
     /// Subscribe to a specific service on a speaker.
     ///
     /// This method creates a new subscription for the given speaker-service combination.

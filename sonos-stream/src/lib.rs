@@ -178,7 +178,7 @@ mod broker;
 mod builder;
 mod error;
 mod event;
-mod strategy;
+mod services;
 mod subscription;
 mod types;
 
@@ -190,10 +190,10 @@ pub use builder::EventBrokerBuilder;
 pub use callback_server::{CallbackServer, EventRouter};
 
 // Re-export event types
-pub use event::{Event, EventData, TypedEvent};
+pub use event::{Event, TypedEvent};
 
-// Re-export trait definitions
-pub use strategy::{SubscriptionStrategy, AVTransportStrategy, AVTransportEvent};
+// Re-export services types
+pub use services::{ServiceStrategy, AVTransportProvider};
 pub use subscription::{Subscription, UPnPSubscription};
 
 // Re-export error types

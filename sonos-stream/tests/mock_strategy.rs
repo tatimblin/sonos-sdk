@@ -1,12 +1,12 @@
 //! Mock strategy and subscription implementations for testing.
 //!
-//! This module provides mock implementations of the `SubscriptionStrategy` and
+//! This module provides mock implementations of the `ServiceStrategy` and
 //! `Subscription` traits that can be used in tests without making real UPnP calls.
 //! The mock implementations support configurable failure modes to test error paths.
 
 use sonos_stream::{
-    EventData, ServiceType, SpeakerId, Speaker, SubscriptionConfig, SubscriptionScope,
-    StrategyError, Subscription, SubscriptionError, SubscriptionStrategy, TypedEvent,
+    ServiceStrategy, ServiceType, SpeakerId, Speaker, SubscriptionConfig, SubscriptionScope,
+    StrategyError, Subscription, SubscriptionError, TypedEvent,
 };
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -14,29 +14,19 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use async_trait::async_trait;
 
-/// Shared mock event data for testing
+/// Shared mock parser for testing
 #[derive(Debug, Clone)]
-pub struct MockEventData {
-    pub event_type: String,
-    pub service_type: ServiceType,
+pub struct MockParser {
     pub data: HashMap<String, String>,
 }
 
-impl EventData for MockEventData {
-    fn event_type(&self) -> &str {
-        &self.event_type
+impl MockParser {
+    pub fn new(data: HashMap<String, String>) -> Self {
+        Self { data }
     }
-
-    fn service_type(&self) -> ServiceType {
-        self.service_type
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn clone_box(&self) -> Box<dyn EventData> {
-        Box::new(self.clone())
+    
+    pub fn get_data(&self, key: &str) -> Option<&str> {
+        self.data.get(key).map(|s| s.as_str())
     }
 }
 
@@ -45,6 +35,7 @@ impl EventData for MockEventData {
 /// This strategy can be configured to simulate various failure scenarios
 /// for testing error handling paths.
 #[derive(Clone)]
+#[derive(Debug)]
 pub struct MockStrategy {
     service_type: ServiceType,
     subscription_scope: SubscriptionScope,
@@ -107,7 +98,7 @@ impl MockStrategy {
 }
 
 #[async_trait]
-impl SubscriptionStrategy for MockStrategy {
+impl ServiceStrategy for MockStrategy {
     fn service_type(&self) -> ServiceType {
         self.service_type
     }
@@ -120,39 +111,11 @@ impl SubscriptionStrategy for MockStrategy {
         "/MockService/Event"
     }
 
-    async fn create_subscription(
-        &self,
-        speaker: &Speaker,
-        callback_url: String,
-        config: &SubscriptionConfig,
-    ) -> Result<Box<dyn Subscription>, StrategyError> {
-        self.creation_count.fetch_add(1, Ordering::Relaxed);
-
-        if self.should_fail_creation.load(Ordering::Relaxed) {
-            return Err(StrategyError::SubscriptionCreationFailed(
-                "Mock failure: subscription creation disabled".to_string(),
-            ));
-        }
-
-        // Generate a mock subscription ID
-        let subscription_id = format!("uuid:mock-sub-{}-{}", speaker.id.as_str(), self.service_type as u32);
-
-        Ok(Box::new(MockSubscription::new(
-            subscription_id,
-            speaker.id.clone(),
-            self.service_type,
-            Duration::from_secs(config.timeout_seconds as u64),
-            callback_url,
-        )))
-    }
-
     fn parse_event(
         &self,
         speaker_id: &SpeakerId,
         event_xml: &str,
     ) -> Result<TypedEvent, StrategyError> {
-
-        
         self.parse_count.fetch_add(1, Ordering::Relaxed);
 
         if self.should_fail_parsing.load(Ordering::Relaxed) {
@@ -195,15 +158,40 @@ impl SubscriptionStrategy for MockStrategy {
             data.insert("channel".to_string(), "Master".to_string());
         }
 
+        let mock_parser = MockParser::new(data);
 
+        Ok(TypedEvent::new_parser(
+            mock_parser,
+            event_type,
+            self.service_type,
+        ))
+    }
 
-        let mock_data = MockEventData {
-            event_type: event_type.to_string(),
-            service_type: self.service_type,
-            data,
-        };
+    // Override create_subscription to add mock-specific behavior
+    async fn create_subscription(
+        &self,
+        speaker: &Speaker,
+        callback_url: String,
+        config: &SubscriptionConfig,
+    ) -> Result<Box<dyn Subscription>, StrategyError> {
+        self.creation_count.fetch_add(1, Ordering::Relaxed);
 
-        Ok(TypedEvent::new(Box::new(mock_data)))
+        if self.should_fail_creation.load(Ordering::Relaxed) {
+            return Err(StrategyError::SubscriptionCreationFailed(
+                "Mock failure: subscription creation disabled".to_string(),
+            ));
+        }
+
+        // Generate a mock subscription ID
+        let subscription_id = format!("uuid:mock-sub-{}-{}", speaker.id.as_str(), self.service_type as u32);
+
+        Ok(Box::new(MockSubscription::new(
+            subscription_id,
+            speaker.id.clone(),
+            self.service_type,
+            Duration::from_secs(config.timeout_seconds as u64),
+            callback_url,
+        )))
     }
 }
 
@@ -477,14 +465,14 @@ mod tests {
         let typed_event = result.unwrap();
         assert_eq!(typed_event.event_type(), "test_event");
         
-        // Downcast to MockEventData to access the data
-        if let Some(mock_data) = typed_event.downcast_ref::<MockEventData>() {
+        // Downcast to MockParser to access the data
+        if let Some(mock_parser) = typed_event.downcast_ref::<MockParser>() {
             assert_eq!(
-                mock_data.data.get("speaker_id").map(|s| s.as_str()),
+                mock_parser.get_data("speaker_id"),
                 Some("RINCON_TEST123")
             );
         } else {
-            panic!("Failed to downcast to MockEventData");
+            panic!("Failed to downcast to MockParser");
         }
     }
 
@@ -507,12 +495,12 @@ mod tests {
         let typed_event = result.unwrap();
         assert_eq!(typed_event.event_type(), "volume_changed");
         
-        // Downcast to MockEventData to access the data
-        if let Some(mock_data) = typed_event.downcast_ref::<MockEventData>() {
-            assert_eq!(mock_data.data.get("volume").map(|s| s.as_str()), Some("50"));
-            assert_eq!(mock_data.data.get("channel").map(|s| s.as_str()), Some("Master"));
+        // Downcast to MockParser to access the data
+        if let Some(mock_parser) = typed_event.downcast_ref::<MockParser>() {
+            assert_eq!(mock_parser.get_data("volume"), Some("50"));
+            assert_eq!(mock_parser.get_data("channel"), Some("Master"));
         } else {
-            panic!("Failed to downcast to MockEventData");
+            panic!("Failed to downcast to MockParser");
         }
     }
 

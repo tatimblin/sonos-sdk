@@ -63,6 +63,7 @@ async fn test_end_to_end_subscription() {
             speaker_id,
             service_type,
             subscription_id,
+            ..
         } => {
             assert_eq!(speaker_id.as_str(), "RINCON_TEST123");
             assert_eq!(service_type, ServiceType::AVTransport);
@@ -76,8 +77,8 @@ async fn test_end_to_end_subscription() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Simulate UPnP event notification via HTTP
-    // Extract port from subscription ID or use a known test port
-    let callback_url = format!("http://127.0.0.1:40000/notify/{}", subscription_id);
+    // Use the actual callback server URL from the broker
+    let callback_url = broker.callback_url();
     let event_xml = r#"<event><test_event>data</test_event></event>"#;
 
     // Send HTTP POST to callback server
@@ -105,16 +106,16 @@ async fn test_end_to_end_subscription() {
             speaker_id,
             service_type,
             event,
+            ..
         } => {
             assert_eq!(speaker_id.as_str(), "RINCON_TEST123");
             assert_eq!(service_type, ServiceType::AVTransport);
             assert_eq!(event.event_type(), "test_event");
             
-            // Demonstrate type-safe downcasting to MockEventData
-            if let Some(mock_data) = event.downcast_ref::<mock_strategy::MockEventData>() {
-                assert_eq!(mock_data.service_type, ServiceType::AVTransport);
+            // Demonstrate type-safe downcasting to MockParser
+            if let Some(mock_parser) = event.downcast_ref::<mock_strategy::MockParser>() {
                 assert_eq!(
-                    mock_data.data.get("speaker_id").map(|s| s.as_str()),
+                    mock_parser.get_data("speaker_id"),
                     Some("RINCON_TEST123")
                 );
             } else {
@@ -140,6 +141,7 @@ async fn test_end_to_end_subscription() {
         Event::SubscriptionRemoved {
             speaker_id,
             service_type,
+            ..
         } => {
             assert_eq!(speaker_id.as_str(), "RINCON_TEST123");
             assert_eq!(service_type, ServiceType::AVTransport);
@@ -240,6 +242,7 @@ async fn test_multiple_subscriptions() {
         Event::SubscriptionRemoved {
             speaker_id,
             service_type,
+            ..
         } => {
             assert_eq!(speaker_id.as_str(), "RINCON_SPEAKER1");
             assert_eq!(service_type, ServiceType::AVTransport);
@@ -539,6 +542,7 @@ async fn test_real_upnp_event_reception() {
             speaker_id,
             service_type,
             subscription_id,
+            ..
         } => {
             assert_eq!(speaker_id.as_str(), "RINCON_REAL_TEST");
             assert_eq!(service_type, ServiceType::AVTransport);
@@ -567,10 +571,8 @@ async fn test_real_upnp_event_reception() {
 </e:propertyset>"#;
 
     // Send HTTP POST to callback server (simulating UPnP device NOTIFY)
-    // Use the clean subscription ID in the URL path (without uuid: prefix)
-    // but include the full ID in the SID header
-    let clean_sub_id = subscription_id.strip_prefix("uuid:").unwrap_or(&subscription_id);
-    let callback_url = format!("http://127.0.0.1:40500/notify/{}", clean_sub_id);
+    // Use the actual callback server URL from the broker
+    let callback_url = broker.callback_url();
     println!("Sending NOTIFY to: {}", callback_url);
     println!("Subscription ID: {}", subscription_id);
     
@@ -608,15 +610,16 @@ async fn test_real_upnp_event_reception() {
             speaker_id,
             service_type,
             event,
+            ..
         } => {
             assert_eq!(speaker_id.as_str(), "RINCON_REAL_TEST");
             assert_eq!(service_type, ServiceType::AVTransport);
             assert_eq!(event.event_type(), "av_transport_event");
             
             // Verify parsed AVTransport data using typed access
-            let av_data = event.downcast_ref::<sonos_stream::AVTransportEvent>().unwrap();
-            assert_eq!(av_data.transport_state, "PLAYING");
-            assert_eq!(av_data.current_track_duration, Some("0:03:45".to_string()));
+            let av_data = event.downcast_ref::<sonos_parser::services::av_transport::AVTransportParser>().unwrap();
+            assert_eq!(av_data.transport_state(), "PLAYING");
+            assert_eq!(av_data.current_track_duration(), Some("0:03:45"));
             
             // Verify DIDL-Lite metadata was parsed
             assert_eq!(av_data.track_title(), Some("Test Song Title"));
@@ -625,7 +628,7 @@ async fn test_real_upnp_event_reception() {
             
             // Verify current play mode through the typed field
             assert_eq!(
-                av_data.current_play_mode.as_deref(),
+                av_data.property.last_change.instance.current_play_mode.as_ref().map(|v| v.val.as_str()),
                 Some("NORMAL")
             );
         }
@@ -648,6 +651,7 @@ async fn test_real_upnp_event_reception() {
         Event::SubscriptionRemoved {
             speaker_id,
             service_type,
+            ..
         } => {
             assert_eq!(speaker_id.as_str(), "RINCON_REAL_TEST");
             assert_eq!(service_type, ServiceType::AVTransport);
@@ -749,6 +753,7 @@ async fn test_multiple_real_upnp_subscriptions() {
                 speaker_id,
                 service_type,
                 subscription_id,
+                ..
             } => {
                 assert_eq!(service_type, ServiceType::AVTransport);
                 subscription_ids.insert(speaker_id.as_str().to_string(), subscription_id);
@@ -793,12 +798,12 @@ async fn test_multiple_real_upnp_subscriptions() {
     let sub1_id = subscription_ids.get("RINCON_MULTI_SPEAKER1").unwrap();
     let sub2_id = subscription_ids.get("RINCON_MULTI_SPEAKER2").unwrap();
     
-    let callback_url1 = format!("http://127.0.0.1:40600/notify/{}", sub1_id);
-    let callback_url2 = format!("http://127.0.0.1:40600/notify/{}", sub2_id);
+    // Use the actual callback server URL from the broker
+    let callback_url = broker.callback_url();
 
     let (response1, response2) = tokio::join!(
         client
-            .post(&callback_url1)
+            .post(&callback_url)
             .header("NT", "upnp:event")
             .header("NTS", "upnp:propchange")
             .header("SID", sub1_id)
@@ -806,7 +811,7 @@ async fn test_multiple_real_upnp_subscriptions() {
             .body(speaker1_event_xml.to_string())
             .send(),
         client
-            .post(&callback_url2)
+            .post(&callback_url)
             .header("NT", "upnp:event")
             .header("NTS", "upnp:propchange")
             .header("SID", sub2_id)
@@ -831,6 +836,7 @@ async fn test_multiple_real_upnp_subscriptions() {
                 speaker_id,
                 service_type,
                 event,
+                ..
             } => {
                 assert_eq!(service_type, ServiceType::AVTransport);
                 assert_eq!(event.event_type(), "av_transport_event");
@@ -855,13 +861,13 @@ async fn test_multiple_real_upnp_subscriptions() {
         .expect("Missing event from speaker 2");
 
     // Verify speaker 1 event data using typed access
-    let speaker1_av_data = speaker1_event.1.downcast_ref::<sonos_stream::AVTransportEvent>().unwrap();
-    assert_eq!(speaker1_av_data.transport_state, "PLAYING");
+    let speaker1_av_data = speaker1_event.1.downcast_ref::<sonos_parser::services::av_transport::AVTransportParser>().unwrap();
+    assert_eq!(speaker1_av_data.transport_state(), "PLAYING");
     assert_eq!(speaker1_av_data.track_title(), Some("Speaker 1 Song"));
 
     // Verify speaker 2 event data using typed access
-    let speaker2_av_data = speaker2_event.1.downcast_ref::<sonos_stream::AVTransportEvent>().unwrap();
-    assert_eq!(speaker2_av_data.transport_state, "PAUSED_PLAYBACK");
+    let speaker2_av_data = speaker2_event.1.downcast_ref::<sonos_parser::services::av_transport::AVTransportParser>().unwrap();
+    assert_eq!(speaker2_av_data.transport_state(), "PAUSED_PLAYBACK");
     assert_eq!(speaker2_av_data.track_title(), Some("Speaker 2 Song"));
 
     // Unsubscribe from both speakers
@@ -886,6 +892,7 @@ async fn test_multiple_real_upnp_subscriptions() {
             Event::SubscriptionRemoved {
                 speaker_id,
                 service_type,
+                ..
             } => {
                 assert_eq!(service_type, ServiceType::AVTransport);
                 assert!(

@@ -62,6 +62,14 @@ pub enum StrategyError {
     /// Invalid configuration provided to the strategy
     #[error("Invalid configuration: {0}")]
     InvalidConfiguration(String),
+
+    /// Invalid input data provided to the strategy
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
+
+    /// Service temporarily unavailable
+    #[error("Service unavailable: {0}")]
+    ServiceUnavailable(String),
 }
 
 /// Errors from subscription operations.
@@ -133,6 +141,12 @@ mod tests {
 
         let error = StrategyError::InvalidConfiguration("missing field".to_string());
         assert_eq!(error.to_string(), "Invalid configuration: missing field");
+
+        let error = StrategyError::InvalidInput("empty data".to_string());
+        assert_eq!(error.to_string(), "Invalid input: empty data");
+
+        let error = StrategyError::ServiceUnavailable("device offline".to_string());
+        assert_eq!(error.to_string(), "Service unavailable: device offline");
     }
 
     #[test]
