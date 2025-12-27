@@ -321,12 +321,19 @@ impl EventBrokerBuilder {
         // Create raw event channel for adapter -> event processor communication
         let (raw_event_tx, raw_event_rx) = mpsc::unbounded_channel();
 
-        // Create and start callback server
-        let callback_server = callback_server::CallbackServer::new(self.config.callback_port_range, notification_tx)
-            .await
-            .map_err(|e| {
-                BrokerError::CallbackServerError(format!("Failed to start callback server: {e}"))
-            })?;
+        // Create and start callback server with firewall detection plugin
+        let firewall_plugin = callback_server::FirewallDetectionPlugin::new();
+        let plugins: Vec<Box<dyn callback_server::Plugin>> = vec![Box::new(firewall_plugin)];
+        
+        let callback_server = callback_server::CallbackServer::with_plugins(
+            self.config.callback_port_range, 
+            notification_tx,
+            Some(plugins)
+        )
+        .await
+        .map_err(|e| {
+            BrokerError::CallbackServerError(format!("Failed to start callback server with firewall detection: {e}"))
+        })?;
 
         // Create callback adapter to convert notifications to raw events
         let callback_adapter = CallbackAdapter::new(notification_rx, raw_event_tx);

@@ -114,8 +114,17 @@ impl CallbackServer {
         // Create ready signal channel
         let (ready_tx, mut ready_rx) = mpsc::channel::<()>(1);
 
+        // Create test result tracker for firewall detection
+        let test_result_tracker = Arc::new(crate::TestResultTracker::new());
+
         // Start the HTTP server
-        let server_handle = Self::start_server(port, event_router.clone(), shutdown_rx, ready_tx);
+        let server_handle = Self::start_server(
+            port, 
+            event_router.clone(), 
+            test_result_tracker.clone(),
+            shutdown_rx, 
+            ready_tx
+        );
 
         // Wait for server to be ready
         ready_rx.recv().await.ok_or_else(|| {
@@ -288,9 +297,18 @@ impl CallbackServer {
     /// # }
     /// ```
     pub async fn get_firewall_status(&self) -> Option<crate::FirewallStatus> {
-        // This is a simplified implementation - in a real scenario, we would
-        // need to find the firewall detection plugin in the registry and query its status
-        // For now, we'll return None since we don't have direct access to plugin instances
+        let registry = self.plugin_registry.lock().await;
+        
+        // Look for firewall detection plugin by name
+        if let Some(plugin) = registry.get_plugin("firewall-detection") {
+            // Try to downcast to FirewallDetectionPlugin to access its status
+            // This is a bit of a hack, but it works for our specific use case
+            // In a more sophisticated implementation, we might want a trait for status queries
+            if let Some(firewall_plugin) = plugin.as_any().downcast_ref::<crate::FirewallDetectionPlugin>() {
+                return Some(firewall_plugin.get_status().await);
+            }
+        }
+        
         None
     }
 
@@ -364,6 +382,7 @@ impl CallbackServer {
     fn start_server(
         port: u16,
         event_router: Arc<EventRouter>,
+        test_result_tracker: Arc<crate::TestResultTracker>,
         mut shutdown_rx: mpsc::Receiver<()>,
         ready_tx: mpsc::Sender<()>,
     ) -> tokio::task::JoinHandle<()> {
@@ -449,9 +468,13 @@ impl CallbackServer {
             // Add firewall test endpoint
             let firewall_test_route = crate::firewall_detection::firewall_test_endpoint();
 
+            // Add test NOTIFY endpoint for UPnP firewall testing
+            let test_notify_route = crate::firewall_detection::test_notify_endpoint(test_result_tracker);
+
             // Combine routes
             let routes = notify_route
                 .or(firewall_test_route)
+                .or(test_notify_route)
                 .recover(handle_rejection);
 
             // Create server with graceful shutdown
@@ -695,6 +718,10 @@ mod plugin_integration_tests {
             state.shutdown = true;
             Ok(())
         }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
     }
 
     /// Test plugin that fails during initialization.
@@ -720,6 +747,10 @@ mod plugin_integration_tests {
 
         async fn shutdown(&mut self) -> Result<(), PluginError> {
             Ok(())
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
         }
     }
 
@@ -751,6 +782,10 @@ mod plugin_integration_tests {
 
         async fn shutdown(&mut self) -> Result<(), PluginError> {
             Err(PluginError::ShutdownFailed("Test failure".to_string()))
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
         }
     }
 

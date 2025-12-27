@@ -5,6 +5,7 @@ use super::Subscription;
 use crate::types::{ServiceType, SpeakerId};
 use std::time::{Duration, SystemTime};
 use async_trait::async_trait;
+use sonos_api::{UpnpSubscriptionClient, Service};
 
 /// Default UPnP subscription implementation.
 ///
@@ -29,6 +30,22 @@ pub struct UPnPSubscription {
 }
 
 impl UPnPSubscription {
+    /// Convert ServiceType to sonos-api Service enum
+    fn service_type_to_service(service_type: ServiceType) -> Service {
+        match service_type {
+            ServiceType::AVTransport => Service::AVTransport,
+            ServiceType::RenderingControl => Service::RenderingControl,
+            ServiceType::ZoneGroupTopology => Service::ZoneGroupTopology,
+        }
+    }
+
+    /// Extract device IP and port from speaker ID
+    fn extract_device_info(speaker_id: &SpeakerId) -> (String, u16) {
+        // SpeakerId format is typically "RINCON_<MAC>01400" where the device IP needs to be resolved
+        // For now, we'll extract from the endpoint URL in the create_subscription method
+        // This is a placeholder - in practice, you'd need device discovery info
+        ("192.168.1.100".to_string(), 1400)
+    }
     /// Create a new UPnP subscription.
     pub fn new(
         sid: String,
@@ -80,163 +97,105 @@ impl UPnPSubscription {
         callback_url: String,
         timeout_seconds: u32,
     ) -> Result<Self, SubscriptionError> {
-        // Create HTTP client with timeout
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .map_err(|e| SubscriptionError::NetworkError(format!("Failed to create HTTP client: {}", e)))?;
-
-        // Extract host from endpoint URL for HOST header
-        let host = Self::extract_host_from_url_static(&endpoint_url)
-            .unwrap_or_else(|| "localhost:1400".to_string());
-
-        // Send SUBSCRIBE request
-        let response = client
-            .request(
-                reqwest::Method::from_bytes(b"SUBSCRIBE").unwrap(),
-                &endpoint_url,
-            )
-            .header("HOST", host)
-            .header("CALLBACK", format!("<{}>", callback_url))
-            .header("NT", "upnp:event")
-            .header("TIMEOUT", format!("Second-{}", timeout_seconds))
-            .send()
+        // Extract device IP and port from endpoint URL
+        let (device_ip, device_port) = Self::extract_device_info_from_url(&endpoint_url)?;
+        
+        // Create UPnP client
+        let upnp_client = UpnpSubscriptionClient::new()
+            .map_err(|e| SubscriptionError::NetworkError(format!("Failed to create UPnP client: {}", e)))?;
+        
+        // Convert service type
+        let service = Self::service_type_to_service(service_type);
+        
+        // Create subscription
+        let subscription_response = upnp_client
+            .subscribe(&device_ip, device_port, service, &callback_url, timeout_seconds)
             .await
-            .map_err(|e| SubscriptionError::NetworkError(format!("SUBSCRIBE request failed: {}", e)))?;
-
-        // Check response status
-        let status = response.status();
-        if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(SubscriptionError::UnsubscribeFailed(format!(
-                "SUBSCRIBE failed: HTTP {} - {}",
-                status,
-                error_text
-            )));
-        }
-
-        // Extract SID from response headers
-        let sid = response
-            .headers()
-            .get("SID")
-            .and_then(|v| v.to_str().ok())
-            .ok_or_else(|| SubscriptionError::UnsubscribeFailed(
-                "Missing SID header in SUBSCRIBE response".to_string()
-            ))?
-            .to_string();
-
-        // Extract timeout from response headers (optional, fallback to requested timeout)
-        let actual_timeout_seconds = response
-            .headers()
-            .get("TIMEOUT")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| {
-                // Parse "Second-1800" format
-                if s.starts_with("Second-") {
-                    s.strip_prefix("Second-")?.parse::<u32>().ok()
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(timeout_seconds);
+            .map_err(|e| match e {
+                sonos_api::SubscriptionError::NetworkError(msg) => SubscriptionError::NetworkError(msg),
+                sonos_api::SubscriptionError::DeviceUnreachable(msg) => SubscriptionError::NetworkError(msg),
+                sonos_api::SubscriptionError::SubscriptionFailed(msg) => SubscriptionError::UnsubscribeFailed(msg),
+                sonos_api::SubscriptionError::TimeoutError => SubscriptionError::NetworkError("Request timeout".to_string()),
+                _ => SubscriptionError::NetworkError(format!("Subscription failed: {}", e)),
+            })?;
 
         // Create UPnPSubscription instance
         Ok(Self::new(
-            sid,
+            subscription_response.sid,
             speaker_id,
             service_type,
             endpoint_url,
-            actual_timeout_seconds,
+            subscription_response.timeout_seconds,
         ))
     }
 
-    /// Static version of extract_host_from_url for use during subscription creation.
-    fn extract_host_from_url_static(endpoint_url: &str) -> Option<String> {
-        let url = url::Url::parse(endpoint_url).ok()?;
-        let host = url.host_str()?;
+    /// Extract device IP and port from endpoint URL
+    fn extract_device_info_from_url(endpoint_url: &str) -> Result<(String, u16), SubscriptionError> {
+        let url = url::Url::parse(endpoint_url)
+            .map_err(|e| SubscriptionError::NetworkError(format!("Invalid endpoint URL: {}", e)))?;
         
-        if let Some(port) = url.port() {
-            Some(format!("{}:{}", host, port))
-        } else {
-            Some(host.to_string())
-        }
+        let host = url.host_str()
+            .ok_or_else(|| SubscriptionError::NetworkError("No host in endpoint URL".to_string()))?;
+        
+        let port = url.port().unwrap_or(1400);
+        
+        Ok((host.to_string(), port))
     }
 
-    /// Send a UPnP UNSUBSCRIBE request.
+    /// Send a UPnP UNSUBSCRIBE request using the shared UPnP client.
     async fn send_unsubscribe_request(&self) -> Result<(), SubscriptionError> {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .map_err(|e| SubscriptionError::NetworkError(e.to_string()))?;
-
-        let response = client
-            .request(
-                reqwest::Method::from_bytes(b"UNSUBSCRIBE").unwrap(),
-                &self.endpoint_url,
-            )
-            .header("HOST", self.extract_host_from_url())
-            .header("SID", &self.sid)
-            .send()
-            .await
-            .map_err(|e| SubscriptionError::NetworkError(e.to_string()))?;
-
-        if !response.status().is_success() {
-            return Err(SubscriptionError::UnsubscribeFailed(format!(
-                "UNSUBSCRIBE failed: HTTP {}",
-                response.status()
-            )));
-        }
-
-        Ok(())
-    }
-
-    /// Send a subscription renewal request.
-    async fn send_renewal_request(&mut self) -> Result<(), SubscriptionError> {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .map_err(|e| SubscriptionError::NetworkError(e.to_string()))?;
-
-        let response = client
-            .request(
-                reqwest::Method::from_bytes(b"SUBSCRIBE").unwrap(),
-                &self.endpoint_url,
-            )
-            .header("HOST", self.extract_host_from_url())
-            .header("SID", &self.sid)
-            .header("TIMEOUT", format!("Second-{}", self.timeout_seconds))
-            .send()
-            .await
-            .map_err(|e| SubscriptionError::NetworkError(e.to_string()))?;
-
-        if !response.status().is_success() {
-            return Err(SubscriptionError::RenewalFailed(format!(
-                "Renewal failed: HTTP {}",
-                response.status()
-            )));
-        }
-
-        // Update expiration time
-        self.expires_at = SystemTime::now() + Duration::from_secs(self.timeout_seconds as u64);
-
-        Ok(())
-    }
-
-    /// Extract host header from endpoint URL.
-    fn extract_host_from_url(&self) -> String {
-        // Extract host from URL like "http://192.168.1.100:1400/path"
-        if let Ok(url) = url::Url::parse(&self.endpoint_url) {
-            if let Some(host) = url.host_str() {
-                if let Some(port) = url.port() {
-                    return format!("{}:{}", host, port);
-                } else {
-                    return host.to_string();
-                }
-            }
-        }
+        // Extract device IP and port from endpoint URL
+        let (device_ip, device_port) = Self::extract_device_info_from_url(&self.endpoint_url)?;
         
-        // Fallback - assume standard Sonos port
-        "localhost:1400".to_string()
+        // Create UPnP client
+        let upnp_client = UpnpSubscriptionClient::new()
+            .map_err(|e| SubscriptionError::NetworkError(format!("Failed to create UPnP client: {}", e)))?;
+        
+        // Convert service type
+        let service = Self::service_type_to_service(self.service_type);
+        
+        // Unsubscribe
+        upnp_client
+            .unsubscribe(&device_ip, device_port, service, &self.sid)
+            .await
+            .map_err(|e| match e {
+                sonos_api::SubscriptionError::UnsubscribeFailed(msg) => SubscriptionError::UnsubscribeFailed(msg),
+                sonos_api::SubscriptionError::NetworkError(msg) => SubscriptionError::NetworkError(msg),
+                sonos_api::SubscriptionError::DeviceUnreachable(msg) => SubscriptionError::NetworkError(msg),
+                _ => SubscriptionError::NetworkError(format!("Unsubscribe failed: {}", e)),
+            })?;
+
+        Ok(())
+    }
+
+    /// Send a subscription renewal request using the shared UPnP client.
+    async fn send_renewal_request(&mut self) -> Result<(), SubscriptionError> {
+        // Extract device IP and port from endpoint URL
+        let (device_ip, device_port) = Self::extract_device_info_from_url(&self.endpoint_url)?;
+        
+        // Create UPnP client
+        let upnp_client = UpnpSubscriptionClient::new()
+            .map_err(|e| SubscriptionError::NetworkError(format!("Failed to create UPnP client: {}", e)))?;
+        
+        // Convert service type
+        let service = Self::service_type_to_service(self.service_type);
+        
+        // Renew subscription
+        let actual_timeout_seconds = upnp_client
+            .renew_subscription(&device_ip, device_port, service, &self.sid, self.timeout_seconds)
+            .await
+            .map_err(|e| match e {
+                sonos_api::SubscriptionError::SubscriptionFailed(msg) => SubscriptionError::RenewalFailed(msg),
+                sonos_api::SubscriptionError::NetworkError(msg) => SubscriptionError::NetworkError(msg),
+                sonos_api::SubscriptionError::DeviceUnreachable(msg) => SubscriptionError::NetworkError(msg),
+                _ => SubscriptionError::NetworkError(format!("Renewal failed: {}", e)),
+            })?;
+
+        // Update timeout and expiration time
+        self.timeout_seconds = actual_timeout_seconds;
+        self.expires_at = SystemTime::now() + Duration::from_secs(actual_timeout_seconds as u64);
+
+        Ok(())
     }
 }
 

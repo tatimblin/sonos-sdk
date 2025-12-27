@@ -140,7 +140,11 @@ pub mod plugin;
 pub mod router;
 mod server;
 
-pub use firewall_detection::{FirewallDetectionPlugin, FirewallStatus, DetectionError};
+pub use firewall_detection::{
+    FirewallDetectionPlugin, FirewallStatus, DetectionError, 
+    FirewallDetectionConfig, TestResult, TestResultTracker, 
+    UPnPDevice, UPnPTestRequester, test_notify_endpoint
+};
 pub use plugin::{Plugin, PluginContext, PluginError, PluginRegistry};
 pub use router::{EventRouter, NotificationPayload};
 pub use server::CallbackServer;

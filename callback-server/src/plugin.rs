@@ -82,6 +82,11 @@ pub trait Plugin: Send + Sync {
     /// This is called during server shutdown and should clean up any
     /// resources the plugin is using.
     async fn shutdown(&mut self) -> Result<(), PluginError>;
+
+    /// Get a reference to the plugin as Any for downcasting.
+    ///
+    /// This enables type-specific operations on plugins when needed.
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 /// Registry for managing callback server plugins.
@@ -211,6 +216,11 @@ impl PluginRegistry {
     pub fn plugin_names(&self) -> Vec<&'static str> {
         self.plugins.iter().map(|p| p.name()).collect()
     }
+
+    /// Get a reference to a plugin by name.
+    pub fn get_plugin(&self, name: &str) -> Option<&dyn Plugin> {
+        self.plugins.iter().find(|p| p.name() == name).map(|p| p.as_ref())
+    }
 }
 
 impl Default for PluginRegistry {
@@ -271,6 +281,10 @@ mod tests {
             }
             self.initialized = false;
             Ok(())
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
         }
     }
 
@@ -400,6 +414,10 @@ mod property_tests {
 
         async fn shutdown(&mut self) -> Result<(), PluginError> {
             Ok(())
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
         }
     }
 

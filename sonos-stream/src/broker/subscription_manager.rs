@@ -13,7 +13,7 @@ use std::time::SystemTime;
 use tokio::sync::{mpsc, RwLock};
 
 use super::CallbackAdapter;
-use crate::error::{BrokerError, Result};
+use crate::error::{BrokerError, Result, StrategyError};
 use crate::event::Event;
 use crate::services::ServiceStrategy;
 use crate::subscription::Subscription;
@@ -176,8 +176,66 @@ impl SubscriptionManager {
             unified_callback_url.clone(),
         );
 
-        // Call service provider to create subscription using unified callback URL
-        let subscription_result = service_provider.create_subscription(speaker, unified_callback_url, &config).await;
+        // Check firewall status to decide subscription strategy
+        let firewall_status = self.callback_server.get_firewall_status().await
+            .unwrap_or(callback_server::FirewallStatus::Unknown);
+
+        eprintln!("🔍 Firewall status: {:?}", firewall_status);
+
+        let subscription_result = match firewall_status {
+            callback_server::FirewallStatus::Blocked => {
+                eprintln!("🚫 Firewall detected as blocked, using polling subscription directly");
+                // Use polling subscription directly when firewall is blocked
+                crate::subscription::PollingSubscription::new(
+                    speaker.id.clone(),
+                    service_type,
+                    speaker.ip,
+                    Some(std::time::Duration::from_secs(5)), // Poll every 5 seconds
+                )
+                .await
+                .map(|sub| Box::new(sub) as Box<dyn Subscription>)
+                .map_err(|e| match e {
+                    crate::error::SubscriptionError::NetworkError(msg) => StrategyError::NetworkError(msg),
+                    crate::error::SubscriptionError::UnsubscribeFailed(msg) => StrategyError::SubscriptionCreationFailed(msg),
+                    crate::error::SubscriptionError::RenewalFailed(msg) => StrategyError::SubscriptionCreationFailed(msg),
+                    crate::error::SubscriptionError::Expired => StrategyError::SubscriptionCreationFailed("Subscription expired during creation".to_string()),
+                })
+            }
+            _ => {
+                // Try UPnP first for Unknown, Accessible, or Error status
+                eprintln!("🔗 Attempting UPnP subscription for speaker {} service {:?}", 
+                         speaker.id.as_str(), service_type);
+                
+                match service_provider.create_subscription(speaker, unified_callback_url.clone(), &config).await {
+                    Ok(subscription) => {
+                        eprintln!("✅ UPnP subscription successful for speaker {} service {:?}", 
+                                 speaker.id.as_str(), service_type);
+                        Ok(subscription)
+                    }
+                    Err(upnp_error) => {
+                        eprintln!("❌ UPnP subscription failed for speaker {} service {:?}: {}", 
+                                 speaker.id.as_str(), service_type, upnp_error);
+                        eprintln!("🔄 Falling back to polling-based subscription");
+                        
+                        // Fall back to polling subscription
+                        crate::subscription::PollingSubscription::new(
+                            speaker.id.clone(),
+                            service_type,
+                            speaker.ip,
+                            Some(std::time::Duration::from_secs(5)), // Poll every 5 seconds
+                        )
+                        .await
+                        .map(|sub| Box::new(sub) as Box<dyn Subscription>)
+                        .map_err(|e| match e {
+                            crate::error::SubscriptionError::NetworkError(msg) => StrategyError::NetworkError(msg),
+                            crate::error::SubscriptionError::UnsubscribeFailed(msg) => StrategyError::SubscriptionCreationFailed(msg),
+                            crate::error::SubscriptionError::RenewalFailed(msg) => StrategyError::SubscriptionCreationFailed(msg),
+                            crate::error::SubscriptionError::Expired => StrategyError::SubscriptionCreationFailed("Subscription expired during creation".to_string()),
+                        })
+                    }
+                }
+            }
+        };
 
         match subscription_result {
             Ok(subscription) => {
