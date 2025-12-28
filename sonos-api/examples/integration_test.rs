@@ -3,8 +3,6 @@
 //! This test verifies that the CLI example components work correctly
 //! without requiring actual Sonos devices on the network.
 
-use std::collections::HashMap;
-
 // Import the CLI example components
 // Note: In a real scenario, these would be in a separate module
 // For this test, we'll just verify the basic functionality
