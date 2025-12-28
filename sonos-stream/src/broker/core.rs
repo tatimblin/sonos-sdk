@@ -171,6 +171,10 @@ impl EventBroker {
     /// This method must be called after creating a subscription via sonos-api to enable
     /// event routing. The subscription ID should match the SID returned by the UPnP device.
     ///
+    /// This registers the subscription with both:
+    /// 1. The EventRouter (for HTTP callback routing)
+    /// 2. The CallbackAdapter (for Sonos-specific context enrichment)
+    ///
     /// # Arguments
     ///
     /// * `subscription_id` - The UPnP subscription ID (SID) from the device
@@ -203,6 +207,10 @@ impl EventBroker {
         speaker_id: SpeakerId,
         service_type: ServiceType,
     ) {
+        // Register with EventRouter for HTTP callback routing
+        self.callback_server.router().register(subscription_id.clone()).await;
+        
+        // Register with CallbackAdapter for Sonos-specific context enrichment
         self.callback_adapter
             .register_subscription(subscription_id, speaker_id, service_type)
             .await;
@@ -212,6 +220,8 @@ impl EventBroker {
     ///
     /// This should be called when a subscription is no longer needed to prevent
     /// memory leaks and ensure clean shutdown.
+    ///
+    /// This unregisters the subscription from both the EventRouter and CallbackAdapter.
     ///
     /// # Arguments
     ///
@@ -223,6 +233,10 @@ impl EventBroker {
     /// broker.unregister_subscription("uuid:sub-123").await;
     /// ```
     pub async fn unregister_subscription(&self, subscription_id: &str) {
+        // Unregister from EventRouter
+        self.callback_server.router().unregister(subscription_id).await;
+        
+        // Unregister from CallbackAdapter
         self.callback_adapter
             .unregister_subscription(subscription_id)
             .await;
