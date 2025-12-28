@@ -102,6 +102,20 @@ pub enum ApiError {
     /// cannot be parsed into the expected event structure.
     #[error("Event parsing failed: {0}")]
     EventParsingFailed(String),
+    
+    /// Network communication error
+    /// 
+    /// This error occurs when there are network-level issues communicating
+    /// with the device, such as connection timeouts or DNS resolution failures.
+    #[error("Network error: {0}")]
+    NetworkError(String),
+    
+    /// SOAP fault returned by device
+    /// 
+    /// This error occurs when the device returns a SOAP fault response,
+    /// indicating that the request was malformed or the operation failed.
+    #[error("SOAP fault: error code {0}")]
+    SoapFault(u16),
 }
 
 impl ApiError {
