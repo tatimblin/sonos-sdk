@@ -26,7 +26,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
 
 // Use new broker module structure
-use crate::broker::{CallbackAdapter, EventBroker, EventProcessor, RenewalManager, SubscriptionManager};
+use crate::broker::{CallbackAdapter, EventBroker, EventProcessor};
 use crate::error::{BrokerError, Result};
 use crate::services::ServiceStrategy;
 use crate::types::{BrokerConfig, ServiceType};
@@ -337,7 +337,7 @@ impl EventBrokerBuilder {
         })?;
 
         // Create callback adapter to convert notifications to raw events
-        let callback_adapter = CallbackAdapter::new(notification_rx, raw_event_tx);
+        let _callback_adapter = CallbackAdapter::new(notification_rx, raw_event_tx);
 
         // Wrap callback server in Arc for sharing between components
         let callback_server_arc = Arc::new(callback_server);
@@ -350,23 +350,6 @@ impl EventBrokerBuilder {
 
         // Create strategies Arc for sharing between components
         let strategies_arc = Arc::new(self.strategies);
-
-        // Create SubscriptionManager
-        let subscription_manager = SubscriptionManager::new(
-            subscriptions.clone(),
-            strategies_arc.clone(),
-            callback_server_arc.clone(),
-            callback_adapter,
-            event_tx.clone(),
-            self.config.clone(),
-        );
-
-        // Start RenewalManager with background task
-        let renewal_manager = RenewalManager::start(
-            subscriptions.clone(),
-            event_tx.clone(),
-            self.config.clone(),
-        );
 
         // Start EventProcessor with background task
         let event_processor = EventProcessor::start(
@@ -381,8 +364,6 @@ impl EventBrokerBuilder {
             callback_server_arc,
             event_tx,
             event_rx,
-            subscription_manager,
-            renewal_manager,
             event_processor,
         ))
     }

@@ -2,27 +2,29 @@
 //!
 //! This module contains the main EventBroker struct and its public API methods.
 //! The broker coordinates between manager components and exposes a clean public
-//! interface for subscription management and event streaming.
+//! interface for event streaming and processing.
+//!
+//! Note: Subscription management is now handled by the `sonos-api` crate's
+//! `SonosClient` and `ManagedSubscription` types.
 
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::event::Event;
-use crate::types::ServiceType;
 
 // Import manager types
 use super::event_processor::EventProcessor;
-use super::renewal_manager::RenewalManager;
-use super::subscription_manager::SubscriptionManager;
 
-/// Event broker for managing UPnP event subscriptions.
+/// Event broker for managing UPnP event streaming and processing.
 ///
 /// The broker is the central component that:
-/// - Manages subscription lifecycle (subscribe, unsubscribe, renewal)
 /// - Routes incoming events to appropriate strategies for parsing
 /// - Emits lifecycle and error events to the application
 /// - Handles automatic renewal in a background task
 /// - Manages the callback server for receiving UPnP notifications
+///
+/// Note: Subscription creation and management is now handled by the `sonos-api` crate's
+/// `SonosClient` and `ManagedSubscription` types. This broker focuses on event processing.
 ///
 /// # Thread Safety
 ///
@@ -32,7 +34,6 @@ use super::subscription_manager::SubscriptionManager;
 /// # Resource Management
 ///
 /// The broker owns several resources that must be cleaned up:
-/// - Active subscriptions (unsubscribed on shutdown)
 /// - Callback server (stopped on shutdown)
 /// - Background renewal task (terminated on shutdown)
 /// - Event channels (closed on shutdown)
@@ -43,7 +44,7 @@ use super::subscription_manager::SubscriptionManager;
 /// # Example
 ///
 /// ```rust,ignore
-/// use sonos_stream::{EventBrokerBuilder, ServiceType};
+/// use sonos_stream::EventBrokerBuilder;
 ///
 /// let broker = EventBrokerBuilder::new()
 ///     .with_strategy(Box::new(AVTransportStrategy))
@@ -51,8 +52,8 @@ use super::subscription_manager::SubscriptionManager;
 ///     .build()
 ///     .await?;
 ///
-/// // Subscribe to a service
-/// broker.subscribe(&speaker, ServiceType::AVTransport).await?;
+/// // Get callback URL for creating subscriptions via sonos-api
+/// let callback_url = broker.callback_url();
 ///
 /// // Receive events
 /// let mut events = broker.event_stream();
@@ -70,10 +71,6 @@ pub struct EventBroker {
     event_sender: mpsc::Sender<Event>,
     /// Receiver for the event stream (taken by event_stream())
     event_receiver: Option<mpsc::Receiver<Event>>,
-    /// Subscription manager for lifecycle operations
-    subscription_manager: SubscriptionManager,
-    /// Renewal manager for automatic renewal
-    renewal_manager: RenewalManager,
     /// Event processor for routing and parsing
     event_processor: EventProcessor,
 }
@@ -89,23 +86,17 @@ impl EventBroker {
     /// * `callback_server` - Arc-wrapped callback server for receiving events
     /// * `event_sender` - Channel sender for emitting events
     /// * `event_receiver` - Channel receiver for the event stream
-    /// * `subscription_manager` - Manager for subscription lifecycle operations
-    /// * `renewal_manager` - Manager for automatic renewal
     /// * `event_processor` - Manager for event routing and parsing
     pub(crate) fn new(
         callback_server: Arc<callback_server::CallbackServer>,
         event_sender: mpsc::Sender<Event>,
         event_receiver: mpsc::Receiver<Event>,
-        subscription_manager: SubscriptionManager,
-        renewal_manager: RenewalManager,
         event_processor: EventProcessor,
     ) -> Self {
         Self {
             callback_server,
             event_sender,
             event_receiver: Some(event_receiver),
-            subscription_manager,
-            renewal_manager,
             event_processor,
         }
     }
@@ -142,138 +133,42 @@ impl EventBroker {
     }
 
     /// Get the callback URL for creating subscriptions.
+    ///
+    /// This URL should be used when creating subscriptions via the `sonos-api` crate's
+    /// `SonosClient.create_managed_subscription()` method.
+    ///
+    /// # Returns
+    ///
+    /// Returns the base callback URL that should be used for UPnP subscriptions.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use sonos_api::SonosClient;
+    ///
+    /// let callback_url = broker.callback_url();
+    /// let client = SonosClient::new();
+    /// let subscription = client.create_managed_subscription(
+    ///     "192.168.1.100",
+    ///     Service::AVTransport,
+    ///     &callback_url,
+    ///     1800
+    /// )?;
+    /// ```
     pub fn callback_url(&self) -> String {
         self.callback_server.base_url().to_string()
-    }
-
-    /// Subscribe to a specific service on a speaker.
-    ///
-    /// This method creates a new subscription for the given speaker-service combination.
-    /// If a subscription already exists for this combination, an error is returned.
-    ///
-    /// The actual subscription creation is delegated to the SubscriptionManager.
-    ///
-    /// # Process
-    ///
-    /// 1. Delegate to SubscriptionManager.subscribe()
-    /// 2. SubscriptionManager checks for duplicates
-    /// 3. SubscriptionManager looks up the strategy
-    /// 4. SubscriptionManager creates the subscription via strategy
-    /// 5. SubscriptionManager registers with callback server
-    /// 6. SubscriptionManager stores in subscription map
-    /// 7. SubscriptionManager emits SubscriptionEstablished event
-    ///
-    /// # Parameters
-    ///
-    /// * `speaker` - The speaker to subscribe to
-    /// * `service_type` - The service type to subscribe to
-    ///
-    /// # Returns
-    ///
-    /// Returns `Ok(())` if the subscription was created successfully.
-    ///
-    /// # Errors
-    ///
-    /// * `BrokerError::SubscriptionAlreadyExists` - A subscription already exists
-    /// * `BrokerError::NoStrategyForService` - No strategy is registered
-    /// * `BrokerError::StrategyError` - The strategy failed to create the subscription
-    ///
-    /// # Events
-    ///
-    /// * `Event::SubscriptionEstablished` - Emitted on success
-    /// * `Event::SubscriptionFailed` - Emitted on failure
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// use sonos_stream::{EventBroker, Speaker, ServiceType, SpeakerId};
-    /// use std::net::IpAddr;
-    ///
-    /// let speaker = Speaker::new(
-    ///     SpeakerId::new("RINCON_123"),
-    ///     "192.168.1.100".parse::<IpAddr>().unwrap(),
-    ///     "Living Room".to_string(),
-    ///     "Living Room".to_string(),
-    /// );
-    ///
-    /// broker.subscribe(&speaker, ServiceType::AVTransport).await?;
-    /// ```
-    pub async fn subscribe(
-        &self,
-        speaker: &crate::types::Speaker,
-        service_type: ServiceType,
-    ) -> crate::error::Result<()> {
-        // Delegate to SubscriptionManager
-        self.subscription_manager.subscribe(speaker, service_type).await
-    }
-
-    /// Unsubscribe from a specific service on a speaker.
-    ///
-    /// This method removes an existing subscription for the given speaker-service combination.
-    /// If no subscription exists for this combination, the operation completes gracefully.
-    ///
-    /// The actual unsubscription is delegated to the SubscriptionManager.
-    ///
-    /// # Process
-    ///
-    /// 1. Delegate to SubscriptionManager.unsubscribe()
-    /// 2. SubscriptionManager looks up the subscription
-    /// 3. SubscriptionManager calls unsubscribe() on the subscription
-    /// 4. SubscriptionManager unregisters from callback server
-    /// 5. SubscriptionManager removes from subscription map
-    /// 6. SubscriptionManager emits SubscriptionRemoved event
-    ///
-    /// # Parameters
-    ///
-    /// * `speaker` - The speaker to unsubscribe from
-    /// * `service_type` - The service type to unsubscribe from
-    ///
-    /// # Returns
-    ///
-    /// Returns `Ok(())` if the unsubscribe operation completed successfully.
-    /// Returns `Ok(())` even if no subscription existed (graceful handling).
-    ///
-    /// # Errors
-    ///
-    /// This method does not return errors for non-existent subscriptions.
-    /// Errors from the subscription's unsubscribe operation are logged but not propagated.
-    ///
-    /// # Events
-    ///
-    /// * `Event::SubscriptionRemoved` - Emitted when the subscription is removed
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// use sonos_stream::{EventBroker, Speaker, ServiceType, SpeakerId};
-    /// use std::net::IpAddr;
-    ///
-    /// let speaker = Speaker::new(
-    ///     SpeakerId::new("RINCON_123"),
-    ///     "192.168.1.100".parse::<IpAddr>().unwrap(),
-    ///     "Living Room".to_string(),
-    ///     "Living Room".to_string(),
-    /// );
-    ///
-    /// broker.unsubscribe(&speaker, ServiceType::AVTransport).await?;
-    /// ```
-    pub async fn unsubscribe(
-        &self,
-        speaker: &crate::types::Speaker,
-        service_type: ServiceType,
-    ) -> crate::error::Result<()> {
-        // Delegate to SubscriptionManager
-        self.subscription_manager.unsubscribe(speaker, service_type).await
     }
 
     /// Shutdown the broker and clean up all resources.
     ///
     /// This method performs a graceful shutdown of the broker by:
-    /// 1. Shutting down the RenewalManager (stops background renewal task)
-    /// 2. Shutting down the EventProcessor (stops event processing task)
-    /// 3. Delegating to SubscriptionManager to unsubscribe from all subscriptions
-    /// 4. Shutting down the callback server
-    /// 5. Closing event channels
+    /// 1. Shutting down the EventProcessor (stops event processing task)
+    /// 2. Shutting down the callback server
+    /// 3. Closing event channels
+    ///
+    /// Note: Subscription cleanup is now handled by the `sonos-api` crate's
+    /// `ManagedSubscription` types, which should be dropped or explicitly
+    /// unsubscribed before shutting down the broker.
     ///
     /// # Returns
     ///
@@ -296,24 +191,14 @@ impl EventBroker {
     pub async fn shutdown(self) -> crate::error::Result<()> {
         use crate::error::BrokerError;
 
-        // 1. Shutdown RenewalManager
-        self.renewal_manager.shutdown().await?;
-
-        // 2. Shutdown EventProcessor
+        // 1. Shutdown EventProcessor
         if let Err(e) = self.event_processor.shutdown().await {
             return Err(BrokerError::ShutdownError(format!(
                 "Failed to shutdown event processor: {e}"
             )));
         }
 
-        // 3. Shutdown SubscriptionManager - unsubscribe all
-        self.subscription_manager.shutdown_all().await?;
-
-        // 4. Shutdown callback server
-        // We need to take ownership of the callback server from the Arc
-        // The SubscriptionManager also holds a reference, so we need to drop it first
-        drop(self.subscription_manager);
-        
+        // 2. Shutdown callback server
         match Arc::try_unwrap(self.callback_server) {
             Ok(callback_server) => {
                 if let Err(e) = callback_server.shutdown().await {
@@ -328,7 +213,7 @@ impl EventBroker {
             }
         }
 
-        // 5. Close event channels
+        // 3. Close event channels
         drop(self.event_sender);
         drop(self.event_receiver);
 

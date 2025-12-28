@@ -1,7 +1,7 @@
 //! Core types for the sonos-stream crate.
 
 use std::net::IpAddr;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use sonos_api::Service;
 
 /// Unique identifier for a Sonos speaker.
@@ -171,6 +171,63 @@ impl SubscriptionConfig {
             timeout_seconds,
             callback_url,
         }
+    }
+}
+
+/// Active subscription state tracked by the broker.
+///
+/// This struct contains metadata about subscriptions for event processing
+/// and renewal management. The actual subscription management is now handled
+/// by the `sonos-api` crate's `ManagedSubscription` types.
+#[derive(Debug, Clone)]
+pub struct ActiveSubscription {
+    /// The unique key identifying this subscription
+    pub key: SubscriptionKey,
+    /// The subscription ID returned by the device
+    pub subscription_id: String,
+    /// When this subscription was created
+    pub created_at: SystemTime,
+    /// When the last event was received (None if no events yet)
+    pub last_event: Option<SystemTime>,
+    /// When this subscription expires
+    pub expires_at: SystemTime,
+}
+
+impl ActiveSubscription {
+    /// Create a new active subscription.
+    pub fn new(
+        key: SubscriptionKey,
+        subscription_id: String,
+        expires_at: SystemTime,
+    ) -> Self {
+        Self {
+            key,
+            subscription_id,
+            created_at: SystemTime::now(),
+            last_event: None,
+            expires_at,
+        }
+    }
+
+    /// Update the last event timestamp to now.
+    pub fn mark_event_received(&mut self) {
+        self.last_event = Some(SystemTime::now());
+    }
+
+    /// Check if the subscription needs renewal.
+    pub fn needs_renewal(&self, threshold: Duration) -> bool {
+        let now = SystemTime::now();
+        if let Ok(time_until_expiry) = self.expires_at.duration_since(now) {
+            time_until_expiry <= threshold
+        } else {
+            // Already expired
+            true
+        }
+    }
+
+    /// Check if the subscription has expired.
+    pub fn is_expired(&self) -> bool {
+        SystemTime::now() >= self.expires_at
     }
 }
 
