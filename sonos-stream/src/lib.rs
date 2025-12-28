@@ -183,8 +183,9 @@ mod subscription;
 mod types;
 
 // Re-export main broker types
-pub use broker::{ActiveSubscription, EventBroker};
+pub use broker::EventBroker;
 pub use builder::EventBrokerBuilder;
+pub use types::ActiveSubscription;
 
 // Re-export callback types from callback-server crate
 pub use callback_server::{CallbackServer, EventRouter};

@@ -67,6 +67,55 @@ pub enum ApiError {
     /// that doesn't fit into more specific error categories.
     #[error("Invalid parameter: {0}")]
     InvalidParameter(String),
+    
+    /// Subscription creation failed
+    /// 
+    /// This error occurs when a UPnP subscription request fails, typically due to
+    /// device rejection, invalid callback URL, or network issues during subscription.
+    #[error("Subscription failed: {0}")]
+    SubscriptionFailed(String),
+    
+    /// Subscription renewal failed
+    /// 
+    /// This error occurs when attempting to renew an existing subscription fails,
+    /// which may happen if the subscription has expired or the device is unreachable.
+    #[error("Subscription renewal failed: {0}")]
+    RenewalFailed(String),
+    
+    /// Subscription has expired
+    /// 
+    /// This error indicates that a subscription operation was attempted on an
+    /// expired subscription that needs to be renewed or recreated.
+    #[error("Subscription expired")]
+    SubscriptionExpired,
+    
+    /// Invalid callback URL
+    /// 
+    /// This error occurs when the provided callback URL for event subscriptions
+    /// is malformed or not accessible by the Sonos device.
+    #[error("Invalid callback URL: {0}")]
+    InvalidCallbackUrl(String),
+    
+    /// Event parsing failed
+    /// 
+    /// This error occurs when event XML received from a UPnP subscription
+    /// cannot be parsed into the expected event structure.
+    #[error("Event parsing failed: {0}")]
+    EventParsingFailed(String),
+    
+    /// Network communication error
+    /// 
+    /// This error occurs when there are network-level issues communicating
+    /// with the device, such as connection timeouts or DNS resolution failures.
+    #[error("Network error: {0}")]
+    NetworkError(String),
+    
+    /// SOAP fault returned by device
+    /// 
+    /// This error occurs when the device returns a SOAP fault response,
+    /// indicating that the request was malformed or the operation failed.
+    #[error("SOAP fault: error code {0}")]
+    SoapFault(u16),
 }
 
 impl ApiError {
@@ -93,6 +142,26 @@ impl ApiError {
     /// Create a new InvalidParameter error
     pub fn invalid_parameter<S: Into<String>>(message: S) -> Self {
         Self::InvalidParameter(message.into())
+    }
+    
+    /// Create a new SubscriptionFailed error
+    pub fn subscription_failed<S: Into<String>>(message: S) -> Self {
+        Self::SubscriptionFailed(message.into())
+    }
+    
+    /// Create a new RenewalFailed error
+    pub fn renewal_failed<S: Into<String>>(message: S) -> Self {
+        Self::RenewalFailed(message.into())
+    }
+    
+    /// Create a new InvalidCallbackUrl error
+    pub fn invalid_callback_url<S: Into<String>>(url: S) -> Self {
+        Self::InvalidCallbackUrl(url.into())
+    }
+    
+    /// Create a new EventParsingFailed error
+    pub fn event_parsing_failed<S: Into<String>>(message: S) -> Self {
+        Self::EventParsingFailed(message.into())
     }
 }
 
@@ -123,6 +192,11 @@ impl From<SoapError> for ApiError {
                     712 => ApiError::InvalidParameter("Invalid object ID".to_string()),
                     713 => ApiError::UnsupportedOperation,
                     714 => ApiError::InvalidState("Cannot process request".to_string()),
+                    // Subscription-specific error codes
+                    412 => ApiError::SubscriptionFailed("Precondition failed".to_string()),
+                    500 => ApiError::SubscriptionFailed("Internal server error".to_string()),
+                    501 => ApiError::UnsupportedOperation,
+                    503 => ApiError::SubscriptionFailed("Service unavailable".to_string()),
                     _ => ApiError::Soap(soap_error),
                 }
             }

@@ -34,42 +34,52 @@ pub struct ServiceInfo {
     
     /// The UPnP service URI used in SOAP requests
     pub service_uri: &'static str,
+    
+    /// The HTTP event endpoint path for UPnP event subscriptions
+    pub event_endpoint: &'static str,
 }
 
 impl Service {
     /// Get the service information (endpoint and URI) for this service
     /// 
     /// # Returns
-    /// A `ServiceInfo` struct containing the endpoint path and service URI
+    /// A `ServiceInfo` struct containing the endpoint path, service URI, and event endpoint
     pub fn info(&self) -> ServiceInfo {
         match self {
             Service::AVTransport => ServiceInfo {
                 endpoint: "MediaRenderer/AVTransport/Control",
                 service_uri: "urn:schemas-upnp-org:service:AVTransport:1",
+                event_endpoint: "MediaRenderer/AVTransport/Event",
             },
             Service::RenderingControl => ServiceInfo {
                 endpoint: "MediaRenderer/RenderingControl/Control",
                 service_uri: "urn:schemas-upnp-org:service:RenderingControl:1",
+                event_endpoint: "MediaRenderer/RenderingControl/Event",
             },
             Service::GroupRenderingControl => ServiceInfo {
                 endpoint: "MediaRenderer/GroupRenderingControl/Control",
                 service_uri: "urn:schemas-upnp-org:service:GroupRenderingControl:1",
+                event_endpoint: "MediaRenderer/GroupRenderingControl/Event",
             },
             Service::ZoneGroupTopology => ServiceInfo {
                 endpoint: "ZoneGroupTopology/Control",
                 service_uri: "urn:schemas-upnp-org:service:ZoneGroupTopology:1",
+                event_endpoint: "ZoneGroupTopology/Event",
             },
             Service::DeviceProperties => ServiceInfo {
                 endpoint: "DeviceProperties/Control",
                 service_uri: "urn:schemas-upnp-org:service:DeviceProperties:1",
+                event_endpoint: "DeviceProperties/Event",
             },
             Service::AlarmClock => ServiceInfo {
                 endpoint: "AlarmClock/Control",
                 service_uri: "urn:schemas-upnp-org:service:AlarmClock:1",
+                event_endpoint: "AlarmClock/Event",
             },
             Service::MusicServices => ServiceInfo {
                 endpoint: "MusicServices/Control",
                 service_uri: "urn:schemas-upnp-org:service:MusicServices:1",
+                event_endpoint: "MusicServices/Event",
             },
         }
     }
@@ -88,5 +98,16 @@ impl Service {
     /// The UPnP service URI as a string slice
     pub fn service_uri(&self) -> &'static str {
         self.info().service_uri
+    }
+    
+    /// Get the event endpoint path for this service
+    /// 
+    /// Event endpoints are used for UPnP event subscriptions to receive
+    /// notifications when the service state changes.
+    /// 
+    /// # Returns
+    /// The HTTP event endpoint path as a string slice
+    pub fn event_endpoint(&self) -> &'static str {
+        self.info().event_endpoint
     }
 }

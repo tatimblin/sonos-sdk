@@ -1,7 +1,8 @@
 //! Private SOAP client for UPnP device communication
 //! 
 //! This crate provides a minimal SOAP client specifically designed for
-//! communicating with UPnP devices like Sonos speakers.
+//! communicating with UPnP devices like Sonos speakers. It also supports
+//! UPnP event subscriptions using SUBSCRIBE/UNSUBSCRIBE methods.
 
 mod error;
 
@@ -10,7 +11,17 @@ pub use error::SoapError;
 use std::time::Duration;
 use xmltree::Element;
 
+/// Response from a UPnP subscription request
+#[derive(Debug, Clone)]
+pub struct SubscriptionResponse {
+    /// Subscription ID returned by the device
+    pub sid: String,
+    /// Actual timeout granted by the device (in seconds)
+    pub timeout_seconds: u32,
+}
+
 /// A minimal SOAP client for UPnP device communication
+#[derive(Debug, Clone)]
 pub struct SoapClient {
     agent: ureq::Agent,
 }
@@ -67,6 +78,155 @@ impl SoapClient {
             
         // Extract response or handle SOAP fault
         self.extract_response(&xml, action)
+    }
+
+    /// Subscribe to UPnP events for a specific service endpoint
+    /// 
+    /// # Arguments
+    /// * `ip` - Device IP address
+    /// * `port` - Device port (typically 1400)
+    /// * `event_endpoint` - Event endpoint path (e.g., "MediaRenderer/AVTransport/Event")
+    /// * `callback_url` - URL where events should be sent
+    /// * `timeout_seconds` - Requested subscription timeout in seconds
+    /// 
+    /// # Returns
+    /// A `SubscriptionResponse` containing the SID and actual timeout
+    pub fn subscribe(
+        &self,
+        ip: &str,
+        port: u16,
+        event_endpoint: &str,
+        callback_url: &str,
+        timeout_seconds: u32,
+    ) -> Result<SubscriptionResponse, SoapError> {
+        let url = format!("http://{}:{}/{}", ip, port, event_endpoint);
+        let host = format!("{}:{}", ip, port);
+        
+        let response = self.agent
+            .request("SUBSCRIBE", &url)
+            .set("HOST", &host)
+            .set("CALLBACK", &format!("<{}>", callback_url))
+            .set("NT", "upnp:event")
+            .set("TIMEOUT", &format!("Second-{}", timeout_seconds))
+            .call()
+            .map_err(|e| SoapError::Network(e.to_string()))?;
+
+        if response.status() != 200 {
+            return Err(SoapError::Network(format!(
+                "SUBSCRIBE failed: HTTP {}",
+                response.status()
+            )));
+        }
+
+        // Extract SID from response headers
+        let sid = response
+            .header("SID")
+            .ok_or_else(|| SoapError::Parse("Missing SID header in SUBSCRIBE response".to_string()))?
+            .to_string();
+
+        // Extract timeout from response headers (optional, fallback to requested timeout)
+        let actual_timeout_seconds = response
+            .header("TIMEOUT")
+            .and_then(|s| {
+                // Parse "Second-1800" format
+                if s.starts_with("Second-") {
+                    s.strip_prefix("Second-")?.parse::<u32>().ok()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(timeout_seconds);
+
+        Ok(SubscriptionResponse {
+            sid,
+            timeout_seconds: actual_timeout_seconds,
+        })
+    }
+
+    /// Renew an existing UPnP subscription
+    /// 
+    /// # Arguments
+    /// * `ip` - Device IP address
+    /// * `port` - Device port (typically 1400)
+    /// * `event_endpoint` - Event endpoint path
+    /// * `sid` - Subscription ID to renew
+    /// * `timeout_seconds` - Requested renewal timeout in seconds
+    /// 
+    /// # Returns
+    /// The actual timeout granted by the device
+    pub fn renew_subscription(
+        &self,
+        ip: &str,
+        port: u16,
+        event_endpoint: &str,
+        sid: &str,
+        timeout_seconds: u32,
+    ) -> Result<u32, SoapError> {
+        let url = format!("http://{}:{}/{}", ip, port, event_endpoint);
+        let host = format!("{}:{}", ip, port);
+        
+        let response = self.agent
+            .request("SUBSCRIBE", &url)
+            .set("HOST", &host)
+            .set("SID", sid)
+            .set("TIMEOUT", &format!("Second-{}", timeout_seconds))
+            .call()
+            .map_err(|e| SoapError::Network(e.to_string()))?;
+
+        if response.status() != 200 {
+            return Err(SoapError::Network(format!(
+                "SUBSCRIBE renewal failed: HTTP {}",
+                response.status()
+            )));
+        }
+
+        // Extract timeout from response headers
+        let actual_timeout_seconds = response
+            .header("TIMEOUT")
+            .and_then(|s| {
+                if s.starts_with("Second-") {
+                    s.strip_prefix("Second-")?.parse::<u32>().ok()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(timeout_seconds);
+
+        Ok(actual_timeout_seconds)
+    }
+
+    /// Unsubscribe from UPnP events
+    /// 
+    /// # Arguments
+    /// * `ip` - Device IP address
+    /// * `port` - Device port (typically 1400)
+    /// * `event_endpoint` - Event endpoint path
+    /// * `sid` - Subscription ID to cancel
+    pub fn unsubscribe(
+        &self,
+        ip: &str,
+        port: u16,
+        event_endpoint: &str,
+        sid: &str,
+    ) -> Result<(), SoapError> {
+        let url = format!("http://{}:{}/{}", ip, port, event_endpoint);
+        let host = format!("{}:{}", ip, port);
+        
+        let response = self.agent
+            .request("UNSUBSCRIBE", &url)
+            .set("HOST", &host)
+            .set("SID", sid)
+            .call()
+            .map_err(|e| SoapError::Network(e.to_string()))?;
+
+        if response.status() != 200 {
+            return Err(SoapError::Network(format!(
+                "UNSUBSCRIBE failed: HTTP {}",
+                response.status()
+            )));
+        }
+
+        Ok(())
     }
 
     fn extract_response(&self, xml: &Element, action: &str) -> Result<Element, SoapError> {

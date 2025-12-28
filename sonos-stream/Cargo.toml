@@ -6,6 +6,9 @@ edition = "2021"
 [dependencies]
 callback-server = { path = "../callback-server" }
 sonos-parser = { path = "../sonos-parser" }
+sonos-api = { path = "../sonos-api" }
+sonos-discovery = { path = "../sonos-discovery" }
+soap-client = { path = "../soap-client" }
 tokio = { version = "1.0", features = ["full"] }
 warp = "0.3"
 reqwest = "0.11"
@@ -17,6 +20,7 @@ uuid = { version = "1.0", features = ["v4"] }
 bytes = "1.0"
 url = "2.4"
 async-trait = "0.1"
+chrono = "0.4"
 
 [dev-dependencies]
 rstest = "0.18"

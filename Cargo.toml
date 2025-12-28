@@ -1,10 +1,10 @@
 [workspace]
 members = [
     "callback-server",
-    "integration-example",
+    # "integration-example",  # Temporarily disabled while refactoring UPnP client
     "sonos-discovery",
     "sonos-parser",
-    "sonos-stream",
+    "sonos-stream",  # Re-enabled after fixing UPnP client references
     "soap-client",
     "sonos-api",
 ]

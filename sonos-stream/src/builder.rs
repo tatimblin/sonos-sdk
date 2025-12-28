@@ -26,7 +26,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
 
 // Use new broker module structure
-use crate::broker::{CallbackAdapter, EventBroker, EventProcessor, RenewalManager, SubscriptionManager};
+use crate::broker::{CallbackAdapter, EventBroker, EventProcessor};
 use crate::error::{BrokerError, Result};
 use crate::services::ServiceStrategy;
 use crate::types::{BrokerConfig, ServiceType};
@@ -321,12 +321,20 @@ impl EventBrokerBuilder {
         // Create raw event channel for adapter -> event processor communication
         let (raw_event_tx, raw_event_rx) = mpsc::unbounded_channel();
 
-        // Create and start callback server
-        let callback_server = callback_server::CallbackServer::new(self.config.callback_port_range, notification_tx)
-            .await
-            .map_err(|e| {
-                BrokerError::CallbackServerError(format!("Failed to start callback server: {e}"))
-            })?;
+        // Create and start callback server with firewall detection plugin
+        let firewall_plugin = callback_server::FirewallDetectionPlugin::new()
+            .map_err(|e| BrokerError::CallbackServerError(format!("Failed to create firewall plugin: {}", e)))?;
+        let plugins: Vec<Box<dyn callback_server::Plugin>> = vec![Box::new(firewall_plugin)];
+        
+        let callback_server = callback_server::CallbackServer::with_plugins(
+            self.config.callback_port_range, 
+            notification_tx,
+            Some(plugins)
+        )
+        .await
+        .map_err(|e| {
+            BrokerError::CallbackServerError(format!("Failed to start callback server with firewall detection: {e}"))
+        })?;
 
         // Create callback adapter to convert notifications to raw events
         let callback_adapter = CallbackAdapter::new(notification_rx, raw_event_tx);
@@ -343,23 +351,6 @@ impl EventBrokerBuilder {
         // Create strategies Arc for sharing between components
         let strategies_arc = Arc::new(self.strategies);
 
-        // Create SubscriptionManager
-        let subscription_manager = SubscriptionManager::new(
-            subscriptions.clone(),
-            strategies_arc.clone(),
-            callback_server_arc.clone(),
-            callback_adapter,
-            event_tx.clone(),
-            self.config.clone(),
-        );
-
-        // Start RenewalManager with background task
-        let renewal_manager = RenewalManager::start(
-            subscriptions.clone(),
-            event_tx.clone(),
-            self.config.clone(),
-        );
-
         // Start EventProcessor with background task
         let event_processor = EventProcessor::start(
             raw_event_rx,
@@ -373,9 +364,8 @@ impl EventBrokerBuilder {
             callback_server_arc,
             event_tx,
             event_rx,
-            subscription_manager,
-            renewal_manager,
             event_processor,
+            callback_adapter,
         ))
     }
 }

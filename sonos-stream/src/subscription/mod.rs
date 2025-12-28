@@ -1,8 +1,10 @@
 //! Subscription trait and related types for managing UPnP event subscriptions.
 
 pub mod upnp;
+pub mod polling;
 
 pub use upnp::UPnPSubscription;
+pub use polling::PollingSubscription;
 
 use crate::error::SubscriptionError;
 use crate::types::{ServiceType, SpeakerId};

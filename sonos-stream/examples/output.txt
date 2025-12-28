@@ -1,0 +1,156 @@
+🎵 Sonos SDK Example: Discover and Stream Events
+================================================
+
+📡 Setting up event streaming...
+🌐 Unified CallbackServer listening on 0.0.0.0:3400 - ready to process events from all speakers and services
+🚀 Enhanced Firewall Detection Plugin: Starting initialization
+🔍 Enhanced Firewall Detection: Starting UPnP-based detection
+🔍 UPnP device discovery not yet implemented - using empty device list
+⚠️  No UPnP devices found for testing
+🔄 Falling back to basic detection
+🔍 Basic Firewall Detection: Testing connectivity to http://192.168.4.34:3400/firewall-test
+⚠️  Note: This only tests local connectivity. Real firewall blocking may still occur for external UPnP devices.
+🎯 Firewall Test Endpoint: Received test request
+✅ Basic Detection: Local server is accessible (status: 200 OK)
+⚠️  This doesn't guarantee UPnP events from network devices will work
+🔄 Firewall Detection: Status updated to Unknown
+✅ Enhanced Firewall Detection Plugin: Initialization completed with status Unknown
+✅ Plugin 'firewall-detection' initialized successfully
+🔄 CallbackAdapter: Starting unified event processing task
+✅ Event broker ready, callback URL: http://192.168.4.34:3400
+
+🔍 Discovering Sonos speakers...
+This may take up to 10 seconds...
+✅ Found 8 Sonos speaker(s):
+   📻 192.168.4.49 - Sonos Playbar - RINCON_5CAAFDAE58BD01400 (Basement) at 192.168.4.49
+   📻 192.168.4.45 - Sonos Connect:Amp - RINCON_B8E937A84F0601400 (Bathroom) at 192.168.4.45
+   📻 192.168.4.54 - Sonos Roam 2 - RINCON_C43875CA135801400 (Office / Roam) at 192.168.4.54
+   📻 192.168.4.44 - Sonos Connect:Amp - RINCON_000E583FEE3401400 (Kitchen) at 192.168.4.44
+   📻 192.168.4.46 - Sonos Connect:Amp - RINCON_5CAAFDEFEE7E01400 (Bedroom) at 192.168.4.46
+   📻 192.168.4.47 - Sonos One - RINCON_7828CAFB9D9C01400 (Basement) at 192.168.4.47
+   📻 192.168.4.48 - Sonos One - RINCON_7828CA128F0001400 (Basement) at 192.168.4.48
+   📻 192.168.4.43 - Sonos Amp - RINCON_804AF2AA2FA201400 (Living Room) at 192.168.4.43
+
+🔗 Creating subscriptions for AVTransport service...
+✅ Subscribed to 192.168.4.49 - Sonos Playbar - RINCON_5CAAFDAE58BD01400 (192.168.4.49)
+📝 CallbackAdapter: Registered subscription uuid:RINCON_5CAAFDAE58BD01400_sub0000000085 for speaker RINCON_5CAAFDAE58BD01400 service AVTransport
+📝 Registered subscription uuid:RINCON_5CAAFDAE58BD01400_sub0000000085 for speaker 192.168.4.49 - Sonos Playbar - RINCON_5CAAFDAE58BD01400
+
+🌐 === UNIFIED CALLBACK SERVER: INCOMING NOTIFY ===
+📡 Method: NOTIFY
+📡 Path: /
+📏 Body size: 2133 bytes
+📋 Headers:
+   SID: uuid:RINCON_5CAAFDAE58BD01400_sub0000000085
+   NT: upnp:event
+   NTS: upnp:propchange
+📄 Event XML (first 200 chars):
+<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><LastChange>&lt;Event xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/AVT/&quot; xmlns:r=&quot;urn:schemas-rinconnetworks-com:metadata...
+🌐 === END UNIFIED CALLBACK NOTIFICATION ===
+
+❌ Unified event stream: Event routing failed - subscription not found
+✅ Subscribed to 192.168.4.45 - Sonos Connect:Amp - RINCON_B8E937A84F0601400 (192.168.4.45)
+📝 CallbackAdapter: Registered subscription uuid:RINCON_B8E937A84F0601400_sub0000000234 for speaker RINCON_B8E937A84F0601400 service AVTransport
+📝 Registered subscription uuid:RINCON_B8E937A84F0601400_sub0000000234 for speaker 192.168.4.45 - Sonos Connect:Amp - RINCON_B8E937A84F0601400
+
+🌐 === UNIFIED CALLBACK SERVER: INCOMING NOTIFY ===
+📡 Method: NOTIFY
+📡 Path: /
+📏 Body size: 2133 bytes
+📋 Headers:
+   SID: uuid:RINCON_B8E937A84F0601400_sub0000000234
+   NT: upnp:event
+   NTS: upnp:propchange
+📄 Event XML (first 200 chars):
+<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><LastChange>&lt;Event xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/AVT/&quot; xmlns:r=&quot;urn:schemas-rinconnetworks-com:metadata...
+🌐 === END UNIFIED CALLBACK NOTIFICATION ===
+
+❌ Unified event stream: Event routing failed - subscription not found
+✅ Subscribed to 192.168.4.54 - Sonos Roam 2 - RINCON_C43875CA135801400 (192.168.4.54)
+📝 CallbackAdapter: Registered subscription uuid:RINCON_C43875CA135801400_sub0000000156 for speaker RINCON_C43875CA135801400 service AVTransport
+📝 Registered subscription uuid:RINCON_C43875CA135801400_sub0000000156 for speaker 192.168.4.54 - Sonos Roam 2 - RINCON_C43875CA135801400
+
+🌐 === UNIFIED CALLBACK SERVER: INCOMING NOTIFY ===
+✅ Subscribed to 192.168.4.44 - Sonos Connect:Amp - RINCON_000E583FEE3401400 (192.168.4.44)
+📡 Method: NOTIFY
+📡 Path: /
+📏 Body size: 6163 bytes
+📋 Headers:
+   SID: uuid:RINCON_C43875CA135801400_sub0000000156
+   NT: upnp:event
+   NTS: upnp:propchange
+📝 CallbackAdapter: Registered subscription uuid:RINCON_000E583FEE3401400_sub0000000230 for speaker RINCON_000E583FEE3401400 service AVTransport
+📄 Event XML (first 200 chars):
+📝 Registered subscription uuid:RINCON_000E583FEE3401400_sub0000000230 for speaker 192.168.4.44 - Sonos Connect:Amp - RINCON_000E583FEE3401400
+<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><LastChange>&lt;Event xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/AVT/&quot; xmlns:r=&quot;urn:schemas-rinconnetworks-com:metadata...
+🌐 === END UNIFIED CALLBACK NOTIFICATION ===
+
+❌ Unified event stream: Event routing failed - subscription not found
+
+🌐 === UNIFIED CALLBACK SERVER: INCOMING NOTIFY ===
+📡 Method: NOTIFY
+📡 Path: /
+📏 Body size: 2133 bytes
+📋 Headers:
+   SID: uuid:RINCON_000E583FEE3401400_sub0000000230
+   NT: upnp:event
+   NTS: upnp:propchange
+📄 Event XML (first 200 chars):
+<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><LastChange>&lt;Event xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/AVT/&quot; xmlns:r=&quot;urn:schemas-rinconnetworks-com:metadata...
+🌐 === END UNIFIED CALLBACK NOTIFICATION ===
+
+❌ Unified event stream: Event routing failed - subscription not found
+✅ Subscribed to 192.168.4.46 - Sonos Connect:Amp - RINCON_5CAAFDEFEE7E01400 (192.168.4.46)
+📝 CallbackAdapter: Registered subscription uuid:RINCON_5CAAFDEFEE7E01400_sub0000000225 for speaker RINCON_5CAAFDEFEE7E01400 service AVTransport
+📝 Registered subscription uuid:RINCON_5CAAFDEFEE7E01400_sub0000000225 for speaker 192.168.4.46 - Sonos Connect:Amp - RINCON_5CAAFDEFEE7E01400
+
+🌐 === UNIFIED CALLBACK SERVER: INCOMING NOTIFY ===
+📡 Method: NOTIFY
+📡 Path: /
+📏 Body size: 4068 bytes
+📋 Headers:
+   SID: uuid:RINCON_5CAAFDEFEE7E01400_sub0000000225
+   NT: upnp:event
+   NTS: upnp:propchange
+📄 Event XML (first 200 chars):
+<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><LastChange>&lt;Event xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/AVT/&quot; xmlns:r=&quot;urn:schemas-rinconnetworks-com:metadata...
+🌐 === END UNIFIED CALLBACK NOTIFICATION ===
+
+❌ Unified event stream: Event routing failed - subscription not found
+⚠️  Failed to subscribe to 192.168.4.47 - Sonos One - RINCON_7828CAFB9D9C01400 (192.168.4.47): Network error: http://192.168.4.47:1400/MediaRenderer/AVTransport/Event: status code 503
+⚠️  Failed to subscribe to 192.168.4.48 - Sonos One - RINCON_7828CA128F0001400 (192.168.4.48): Network error: http://192.168.4.48:1400/MediaRenderer/AVTransport/Event: status code 503
+✅ Subscribed to 192.168.4.43 - Sonos Amp - RINCON_804AF2AA2FA201400 (192.168.4.43)
+📝 CallbackAdapter: Registered subscription uuid:RINCON_804AF2AA2FA201400_sub0000000365 for speaker RINCON_804AF2AA2FA201400 service AVTransport
+📝 Registered subscription uuid:RINCON_804AF2AA2FA201400_sub0000000365 for speaker 192.168.4.43 - Sonos Amp - RINCON_804AF2AA2FA201400
+✅ Created 6 subscription(s)
+
+🎧 Listening for events from all speakers...
+💡 Try playing, pausing, or changing tracks on your Sonos speakers
+⏹️  Press Ctrl+C to stop
+
+
+🌐 === UNIFIED CALLBACK SERVER: INCOMING NOTIFY ===
+📡 Method: NOTIFY
+📡 Path: /
+📏 Body size: 2133 bytes
+📋 Headers:
+   SID: uuid:RINCON_804AF2AA2FA201400_sub0000000365
+   NT: upnp:event
+   NTS: upnp:propchange
+📄 Event XML (first 200 chars):
+<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><LastChange>&lt;Event xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/AVT/&quot; xmlns:r=&quot;urn:schemas-rinconnetworks-com:metadata...
+🌐 === END UNIFIED CALLBACK NOTIFICATION ===
+
+❌ Unified event stream: Event routing failed - subscription not found
+
+🌐 === UNIFIED CALLBACK SERVER: INCOMING NOTIFY ===
+📡 Method: NOTIFY
+📡 Path: /
+📏 Body size: 2133 bytes
+📋 Headers:
+   SID: uuid:RINCON_B8E937A84F0601400_sub0000000234
+   NT: upnp:event
+   NTS: upnp:propchange
+📄 Event XML (first 200 chars):
+<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><LastChange>&lt;Event xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/AVT/&quot; xmlns:r=&quot;urn:schemas-rinconnetworks-com:metadata...
+🌐 === END UNIFIED CALLBACK NOTIFICATION ===

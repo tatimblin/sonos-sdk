@@ -117,6 +117,10 @@ impl ServiceStrategy for AVTransportProvider {
         // Construct the full service endpoint URL
         let endpoint_url = format!("http://{}:1400{}", speaker.ip, self.service_endpoint_path());
         
+        // TODO: Check firewall status and use polling if blocked
+        // For now, we'll use the default UPnP subscription behavior
+        // This will be enhanced once we have proper firewall detection integration
+        
         // Create UPnP subscription using the unified callback server
         let subscription = UPnPSubscription::create_subscription(
             speaker.id.clone(),

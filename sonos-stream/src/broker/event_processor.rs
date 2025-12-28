@@ -30,9 +30,7 @@ use tokio::task::JoinHandle;
 use crate::event::Event;
 use crate::services::ServiceStrategy;
 use crate::types::RawEvent;
-use crate::types::{ServiceType, SubscriptionKey};
-
-use super::subscription_manager::ActiveSubscription;
+use crate::types::{ServiceType, SubscriptionKey, ActiveSubscription};
 
 
 
@@ -265,7 +263,6 @@ impl EventProcessor {
 mod tests {
     use super::*;
 
-    use crate::subscription::Subscription;
     use crate::types::{ServiceType, SpeakerId};
     use std::time::Duration;
 
@@ -292,15 +289,11 @@ mod tests {
             let mut subs = subscriptions.write().await;
             subs.insert(
                 key.clone(),
-                ActiveSubscription {
-                    key: key.clone(),
-                    subscription: Box::new(MockSubscription::new(
-                        speaker_id.clone(),
-                        ServiceType::AVTransport,
-                    )),
-                    created_at: SystemTime::now(),
-                    last_event: None,
-                },
+                ActiveSubscription::new(
+                    key.clone(),
+                    "sub-123".to_string(),
+                    SystemTime::now() + Duration::from_secs(1800), // Expires in 30 minutes
+                ),
             );
         }
 
@@ -523,49 +516,4 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // Mock subscription for testing
-    struct MockSubscription {
-        speaker_id: SpeakerId,
-        service_type: ServiceType,
-    }
-
-    impl MockSubscription {
-        fn new(speaker_id: SpeakerId, service_type: ServiceType) -> Self {
-            Self {
-                speaker_id,
-                service_type,
-            }
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl Subscription for MockSubscription {
-        fn speaker_id(&self) -> &SpeakerId {
-            &self.speaker_id
-        }
-
-        fn service_type(&self) -> ServiceType {
-            self.service_type
-        }
-
-        fn subscription_id(&self) -> &str {
-            "mock-sub-123"
-        }
-
-        fn is_active(&self) -> bool {
-            true
-        }
-
-        fn time_until_renewal(&self) -> Option<Duration> {
-            Some(Duration::from_secs(300))
-        }
-
-        async fn renew(&mut self) -> Result<(), crate::error::SubscriptionError> {
-            Ok(())
-        }
-
-        async fn unsubscribe(&mut self) -> Result<(), crate::error::SubscriptionError> {
-            Ok(())
-        }
-    }
 }

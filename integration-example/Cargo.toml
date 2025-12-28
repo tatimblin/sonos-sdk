@@ -12,7 +12,7 @@ path = "src/main.rs"
 [dependencies]
 # Sonos SDK crates
 sonos-discovery = { path = "../sonos-discovery" }
-sonos-stream = { path = "../sonos-stream" }
+# sonos-stream = { path = "../sonos-stream" }  # Temporarily disabled while refactoring UPnP client
 sonos-api = { path = "../sonos-api" }
 sonos-parser = { path = "../sonos-parser" }
 
