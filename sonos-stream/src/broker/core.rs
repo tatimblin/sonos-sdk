@@ -11,9 +11,11 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::event::Event;
+use crate::types::{SpeakerId, ServiceType};
 
 // Import manager types
 use super::event_processor::EventProcessor;
+use super::callback_adapter::CallbackAdapter;
 
 /// Event broker for managing UPnP event streaming and processing.
 ///
@@ -73,6 +75,8 @@ pub struct EventBroker {
     event_receiver: Option<mpsc::Receiver<Event>>,
     /// Event processor for routing and parsing
     event_processor: EventProcessor,
+    /// Callback adapter for subscription registration
+    callback_adapter: CallbackAdapter,
 }
 
 impl EventBroker {
@@ -87,17 +91,20 @@ impl EventBroker {
     /// * `event_sender` - Channel sender for emitting events
     /// * `event_receiver` - Channel receiver for the event stream
     /// * `event_processor` - Manager for event routing and parsing
+    /// * `callback_adapter` - Adapter for subscription registration
     pub(crate) fn new(
         callback_server: Arc<callback_server::CallbackServer>,
         event_sender: mpsc::Sender<Event>,
         event_receiver: mpsc::Receiver<Event>,
         event_processor: EventProcessor,
+        callback_adapter: CallbackAdapter,
     ) -> Self {
         Self {
             callback_server,
             event_sender,
             event_receiver: Some(event_receiver),
             event_processor,
+            callback_adapter,
         }
     }
 
@@ -157,6 +164,68 @@ impl EventBroker {
     /// ```
     pub fn callback_url(&self) -> String {
         self.callback_server.base_url().to_string()
+    }
+
+    /// Register a subscription for event routing.
+    ///
+    /// This method must be called after creating a subscription via sonos-api to enable
+    /// event routing. The subscription ID should match the SID returned by the UPnP device.
+    ///
+    /// # Arguments
+    ///
+    /// * `subscription_id` - The UPnP subscription ID (SID) from the device
+    /// * `speaker_id` - The ID of the speaker this subscription is for
+    /// * `service_type` - The type of service being subscribed to
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use sonos_api::{SonosClient, Service};
+    /// use sonos_stream::{SpeakerId, ServiceType};
+    ///
+    /// let subscription = client.create_managed_subscription(
+    ///     "192.168.1.100",
+    ///     Service::AVTransport,
+    ///     &callback_url,
+    ///     1800
+    /// )?;
+    ///
+    /// // Register the subscription for event routing
+    /// broker.register_subscription(
+    ///     subscription.subscription_id(),
+    ///     SpeakerId::new("RINCON_123"),
+    ///     ServiceType::AVTransport,
+    /// ).await;
+    /// ```
+    pub async fn register_subscription(
+        &self,
+        subscription_id: String,
+        speaker_id: SpeakerId,
+        service_type: ServiceType,
+    ) {
+        self.callback_adapter
+            .register_subscription(subscription_id, speaker_id, service_type)
+            .await;
+    }
+
+    /// Unregister a subscription from event routing.
+    ///
+    /// This should be called when a subscription is no longer needed to prevent
+    /// memory leaks and ensure clean shutdown.
+    ///
+    /// # Arguments
+    ///
+    /// * `subscription_id` - The subscription ID to unregister
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// broker.unregister_subscription("uuid:sub-123").await;
+    /// ```
+    pub async fn unregister_subscription(&self, subscription_id: &str) {
+        self.callback_adapter
+            .unregister_subscription(subscription_id)
+            .await;
     }
 
     /// Shutdown the broker and clean up all resources.

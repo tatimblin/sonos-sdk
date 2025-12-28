@@ -14,7 +14,7 @@
 
 use sonos_discovery::get_with_timeout;
 use sonos_api::{SonosClient, Service};
-use sonos_stream::{EventBrokerBuilder, Event, AVTransportProvider};
+use sonos_stream::{EventBrokerBuilder, Event, AVTransportProvider, SpeakerId, ServiceType};
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio::time::timeout;
@@ -72,6 +72,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ) {
             Ok(subscription) => {
                 println!("✅ Subscribed to {} ({})", speaker.name, speaker.ip_address);
+                
+                // Extract RINCON ID from the device ID (e.g., "uuid:RINCON_000E58A0123456" -> "RINCON_000E58A0123456")
+                let speaker_id = if speaker.id.starts_with("uuid:") {
+                    SpeakerId::new(&speaker.id[5..]) // Remove "uuid:" prefix
+                } else {
+                    SpeakerId::new(&speaker.id)
+                };
+                
+                // Register the subscription with the event broker for routing
+                broker.register_subscription(
+                    subscription.subscription_id().to_string(),
+                    speaker_id,
+                    ServiceType::AVTransport,
+                ).await;
+                
+                println!("📝 Registered subscription {} for speaker {}", 
+                    subscription.subscription_id(), speaker.name);
+                
                 subscriptions.insert(speaker.ip_address.clone(), subscription);
             }
             Err(e) => {
@@ -131,8 +149,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Step 5: Clean up
     println!("\n🧹 Cleaning up...");
     
-    // Unsubscribe from all services
+    // Unregister and unsubscribe from all services
     for (ip, subscription) in subscriptions {
+        // Unregister from event broker first
+        broker.unregister_subscription(subscription.subscription_id()).await;
+        println!("📝 Unregistered subscription {} from event broker", subscription.subscription_id());
+        
+        // Then unsubscribe from the device
         if let Err(e) = subscription.unsubscribe() {
             println!("⚠️  Failed to unsubscribe from {}: {}", ip, e);
         } else {

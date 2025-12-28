@@ -337,7 +337,7 @@ impl EventBrokerBuilder {
         })?;
 
         // Create callback adapter to convert notifications to raw events
-        let _callback_adapter = CallbackAdapter::new(notification_rx, raw_event_tx);
+        let callback_adapter = CallbackAdapter::new(notification_rx, raw_event_tx);
 
         // Wrap callback server in Arc for sharing between components
         let callback_server_arc = Arc::new(callback_server);
@@ -365,6 +365,7 @@ impl EventBrokerBuilder {
             event_tx,
             event_rx,
             event_processor,
+            callback_adapter,
         ))
     }
 }
