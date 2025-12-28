@@ -1618,10 +1618,13 @@ name = "sonos-api"
 version = "0.1.0"
 dependencies = [
  "mockito",
+ "proptest",
  "rstest",
  "serde",
  "soap-client",
+ "sonos-discovery",
  "thiserror",
+ "tokio",
  "xmltree",
 ]
 
