@@ -8,6 +8,7 @@ pub mod rendering_control;
 pub mod group_rendering_control;
 pub mod zone_group_topology;
 pub mod device_properties;
+pub mod events;
 
 // Re-export commonly used operations
 pub use av_transport::{
@@ -17,3 +18,8 @@ pub use av_transport::{
     GetTransportInfoOperation, GetTransportInfoRequest, GetTransportInfoResponse, PlayState
 };
 pub use rendering_control::{GetVolumeOperation, SetVolumeOperation, SetRelativeVolumeOperation};
+pub use events::{
+    SubscribeOperation, SubscribeRequest, SubscribeResponse,
+    UnsubscribeOperation, UnsubscribeRequest, UnsubscribeResponse,
+    RenewOperation, RenewRequest, RenewResponse,
+};

@@ -44,6 +44,7 @@ The crate currently supports operations for these UPnP services:
 - **DeviceProperties**: Device information and capabilities
 - **ZoneGroupTopology**: Multi-room grouping and topology
 - **GroupRenderingControl**: Group-level audio control
+- **Events**: UPnP event subscriptions (subscribe, unsubscribe, renew) for all services
 
 ## Usage
 
@@ -106,6 +107,39 @@ let pause_request = PauseRequest {
     instance_id: 0,
 };
 client.execute::<PauseOperation>(device_ip, &pause_request)?;
+```
+
+### Event Subscriptions
+
+The client also supports UPnP event subscriptions for real-time notifications:
+
+```rust
+use sonos_api::{SonosClient, Service, operations::events::{SubscribeRequest, UnsubscribeRequest, RenewRequest}};
+
+let client = SonosClient::new();
+let device_ip = "192.168.1.100";
+
+// Subscribe to AVTransport events
+let subscribe_request = SubscribeRequest {
+    callback_url: "http://192.168.1.50:8080/callback".to_string(),
+    timeout_seconds: 1800,
+};
+let subscription = client.subscribe(device_ip, Service::AVTransport, &subscribe_request)?;
+println!("Subscribed with SID: {}", subscription.sid);
+
+// Renew the subscription before it expires
+let renew_request = RenewRequest {
+    sid: subscription.sid.clone(),
+    timeout_seconds: 1800,
+};
+let renewal = client.renew_subscription(device_ip, Service::AVTransport, &renew_request)?;
+println!("Renewed for {} seconds", renewal.timeout_seconds);
+
+// Unsubscribe when done
+let unsubscribe_request = UnsubscribeRequest {
+    sid: subscription.sid,
+};
+client.unsubscribe(device_ip, Service::AVTransport, &unsubscribe_request)?;
 ```
 
 ### Low-Level Operation Usage (Advanced)
