@@ -2,6 +2,7 @@
 
 use std::net::IpAddr;
 use std::time::Duration;
+use sonos_api::Service;
 
 /// Unique identifier for a Sonos speaker.
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
@@ -66,6 +67,17 @@ pub enum ServiceType {
     RenderingControl,
     /// ZoneGroupTopology service for speaker grouping
     ZoneGroupTopology,
+}
+
+impl ServiceType {
+    /// Convert to sonos-api Service enum
+    pub fn to_sonos_api_service(self) -> Service {
+        match self {
+            ServiceType::AVTransport => Service::AVTransport,
+            ServiceType::RenderingControl => Service::RenderingControl,
+            ServiceType::ZoneGroupTopology => Service::ZoneGroupTopology,
+        }
+    }
 }
 
 /// Classification of subscription scope for a service.
@@ -159,5 +171,31 @@ impl SubscriptionConfig {
             timeout_seconds,
             callback_url,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_service_type_to_sonos_api_service_conversion() {
+        // Test AVTransport conversion
+        assert_eq!(
+            ServiceType::AVTransport.to_sonos_api_service(),
+            Service::AVTransport
+        );
+
+        // Test RenderingControl conversion
+        assert_eq!(
+            ServiceType::RenderingControl.to_sonos_api_service(),
+            Service::RenderingControl
+        );
+
+        // Test ZoneGroupTopology conversion
+        assert_eq!(
+            ServiceType::ZoneGroupTopology.to_sonos_api_service(),
+            Service::ZoneGroupTopology
+        );
     }
 }

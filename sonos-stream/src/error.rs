@@ -1,6 +1,7 @@
 //! Error types for the sonos-stream crate.
 
 use crate::types::{ServiceType, SpeakerId};
+use sonos_api::ApiError;
 
 /// Errors that can occur in the event broker.
 #[derive(Debug, thiserror::Error)]
@@ -94,6 +95,43 @@ pub enum SubscriptionError {
 
 /// Convenience type alias for Results using BrokerError.
 pub type Result<T> = std::result::Result<T, BrokerError>;
+
+/// Convert sonos-api ApiError to SubscriptionError
+/// 
+/// This implementation maps all possible ApiError variants to appropriate
+/// SubscriptionError variants while preserving original error messages for debugging.
+impl From<ApiError> for SubscriptionError {
+    fn from(error: ApiError) -> Self {
+        match error {
+            // Network-related errors map to NetworkError
+            ApiError::NetworkError(msg) => SubscriptionError::NetworkError(msg),
+            ApiError::DeviceUnreachable(msg) => SubscriptionError::NetworkError(msg),
+            
+            // Parse errors map to NetworkError (communication issue)
+            ApiError::ParseError(msg) => SubscriptionError::NetworkError(format!("Parse error: {}", msg)),
+            ApiError::EventParsingFailed(msg) => SubscriptionError::NetworkError(format!("Event parsing failed: {}", msg)),
+            
+            // SOAP faults map to UnsubscribeFailed (operation failure)
+            ApiError::SoapFault(code) => SubscriptionError::UnsubscribeFailed(format!("SOAP fault: error code {}", code)),
+            
+            // Subscription-specific errors map to their corresponding variants
+            ApiError::SubscriptionFailed(msg) => SubscriptionError::UnsubscribeFailed(msg),
+            ApiError::RenewalFailed(msg) => SubscriptionError::RenewalFailed(msg),
+            ApiError::SubscriptionExpired => SubscriptionError::Expired,
+            
+            // Invalid callback URL is a subscription creation failure
+            ApiError::InvalidCallbackUrl(msg) => SubscriptionError::UnsubscribeFailed(format!("Invalid callback URL: {}", msg)),
+            
+            // All other errors map to NetworkError with descriptive messages
+            ApiError::Soap(soap_error) => SubscriptionError::NetworkError(format!("SOAP error: {}", soap_error)),
+            ApiError::InvalidVolume(vol) => SubscriptionError::NetworkError(format!("Invalid volume: {} (must be 0-100)", vol)),
+            ApiError::NotCoordinator(device) => SubscriptionError::NetworkError(format!("Device is not a group coordinator: {}", device)),
+            ApiError::UnsupportedOperation => SubscriptionError::NetworkError("Operation not supported by device".to_string()),
+            ApiError::InvalidState(msg) => SubscriptionError::NetworkError(format!("Invalid device state for operation: {}", msg)),
+            ApiError::InvalidParameter(msg) => SubscriptionError::NetworkError(format!("Invalid parameter: {}", msg)),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -189,5 +227,120 @@ mod tests {
 
         assert_eq!(returns_result().unwrap(), 42);
         assert!(returns_error().is_err());
+    }
+
+    #[test]
+    fn test_api_error_to_subscription_error_conversion() {
+        // Test NetworkError mapping
+        let api_error = ApiError::NetworkError("connection failed".to_string());
+        let sub_error: SubscriptionError = api_error.into();
+        match sub_error {
+            SubscriptionError::NetworkError(msg) => assert_eq!(msg, "connection failed"),
+            _ => panic!("Expected NetworkError variant"),
+        }
+
+        // Test DeviceUnreachable mapping
+        let api_error = ApiError::DeviceUnreachable("device offline".to_string());
+        let sub_error: SubscriptionError = api_error.into();
+        match sub_error {
+            SubscriptionError::NetworkError(msg) => assert_eq!(msg, "device offline"),
+            _ => panic!("Expected NetworkError variant"),
+        }
+
+        // Test ParseError mapping
+        let api_error = ApiError::ParseError("invalid XML".to_string());
+        let sub_error: SubscriptionError = api_error.into();
+        match sub_error {
+            SubscriptionError::NetworkError(msg) => assert_eq!(msg, "Parse error: invalid XML"),
+            _ => panic!("Expected NetworkError variant"),
+        }
+
+        // Test SoapFault mapping
+        let api_error = ApiError::SoapFault(500);
+        let sub_error: SubscriptionError = api_error.into();
+        match sub_error {
+            SubscriptionError::UnsubscribeFailed(msg) => assert_eq!(msg, "SOAP fault: error code 500"),
+            _ => panic!("Expected UnsubscribeFailed variant"),
+        }
+
+        // Test SubscriptionFailed mapping
+        let api_error = ApiError::SubscriptionFailed("subscription rejected".to_string());
+        let sub_error: SubscriptionError = api_error.into();
+        match sub_error {
+            SubscriptionError::UnsubscribeFailed(msg) => assert_eq!(msg, "subscription rejected"),
+            _ => panic!("Expected UnsubscribeFailed variant"),
+        }
+
+        // Test RenewalFailed mapping
+        let api_error = ApiError::RenewalFailed("renewal timeout".to_string());
+        let sub_error: SubscriptionError = api_error.into();
+        match sub_error {
+            SubscriptionError::RenewalFailed(msg) => assert_eq!(msg, "renewal timeout"),
+            _ => panic!("Expected RenewalFailed variant"),
+        }
+
+        // Test SubscriptionExpired mapping
+        let api_error = ApiError::SubscriptionExpired;
+        let sub_error: SubscriptionError = api_error.into();
+        match sub_error {
+            SubscriptionError::Expired => {},
+            _ => panic!("Expected Expired variant"),
+        }
+
+        // Test InvalidCallbackUrl mapping
+        let api_error = ApiError::InvalidCallbackUrl("malformed URL".to_string());
+        let sub_error: SubscriptionError = api_error.into();
+        match sub_error {
+            SubscriptionError::UnsubscribeFailed(msg) => assert_eq!(msg, "Invalid callback URL: malformed URL"),
+            _ => panic!("Expected UnsubscribeFailed variant"),
+        }
+
+        // Test EventParsingFailed mapping
+        let api_error = ApiError::EventParsingFailed("bad event XML".to_string());
+        let sub_error: SubscriptionError = api_error.into();
+        match sub_error {
+            SubscriptionError::NetworkError(msg) => assert_eq!(msg, "Event parsing failed: bad event XML"),
+            _ => panic!("Expected NetworkError variant"),
+        }
+
+        // Test InvalidVolume mapping
+        let api_error = ApiError::InvalidVolume(150);
+        let sub_error: SubscriptionError = api_error.into();
+        match sub_error {
+            SubscriptionError::NetworkError(msg) => assert_eq!(msg, "Invalid volume: 150 (must be 0-100)"),
+            _ => panic!("Expected NetworkError variant"),
+        }
+
+        // Test NotCoordinator mapping
+        let api_error = ApiError::NotCoordinator("192.168.1.100".to_string());
+        let sub_error: SubscriptionError = api_error.into();
+        match sub_error {
+            SubscriptionError::NetworkError(msg) => assert_eq!(msg, "Device is not a group coordinator: 192.168.1.100"),
+            _ => panic!("Expected NetworkError variant"),
+        }
+
+        // Test UnsupportedOperation mapping
+        let api_error = ApiError::UnsupportedOperation;
+        let sub_error: SubscriptionError = api_error.into();
+        match sub_error {
+            SubscriptionError::NetworkError(msg) => assert_eq!(msg, "Operation not supported by device"),
+            _ => panic!("Expected NetworkError variant"),
+        }
+
+        // Test InvalidState mapping
+        let api_error = ApiError::InvalidState("not playing".to_string());
+        let sub_error: SubscriptionError = api_error.into();
+        match sub_error {
+            SubscriptionError::NetworkError(msg) => assert_eq!(msg, "Invalid device state for operation: not playing"),
+            _ => panic!("Expected NetworkError variant"),
+        }
+
+        // Test InvalidParameter mapping
+        let api_error = ApiError::InvalidParameter("bad instance ID".to_string());
+        let sub_error: SubscriptionError = api_error.into();
+        match sub_error {
+            SubscriptionError::NetworkError(msg) => assert_eq!(msg, "Invalid parameter: bad instance ID"),
+            _ => panic!("Expected NetworkError variant"),
+        }
     }
 }
