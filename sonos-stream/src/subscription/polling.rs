@@ -133,7 +133,7 @@ impl PollingSubscription {
             let max_errors = 5;
             
             // Create SOAP client for making requests
-            let soap_client = SoapClient::new();
+            let soap_client = SoapClient::get().clone();
             
             loop {
                 // Check if we should shutdown

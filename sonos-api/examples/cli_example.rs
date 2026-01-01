@@ -929,9 +929,10 @@ async fn main() -> Result<()> {
     display_welcome_message();
     
     // Initialize the operation registry and client
+    // Note: SonosClient::new() now uses a shared SOAP client for resource efficiency
     let registry = OperationRegistry::new();
     let client = SonosClient::new();
-    println!("✓ Sonos API client initialized");
+    println!("✓ Sonos API client initialized (using shared HTTP connection pool)");
     println!("✓ Operation registry loaded with {} operations", registry.get_operations().len());
     
     // Setup graceful shutdown handling

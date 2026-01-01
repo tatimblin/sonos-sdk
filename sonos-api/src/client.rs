@@ -31,11 +31,23 @@ pub struct SonosClient {
 }
 
 impl SonosClient {
-    /// Create a new Sonos client with default configuration
+    /// Create a new Sonos client using the shared SOAP client
+    ///
+    /// This uses the global shared SOAP client instance for maximum resource efficiency.
+    /// All SonosClient instances created this way share the same underlying HTTP client
+    /// and connection pool, reducing memory usage and improving performance.
     pub fn new() -> Self {
         Self {
-            soap_client: SoapClient::new(),
+            soap_client: SoapClient::get().clone(),
         }
+    }
+
+    /// Create a Sonos client with a custom SOAP client (for advanced use cases)
+    ///
+    /// Most applications should use `SonosClient::new()` instead. This method is
+    /// provided for cases where custom SOAP client configuration is needed.
+    pub fn with_soap_client(soap_client: SoapClient) -> Self {
+        Self { soap_client }
     }
 
     /// Execute a Sonos operation against a device
