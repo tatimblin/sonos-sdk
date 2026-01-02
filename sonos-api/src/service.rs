@@ -40,8 +40,24 @@ pub struct ServiceInfo {
 }
 
 impl Service {
+    /// Get the name of this service as a string
+    ///
+    /// # Returns
+    /// The service name as a string slice
+    pub fn name(&self) -> &'static str {
+        match self {
+            Service::AVTransport => "AVTransport",
+            Service::RenderingControl => "RenderingControl",
+            Service::GroupRenderingControl => "GroupRenderingControl",
+            Service::ZoneGroupTopology => "ZoneGroupTopology",
+            Service::DeviceProperties => "DeviceProperties",
+            Service::AlarmClock => "AlarmClock",
+            Service::MusicServices => "MusicServices",
+        }
+    }
+
     /// Get the service information (endpoint and URI) for this service
-    /// 
+    ///
     /// # Returns
     /// A `ServiceInfo` struct containing the endpoint path, service URI, and event endpoint
     pub fn info(&self) -> ServiceInfo {
