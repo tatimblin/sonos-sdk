@@ -116,27 +116,22 @@ impl Subscription for UPnPSubscription {
     async fn renew(&mut self) -> Result<(), SubscriptionError> {
         self.managed_subscription.renew().map_err(|e| match e {
             sonos_api::ApiError::NetworkError(msg) => SubscriptionError::NetworkError(msg),
-            sonos_api::ApiError::DeviceUnreachable(msg) => SubscriptionError::NetworkError(msg),
-            sonos_api::ApiError::RenewalFailed(msg) => SubscriptionError::RenewalFailed(msg),
-            sonos_api::ApiError::SubscriptionExpired => SubscriptionError::Expired,
+            sonos_api::ApiError::SubscriptionError(msg) => SubscriptionError::RenewalFailed(msg),
             sonos_api::ApiError::SoapFault(code) => SubscriptionError::RenewalFailed(format!("SOAP fault: {}", code)),
             sonos_api::ApiError::ParseError(msg) => SubscriptionError::RenewalFailed(format!("Parse error: {}", msg)),
-            sonos_api::ApiError::UnsupportedOperation => SubscriptionError::RenewalFailed("Renewal not supported by device".to_string()),
+            sonos_api::ApiError::DeviceError(msg) => SubscriptionError::RenewalFailed(format!("Device error: {}", msg)),
             sonos_api::ApiError::InvalidParameter(msg) => SubscriptionError::RenewalFailed(format!("Invalid parameter: {}", msg)),
-            _ => SubscriptionError::RenewalFailed(format!("Renewal failed: {}", e)),
         })
     }
 
     async fn unsubscribe(&mut self) -> Result<(), SubscriptionError> {
         self.managed_subscription.unsubscribe().map_err(|e| match e {
             sonos_api::ApiError::NetworkError(msg) => SubscriptionError::NetworkError(msg),
-            sonos_api::ApiError::DeviceUnreachable(msg) => SubscriptionError::NetworkError(msg),
+            sonos_api::ApiError::SubscriptionError(msg) => SubscriptionError::UnsubscribeFailed(msg),
             sonos_api::ApiError::SoapFault(code) => SubscriptionError::UnsubscribeFailed(format!("SOAP fault: {}", code)),
-            sonos_api::ApiError::SubscriptionExpired => SubscriptionError::Expired,
             sonos_api::ApiError::ParseError(msg) => SubscriptionError::UnsubscribeFailed(format!("Parse error: {}", msg)),
-            sonos_api::ApiError::UnsupportedOperation => SubscriptionError::UnsubscribeFailed("Unsubscribe not supported by device".to_string()),
+            sonos_api::ApiError::DeviceError(msg) => SubscriptionError::UnsubscribeFailed(format!("Device error: {}", msg)),
             sonos_api::ApiError::InvalidParameter(msg) => SubscriptionError::UnsubscribeFailed(format!("Invalid parameter: {}", msg)),
-            _ => SubscriptionError::UnsubscribeFailed(format!("Unsubscribe failed: {}", e)),
         })
     }
 

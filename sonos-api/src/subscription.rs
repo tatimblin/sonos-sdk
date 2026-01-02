@@ -4,7 +4,7 @@
 //! lifecycle of UPnP subscriptions with manual renewal and proper cleanup.
 
 use crate::{ApiError, Result, Service};
-use crate::operations::events::{
+use crate::services::events::{
     SubscribeOperation, SubscribeRequest,
     UnsubscribeOperation, UnsubscribeRequest, UnsubscribeResponse,
     RenewOperation, RenewRequest, RenewResponse,
@@ -182,7 +182,7 @@ impl ManagedSubscription {
         let current_timeout = {
             let state = self.state.lock().unwrap();
             if !state.active {
-                return Err(ApiError::SubscriptionExpired);
+                return Err(ApiError::subscription_expired());
             }
             state.timeout_seconds
         };

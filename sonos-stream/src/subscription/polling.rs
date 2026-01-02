@@ -15,8 +15,8 @@ use std::sync::Arc;
 use std::net::IpAddr;
 
 // Import sonos-api operations
-use sonos_api::operations::{
-    GetTransportInfoOperation, GetTransportInfoRequest,
+use sonos_api::services::av_transport::{
+    GetTransportInfoOperation, GetTransportInfoOperationRequest,
 };
 use sonos_api::{Service, SonosOperation};
 use soap_client::SoapClient;
@@ -211,7 +211,7 @@ impl PollingSubscription {
         match service_type {
             ServiceType::AVTransport => {
                 // Use GetTransportInfo operation from sonos-api
-                let request = GetTransportInfoRequest { instance_id: 0 };
+                let request = GetTransportInfoOperationRequest { instance_id: 0 };
                 let payload = GetTransportInfoOperation::build_payload(&request);
                 
                 let service_info = Service::AVTransport.info();

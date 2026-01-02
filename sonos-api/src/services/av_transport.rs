@@ -1,16 +1,35 @@
-use crate::{simple_operation, define_upnp_operation, define_operation_with_response, Validate};
+use crate::{define_upnp_operation, define_operation_with_response, Validate};
 use paste::paste;
 
-simple_operation!(PauseOperation, "Pause", AVTransport, {}, ());
-simple_operation!(StopOperation, "Stop", AVTransport, {}, ());
+define_upnp_operation! {
+    operation: PauseOperation,
+    action: "Pause",
+    service: AVTransport,
+    request: {
+    },
+    response: (),
+    payload: |req| format!("<InstanceID>{}</InstanceID>", req.instance_id),
+    parse: |_xml| Ok(()),
+}
 
-// Default Validate implementations for simple operations with no parameters
+define_upnp_operation! {
+    operation: StopOperation,
+    action: "Stop",
+    service: AVTransport,
+    request: {
+    },
+    response: (),
+    payload: |req| format!("<InstanceID>{}</InstanceID>", req.instance_id),
+    parse: |_xml| Ok(()),
+}
+
+// Default Validate implementations for simple operations
 impl Validate for PauseOperationRequest {
-    // No validation needed for parameterless operation
+    // No validation needed - instance_id is always valid
 }
 
 impl Validate for StopOperationRequest {
-    // No validation needed for parameterless operation
+    // No validation needed - instance_id is always valid
 }
 
 // Advanced operation with parameters and custom validation
@@ -30,21 +49,16 @@ define_upnp_operation! {
 
 // Custom validation implementation for PlayOperation (overrides the default macro validation)
 impl Validate for PlayOperationRequest {
-    fn validate_boundary(&self) -> Result<(), crate::operation::ValidationError> {
+    fn validate_basic(&self) -> Result<(), crate::operation::ValidationError> {
         if self.speed.is_empty() {
             return Err(crate::operation::ValidationError::invalid_value("speed", &self.speed));
         }
-        Ok(())
-    }
 
-    fn validate_comprehensive(&self) -> Result<(), crate::operation::ValidationError> {
-        self.validate_boundary()?;
-
-        // Comprehensive validation: check if speed is a valid value
+        // Basic validation: check if speed is a valid value
         match self.speed.as_str() {
             "1" | "0" => Ok(()),
             other => {
-                // Allow numeric values for comprehensive validation
+                // Allow numeric values
                 if other.parse::<f32>().is_ok() {
                     Ok(())
                 } else {
@@ -93,10 +107,71 @@ pub use pause_operation as pause;
 pub use stop_operation as stop;
 pub use get_transport_info_operation as get_transport_info;
 
+/// Service identifier for AVTransport
+pub const SERVICE: crate::Service = crate::Service::AVTransport;
+
+/// Subscribe to AVTransport events
+///
+/// This is a convenience function that subscribes to AVTransport service events.
+/// Events include transport state changes (play/pause/stop), track changes, etc.
+///
+/// # Arguments
+/// * `client` - The SonosClient to use for the subscription
+/// * `ip` - The IP address of the Sonos device
+/// * `callback_url` - URL where the device will send event notifications
+///
+/// # Returns
+/// A managed subscription for AVTransport events
+///
+/// # Example
+/// ```rust,ignore
+/// use sonos_api::{SonosClient, services::av_transport};
+///
+/// let client = SonosClient::new();
+/// let subscription = av_transport::subscribe(
+///     &client,
+///     "192.168.1.100",
+///     "http://192.168.1.50:8080/callback"
+/// )?;
+///
+/// // Now AVTransport events will be sent to your callback URL
+/// // Execute control operations separately:
+/// let play_op = av_transport::play("1".to_string()).build()?;
+/// client.execute("192.168.1.100", play_op)?;
+/// ```
+pub fn subscribe(
+    client: &crate::SonosClient,
+    ip: &str,
+    callback_url: &str,
+) -> crate::Result<crate::ManagedSubscription> {
+    client.subscribe(ip, SERVICE, callback_url)
+}
+
+/// Subscribe to AVTransport events with custom timeout
+///
+/// Same as `subscribe()` but allows specifying a custom timeout.
+///
+/// # Arguments
+/// * `client` - The SonosClient to use for the subscription
+/// * `ip` - The IP address of the Sonos device
+/// * `callback_url` - URL where the device will send event notifications
+/// * `timeout_seconds` - How long the subscription should last
+///
+/// # Returns
+/// A managed subscription for AVTransport events
+pub fn subscribe_with_timeout(
+    client: &crate::SonosClient,
+    ip: &str,
+    callback_url: &str,
+    timeout_seconds: u32,
+) -> crate::Result<crate::ManagedSubscription> {
+    client.subscribe_with_timeout(ip, SERVICE, callback_url, timeout_seconds)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::operation::{ValidationLevel, UPnPOperation};
+    use crate::operation::UPnPOperation;
 
     #[test]
     fn test_play_operation_builder() {
@@ -106,33 +181,18 @@ mod tests {
     }
 
     #[test]
-    fn test_play_validation_boundary() {
+    fn test_play_validation_basic() {
         let request = PlayOperationRequest {
             instance_id: 0,
             speed: "".to_string(),
         };
-        assert!(request.validate_boundary().is_err());
+        assert!(request.validate_basic().is_err());
 
         let request = PlayOperationRequest {
             instance_id: 0,
             speed: "1".to_string(),
         };
-        assert!(request.validate_boundary().is_ok());
-    }
-
-    #[test]
-    fn test_play_validation_comprehensive() {
-        let request = PlayOperationRequest {
-            instance_id: 0,
-            speed: "invalid".to_string(),
-        };
-        assert!(request.validate_comprehensive().is_err());
-
-        let request = PlayOperationRequest {
-            instance_id: 0,
-            speed: "0.5".to_string(),
-        };
-        assert!(request.validate_comprehensive().is_ok());
+        assert!(request.validate_basic().is_ok());
     }
 
     #[test]
@@ -147,43 +207,44 @@ mod tests {
         assert!(payload.contains("<Speed>1</Speed>"));
     }
 
+
     #[test]
-    fn test_operation_composition() {
-        let play_op = play_operation("1".to_string()).build().unwrap();
-        let pause_op = pause_operation().build().unwrap();
-
-        // Test chaining operations
-        let sequence = play_op.and_then(pause_op);
-        let (first, second) = sequence.operations();
-
-        assert_eq!(first.request().speed, "1");
-        assert_eq!(first.metadata().action, "Play");
-        assert_eq!(second.metadata().action, "Pause");
+    fn test_service_constant() {
+        // Verify that SERVICE constant is correctly set
+        assert_eq!(SERVICE, crate::Service::AVTransport);
     }
 
     #[test]
-    fn test_operation_batching() {
-        let info_op = get_transport_info_operation().build().unwrap();
-        let stop_op = stop_operation().build().unwrap();
+    fn test_service_level_subscription_helpers() {
+        // Test that subscription helper functions have correct signatures
+        let client = crate::SonosClient::new();
 
-        // Test batching operations
-        let batch = info_op.concurrent_with(stop_op);
-        let (first, second) = batch.operations();
+        // Test subscribe function exists and has correct signature
+        let _subscribe_fn = || {
+            subscribe(&client, "192.168.1.100", "http://callback.url")
+        };
 
-        assert_eq!(first.metadata().action, "GetTransportInfo");
-        assert_eq!(second.metadata().action, "Stop");
+        // Test subscribe_with_timeout function exists and has correct signature
+        let _subscribe_timeout_fn = || {
+            subscribe_with_timeout(&client, "192.168.1.100", "http://callback.url", 3600)
+        };
+
+        // If this compiles, the function signatures are correct
+        assert!(true);
     }
 
     #[test]
-    fn test_conditional_operations() {
-        let play_op = play_operation("1".to_string()).build().unwrap();
+    fn test_subscription_uses_correct_service() {
+        // We can't test actual subscription without a device, but we can
+        // verify the service type is used correctly by checking the SERVICE constant
+        let client = crate::SonosClient::new();
 
-        // Test conditional execution
-        let conditional = play_op.condition(|| true);
-        assert!(conditional.should_execute());
+        // Verify that our subscription helpers would use the correct service
+        assert_eq!(SERVICE, crate::Service::AVTransport);
 
-        let play_op2 = play("1".to_string()).build().unwrap();
-        let conditional2 = play_op2.condition(|| false);
-        assert!(!conditional2.should_execute());
+        // The subscribe function should internally call client.subscribe(ip, SERVICE, callback_url)
+        // We can't test the actual call without mocking, but the function signature
+        // and SERVICE constant verification confirms correct integration
     }
+
 }

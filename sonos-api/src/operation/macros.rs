@@ -4,7 +4,6 @@
 //! UPnP operations. Instead of manually implementing traits and structs, developers
 //! can use simple declarative syntax to generate all necessary code.
 
-use paste::paste;
 
 /// Simplified macro for defining UPnP operations with minimal boilerplate
 ///
@@ -61,7 +60,7 @@ macro_rules! define_upnp_operation {
                 const ACTION: &'static str = $action;
 
                 fn build_payload(request: &Self::Request) -> Result<String, $crate::operation::ValidationError> {
-                    request.validate($crate::operation::ValidationLevel::Boundary)?;
+                    request.validate($crate::operation::ValidationLevel::Basic)?;
                     let $req_param = request;
                     Ok($payload_expr)
                 }
@@ -84,39 +83,6 @@ macro_rules! define_upnp_operation {
     };
 }
 
-/// Even simpler macro for basic operations that don't need custom logic
-///
-/// # Example
-/// ```rust,ignore
-/// simple_operation! {
-///     PauseOperation, "Pause", AVTransport, {}, ()
-/// }
-/// ```
-#[macro_export]
-macro_rules! simple_operation {
-    ($op_struct:ident, $action:literal, $service:ident, { $($field:ident: $field_type:ty),* }, $response_type:ty) => {
-        define_upnp_operation! {
-            operation: $op_struct,
-            action: $action,
-            service: $service,
-            request: {
-                $($field: $field_type,)*
-            },
-            response: $response_type,
-            payload: |req| {
-                let mut xml = format!("<InstanceID>{}</InstanceID>", req.instance_id);
-                $(
-                    xml.push_str(&format!("<{}>{}</{}>",
-                        stringify!($field),
-                        req.$field,
-                        stringify!($field)));
-                )*
-                xml
-            },
-            parse: |_xml| Ok(()),
-        }
-    };
-}
 
 /// Macro for defining operations with XML response parsing
 ///
@@ -178,14 +144,25 @@ macro_rules! define_operation_with_response {
                 const ACTION: &'static str = $action;
 
                 fn build_payload(request: &Self::Request) -> Result<String, $crate::operation::ValidationError> {
-                    request.validate($crate::operation::ValidationLevel::Boundary)?;
+                    request.validate($crate::operation::ValidationLevel::Basic)?;
 
                     let mut xml = format!("<InstanceID>{}</InstanceID>", request.instance_id);
                     $(
+                        // Capitalize the first letter for proper Sonos XML element names
+                        let field_name = stringify!($field);
+                        let capitalized = if field_name.is_empty() {
+                            field_name.to_string()
+                        } else {
+                            let mut chars = field_name.chars();
+                            match chars.next() {
+                                None => String::new(),
+                                Some(first) => first.to_uppercase().chain(chars).collect(),
+                            }
+                        };
                         xml.push_str(&format!("<{}>{}</{}>",
-                            stringify!($field),
+                            capitalized,
                             request.$field,
-                            stringify!($field)));
+                            capitalized));
                     )*
                     Ok(xml)
                 }

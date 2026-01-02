@@ -3,42 +3,119 @@
 //! This crate provides a type-safe, trait-based API for controlling Sonos devices.
 //! It uses the private `soap-client` crate for low-level SOAP communication.
 //!
-//! # New Enhanced Operation Framework
+//! # UPnP Architecture
 //!
-//! The new operation framework provides composable, declarative UPnP operations:
+//! This API correctly implements the UPnP architecture used by Sonos devices:
+//!
+//! - **Control Operations**: Commands like Play, Pause, SetVolume are sent to `/Control` endpoints
+//! - **Event Subscriptions**: Subscriptions for state change notifications are sent to `/Event` endpoints
+//!
+//! These are completely separate and independent concepts that work together to provide
+//! both control and monitoring capabilities.
+//!
+//! # Enhanced Operation Framework
+//!
+//! The operation framework provides composable, declarative UPnP operations with validation,
+//! retry policies, and timeouts:
 //!
 //! ```rust,ignore
-//! use sonos_api::operation::{OperationBuilder, ValidationLevel};
-//! use sonos_api::services::av_transport;
+//! use sonos_api::{SonosClient, services::av_transport, services::rendering_control};
+//! use sonos_api::operation::ValidationLevel;
+//!
+//! let client = SonosClient::new();
 //!
 //! // Simple operation execution
 //! let play_op = av_transport::play("1".to_string())
 //!     .with_validation(ValidationLevel::Comprehensive)
 //!     .build()?;
 //!
+//! client.execute_enhanced("192.168.1.100", play_op)?;
+//!
 //! // Composed operations
 //! let sequence = av_transport::play("1".to_string())
 //!     .build()?
-//!     .and_then(rendering_control::set_volume(75).build()?);
+//!     .and_then(rendering_control::set_volume("Master".to_string(), 75).build()?);
 //!
-//! // Execute with enhanced client
-//! let client = SonosClient::new();
 //! client.execute_sequence("192.168.1.100", sequence)?;
 //! ```
 //!
-//! # Legacy Subscription Management
+//! # Event Subscription Management
 //!
-//! The primary way to manage UPnP event subscriptions is through the `ManagedSubscription` API:
+//! UPnP event subscriptions allow you to receive real-time state change notifications
+//! from Sonos devices. Subscriptions are managed separately from control operations:
 //!
-//! ```rust
+//! ## Client-Level Subscriptions
+//!
+//! Subscribe directly to any service using the client:
+//!
+//! ```rust,ignore
 //! use sonos_api::{SonosClient, Service};
 //!
 //! let client = SonosClient::new();
-//! let subscription = client.create_managed_subscription(
+//!
+//! // Subscribe to AVTransport events (play/pause state changes)
+//! let av_subscription = client.subscribe(
+//!     "192.168.1.100",
+//!     Service::AVTransport,
+//!     "http://192.168.1.50:8080/callback"
+//! )?;
+//!
+//! // Subscribe to RenderingControl events (volume changes)
+//! let rc_subscription = client.subscribe(
+//!     "192.168.1.100",
+//!     Service::RenderingControl,
+//!     "http://192.168.1.50:8080/callback"
+//! )?;
+//!
+//! // Custom timeout (default is 1800 seconds)
+//! let long_subscription = client.subscribe_with_timeout(
 //!     "192.168.1.100",
 //!     Service::AVTransport,
 //!     "http://192.168.1.50:8080/callback",
-//!     1800
+//!     7200  // 2 hours
+//! )?;
+//! ```
+//!
+//! ## Service-Level Subscription Helpers
+//!
+//! Each service module provides convenient subscription helpers:
+//!
+//! ```rust,ignore
+//! use sonos_api::{SonosClient, services::av_transport, services::rendering_control};
+//!
+//! let client = SonosClient::new();
+//!
+//! // Subscribe to specific services using module helpers
+//! let av_subscription = av_transport::subscribe(
+//!     &client,
+//!     "192.168.1.100",
+//!     "http://192.168.1.50:8080/callback"
+//! )?;
+//!
+//! let rc_subscription = rendering_control::subscribe(
+//!     &client,
+//!     "192.168.1.100",
+//!     "http://192.168.1.50:8080/callback"
+//! )?;
+//!
+//! // With custom timeout
+//! let long_av_subscription = av_transport::subscribe_with_timeout(
+//!     &client,
+//!     "192.168.1.100",
+//!     "http://192.168.1.50:8080/callback",
+//!     3600
+//! )?;
+//! ```
+//!
+//! ## Subscription Lifecycle Management
+//!
+//! All subscriptions return a `ManagedSubscription` that handles lifecycle management:
+//!
+//! ```rust,ignore
+//! let subscription = client.subscribe(
+//!     "192.168.1.100",
+//!     Service::AVTransport,
+//!     "http://192.168.1.50:8080/callback"
 //! )?;
 //!
 //! // Check if renewal is needed and renew if so
@@ -52,13 +129,36 @@
 //!
 //! The `ManagedSubscription` handles all lifecycle management including expiration tracking,
 //! renewal logic, and proper cleanup.
+//!
+//! ## Control Operations and Subscriptions Together
+//!
+//! Control operations and subscriptions work independently but can be used together:
+//!
+//! ```rust,ignore
+//! use sonos_api::{SonosClient, Service, services::av_transport};
+//!
+//! let client = SonosClient::new();
+//!
+//! // Set up event subscription first
+//! let subscription = client.subscribe(
+//!     "192.168.1.100",
+//!     Service::AVTransport,
+//!     "http://192.168.1.50:8080/callback"
+//! )?;
+//!
+//! // Execute control operations
+//! let play_op = av_transport::play("1".to_string()).build()?;
+//! client.execute_enhanced("192.168.1.100", play_op)?;
+//!
+//! // The subscription will receive events about state changes
+//! // caused by the control operations
+//! ```
 
 pub mod client;
 pub mod error;
 pub mod operation; // Enhanced operation framework
 pub mod service;
-pub mod operations; // Legacy operations
-pub mod services; // New enhanced services
+pub mod services; // Enhanced services
 pub mod subscription;
 
 // Legacy exports for backward compatibility
@@ -68,18 +168,12 @@ pub use operation::SonosOperation; // Legacy trait
 pub use service::{Service, ServiceInfo};
 pub use subscription::ManagedSubscription;
 
-// Enhanced error handling exports
-pub use error::{
-    OperationContext, ContextualResult, WithContext, BatchStatistics
-};
 
 // New enhanced operation framework exports
 pub use operation::{
-    UPnPOperation, OperationBuilder, ComposableOperation,
+    UPnPOperation, OperationBuilder,
     ValidationLevel, ValidationError, Validate,
-    OperationSequence, OperationBatch, ConditionalOperation,
-    RetryPolicy, OperationMetadata,
-    SequenceResult, BatchResult, ConditionalResult,
+    OperationMetadata,
 };
 
 // Enhanced services are available through the services module

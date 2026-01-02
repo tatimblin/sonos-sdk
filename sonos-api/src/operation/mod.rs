@@ -7,11 +7,9 @@
 //! - Strong type safety with minimal boilerplate
 
 mod builder;
-mod composition;
 pub mod macros;
 
 pub use builder::*;
-pub use composition::*;
 
 // Legacy SonosOperation trait for backward compatibility
 use serde::{Deserialize, Serialize};
@@ -65,7 +63,6 @@ pub trait SonosOperation {
     fn parse_response(xml: &Element) -> Result<Self::Response, ApiError>;
 }
 
-use std::time::Duration;
 
 /// Validation error types
 #[derive(Debug, thiserror::Error)]
@@ -116,42 +113,31 @@ impl ValidationError {
 pub enum ValidationLevel {
     /// No validation - maximum performance
     None,
-    /// Light validation at API boundary - basic type and range checks
-    Boundary,
-    /// Full validation including domain rules and complex constraints
-    Comprehensive,
+    /// Basic validation - type and range checks
+    Basic,
 }
 
 impl Default for ValidationLevel {
     fn default() -> Self {
-        Self::Boundary
+        Self::Basic
     }
 }
 
 /// Trait for types that can be validated
 pub trait Validate {
-    /// Perform light validation at the API boundary
+    /// Perform basic validation
     ///
-    /// This should include basic type checks and simple range validation
+    /// This should include type checks and range validation
     /// to fail fast on obviously invalid input.
-    fn validate_boundary(&self) -> Result<(), ValidationError> {
-        Ok(()) // Default: no boundary validation
-    }
-
-    /// Perform comprehensive validation including domain rules
-    ///
-    /// This includes all boundary validation plus complex business logic,
-    /// regex patterns, cross-field validation, etc.
-    fn validate_comprehensive(&self) -> Result<(), ValidationError> {
-        self.validate_boundary() // Default: same as boundary validation
+    fn validate_basic(&self) -> Result<(), ValidationError> {
+        Ok(()) // Default: no validation
     }
 
     /// Validate with the specified level
     fn validate(&self, level: ValidationLevel) -> Result<(), ValidationError> {
         match level {
             ValidationLevel::None => Ok(()),
-            ValidationLevel::Boundary => self.validate_boundary(),
-            ValidationLevel::Comprehensive => self.validate_comprehensive(),
+            ValidationLevel::Basic => self.validate_basic(),
         }
     }
 }
@@ -248,119 +234,6 @@ pub struct OperationMetadata {
     pub dependencies: &'static [&'static str],
 }
 
-/// Retry policy for operation execution
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RetryPolicy {
-    /// Maximum number of retry attempts
-    pub max_retries: u32,
-    /// Base delay between retries
-    pub base_delay: Duration,
-    /// Whether to use exponential backoff
-    pub exponential_backoff: bool,
-}
-
-impl Default for RetryPolicy {
-    fn default() -> Self {
-        Self {
-            max_retries: 3,
-            base_delay: Duration::from_millis(100),
-            exponential_backoff: true,
-        }
-    }
-}
-
-impl RetryPolicy {
-    /// Create a retry policy with no retries
-    pub fn none() -> Self {
-        Self {
-            max_retries: 0,
-            base_delay: Duration::ZERO,
-            exponential_backoff: false,
-        }
-    }
-
-    /// Create a retry policy with fixed delays
-    pub fn fixed(max_retries: u32, delay: Duration) -> Self {
-        Self {
-            max_retries,
-            base_delay: delay,
-            exponential_backoff: false,
-        }
-    }
-
-    /// Create a retry policy with exponential backoff
-    pub fn exponential(max_retries: u32, base_delay: Duration) -> Self {
-        Self {
-            max_retries,
-            base_delay,
-            exponential_backoff: true,
-        }
-    }
-
-    /// Calculate the delay for a given retry attempt
-    pub fn delay_for_attempt(&self, attempt: u32) -> Duration {
-        if attempt == 0 || attempt > self.max_retries {
-            return Duration::ZERO;
-        }
-
-        if self.exponential_backoff {
-            self.base_delay * 2_u32.pow(attempt - 1)
-        } else {
-            self.base_delay
-        }
-    }
-}
-
-/// Result type for sequence operations
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SequenceResult<T> {
-    /// All operations in the sequence completed successfully
-    Success(T),
-}
-
-/// Result type for batch operations
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BatchResult<T> {
-    /// All operations in the batch completed (some may have failed)
-    Complete(T),
-}
-
-/// Result type for conditional operations
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ConditionalResult<T> {
-    /// The operation was executed and completed with this result
-    Executed(T),
-    /// The operation was skipped due to condition not being met
-    Skipped,
-}
-
-impl<T> ConditionalResult<T> {
-    /// Check if the operation was executed
-    pub fn was_executed(&self) -> bool {
-        matches!(self, ConditionalResult::Executed(_))
-    }
-
-    /// Check if the operation was skipped
-    pub fn was_skipped(&self) -> bool {
-        matches!(self, ConditionalResult::Skipped)
-    }
-
-    /// Get the result if the operation was executed
-    pub fn result(self) -> Option<T> {
-        match self {
-            ConditionalResult::Executed(result) => Some(result),
-            ConditionalResult::Skipped => None,
-        }
-    }
-
-    /// Get a reference to the result if the operation was executed
-    pub fn result_ref(&self) -> Option<&T> {
-        match self {
-            ConditionalResult::Executed(result) => Some(result),
-            ConditionalResult::Skipped => None,
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -376,32 +249,9 @@ mod tests {
 
     #[test]
     fn test_validation_level_default() {
-        assert_eq!(ValidationLevel::default(), ValidationLevel::Boundary);
+        assert_eq!(ValidationLevel::default(), ValidationLevel::Basic);
     }
 
-    #[test]
-    fn test_retry_policy_none() {
-        let policy = RetryPolicy::none();
-        assert_eq!(policy.max_retries, 0);
-        assert_eq!(policy.delay_for_attempt(1), Duration::ZERO);
-    }
-
-    #[test]
-    fn test_retry_policy_fixed() {
-        let policy = RetryPolicy::fixed(3, Duration::from_millis(500));
-        assert_eq!(policy.max_retries, 3);
-        assert_eq!(policy.delay_for_attempt(1), Duration::from_millis(500));
-        assert_eq!(policy.delay_for_attempt(2), Duration::from_millis(500));
-    }
-
-    #[test]
-    fn test_retry_policy_exponential() {
-        let policy = RetryPolicy::exponential(3, Duration::from_millis(100));
-        assert_eq!(policy.delay_for_attempt(1), Duration::from_millis(100));
-        assert_eq!(policy.delay_for_attempt(2), Duration::from_millis(200));
-        assert_eq!(policy.delay_for_attempt(3), Duration::from_millis(400));
-        assert_eq!(policy.delay_for_attempt(4), Duration::ZERO); // Beyond max_retries
-    }
 
     // Mock validation implementation for testing
     struct TestRequest {
@@ -409,17 +259,8 @@ mod tests {
     }
 
     impl Validate for TestRequest {
-        fn validate_boundary(&self) -> Result<(), ValidationError> {
-            if self.value < 0 {
-                Err(ValidationError::range_error("value", 0, 100, self.value))
-            } else {
-                Ok(())
-            }
-        }
-
-        fn validate_comprehensive(&self) -> Result<(), ValidationError> {
-            self.validate_boundary()?;
-            if self.value > 100 {
+        fn validate_basic(&self) -> Result<(), ValidationError> {
+            if self.value < 0 || self.value > 100 {
                 Err(ValidationError::range_error("value", 0, 100, self.value))
             } else {
                 Ok(())
@@ -431,17 +272,14 @@ mod tests {
     fn test_validation_levels() {
         let valid_request = TestRequest { value: 50 };
         assert!(valid_request.validate(ValidationLevel::None).is_ok());
-        assert!(valid_request.validate(ValidationLevel::Boundary).is_ok());
-        assert!(valid_request.validate(ValidationLevel::Comprehensive).is_ok());
+        assert!(valid_request.validate(ValidationLevel::Basic).is_ok());
 
-        let boundary_invalid = TestRequest { value: -10 };
-        assert!(boundary_invalid.validate(ValidationLevel::None).is_ok());
-        assert!(boundary_invalid.validate(ValidationLevel::Boundary).is_err());
-        assert!(boundary_invalid.validate(ValidationLevel::Comprehensive).is_err());
+        let invalid_request = TestRequest { value: 150 };
+        assert!(invalid_request.validate(ValidationLevel::None).is_ok());
+        assert!(invalid_request.validate(ValidationLevel::Basic).is_err());
 
-        let comprehensive_invalid = TestRequest { value: 150 };
-        assert!(comprehensive_invalid.validate(ValidationLevel::None).is_ok());
-        assert!(comprehensive_invalid.validate(ValidationLevel::Boundary).is_ok());
-        assert!(comprehensive_invalid.validate(ValidationLevel::Comprehensive).is_err());
+        let negative_request = TestRequest { value: -10 };
+        assert!(negative_request.validate(ValidationLevel::None).is_ok());
+        assert!(negative_request.validate(ValidationLevel::Basic).is_err());
     }
 }

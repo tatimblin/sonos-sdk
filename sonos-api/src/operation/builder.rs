@@ -3,14 +3,14 @@
 //! This module provides the builder pattern for constructing UPnP operations
 //! with validation, timeout, and retry configuration.
 
-use super::{UPnPOperation, ValidationLevel, ValidationError, Validate, RetryPolicy, OperationMetadata};
+use super::{UPnPOperation, ValidationLevel, ValidationError, Validate, OperationMetadata};
 use std::marker::PhantomData;
 use std::time::Duration;
 
 /// Builder for constructing UPnP operations with configuration
 ///
 /// The OperationBuilder allows for fluent construction of operations with
-/// validation levels, timeouts, retry policies, and other configuration.
+/// validation levels, timeouts, and other configuration.
 ///
 /// # Type Parameters
 /// * `Op` - The UPnP operation type being built
@@ -18,7 +18,6 @@ pub struct OperationBuilder<Op: UPnPOperation> {
     request: Op::Request,
     validation: ValidationLevel,
     timeout: Option<Duration>,
-    retry_policy: Option<RetryPolicy>,
     _phantom: PhantomData<Op>,
 }
 
@@ -35,7 +34,6 @@ impl<Op: UPnPOperation> OperationBuilder<Op> {
             request,
             validation: ValidationLevel::default(),
             timeout: None,
-            retry_policy: None,
             _phantom: PhantomData,
         }
     }
@@ -64,26 +62,6 @@ impl<Op: UPnPOperation> OperationBuilder<Op> {
         self
     }
 
-    /// Set a retry policy for the operation
-    ///
-    /// # Arguments
-    /// * `policy` - The retry policy to use
-    ///
-    /// # Returns
-    /// The builder for method chaining
-    pub fn with_retry(mut self, policy: RetryPolicy) -> Self {
-        self.retry_policy = Some(policy);
-        self
-    }
-
-    /// Disable retries for the operation
-    ///
-    /// # Returns
-    /// The builder for method chaining
-    pub fn without_retry(mut self) -> Self {
-        self.retry_policy = Some(RetryPolicy::none());
-        self
-    }
 
     /// Build the final composable operation
     ///
@@ -100,7 +78,6 @@ impl<Op: UPnPOperation> OperationBuilder<Op> {
             request: self.request,
             validation: self.validation,
             timeout: self.timeout,
-            retry_policy: self.retry_policy.unwrap_or_default(),
             metadata: Op::metadata(),
             _phantom: PhantomData,
         })
@@ -118,7 +95,6 @@ impl<Op: UPnPOperation> OperationBuilder<Op> {
             request: self.request,
             validation: ValidationLevel::None,
             timeout: self.timeout,
-            retry_policy: self.retry_policy.unwrap_or_default(),
             metadata: Op::metadata(),
             _phantom: PhantomData,
         }
@@ -134,10 +110,7 @@ impl<Op: UPnPOperation> OperationBuilder<Op> {
         self.timeout
     }
 
-    /// Get the current retry policy
-    pub fn retry_policy(&self) -> Option<&RetryPolicy> {
-        self.retry_policy.as_ref()
-    }
+
 }
 
 /// A composable operation ready for execution
@@ -151,7 +124,6 @@ pub struct ComposableOperation<Op: UPnPOperation> {
     pub(crate) request: Op::Request,
     pub(crate) validation: ValidationLevel,
     pub(crate) timeout: Option<Duration>,
-    pub(crate) retry_policy: RetryPolicy,
     pub(crate) metadata: OperationMetadata,
     _phantom: PhantomData<Op>,
 }
@@ -172,10 +144,6 @@ impl<Op: UPnPOperation> ComposableOperation<Op> {
         self.timeout
     }
 
-    /// Get the retry policy for this operation
-    pub fn retry_policy(&self) -> &RetryPolicy {
-        &self.retry_policy
-    }
 
     /// Get the operation metadata
     pub fn metadata(&self) -> &OperationMetadata {
@@ -209,7 +177,6 @@ impl<Op: UPnPOperation> std::fmt::Debug for ComposableOperation<Op> {
             .field("action", &self.metadata.action)
             .field("validation", &self.validation)
             .field("timeout", &self.timeout)
-            .field("retry_policy", &self.retry_policy)
             .finish()
     }
 }
@@ -223,12 +190,12 @@ where
             request: self.request.clone(),
             validation: self.validation,
             timeout: self.timeout,
-            retry_policy: self.retry_policy.clone(),
             metadata: self.metadata.clone(),
             _phantom: PhantomData,
         }
     }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -245,17 +212,8 @@ mod tests {
     }
 
     impl Validate for TestRequest {
-        fn validate_boundary(&self) -> Result<(), ValidationError> {
-            if self.value < 0 {
-                Err(ValidationError::range_error("value", 0, 100, self.value))
-            } else {
-                Ok(())
-            }
-        }
-
-        fn validate_comprehensive(&self) -> Result<(), ValidationError> {
-            self.validate_boundary()?;
-            if self.value > 100 {
+        fn validate_basic(&self) -> Result<(), ValidationError> {
+            if self.value < 0 || self.value > 100 {
                 Err(ValidationError::range_error("value", 0, 100, self.value))
             } else {
                 Ok(())
@@ -278,7 +236,7 @@ mod tests {
         const ACTION: &'static str = "TestAction";
 
         fn build_payload(request: &Self::Request) -> Result<String, ValidationError> {
-            request.validate(ValidationLevel::Boundary)?;
+            request.validate(ValidationLevel::Basic)?;
             Ok(format!("<TestRequest><Value>{}</Value></TestRequest>", request.value))
         }
 
@@ -297,34 +255,31 @@ mod tests {
         let request = TestRequest { value: 50 };
         let builder = OperationBuilder::<TestOperation>::new(request);
 
-        assert_eq!(builder.validation_level(), ValidationLevel::Boundary);
+        assert_eq!(builder.validation_level(), ValidationLevel::Basic);
         assert_eq!(builder.timeout(), None);
-        assert!(builder.retry_policy().is_none());
     }
 
     #[test]
     fn test_operation_builder_fluent() {
         let request = TestRequest { value: 50 };
         let builder = OperationBuilder::<TestOperation>::new(request)
-            .with_validation(ValidationLevel::Comprehensive)
-            .with_timeout(Duration::from_secs(30))
-            .with_retry(RetryPolicy::fixed(5, Duration::from_millis(200)));
+            .with_validation(ValidationLevel::Basic)
+            .with_timeout(Duration::from_secs(30));
 
-        assert_eq!(builder.validation_level(), ValidationLevel::Comprehensive);
+        assert_eq!(builder.validation_level(), ValidationLevel::Basic);
         assert_eq!(builder.timeout(), Some(Duration::from_secs(30)));
-        assert_eq!(builder.retry_policy().unwrap().max_retries, 5);
     }
 
     #[test]
     fn test_operation_builder_build_success() {
         let request = TestRequest { value: 50 };
         let operation = OperationBuilder::<TestOperation>::new(request)
-            .with_validation(ValidationLevel::Comprehensive)
+            .with_validation(ValidationLevel::Basic)
             .build()
             .expect("Should build successfully");
 
         assert_eq!(operation.request().value, 50);
-        assert_eq!(operation.validation_level(), ValidationLevel::Comprehensive);
+        assert_eq!(operation.validation_level(), ValidationLevel::Basic);
         assert_eq!(operation.metadata().action, "TestAction");
     }
 
@@ -332,7 +287,7 @@ mod tests {
     fn test_operation_builder_build_validation_error() {
         let request = TestRequest { value: 150 }; // Invalid value
         let result = OperationBuilder::<TestOperation>::new(request)
-            .with_validation(ValidationLevel::Comprehensive)
+            .with_validation(ValidationLevel::Basic)
             .build();
 
         assert!(result.is_err());
@@ -343,7 +298,7 @@ mod tests {
     fn test_operation_builder_build_unchecked() {
         let request = TestRequest { value: 150 }; // Invalid value
         let operation = OperationBuilder::<TestOperation>::new(request)
-            .with_validation(ValidationLevel::Comprehensive)
+            .with_validation(ValidationLevel::Basic)
             .build_unchecked(); // Should succeed despite invalid value
 
         assert_eq!(operation.request().value, 150);
@@ -385,4 +340,5 @@ mod tests {
         assert_eq!(operation.request().value, cloned.request().value);
         assert_eq!(operation.validation_level(), cloned.validation_level());
     }
+
 }
