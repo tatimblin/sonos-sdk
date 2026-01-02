@@ -236,11 +236,11 @@ mod tests {
             _ => panic!("Expected NetworkError variant"),
         }
 
-        // Test DeviceUnreachable mapping
-        let api_error = ApiError::DeviceUnreachable("device offline".to_string());
+        // Test DeviceError mapping
+        let api_error = ApiError::DeviceError("device offline".to_string());
         let sub_error: SubscriptionError = api_error.into();
         match sub_error {
-            SubscriptionError::NetworkError(msg) => assert_eq!(msg, "device offline"),
+            SubscriptionError::NetworkError(msg) => assert_eq!(msg, "Device error: device offline"),
             _ => panic!("Expected NetworkError variant"),
         }
 
@@ -260,8 +260,8 @@ mod tests {
             _ => panic!("Expected UnsubscribeFailed variant"),
         }
 
-        // Test SubscriptionFailed mapping
-        let api_error = ApiError::SubscriptionFailed("subscription rejected".to_string());
+        // Test SubscriptionError mapping
+        let api_error = ApiError::SubscriptionError("subscription rejected".to_string());
         let sub_error: SubscriptionError = api_error.into();
         match sub_error {
             SubscriptionError::UnsubscribeFailed(msg) => assert_eq!(msg, "subscription rejected"),

@@ -76,14 +76,11 @@ impl UPnPSubscription {
             .create_managed_subscription(&device_ip, service, &callback_url, timeout_seconds)
             .map_err(|e| match e {
                 sonos_api::ApiError::NetworkError(msg) => SubscriptionError::NetworkError(msg),
-                sonos_api::ApiError::DeviceUnreachable(msg) => SubscriptionError::NetworkError(msg),
-                sonos_api::ApiError::SubscriptionFailed(msg) => SubscriptionError::UnsubscribeFailed(msg),
                 sonos_api::ApiError::ParseError(msg) => SubscriptionError::NetworkError(format!("Parse error: {}", msg)),
                 sonos_api::ApiError::SoapFault(code) => SubscriptionError::UnsubscribeFailed(format!("SOAP fault: {}", code)),
-                sonos_api::ApiError::InvalidCallbackUrl(msg) => SubscriptionError::UnsubscribeFailed(format!("Invalid callback URL: {}", msg)),
-                sonos_api::ApiError::UnsupportedOperation => SubscriptionError::UnsubscribeFailed("Subscription not supported by device".to_string()),
                 sonos_api::ApiError::InvalidParameter(msg) => SubscriptionError::UnsubscribeFailed(format!("Invalid parameter: {}", msg)),
-                _ => SubscriptionError::NetworkError(format!("Subscription failed: {}", e)),
+                sonos_api::ApiError::SubscriptionError(msg) => SubscriptionError::UnsubscribeFailed(msg),
+                sonos_api::ApiError::DeviceError(msg) => SubscriptionError::UnsubscribeFailed(format!("Device error: {}", msg)),
             })?;
 
         Ok(Self {

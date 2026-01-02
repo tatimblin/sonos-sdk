@@ -54,79 +54,9 @@ pub enum ApiError {
 }
 
 impl ApiError {
-    /// Create a new NetworkError
-    pub fn network_error<S: Into<String>>(message: S) -> Self {
-        Self::NetworkError(message.into())
-    }
-
-    /// Create a new ParseError
-    pub fn parse_error<S: Into<String>>(message: S) -> Self {
-        Self::ParseError(message.into())
-    }
-
-    /// Create a new InvalidParameter error
-    pub fn invalid_parameter<S: Into<String>>(message: S) -> Self {
-        Self::InvalidParameter(message.into())
-    }
-
-    /// Create a new SubscriptionError
-    pub fn subscription_error<S: Into<String>>(message: S) -> Self {
-        Self::SubscriptionError(message.into())
-    }
-
-    /// Create a new DeviceError
-    pub fn device_error<S: Into<String>>(message: S) -> Self {
-        Self::DeviceError(message.into())
-    }
-
-    /// Create an invalid volume error (convenience method)
-    pub fn invalid_volume(volume: u8) -> Self {
-        Self::InvalidParameter(format!("Invalid volume: {} (must be 0-100)", volume))
-    }
-
-    /// Create a device unreachable error (convenience method)
-    pub fn device_unreachable<S: Into<String>>(device: S) -> Self {
-        Self::NetworkError(format!("Device unreachable: {}", device.into()))
-    }
-
-    /// Create a not coordinator error (convenience method)
-    pub fn not_coordinator<S: Into<String>>(device: S) -> Self {
-        Self::DeviceError(format!("Device is not a group coordinator: {}", device.into()))
-    }
-
-    /// Create a subscription failed error (convenience method)
-    pub fn subscription_failed<S: Into<String>>(message: S) -> Self {
-        Self::SubscriptionError(format!("Subscription failed: {}", message.into()))
-    }
-
-    /// Create a renewal failed error (convenience method)
-    pub fn renewal_failed<S: Into<String>>(message: S) -> Self {
-        Self::SubscriptionError(format!("Subscription renewal failed: {}", message.into()))
-    }
-
-    /// Create a subscription expired error (convenience method)
+    /// Create a subscription expired error (used by subscription management)
     pub fn subscription_expired() -> Self {
         Self::SubscriptionError("Subscription expired".to_string())
-    }
-
-    /// Create an invalid callback URL error (convenience method)
-    pub fn invalid_callback_url<S: Into<String>>(url: S) -> Self {
-        Self::InvalidParameter(format!("Invalid callback URL: {}", url.into()))
-    }
-
-    /// Create an invalid state error (convenience method)
-    pub fn invalid_state<S: Into<String>>(message: S) -> Self {
-        Self::InvalidParameter(format!("Invalid device state: {}", message.into()))
-    }
-
-    /// Create an event parsing failed error (convenience method)
-    pub fn event_parsing_failed<S: Into<String>>(message: S) -> Self {
-        Self::ParseError(format!("Event parsing failed: {}", message.into()))
-    }
-
-    /// Create an unsupported operation error (convenience method)
-    pub fn unsupported_operation() -> Self {
-        Self::DeviceError("Operation not supported by device".to_string())
     }
 }
 
@@ -144,20 +74,39 @@ impl From<SoapError> for ApiError {
     }
 }
 
+/// Convert from ValidationError to ApiError
+impl From<crate::operation::ValidationError> for ApiError {
+    fn from(validation_error: crate::operation::ValidationError) -> Self {
+        match validation_error {
+            crate::operation::ValidationError::InvalidValue { parameter, value, reason } => {
+                ApiError::InvalidParameter(format!("Invalid value '{}' for parameter '{}': {}", value, parameter, reason))
+            }
+            crate::operation::ValidationError::RangeError { parameter, value, min, max } => {
+                ApiError::InvalidParameter(format!(
+                    "Parameter '{}' value {} is out of range [{}, {}]",
+                    parameter, value, min, max
+                ))
+            }
+            crate::operation::ValidationError::Custom { parameter, message } => {
+                ApiError::InvalidParameter(format!("Parameter '{}': {}", parameter, message))
+            }
+            crate::operation::ValidationError::MissingParameter { parameter } => {
+                ApiError::InvalidParameter(format!("Required parameter '{}' is missing", parameter))
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_error_creation() {
-        let error = ApiError::invalid_volume(150);
-        assert!(matches!(error, ApiError::InvalidParameter(_)));
-
-        let error = ApiError::device_unreachable("192.168.1.100");
-        assert!(matches!(error, ApiError::NetworkError(_)));
-
-        let error = ApiError::subscription_failed("timeout");
+    fn test_subscription_expired() {
+        let error = ApiError::subscription_expired();
         assert!(matches!(error, ApiError::SubscriptionError(_)));
+        let error_str = format!("{}", error);
+        assert!(error_str.contains("expired"));
     }
 
     #[test]
@@ -176,13 +125,14 @@ mod tests {
     }
 
     #[test]
-    fn test_convenience_methods() {
-        let error = ApiError::not_coordinator("192.168.1.100");
-        let error_str = format!("{}", error);
-        assert!(error_str.contains("not a group coordinator"));
+    fn test_error_display() {
+        let network_err = ApiError::NetworkError("connection failed".to_string());
+        assert_eq!(format!("{}", network_err), "Network error: connection failed");
 
-        let error = ApiError::subscription_expired();
-        let error_str = format!("{}", error);
-        assert!(error_str.contains("expired"));
+        let parse_err = ApiError::ParseError("invalid XML".to_string());
+        assert_eq!(format!("{}", parse_err), "Parse error: invalid XML");
+
+        let soap_fault = ApiError::SoapFault(500);
+        assert_eq!(format!("{}", soap_fault), "SOAP fault: error code 500");
     }
 }
