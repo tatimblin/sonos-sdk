@@ -62,18 +62,18 @@ use std::io::{self, Write};
 use std::time::Duration;
 
 use sonos_api::{SonosClient, ApiError};
-use sonos_api::operations::{
-    PlayOperation, PlayRequest,
-    PauseOperation, PauseRequest,
-    StopOperation, StopRequest,
-    GetTransportInfoOperation, GetTransportInfoRequest, PlayState,
-    GetVolumeOperation, SetVolumeOperation, SetRelativeVolumeOperation,
+use sonos_api::services::av_transport::{
+    PlayOperation, PlayOperationRequest,
+    PauseOperation, PauseOperationRequest,
+    StopOperation, StopOperationRequest,
+    GetTransportInfoOperation, GetTransportInfoOperationRequest,
 };
-use sonos_api::operations::rendering_control::{
-    GetVolumeRequest,
-    SetVolumeRequest,
-    SetRelativeVolumeRequest,
+use sonos_api::services::rendering_control::{
+    GetVolumeOperation, GetVolumeOperationRequest,
+    SetVolumeOperation, SetVolumeOperationRequest,
+    SetRelativeVolumeOperation, SetRelativeVolumeOperationRequest,
 };
+use sonos_api::operation::{OperationBuilder, ValidationError};
 use sonos_discovery::{Device, get_with_timeout, DiscoveryError};
 
 /// CLI-specific error types for better error handling and user experience
@@ -84,7 +84,10 @@ pub enum CliError {
     
     #[error("API operation error: {0}")]
     Api(#[from] ApiError),
-    
+
+    #[error("Validation error: {0}")]
+    Validation(#[from] ValidationError),
+
     #[error("Input/output error: {0}")]
     Io(#[from] io::Error),
     
@@ -738,42 +741,39 @@ pub fn execute_operation(
         // AVTransport operations
         ("AVTransport", "Play") => {
             let speed = params.get("speed").unwrap_or(&"1".to_string()).clone();
-            let request = PlayRequest {
+            let request = PlayOperationRequest {
                 instance_id: 0,
                 speed,
             };
-            
-            client.execute::<PlayOperation>(device_ip, &request)?;
+
+            let operation = OperationBuilder::<PlayOperation>::new(request).build()?;
+            client.execute_enhanced(device_ip, operation)?;
             Ok(format!("✓ Playback started on {}", device.name))
         }
-        
+
         ("AVTransport", "Pause") => {
-            let request = PauseRequest { instance_id: 0 };
-            client.execute::<PauseOperation>(device_ip, &request)?;
+            let request = PauseOperationRequest { instance_id: 0 };
+            let operation = OperationBuilder::<PauseOperation>::new(request).build()?;
+            client.execute_enhanced(device_ip, operation)?;
             Ok(format!("✓ Playback paused on {}", device.name))
         }
         
         ("AVTransport", "Stop") => {
-            let request = StopRequest { instance_id: 0 };
-            client.execute::<StopOperation>(device_ip, &request)?;
+            let request = StopOperationRequest { instance_id: 0 };
+            let operation = OperationBuilder::<StopOperation>::new(request).build()?;
+            client.execute_enhanced(device_ip, operation)?;
             Ok(format!("✓ Playback stopped on {}", device.name))
         }
-        
+
         ("AVTransport", "GetTransportInfo") => {
-            let request = GetTransportInfoRequest { instance_id: 0 };
-            let response = client.execute::<GetTransportInfoOperation>(device_ip, &request)?;
-            
-            let state_description = match response.current_transport_state {
-                PlayState::Playing => "Playing",
-                PlayState::Paused => "Paused",
-                PlayState::Stopped => "Stopped",
-                PlayState::Transitioning => "Transitioning",
-            };
-            
+            let request = GetTransportInfoOperationRequest { instance_id: 0 };
+            let operation = OperationBuilder::<GetTransportInfoOperation>::new(request).build()?;
+            let response = client.execute_enhanced(device_ip, operation)?;
+
             Ok(format!(
                 "✓ Transport Info for {}:\n  State: {}\n  Status: {}\n  Speed: {}",
                 device.name,
-                state_description,
+                response.current_transport_state,
                 response.current_transport_status,
                 response.current_speed
             ))
@@ -782,16 +782,17 @@ pub fn execute_operation(
         // RenderingControl operations
         ("RenderingControl", "GetVolume") => {
             let channel = params.get("channel").unwrap_or(&"Master".to_string()).clone();
-            let request = GetVolumeRequest {
+            let request = GetVolumeOperationRequest {
                 instance_id: 0,
                 channel: channel.clone(),
             };
-            
-            let response = client.execute::<GetVolumeOperation>(device_ip, &request)?;
-            Ok(format!("✓ Current volume on {} ({}): {}", 
+
+            let operation = OperationBuilder::<GetVolumeOperation>::new(request).build()?;
+            let response = client.execute_enhanced(device_ip, operation)?;
+            Ok(format!("✓ Current volume on {} ({}): {}",
                       device.name, channel, response.current_volume))
         }
-        
+
         ("RenderingControl", "SetVolume") => {
             let volume_str = params.get("volume")
                 .ok_or_else(|| CliError::MissingParameter("volume".to_string()))?;
@@ -799,22 +800,23 @@ pub fn execute_operation(
                 .map_err(|_| CliError::InvalidParameter(
                     format!("Volume must be a number between 0-100, got '{}'", volume_str)
                 ))?;
-            
+
             if volume > 100 {
                 return Err(CliError::InvalidParameter(
                     format!("Volume must be between 0-100, got {}", volume)
                 ));
             }
-            
+
             let channel = params.get("channel").unwrap_or(&"Master".to_string()).clone();
-            let request = SetVolumeRequest {
+            let request = SetVolumeOperationRequest {
                 instance_id: 0,
                 channel: channel.clone(),
                 desired_volume: volume,
             };
-            
-            client.execute::<SetVolumeOperation>(device_ip, &request)?;
-            Ok(format!("✓ Volume set to {} on {} ({})", 
+
+            let operation = OperationBuilder::<SetVolumeOperation>::new(request).build()?;
+            client.execute_enhanced(device_ip, operation)?;
+            Ok(format!("✓ Volume set to {} on {} ({})",
                       volume, device.name, channel))
         }
         
@@ -825,18 +827,19 @@ pub fn execute_operation(
                 .map_err(|_| CliError::InvalidParameter(
                     format!("Adjustment must be a number between -128 to 127, got '{}'", adjustment_str)
                 ))?;
-            
+
             let channel = params.get("channel").unwrap_or(&"Master".to_string()).clone();
-            let request = SetRelativeVolumeRequest {
+            let request = SetRelativeVolumeOperationRequest {
                 instance_id: 0,
                 channel: channel.clone(),
                 adjustment,
             };
-            
-            let response = client.execute::<SetRelativeVolumeOperation>(device_ip, &request)?;
+
+            let operation = OperationBuilder::<SetRelativeVolumeOperation>::new(request).build()?;
+            let response = client.execute_enhanced(device_ip, operation)?;
             let direction = if adjustment > 0 { "increased" } else if adjustment < 0 { "decreased" } else { "unchanged" };
-            
-            Ok(format!("✓ Volume {} by {} on {} ({})\n  New volume: {}", 
+
+            Ok(format!("✓ Volume {} by {} on {} ({})\n  New volume: {}",
                       direction, adjustment.abs(), device.name, channel, response.new_volume))
         }
         
@@ -929,9 +932,10 @@ async fn main() -> Result<()> {
     display_welcome_message();
     
     // Initialize the operation registry and client
+    // Note: SonosClient::new() now uses a shared SOAP client for resource efficiency
     let registry = OperationRegistry::new();
     let client = SonosClient::new();
-    println!("✓ Sonos API client initialized");
+    println!("✓ Sonos API client initialized (using shared HTTP connection pool)");
     println!("✓ Operation registry loaded with {} operations", registry.get_operations().len());
     
     // Setup graceful shutdown handling

@@ -12,18 +12,9 @@ pub enum Service {
     
     /// GroupRenderingControl service - Controls group-wide audio settings
     GroupRenderingControl,
-    
+
     /// ZoneGroupTopology service - Manages speaker grouping and topology
     ZoneGroupTopology,
-    
-    /// DeviceProperties service - Provides device information and properties
-    DeviceProperties,
-    
-    /// AlarmClock service - Manages alarms and sleep timers
-    AlarmClock,
-    
-    /// MusicServices service - Manages music service configurations
-    MusicServices,
 }
 
 /// Contains the endpoint and service URI information for a UPnP service
@@ -40,8 +31,21 @@ pub struct ServiceInfo {
 }
 
 impl Service {
+    /// Get the name of this service as a string
+    ///
+    /// # Returns
+    /// The service name as a string slice
+    pub fn name(&self) -> &'static str {
+        match self {
+            Service::AVTransport => "AVTransport",
+            Service::RenderingControl => "RenderingControl",
+            Service::GroupRenderingControl => "GroupRenderingControl",
+            Service::ZoneGroupTopology => "ZoneGroupTopology",
+        }
+    }
+
     /// Get the service information (endpoint and URI) for this service
-    /// 
+    ///
     /// # Returns
     /// A `ServiceInfo` struct containing the endpoint path, service URI, and event endpoint
     pub fn info(&self) -> ServiceInfo {
@@ -66,48 +70,7 @@ impl Service {
                 service_uri: "urn:schemas-upnp-org:service:ZoneGroupTopology:1",
                 event_endpoint: "ZoneGroupTopology/Event",
             },
-            Service::DeviceProperties => ServiceInfo {
-                endpoint: "DeviceProperties/Control",
-                service_uri: "urn:schemas-upnp-org:service:DeviceProperties:1",
-                event_endpoint: "DeviceProperties/Event",
-            },
-            Service::AlarmClock => ServiceInfo {
-                endpoint: "AlarmClock/Control",
-                service_uri: "urn:schemas-upnp-org:service:AlarmClock:1",
-                event_endpoint: "AlarmClock/Event",
-            },
-            Service::MusicServices => ServiceInfo {
-                endpoint: "MusicServices/Control",
-                service_uri: "urn:schemas-upnp-org:service:MusicServices:1",
-                event_endpoint: "MusicServices/Event",
-            },
         }
     }
     
-    /// Get the endpoint path for this service
-    /// 
-    /// # Returns
-    /// The HTTP endpoint path as a string slice
-    pub fn endpoint(&self) -> &'static str {
-        self.info().endpoint
-    }
-    
-    /// Get the service URI for this service
-    /// 
-    /// # Returns
-    /// The UPnP service URI as a string slice
-    pub fn service_uri(&self) -> &'static str {
-        self.info().service_uri
-    }
-    
-    /// Get the event endpoint path for this service
-    /// 
-    /// Event endpoints are used for UPnP event subscriptions to receive
-    /// notifications when the service state changes.
-    /// 
-    /// # Returns
-    /// The HTTP event endpoint path as a string slice
-    pub fn event_endpoint(&self) -> &'static str {
-        self.info().event_endpoint
-    }
 }

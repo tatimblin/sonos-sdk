@@ -191,7 +191,7 @@ impl UPnPTestRequester {
     pub fn new(_test_timeout: Duration) -> Result<Self, DetectionError> {
         Ok(Self {
             discovered_devices: Vec::new(),
-            soap_client: SoapClient::new(),
+            soap_client: SoapClient::get().clone(),
         })
     }
 

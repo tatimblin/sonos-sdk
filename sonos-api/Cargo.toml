@@ -15,6 +15,7 @@ serde = { version = "1.0", features = ["derive"] }
 thiserror = "1.0"
 xmltree = "0.10"
 sonos-discovery = { path = "../sonos-discovery" }
+paste = "1.0"
 
 [dev-dependencies]
 rstest = "0.18"

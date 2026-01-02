@@ -8,6 +8,7 @@ mod error;
 
 pub use error::SoapError;
 
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use xmltree::Element;
 
@@ -21,20 +22,58 @@ pub struct SubscriptionResponse {
 }
 
 /// A minimal SOAP client for UPnP device communication
+///
+/// Uses Arc internally for efficient sharing of the underlying HTTP client
+/// and connection pool across multiple instances.
 #[derive(Debug, Clone)]
 pub struct SoapClient {
-    agent: ureq::Agent,
+    agent: Arc<ureq::Agent>,
 }
 
-impl SoapClient {
-    /// Create a new SOAP client with default configuration
-    pub fn new() -> Self {
-        Self {
-            agent: ureq::AgentBuilder::new()
+/// Global shared SOAP client instance for maximum resource efficiency
+static SHARED_SOAP_CLIENT: LazyLock<SoapClient> = LazyLock::new(|| {
+    SoapClient {
+        agent: Arc::new(
+            ureq::AgentBuilder::new()
                 .timeout_connect(Duration::from_secs(5))
                 .timeout_read(Duration::from_secs(10))
                 .build(),
-        }
+        ),
+    }
+});
+
+impl SoapClient {
+    /// Get the global shared SOAP client instance
+    ///
+    /// This provides a singleton-like pattern for maximum resource efficiency.
+    /// All clients returned by this method share the same underlying HTTP agent
+    /// and connection pool, reducing memory usage and improving performance.
+    pub fn get() -> &'static Self {
+        &SHARED_SOAP_CLIENT
+    }
+
+    /// Create a SOAP client with a custom agent (for advanced use cases only)
+    ///
+    /// Most applications should use `SoapClient::get()` instead for better
+    /// resource efficiency. This method is provided for cases where custom
+    /// timeout values or other HTTP client configuration is needed.
+    pub fn with_agent(agent: Arc<ureq::Agent>) -> Self {
+        Self { agent }
+    }
+
+    /// Create a new SOAP client with default configuration
+    ///
+    /// **DEPRECATED**: Use `SoapClient::get()` instead for better resource efficiency.
+    /// This method creates a separate HTTP agent instance, which wastes resources
+    /// when multiple SOAP clients are used.
+    #[deprecated(since = "0.2.0", note = "Use SoapClient::get() for shared resources")]
+    pub fn new() -> Self {
+        Self::with_agent(Arc::new(
+            ureq::AgentBuilder::new()
+                .timeout_connect(Duration::from_secs(5))
+                .timeout_read(Duration::from_secs(10))
+                .build(),
+        ))
     }
 
     /// Send a SOAP request and return the parsed response element
@@ -255,7 +294,7 @@ impl SoapClient {
 
 impl Default for SoapClient {
     fn default() -> Self {
-        Self::new()
+        Self::get().clone()
     }
 }
 
@@ -265,18 +304,39 @@ mod tests {
 
     #[test]
     fn test_soap_client_creation() {
-        let _client = SoapClient::new();
-        
+        // Test singleton pattern
+        let _client = SoapClient::get();
+
         // Test that the client can be created without panicking
         // and that it has the expected timeout configuration
         // We can't easily test the timeout values directly, but we can verify
         // the client was created successfully
         let _default_client = SoapClient::default();
+
+        // Test that cloning works efficiently
+        let _cloned_client = SoapClient::get().clone();
+    }
+
+    #[test]
+    fn test_singleton_pattern_consistency() {
+        // Test that multiple calls to get() return references to the same instance
+        let client1 = SoapClient::get();
+        let client2 = SoapClient::get();
+
+        // Both should point to the same static instance
+        assert!(std::ptr::eq(client1, client2));
+
+        // Clones should have the same Arc reference count
+        let cloned1 = client1.clone();
+        let cloned2 = client2.clone();
+
+        // All clones should share the same underlying agent
+        assert!(Arc::ptr_eq(&cloned1.agent, &cloned2.agent));
     }
 
     #[test]
     fn test_extract_response_with_valid_response() {
-        let client = SoapClient::new();
+        let client = SoapClient::get();
         
         let xml_str = r#"
             <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
@@ -297,7 +357,7 @@ mod tests {
 
     #[test]
     fn test_extract_response_with_soap_fault() {
-        let client = SoapClient::new();
+        let client = SoapClient::get();
         
         let xml_str = r#"
             <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
@@ -328,7 +388,7 @@ mod tests {
 
     #[test]
     fn test_extract_response_missing_body() {
-        let client = SoapClient::new();
+        let client = SoapClient::get();
         
         let xml_str = r#"
             <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
@@ -347,7 +407,7 @@ mod tests {
 
     #[test]
     fn test_extract_response_missing_action_response() {
-        let client = SoapClient::new();
+        let client = SoapClient::get();
         
         let xml_str = r#"
             <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
@@ -368,7 +428,7 @@ mod tests {
 
     #[test]
     fn test_soap_fault_with_default_error_code() {
-        let client = SoapClient::new();
+        let client = SoapClient::get();
         
         let xml_str = r#"
             <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
