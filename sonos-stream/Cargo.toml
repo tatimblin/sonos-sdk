@@ -2,26 +2,69 @@
 name = "sonos-stream"
 version = "0.1.0"
 edition = "2021"
+description = "Event streaming and subscription management for Sonos devices with transparent polling fallback"
+authors = ["Claude Code"]
+license = "MIT OR Apache-2.0"
 
 [dependencies]
+# Local workspace dependencies
 callback-server = { path = "../callback-server" }
 sonos-parser = { path = "../sonos-parser" }
 sonos-api = { path = "../sonos-api" }
 sonos-discovery = { path = "../sonos-discovery" }
 soap-client = { path = "../soap-client" }
+
+# Async runtime and utilities
 tokio = { version = "1.0", features = ["full"] }
-warp = "0.3"
-reqwest = "0.11"
-quick-xml = { version = "0.31", features = ["serialize"] }
+futures = "0.3"
+
+# Serialization and data handling
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+quick-xml = { version = "0.31", features = ["serialize"] }
+bytes = "1.0"
+
+# Error handling and utilities
 thiserror = "1.0"
 uuid = { version = "1.0", features = ["v4"] }
-bytes = "1.0"
 url = "2.4"
 async-trait = "0.1"
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
+
+# HTTP and networking
+reqwest = "0.11"
+warp = "0.3"
+
+# Collections and utilities for event processing
+dashmap = "5.0"  # Concurrent HashMap alternative
+crossbeam = "0.8"  # Lock-free data structures
 
 [dev-dependencies]
 rstest = "0.18"
 proptest = "1.0"
+tokio-test = "0.4"
+mockall = "0.11"
+
+[features]
+default = ["firewall-detection"]
+firewall-detection = []  # Enable proactive firewall detection
+
+[[example]]
+name = "basic_usage"
+path = "examples/basic_usage.rs"
+required-features = ["firewall-detection"]
+
+[[example]]
+name = "async_realtime"
+path = "examples/async_realtime.rs"
+required-features = ["firewall-detection"]
+
+[[example]]
+name = "firewall_handling"
+path = "examples/firewall_handling.rs"
+required-features = ["firewall-detection"]
+
+[[example]]
+name = "filtering_and_batch"
+path = "examples/filtering_and_batch.rs"
+required-features = ["firewall-detection"]
