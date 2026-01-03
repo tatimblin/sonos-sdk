@@ -4,8 +4,7 @@ members = [
     # "integration-example",  # Temporarily disabled while refactoring UPnP client
     "sonos-discovery",
     "sonos-parser",
-    "sonos-stream",        # New implementation
-    "sonos-stream-legacy", # Renamed old implementation
+    "sonos-stream",
     "soap-client",
     "sonos-api",
 ]
