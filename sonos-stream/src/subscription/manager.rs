@@ -4,7 +4,6 @@
 //! ManagedSubscription system and coordinating with the callback server for event routing.
 
 use std::collections::HashMap;
-use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -147,8 +146,6 @@ pub struct SubscriptionManager {
     /// Callback URL for UPnP event notifications
     callback_url: String,
 
-    /// Default subscription timeout in seconds
-    subscription_timeout: u32,
 
     /// Active subscriptions indexed by registration ID
     active_subscriptions: Arc<RwLock<HashMap<RegistrationId, Arc<ManagedSubscriptionWrapper>>>>,
@@ -159,11 +156,10 @@ pub struct SubscriptionManager {
 
 impl SubscriptionManager {
     /// Create a new SubscriptionManager
-    pub fn new(callback_url: String, subscription_timeout_secs: u32) -> Self {
+    pub fn new(callback_url: String) -> Self {
         Self {
             sonos_client: SonosClient::new(),
             callback_url,
-            subscription_timeout: subscription_timeout_secs,
             active_subscriptions: Arc::new(RwLock::new(HashMap::new())),
             firewall_status: Arc::new(RwLock::new(FirewallStatus::Unknown)),
         }
@@ -395,7 +391,6 @@ mod tests {
     async fn test_subscription_manager_creation() {
         let manager = SubscriptionManager::new(
             "http://192.168.1.50:3400/callback".to_string(),
-            1800,
         );
 
         // Test initial state
@@ -411,7 +406,6 @@ mod tests {
     async fn test_subscription_stats() {
         let manager = SubscriptionManager::new(
             "http://192.168.1.50:3400/callback".to_string(),
-            1800,
         );
 
         let stats = manager.stats().await;

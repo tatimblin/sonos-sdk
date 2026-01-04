@@ -8,7 +8,7 @@ use sonos_stream::{
     BrokerConfig, EventBroker, EventData, PollingReason,
     events::types::{EventSource, ResyncReason}
 };
-use sonos_api::{SonosClient, ServiceType};
+use sonos_api::{SonosClient, Service};
 use callback_server::firewall_detection::FirewallStatus;
 use std::net::IpAddr;
 use std::time::Duration;
@@ -78,8 +78,8 @@ async fn test_firewall_scenario(
     println!("\n📋 Registering services...");
 
     // Register services and analyze the results
-    let transport_reg = broker.register_speaker_service(device_ip, ServiceType::AVTransport).await?;
-    let volume_reg = broker.register_speaker_service(device_ip, ServiceType::RenderingControl).await?;
+    let transport_reg = broker.register_speaker_service(device_ip, Service::AVTransport).await?;
+    let volume_reg = broker.register_speaker_service(device_ip, Service::RenderingControl).await?;
 
     // Analyze and report on the registration results
     println!("\n🔍 Registration Analysis:");
@@ -160,6 +160,12 @@ fn analyze_registration_result(
                 println!("    💡 Explanation: Attempting events but ready to switch to polling quickly");
             }
         }
+
+        FirewallStatus::Error => {
+            println!("    🔴 Firewall Status: Error - detection failed due to errors");
+            println!("    🔄 Mode: Polling (automatic fallback)");
+            println!("    💡 Explanation: Detection process encountered errors, using polling as safe fallback");
+        }
     }
 }
 
@@ -220,6 +226,8 @@ async fn monitor_events(
                     EventData::RenderingControlResync(_) => {
                         println!("       🔄 Full volume state resync received");
                     }
+                    EventData::DevicePropertiesChange(_device_properties_delta) => todo!(),
+                    EventData::DevicePropertiesResync(_device_properties_full_state) => todo!(),
                 }
             }
             Ok(None) => {
@@ -275,5 +283,8 @@ fn format_resync_reason_enum(reason: &ResyncReason) -> String {
         ResyncReason::PollingDiscrepancy => "polling found different state".to_string(),
         ResyncReason::SubscriptionRenewal => "subscription was renewed".to_string(),
         ResyncReason::ExplicitRefresh => "explicit refresh requested".to_string(),
+        ResyncReason::FirewallBlocked => todo!(),
+        ResyncReason::NetworkIssues => todo!(),
+        ResyncReason::InitialState => todo!(),
     }
 }

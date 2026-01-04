@@ -81,6 +81,13 @@ impl ServicePoller for AVTransportPoller {
             transport_state: transport_info.current_transport_state,
             current_transport_status: transport_info.current_transport_status,
             current_speed: transport_info.current_speed,
+            current_track_uri: "".to_string(), // TODO: Get from get_position_info_operation
+            track_duration: "".to_string(),     // TODO: Get from get_position_info_operation
+            track_metadata: "".to_string(),     // TODO: Get from get_position_info_operation
+            rel_time: "".to_string(),           // TODO: Get from get_position_info_operation
+            abs_time: "".to_string(),           // TODO: Get from get_position_info_operation
+            rel_count: 0,                       // TODO: Get from get_position_info_operation
+            abs_count: 0,                       // TODO: Get from get_position_info_operation
         };
 
         serde_json::to_string(&state)
@@ -126,6 +133,29 @@ impl ServicePoller for AVTransportPoller {
             });
         }
 
+        // Check track changes
+        if old.current_track_uri != new.current_track_uri {
+            changes.push(StateChange::TrackChanged {
+                old_uri: old.current_track_uri,
+                new_uri: new.current_track_uri,
+            });
+        }
+
+        // Check position changes (only report significant changes > 5 seconds)
+        if old.rel_time != new.rel_time {
+            if let (Ok(old_secs), Ok(new_secs)) = (
+                Self::parse_time_string(&old.rel_time),
+                Self::parse_time_string(&new.rel_time)
+            ) {
+                if old_secs.abs_diff(new_secs) > 5 {
+                    changes.push(StateChange::PositionChanged {
+                        old_position: old.rel_time,
+                        new_position: new.rel_time,
+                    });
+                }
+            }
+        }
+
         changes
     }
 
@@ -135,16 +165,24 @@ impl ServicePoller for AVTransportPoller {
 }
 
 impl AVTransportPoller {
-    /// Parse time string (HH:MM:SS) to seconds
-    fn parse_time_string(time_str: &str) -> Result<u32, ()> {
+    /// Parse a time string in HH:MM:SS format to total seconds
+    pub fn parse_time_string(time_str: &str) -> Result<u32, String> {
         let parts: Vec<&str> = time_str.split(':').collect();
+
         if parts.len() != 3 {
-            return Err(());
+            return Err(format!("Invalid time format, expected HH:MM:SS, got: {}", time_str));
         }
 
-        let hours: u32 = parts[0].parse().map_err(|_| ())?;
-        let minutes: u32 = parts[1].parse().map_err(|_| ())?;
-        let seconds: u32 = parts[2].parse().map_err(|_| ())?;
+        let hours: u32 = parts[0].parse()
+            .map_err(|_| format!("Invalid hours: {}", parts[0]))?;
+        let minutes: u32 = parts[1].parse()
+            .map_err(|_| format!("Invalid minutes: {}", parts[1]))?;
+        let seconds: u32 = parts[2].parse()
+            .map_err(|_| format!("Invalid seconds: {}", parts[2]))?;
+
+        if minutes >= 60 || seconds >= 60 {
+            return Err("Minutes and seconds must be less than 60".to_string());
+        }
 
         Ok(hours * 3600 + minutes * 60 + seconds)
     }
@@ -156,6 +194,13 @@ struct AVTransportState {
     pub transport_state: String,
     pub current_transport_status: String,
     pub current_speed: String,
+    pub current_track_uri: String,
+    pub track_duration: String,
+    pub track_metadata: String,
+    pub rel_time: String,
+    pub abs_time: String,
+    pub rel_count: u32,
+    pub abs_count: u32,
 }
 
 /// Polling strategy for RenderingControl service
@@ -175,9 +220,10 @@ impl ServicePoller for RenderingControlPoller {
             .execute_enhanced(&pair.speaker_ip.to_string(), volume_op)
             .map_err(|e| PollingError::Network(e.to_string()))?;
 
-        // Create comparable state representation (simplified to only volume)
+        // Create comparable state representation
         let state = RenderingControlState {
             volume: volume_response.current_volume as u16,
+            mute: false, // TODO: Get from get_mute_operation
         };
 
         serde_json::to_string(&state)
@@ -205,6 +251,14 @@ impl ServicePoller for RenderingControlPoller {
             });
         }
 
+        // Check mute changes
+        if old.mute != new.mute {
+            changes.push(StateChange::MuteChanged {
+                old_mute: old.mute,
+                new_mute: new.mute,
+            });
+        }
+
         changes
     }
 
@@ -217,6 +271,7 @@ impl ServicePoller for RenderingControlPoller {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct RenderingControlState {
     pub volume: u16,
+    pub mute: bool,
 }
 
 /// Main device state poller that coordinates different service strategies
@@ -328,7 +383,7 @@ mod tests {
         assert_eq!(stats.total_pollers, 2); // AVTransport and RenderingControl
         assert!(poller.is_service_supported(&Service::AVTransport));
         assert!(poller.is_service_supported(&Service::RenderingControl));
-        assert!(!poller.is_service_supported(&Service::DeviceProperties));
+        assert!(!poller.is_service_supported(&Service::ZoneGroupTopology));
     }
 
     #[test]

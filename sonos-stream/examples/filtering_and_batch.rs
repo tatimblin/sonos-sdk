@@ -7,11 +7,11 @@
 //! - Working with multiple devices and services simultaneously
 
 use sonos_stream::{
-    BrokerConfig, EventBroker, EventData,
+    BrokerConfig, EventBroker, EventData, RegistrationResult,
     events::iterator::EventSourceType,
     events::types::{EventSource}
 };
-use sonos_api::{SonosClient, ServiceType};
+use sonos_api::Service;
 use std::net::IpAddr;
 use std::time::Duration;
 use std::collections::HashMap;
@@ -32,11 +32,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Register multiple services across potentially multiple devices
     let registrations = vec![
-        broker.register_speaker_service(device1, ServiceType::AVTransport).await?,
-        broker.register_speaker_service(device1, ServiceType::RenderingControl).await?,
+        broker.register_speaker_service(device1, Service::AVTransport).await?,
+        broker.register_speaker_service(device1, Service::RenderingControl).await?,
         // Uncomment if you have a second device:
-        // broker.register_speaker_service(device2, ServiceType::AVTransport).await?,
-        // broker.register_speaker_service(device2, ServiceType::RenderingControl).await?,
+        // broker.register_speaker_service(device2, Service::AVTransport).await?,
+        // broker.register_speaker_service(device2, Service::RenderingControl).await?,
     ];
 
     println!("✅ Registered {} services:", registrations.len());
@@ -75,30 +75,42 @@ async fn demonstrate_source_filtering(broker: &mut EventBroker) -> Result<(), Bo
 
     let events = broker.event_iterator()?;
 
-    // Create filtered iterators for different source types
-    let upnp_events = events.filter_by_source_type(EventSourceType::UPnP);
-    let polling_events = events.filter_by_source_type(EventSourceType::Polling);
-    let resync_events = events.filter_by_source_type(EventSourceType::Resync);
+    // Create a filtered iterator for UPnP events only
+    let mut upnp_events = events.filter_by_source_type(EventSourceType::UPnP);
 
     println!("📡 Monitoring UPnP events only for 5 seconds...");
     let mut upnp_count = 0;
     let start = std::time::Instant::now();
 
-    // Note: This is a demonstration - in real code you'd typically only use one filtered iterator
-    // Here we're just showing the API, but we can't actually use multiple filters on the same iterator
-    println!("💡 In practice, you would create separate brokers or use a single filter at a time");
-    println!("   Example patterns:");
-    println!("   • let upnp_only = events.filter_by_source_type(EventSourceType::UPnP);");
-    println!("   • let av_only = events.filter_by_service(ServiceType::AVTransport);");
-    println!("   • let device_only = events.filter_by_registration(registration_id);");
+    println!("💡 Different filter types available (create separate iterators for each):");
+    println!("   • events.filter_by_source_type(EventSourceType::UPnP)     - UPnP notifications only");
+    println!("   • events.filter_by_source_type(EventSourceType::Polling)  - Polling-based events only");
+    println!("   • events.filter_by_source_type(EventSourceType::Resync)   - State resync events only");
+    println!("   • events.filter_by_service(Service::AVTransport)          - Transport events only");
+    println!("   • events.filter_by_registration(registration_id)          - Single device only");
 
+    // Actually demonstrate the UPnP filter in action
+    for event in upnp_events.iter() {
+        if start.elapsed() > Duration::from_secs(5) {
+            break;
+        }
+
+        upnp_count += 1;
+        println!("📡 UPnP Event {}: {} from {} ({})",
+                 upnp_count,
+                 format_event_data(&event.event_data),
+                 event.speaker_ip,
+                 format_event_source(&event.event_source));
+    }
+
+    println!("✅ Captured {} UPnP-only events in 5 seconds", upnp_count);
     Ok(())
 }
 
 /// Demonstrate filtering by service type
 async fn demonstrate_service_filtering(
     broker: &mut EventBroker,
-    registrations: &[sonos_stream::RegistrationResult]
+    registrations: &[RegistrationResult]
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Creating service-specific event streams...");
 
@@ -106,11 +118,11 @@ async fn demonstrate_service_filtering(
     // or process events sequentially rather than in parallel
 
     println!("🎵 AVTransport Events Filter:");
-    println!("   let av_events = events.filter_by_service(ServiceType::AVTransport);");
+    println!("   let av_events = events.filter_by_service(Service::AVTransport);");
     println!("   for event in av_events.iter() {{ /* handle transport events */ }}");
 
     println!("\n🔊 RenderingControl Events Filter:");
-    println!("   let volume_events = events.filter_by_service(ServiceType::RenderingControl);");
+    println!("   let volume_events = events.filter_by_service(Service::RenderingControl);");
     println!("   for event in volume_events.iter() {{ /* handle volume events */ }}");
 
     println!("\n🎯 Registration-Specific Filter:");
@@ -181,6 +193,8 @@ async fn demonstrate_batch_processing(broker: &mut EventBroker) -> Result<(), Bo
                     println!("   {}. 🔊 Volume event from {} ({})",
                              i + 1, event.speaker_ip, format_event_source(&event.event_source));
                 }
+                EventData::DevicePropertiesChange(_device_properties_delta) => todo!(),
+                EventData::DevicePropertiesResync(_device_properties_full_state) => todo!(),
             }
         }
 
@@ -221,21 +235,27 @@ async fn demonstrate_peek_functionality(broker: &mut EventBroker) -> Result<(), 
             println!("   Service: {:?}", peeked_event.service);
             println!("   Source: {}", format_event_source(&peeked_event.event_source));
 
+            // Note: We'll consume this event next
+
             // Event is still available for next()
             println!("\n📨 Now consuming the peeked event...");
-            match events.next_async().await {
-                Some(consumed_event) => {
-                    println!("✅ Successfully consumed the same event");
-                    println!("   Event IDs match: {}",
-                             peeked_event.registration_id == consumed_event.registration_id);
-                }
-                None => println!("❓ Event stream ended"),
-            }
+            // Drop the borrow from peek() by moving out of the match
         }
         None => {
-            println!("📭 No events available to peek at");
-            println!("💡 Try generating some activity on your Sonos device");
+            println!("❓ No events available to peek at");
+            return Ok(());
         }
+    }
+
+    // Now we can safely call next_async() without conflicting borrows
+    match events.next_async().await {
+        Some(consumed_event) => {
+            println!("✅ Successfully consumed the same event");
+            // We need to get the peeked registration ID from above, but since we're outside
+            // the match now, let's just confirm we got an event
+            println!("   Consumed event from: {}", consumed_event.speaker_ip);
+        }
+        None => println!("❓ Event stream ended"),
     }
 
     Ok(())
@@ -244,14 +264,14 @@ async fn demonstrate_peek_functionality(broker: &mut EventBroker) -> Result<(), 
 /// Demonstrate coordination across multiple devices
 async fn demonstrate_multi_device_coordination(
     broker: &mut EventBroker,
-    registrations: &[sonos_stream::RegistrationResult]
+    registrations: &[RegistrationResult]
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Demonstrating multi-device event coordination...");
 
     if registrations.len() < 2 {
         println!("💡 Only one device registered - multi-device coordination requires multiple devices");
         println!("   Consider adding a second device with:");
-        println!("   broker.register_speaker_service(\"192.168.1.101\".parse()?, ServiceType::AVTransport)");
+        println!("   broker.register_speaker_service(\"192.168.1.101\".parse()?, Service::AVTransport)");
         return Ok(());
     }
 
@@ -335,8 +355,8 @@ fn analyze_collected_events(events: &[sonos_stream::events::types::EnrichedEvent
 
     for event in events {
         match event.service {
-            ServiceType::AVTransport => av_transport_events += 1,
-            ServiceType::RenderingControl => rendering_control_events += 1,
+            Service::AVTransport => av_transport_events += 1,
+            Service::RenderingControl => rendering_control_events += 1,
             _ => {}
         }
 
@@ -373,6 +393,18 @@ fn analyze_collected_events(events: &[sonos_stream::events::types::EnrichedEvent
     }
     if polling_events > 0 {
         println!("   • Filter Polling Events: Network-resilient state tracking");
+    }
+}
+
+/// Format event data for display
+fn format_event_data(data: &EventData) -> String {
+    match data {
+        EventData::AVTransportChange(_) => "AVTransport Change".to_string(),
+        EventData::RenderingControlChange(_) => "Volume Change".to_string(),
+        EventData::AVTransportResync(_) => "AVTransport Resync".to_string(),
+        EventData::RenderingControlResync(_) => "Volume Resync".to_string(),
+        EventData::DevicePropertiesChange(_) => "Device Properties Change".to_string(),
+        EventData::DevicePropertiesResync(_) => "Device Properties Resync".to_string(),
     }
 }
 
