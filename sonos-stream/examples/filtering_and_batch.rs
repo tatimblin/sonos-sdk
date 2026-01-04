@@ -69,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Demonstrate filtering events by source type (UPnP vs Polling vs Resync)
+/// Demonstrate filtering events by source type (UPnP vs Polling)
 async fn demonstrate_source_filtering(broker: &mut EventBroker) -> Result<(), Box<dyn std::error::Error>> {
     println!("Filtering events by source type...");
 
@@ -85,7 +85,6 @@ async fn demonstrate_source_filtering(broker: &mut EventBroker) -> Result<(), Bo
     println!("💡 Different filter types available (create separate iterators for each):");
     println!("   • events.filter_by_source_type(EventSourceType::UPnP)     - UPnP notifications only");
     println!("   • events.filter_by_source_type(EventSourceType::Polling)  - Polling-based events only");
-    println!("   • events.filter_by_source_type(EventSourceType::Resync)   - State resync events only");
     println!("   • events.filter_by_service(Service::AVTransport)          - Transport events only");
     println!("   • events.filter_by_registration(registration_id)          - Single device only");
 
@@ -361,7 +360,6 @@ fn analyze_collected_events(events: &[sonos_stream::events::types::EnrichedEvent
     let mut rendering_control_events = 0;
     let mut upnp_events = 0;
     let mut polling_events = 0;
-    let mut resync_events = 0;
 
     for event in events {
         match event.service {
@@ -373,7 +371,6 @@ fn analyze_collected_events(events: &[sonos_stream::events::types::EnrichedEvent
         match &event.event_source {
             EventSource::UPnPNotification { .. } => upnp_events += 1,
             EventSource::PollingDetection { .. } => polling_events += 1,
-            EventSource::ResyncDetection { .. } => resync_events += 1,
         }
     }
 
@@ -388,8 +385,6 @@ fn analyze_collected_events(events: &[sonos_stream::events::types::EnrichedEvent
              upnp_events, (upnp_events as f64 / events.len() as f64) * 100.0);
     println!("     🔄 Polling Events: {} ({:.1}%)",
              polling_events, (polling_events as f64 / events.len() as f64) * 100.0);
-    println!("     🔄 Resync Events: {} ({:.1}%)",
-             resync_events, (resync_events as f64 / events.len() as f64) * 100.0);
 
     println!("\n🎯 Filtering Use Cases:");
     if av_transport_events > 0 {
@@ -424,9 +419,6 @@ fn format_event_source(source: &EventSource) -> String {
         EventSource::UPnPNotification { .. } => "UPnP".to_string(),
         EventSource::PollingDetection { poll_interval } => {
             format!("Poll({}s)", poll_interval.as_secs())
-        }
-        EventSource::ResyncDetection { reason } => {
-            format!("Resync({:?})", reason)
         }
     }
 }

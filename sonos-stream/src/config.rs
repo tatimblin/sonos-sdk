@@ -72,9 +72,6 @@ pub struct BrokerConfig {
     /// Default: 100
     pub max_cached_device_states: usize,
 
-    /// Cooldown period between resync events to prevent spam
-    /// Default: 30 seconds
-    pub resync_cooldown: Duration,
 
     /// Maximum number of registrations allowed
     /// Default: 1000
@@ -107,7 +104,6 @@ impl Default for BrokerConfig {
             firewall_event_wait_timeout: Duration::from_secs(15),
             enable_firewall_caching: true,
             max_cached_device_states: 100,
-            resync_cooldown: Duration::from_secs(30),
             max_registrations: 1000,
             adaptive_polling: true,
             renewal_threshold: Duration::from_secs(300), // 5 minutes

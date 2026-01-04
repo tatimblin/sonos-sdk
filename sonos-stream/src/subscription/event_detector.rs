@@ -1,7 +1,7 @@
-//! Event activity detection and automatic resync with proactive firewall detection
+//! Event activity detection and automatic polling with proactive firewall detection
 //!
-//! This module monitors event activity for subscriptions and provides automatic resync
-//! capabilities when state drift is detected. It integrates with the firewall detection
+//! This module monitors event activity for subscriptions and provides automatic polling
+//! fallback when events are not being received. It integrates with the firewall detection
 //! system to immediately switch to polling when firewall blocking is detected.
 
 use std::collections::HashMap;
@@ -11,8 +11,7 @@ use tokio::sync::{mpsc, RwLock};
 
 use callback_server::{FirewallDetectionCoordinator, FirewallStatus};
 
-use crate::error::{SubscriptionError, SubscriptionResult};
-use crate::events::types::{EnrichedEvent, EventData, EventSource, ResyncReason};
+use crate::broker::PollingReason;
 use crate::registry::{RegistrationId, SpeakerServicePair};
 
 /// Monitors event activity and detects when polling fallback is needed
@@ -32,8 +31,6 @@ pub struct EventDetector {
     /// Sender for requesting polling activation
     polling_request_sender: Option<mpsc::UnboundedSender<PollingRequest>>,
 
-    /// Sender for emitting resync events
-    resync_event_sender: Option<mpsc::UnboundedSender<EnrichedEvent>>,
 }
 
 /// Request to activate or deactivate polling for a registration
@@ -42,7 +39,7 @@ pub struct PollingRequest {
     pub registration_id: RegistrationId,
     pub speaker_service_pair: SpeakerServicePair,
     pub action: PollingAction,
-    pub reason: ResyncReason,
+    pub reason: PollingReason,
 }
 
 #[derive(Debug, Clone)]
@@ -60,7 +57,6 @@ impl EventDetector {
             polling_activation_delay,
             firewall_coordinator: None,
             polling_request_sender: None,
-            resync_event_sender: None,
         }
     }
 
@@ -74,10 +70,6 @@ impl EventDetector {
         self.polling_request_sender = Some(sender);
     }
 
-    /// Set the resync event sender
-    pub fn set_resync_event_sender(&mut self, sender: mpsc::UnboundedSender<EnrichedEvent>) {
-        self.resync_event_sender = Some(sender);
-    }
 
     /// Record that an event was received for a registration
     pub async fn record_event(&self, registration_id: RegistrationId) {
@@ -130,7 +122,7 @@ impl EventDetector {
                         registration_id,
                         speaker_service_pair: pair.clone(),
                         action: PollingAction::Start,
-                        reason: ResyncReason::FirewallBlocked,
+                        reason: PollingReason::FirewallBlocked,
                     })
                 }
                 FirewallStatus::Accessible => {
@@ -147,7 +139,7 @@ impl EventDetector {
                         registration_id,
                         speaker_service_pair: pair.clone(),
                         action: PollingAction::Start,
-                        reason: ResyncReason::NetworkIssues,
+                        reason: PollingReason::NetworkIssues,
                     })
                 }
             }
@@ -243,189 +235,6 @@ impl EventDetector {
     }
 }
 
-/// Handles state drift detection and resync event generation
-pub struct ResyncDetector {
-    /// Track expected state per registration for drift detection
-    expected_state: Arc<RwLock<HashMap<RegistrationId, String>>>,
-
-    /// Track when resync events were last emitted to prevent spam
-    last_resync_times: Arc<RwLock<HashMap<RegistrationId, SystemTime>>>,
-
-    /// Minimum time between resync events to prevent spam
-    resync_cooldown: Duration,
-
-}
-
-impl ResyncDetector {
-    /// Create a new ResyncDetector
-    pub fn new(resync_cooldown: Duration) -> Self {
-        Self {
-            expected_state: Arc::new(RwLock::new(HashMap::new())),
-            last_resync_times: Arc::new(RwLock::new(HashMap::new())),
-            resync_cooldown,
-        }
-    }
-
-    /// Check if a resync is needed for a registration
-    pub async fn check_resync_needed(
-        &self,
-        registration_id: RegistrationId,
-        pair: &SpeakerServicePair,
-    ) -> Option<EnrichedEvent> {
-        // Check cooldown period
-        if !self.should_resync(registration_id).await {
-            return None;
-        }
-
-        // Query current device state
-        let current_state = match self.query_current_state(pair).await {
-            Ok(state) => state,
-            Err(_) => return None, // Skip resync if we can't query state
-        };
-
-        // Compare with expected state
-        let expected_state = self.get_expected_state(registration_id).await;
-
-        if let Some(expected) = expected_state {
-            if current_state != expected {
-                // State drift detected - create resync event
-                return Some(self.create_resync_event(
-                    registration_id,
-                    pair,
-                    current_state,
-                    ResyncReason::PollingDiscrepancy,
-                ));
-            }
-        } else {
-            // No expected state yet - this might be initial state
-            self.set_expected_state(registration_id, current_state.clone()).await;
-            return Some(self.create_resync_event(
-                registration_id,
-                pair,
-                current_state,
-                ResyncReason::InitialState,
-            ));
-        }
-
-        None
-    }
-
-    /// Check if enough time has passed since last resync
-    async fn should_resync(&self, registration_id: RegistrationId) -> bool {
-        let last_resync_times = self.last_resync_times.read().await;
-
-        if let Some(last_resync) = last_resync_times.get(&registration_id) {
-            let elapsed = SystemTime::now()
-                .duration_since(*last_resync)
-                .unwrap_or(Duration::ZERO);
-            elapsed >= self.resync_cooldown
-        } else {
-            true // No previous resync
-        }
-    }
-
-    /// Query current device state
-    async fn query_current_state(&self, pair: &SpeakerServicePair) -> SubscriptionResult<String> {
-        // This is a placeholder implementation
-        // In the real implementation, we would use sonos-api operations to query state
-        match pair.service {
-            sonos_api::Service::AVTransport => {
-                // Use GetTransportInfo operation
-                Ok(format!("transport_state_placeholder_{}", pair.speaker_ip))
-            }
-            sonos_api::Service::RenderingControl => {
-                // Use GetVolume and GetMute operations
-                Ok(format!("volume_state_placeholder_{}", pair.speaker_ip))
-            }
-            _ => Err(SubscriptionError::ServiceError(
-                "Unsupported service for state query".to_string(),
-            )),
-        }
-    }
-
-    /// Get expected state for a registration
-    async fn get_expected_state(&self, registration_id: RegistrationId) -> Option<String> {
-        let expected_state = self.expected_state.read().await;
-        expected_state.get(&registration_id).cloned()
-    }
-
-    /// Set expected state for a registration
-    async fn set_expected_state(&self, registration_id: RegistrationId, state: String) {
-        let mut expected_state = self.expected_state.write().await;
-        expected_state.insert(registration_id, state);
-    }
-
-    /// Create a resync event
-    fn create_resync_event(
-        &self,
-        registration_id: RegistrationId,
-        pair: &SpeakerServicePair,
-        current_state: String,
-        reason: ResyncReason,
-    ) -> EnrichedEvent {
-        // Create event data using new complete event structure
-        let event_data = match pair.service {
-            sonos_api::Service::AVTransport => {
-                EventData::AVTransportEvent(crate::events::types::AVTransportEvent {
-                    transport_state: Some(current_state),
-                    transport_status: None,
-                    speed: None,
-                    current_track_uri: None,
-                    track_duration: None,
-                    rel_time: None,
-                    abs_time: None,
-                    rel_count: None,
-                    abs_count: None,
-                    play_mode: None,
-                    track_metadata: None,
-                    next_track_uri: None,
-                    next_track_metadata: None,
-                    queue_length: None,
-                })
-            }
-            sonos_api::Service::RenderingControl => {
-                EventData::RenderingControlEvent(crate::events::types::RenderingControlEvent {
-                    master_volume: Some(current_state),
-                    lf_volume: None,
-                    rf_volume: None,
-                    master_mute: None,
-                    lf_mute: None,
-                    rf_mute: None,
-                    bass: None,
-                    treble: None,
-                    loudness: None,
-                    balance: None,
-                    other_channels: std::collections::HashMap::new(),
-                })
-            }
-            _ => EventData::AVTransportEvent(crate::events::types::AVTransportEvent {
-                transport_state: Some("unknown".to_string()),
-                transport_status: None,
-                speed: None,
-                current_track_uri: None,
-                track_duration: None,
-                rel_time: None,
-                abs_time: None,
-                rel_count: None,
-                abs_count: None,
-                play_mode: None,
-                track_metadata: None,
-                next_track_uri: None,
-                next_track_metadata: None,
-                queue_length: None,
-            }),
-        };
-
-        EnrichedEvent {
-            registration_id,
-            speaker_ip: pair.speaker_ip,
-            service: pair.service,
-            event_source: EventSource::ResyncDetection { reason },
-            timestamp: SystemTime::now(),
-            event_data,
-        }
-    }
-}
 
 /// Statistics about event detection
 #[derive(Debug)]
@@ -505,27 +314,4 @@ mod tests {
         assert_eq!(stats.total_monitored, 0);
     }
 
-    #[tokio::test]
-    async fn test_resync_detector_creation() {
-        let detector = ResyncDetector::new(Duration::from_secs(30));
-        assert_eq!(detector.resync_cooldown, Duration::from_secs(30));
-    }
-
-    #[tokio::test]
-    async fn test_resync_cooldown() {
-        let detector = ResyncDetector::new(Duration::from_secs(30));
-        let registration_id = RegistrationId::new(1);
-
-        // Should allow resync initially
-        assert!(detector.should_resync(registration_id).await);
-
-        // Simulate resync happened
-        {
-            let mut last_resync_times = detector.last_resync_times.write().await;
-            last_resync_times.insert(registration_id, SystemTime::now());
-        }
-
-        // Should not allow resync immediately
-        assert!(!detector.should_resync(registration_id).await);
-    }
 }

@@ -3,12 +3,11 @@
 //! This example shows the recommended approach for maintaining local state from Sonos events:
 //! 1. Initialize local state through direct queries (not from events)
 //! 2. Process change events to maintain local state using sync iterator (best practice)
-//! 3. Handle automatic resync events when state drift is detected
+//! 3. Handle events from both UPnP notifications and polling transparently
 //! 4. Get clear feedback about firewall detection and polling reasons
 
 use sonos_stream::{
     BrokerConfig, EventBroker, EventData, PollingReason,
-    events::types::{ResyncReason}
 };
 use sonos_api::{SonosClient, Service, OperationBuilder};
 use sonos_api::services::av_transport::{GetTransportInfoOperation, GetTransportInfoOperationRequest};
@@ -326,34 +325,9 @@ fn format_event_source(source: &sonos_stream::events::types::EventSource) -> Str
         EventSource::PollingDetection { poll_interval } => {
             format!("Polling ({}s interval)", poll_interval.as_secs())
         }
-        EventSource::ResyncDetection { reason } => {
-            format!("Resync ({})", format_resync_reason_enum(reason))
-        }
     }
 }
 
-/// Format resync reason for display
-fn format_resync_reason(source: &sonos_stream::events::types::EventSource) -> String {
-    use sonos_stream::events::types::EventSource;
-
-    match source {
-        EventSource::ResyncDetection { reason } => format_resync_reason_enum(reason),
-        _ => "unknown".to_string(),
-    }
-}
-
-/// Format resync reason enum for display
-fn format_resync_reason_enum(reason: &ResyncReason) -> String {
-    match reason {
-        ResyncReason::EventTimeoutDetected => "event timeout detected".to_string(),
-        ResyncReason::PollingDiscrepancy => "polling found different state".to_string(),
-        ResyncReason::SubscriptionRenewal => "subscription was renewed".to_string(),
-        ResyncReason::FirewallBlocked => "firewall blocking detected".to_string(),
-        ResyncReason::NetworkIssues => "network issues detected".to_string(),
-        ResyncReason::InitialState => "initial state query".to_string(),
-        ResyncReason::ExplicitRefresh => "explicit refresh requested".to_string(),
-    }
-}
 
 /// Extract track title from metadata (simplified)
 fn extract_track_title(metadata: &str) -> String {

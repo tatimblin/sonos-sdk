@@ -6,7 +6,6 @@
 
 use sonos_stream::{
     BrokerConfig, EventBroker, EventData,
-    events::types::{ResyncReason}
 };
 use sonos_api::Service;
 use std::net::IpAddr;
@@ -308,7 +307,6 @@ async fn demonstrate_async_features(events: &mut sonos_stream::events::iterator:
     println!("\nIterator Statistics:");
     println!("  Events received: {}", stats.events_received);
     println!("  Events delivered: {}", stats.events_delivered);
-    println!("  Resync events: {}", stats.resync_events_emitted);
     println!("  Timeouts: {}", stats.timeouts);
     println!("  Delivery rate: {:.1}%", stats.delivery_rate() * 100.0);
 }
@@ -327,12 +325,6 @@ async fn simulate_track_update(device_ip: IpAddr, track_uri: &str) {
     println!("   💾 Updated track database: {} -> {}", device_ip, track_uri);
 }
 
-/// Simulate resync notification to monitoring system
-async fn simulate_resync_notification(device_ip: IpAddr, component: &str) {
-    // Simulate async monitoring notification
-    tokio::time::sleep(Duration::from_millis(75)).await;
-    println!("   🔄 Sent resync notification: {} {} resynced", device_ip, component);
-}
 
 /// Simulate topology database update
 async fn simulate_topology_update(
@@ -372,31 +364,6 @@ fn format_event_source(source: &sonos_stream::events::types::EventSource) -> Str
         EventSource::PollingDetection { poll_interval } => {
             format!("Polling ({}s)", poll_interval.as_secs())
         }
-        EventSource::ResyncDetection { reason } => {
-            format!("Resync ({})", format_resync_reason_enum(reason))
-        }
     }
 }
 
-/// Format resync reason for display
-fn format_resync_reason(source: &sonos_stream::events::types::EventSource) -> String {
-    use sonos_stream::events::types::EventSource;
-
-    match source {
-        EventSource::ResyncDetection { reason } => format_resync_reason_enum(reason),
-        _ => "not a resync event".to_string(),
-    }
-}
-
-/// Format resync reason enum for display
-fn format_resync_reason_enum(reason: &ResyncReason) -> String {
-    match reason {
-        ResyncReason::EventTimeoutDetected => "event timeout detected".to_string(),
-        ResyncReason::PollingDiscrepancy => "polling found different state".to_string(),
-        ResyncReason::SubscriptionRenewal => "subscription was renewed".to_string(),
-        ResyncReason::ExplicitRefresh => "explicit refresh requested".to_string(),
-        ResyncReason::FirewallBlocked => todo!(),
-        ResyncReason::NetworkIssues => todo!(),
-        ResyncReason::InitialState => todo!(),
-    }
-}

@@ -6,7 +6,7 @@
 
 use sonos_stream::{
     BrokerConfig, EventBroker, EventData, PollingReason,
-    events::types::{EventSource, ResyncReason}
+    events::types::EventSource
 };
 use sonos_api::Service;
 use callback_server::firewall_detection::FirewallStatus;
@@ -179,7 +179,6 @@ async fn monitor_events(
     let mut event_count = 0;
     let mut upnp_events = 0;
     let mut polling_events = 0;
-    let mut resync_events = 0;
 
     // Monitor events until duration expires
     while start_time.elapsed() < duration {
@@ -198,11 +197,6 @@ async fn monitor_events(
                         polling_events += 1;
                         println!("    🔄 Polling Event #{}: {} {:?} ({}s interval)",
                                  event_count, event.speaker_ip, event.service, poll_interval.as_secs());
-                    }
-                    EventSource::ResyncDetection { reason } => {
-                        resync_events += 1;
-                        println!("    🔄 Resync Event #{}: {} {:?} ({})",
-                                 event_count, event.speaker_ip, event.service, format_resync_reason_enum(reason));
                     }
                 }
 
@@ -254,7 +248,6 @@ async fn monitor_events(
         println!("       Total Events: {}", event_count);
         println!("       UPnP Events: {} ({:.1}%)", upnp_events, (upnp_events as f64 / event_count as f64) * 100.0);
         println!("       Polling Events: {} ({:.1}%)", polling_events, (polling_events as f64 / event_count as f64) * 100.0);
-        println!("       Resync Events: {} ({:.1}%)", resync_events, (resync_events as f64 / event_count as f64) * 100.0);
 
         if upnp_events > 0 && polling_events > 0 {
             println!("    🔄 Observed transparent switching between UPnP events and polling!");
@@ -278,15 +271,3 @@ fn format_polling_reason(reason: &PollingReason) -> String {
     }
 }
 
-/// Format resync reason enum for display
-fn format_resync_reason_enum(reason: &ResyncReason) -> String {
-    match reason {
-        ResyncReason::EventTimeoutDetected => "event timeout detected".to_string(),
-        ResyncReason::PollingDiscrepancy => "polling found different state".to_string(),
-        ResyncReason::SubscriptionRenewal => "subscription was renewed".to_string(),
-        ResyncReason::ExplicitRefresh => "explicit refresh requested".to_string(),
-        ResyncReason::FirewallBlocked => todo!(),
-        ResyncReason::NetworkIssues => todo!(),
-        ResyncReason::InitialState => todo!(),
-    }
-}

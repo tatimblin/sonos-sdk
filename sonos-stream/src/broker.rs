@@ -7,7 +7,7 @@
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::mpsc;
 
 use callback_server::{CallbackServer, FirewallDetectionCoordinator, FirewallDetectionConfig, FirewallStatus};
 use sonos_api::Service;
@@ -22,7 +22,7 @@ use crate::events::{
 use crate::polling::scheduler::PollingScheduler;
 use crate::registry::{RegistrationId, SpeakerServicePair, SpeakerServiceRegistry};
 use crate::subscription::{
-    event_detector::{EventDetector, PollingRequest, PollingAction, ResyncDetector},
+    event_detector::{EventDetector, PollingRequest, PollingAction},
     manager::SubscriptionManager,
 };
 
@@ -86,8 +86,6 @@ pub struct EventBroker {
     /// Event activity detector
     event_detector: Arc<EventDetector>,
 
-    /// Resync detector for state drift
-    resync_detector: Arc<ResyncDetector>,
 
     /// Polling scheduler
     polling_scheduler: Arc<PollingScheduler>,
@@ -204,8 +202,6 @@ impl EventBroker {
             config.polling_activation_delay,
         ));
 
-        // Initialize resync detector
-        let resync_detector = Arc::new(ResyncDetector::new(config.resync_cooldown));
 
         let mut broker = Self {
             registry,
@@ -214,7 +210,6 @@ impl EventBroker {
             callback_server,
             firewall_coordinator,
             event_detector,
-            resync_detector,
             polling_scheduler,
             event_sender,
             event_receiver: Some(event_receiver),
@@ -448,15 +443,7 @@ impl EventBroker {
                     .evaluate_firewall_status(registration_id, &pair)
                     .await
                 {
-                    match request.reason {
-                        crate::events::types::ResyncReason::FirewallBlocked => {
-                            polling_reason = Some(PollingReason::FirewallBlocked);
-                        }
-                        crate::events::types::ResyncReason::NetworkIssues => {
-                            polling_reason = Some(PollingReason::NetworkIssues);
-                        }
-                        _ => {}
-                    }
+                    polling_reason = Some(request.reason.clone());
 
                     // Start polling immediately
                     if let Err(e) = self.polling_scheduler
