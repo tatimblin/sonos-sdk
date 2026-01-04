@@ -50,9 +50,9 @@ impl EnrichedEvent {
         }
     }
 
-    /// Check if this is a resync event
+    /// Check if this event came from resync detection
     pub fn is_resync_event(&self) -> bool {
-        matches!(self.event_data, EventData::AVTransportResync(_) | EventData::RenderingControlResync(_))
+        matches!(self.event_source, EventSource::ResyncDetection { .. })
     }
 
     /// Get the resync reason if this is a resync event
@@ -125,97 +125,56 @@ impl std::fmt::Display for ResyncReason {
     }
 }
 
-/// Event data - either change events (deltas) or resync events (full state)
+/// Event data - complete event information for each service
 #[derive(Debug, Clone)]
 pub enum EventData {
-    // Regular change events (delta only)
-    /// AVTransport service change event
-    AVTransportChange(AVTransportDelta),
+    /// AVTransport service event with complete transport state
+    AVTransportEvent(AVTransportEvent),
 
-    /// RenderingControl service change event
-    RenderingControlChange(RenderingControlDelta),
+    /// RenderingControl service event with complete rendering state
+    RenderingControlEvent(RenderingControlEvent),
 
-    /// DeviceProperties service change event
-    DevicePropertiesChange(DevicePropertiesDelta),
+    /// DeviceProperties service event with complete device properties
+    DevicePropertiesEvent(DevicePropertiesEvent),
 
-    // Special resync events (full state) when drift detected
-    /// AVTransport service resync event with full state
-    AVTransportResync(AVTransportFullState),
-
-    /// RenderingControl service resync event with full state
-    RenderingControlResync(RenderingControlFullState),
-
-    /// DeviceProperties service resync event with full state
-    DevicePropertiesResync(DevicePropertiesFullState),
+    /// ZoneGroupTopology service event with complete topology data
+    ZoneGroupTopologyEvent(ZoneGroupTopologyEvent),
 }
 
 impl EventData {
     /// Get the service type for this event data
     pub fn service_type(&self) -> sonos_api::Service {
         match self {
-            EventData::AVTransportChange(_) | EventData::AVTransportResync(_) => {
+            EventData::AVTransportEvent(_) => {
                 sonos_api::Service::AVTransport
             }
-            EventData::RenderingControlChange(_) | EventData::RenderingControlResync(_) => {
+            EventData::RenderingControlEvent(_) => {
                 sonos_api::Service::RenderingControl
             }
-            EventData::DevicePropertiesChange(_) | EventData::DevicePropertiesResync(_) => {
+            EventData::DevicePropertiesEvent(_) => {
                 // DeviceProperties service doesn't exist in sonos-api, using ZoneGroupTopology as fallback
                 sonos_api::Service::ZoneGroupTopology
             }
+            EventData::ZoneGroupTopologyEvent(_) => {
+                sonos_api::Service::ZoneGroupTopology
+            }
         }
-    }
-
-    /// Check if this is a change event (delta)
-    pub fn is_change_event(&self) -> bool {
-        matches!(
-            self,
-            EventData::AVTransportChange(_)
-            | EventData::RenderingControlChange(_)
-            | EventData::DevicePropertiesChange(_)
-        )
-    }
-
-    /// Check if this is a resync event (full state)
-    pub fn is_resync_event(&self) -> bool {
-        matches!(
-            self,
-            EventData::AVTransportResync(_)
-            | EventData::RenderingControlResync(_)
-            | EventData::DevicePropertiesResync(_)
-        )
     }
 }
 
 // AVTransport event types
 
-/// Delta change for AVTransport service
+/// Complete AVTransport event data containing all transport state information
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AVTransportDelta {
-    /// Transport state change (if it changed)
+pub struct AVTransportEvent {
+    /// Current transport state (PLAYING, PAUSED_PLAYBACK, STOPPED, etc.)
     pub transport_state: Option<String>,
 
-    /// Current track URI change (if it changed)
-    pub current_track_uri: Option<String>,
+    /// Current transport status (OK, ERROR_OCCURRED, etc.)
+    pub transport_status: Option<String>,
 
-    /// Track duration change (if it changed)
-    pub track_duration: Option<String>,
-
-    /// Relative time position change (if it changed)
-    pub rel_time: Option<String>,
-
-    /// Play mode change (if it changed)
-    pub play_mode: Option<String>,
-
-    /// Current track metadata change (if it changed)
-    pub track_metadata: Option<String>,
-}
-
-/// Full state for AVTransport service (used in resync events)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AVTransportFullState {
-    /// Current transport state
-    pub transport_state: String,
+    /// Current playback speed
+    pub speed: Option<String>,
 
     /// Current track URI
     pub current_track_uri: Option<String>,
@@ -223,83 +182,78 @@ pub struct AVTransportFullState {
     /// Track duration
     pub track_duration: Option<String>,
 
-    /// Relative time position
+    /// Relative time position in current track
     pub rel_time: Option<String>,
 
-    /// Current play mode
+    /// Absolute time position
+    pub abs_time: Option<String>,
+
+    /// Relative track number in queue
+    pub rel_count: Option<u32>,
+
+    /// Absolute track number
+    pub abs_count: Option<u32>,
+
+    /// Current play mode (NORMAL, REPEAT_ALL, REPEAT_ONE, SHUFFLE, etc.)
     pub play_mode: Option<String>,
 
-    /// Current track metadata
+    /// Current track metadata (DIDL-Lite XML)
     pub track_metadata: Option<String>,
+
+    /// Next track URI
+    pub next_track_uri: Option<String>,
+
+    /// Next track metadata
+    pub next_track_metadata: Option<String>,
 
     /// Queue size/length
     pub queue_length: Option<u32>,
-
-    /// Current track number in queue
-    pub track_number: Option<u32>,
 }
 
 // RenderingControl event types
 
-/// Delta change for RenderingControl service
+/// Complete RenderingControl event data containing all rendering state information
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RenderingControlDelta {
-    /// Volume level change (if it changed)
-    pub volume: Option<u16>,
+pub struct RenderingControlEvent {
+    /// Current volume level (0-100) for Master channel
+    pub master_volume: Option<String>,
 
-    /// Mute state change (if it changed)
-    pub mute: Option<bool>,
+    /// Current volume level (0-100) for Left Front channel
+    pub lf_volume: Option<String>,
 
-    /// Bass level change (if it changed)
-    pub bass: Option<i8>,
+    /// Current volume level (0-100) for Right Front channel
+    pub rf_volume: Option<String>,
 
-    /// Treble level change (if it changed)
-    pub treble: Option<i8>,
+    /// Current mute state for Master channel
+    pub master_mute: Option<String>,
 
-    /// Loudness setting change (if it changed)
-    pub loudness: Option<bool>,
-}
+    /// Current mute state for Left Front channel
+    pub lf_mute: Option<String>,
 
-/// Full state for RenderingControl service (used in resync events)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RenderingControlFullState {
-    /// Current volume level (0-100)
-    pub volume: String, // Using String to match the pattern in event_detector
-
-    /// Current mute state
-    pub mute: Option<bool>,
+    /// Current mute state for Right Front channel
+    pub rf_mute: Option<String>,
 
     /// Current bass level
-    pub bass: Option<i8>,
+    pub bass: Option<String>,
 
     /// Current treble level
-    pub treble: Option<i8>,
+    pub treble: Option<String>,
 
     /// Current loudness setting
-    pub loudness: Option<bool>,
+    pub loudness: Option<String>,
 
     /// Balance setting (-100 to +100)
-    pub balance: Option<i8>,
+    pub balance: Option<String>,
+
+    /// Additional channel configurations (can be extended)
+    pub other_channels: std::collections::HashMap<String, String>,
 }
 
 // DeviceProperties event types
 
-/// Delta change for DeviceProperties service
+/// Complete DeviceProperties event data containing all device property information
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DevicePropertiesDelta {
-    /// Zone name change (if it changed)
-    pub zone_name: Option<String>,
-
-    /// Zone icon change (if it changed)
-    pub zone_icon: Option<String>,
-
-    /// Configuration information change (if it changed)
-    pub configuration: Option<String>,
-}
-
-/// Full state for DeviceProperties service (used in resync events)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DevicePropertiesFullState {
+pub struct DevicePropertiesEvent {
     /// Current zone name
     pub zone_name: Option<String>,
 
@@ -313,7 +267,108 @@ pub struct DevicePropertiesFullState {
     pub capabilities: Option<String>,
 
     /// Firmware version
-    pub firmware_version: Option<String>,
+    pub software_version: Option<String>,
+
+    /// Device model information
+    pub model_name: Option<String>,
+
+    /// Device display version
+    pub display_version: Option<String>,
+
+    /// Device hardware version
+    pub hardware_version: Option<String>,
+
+    /// Additional device properties (extensible)
+    pub additional_properties: std::collections::HashMap<String, String>,
+}
+
+// ZoneGroupTopology event types
+
+/// Event data for ZoneGroupTopology service containing complete topology information.
+/// This passes through the entire parsed topology state without any delta processing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ZoneGroupTopologyEvent {
+    /// Complete zone group topology data
+    pub zone_groups: Vec<ZoneGroupInfo>,
+
+    /// Devices that have vanished from the network
+    pub vanished_devices: Vec<String>, // Can be expanded later if needed
+}
+
+/// Information about a single zone group.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ZoneGroupInfo {
+    /// The coordinator (master) speaker UUID for this group
+    pub coordinator: String,
+
+    /// Unique identifier for this zone group
+    pub id: String,
+
+    /// All speakers that are members of this zone group
+    pub members: Vec<ZoneGroupMemberInfo>,
+}
+
+/// Information about a speaker in a zone group.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ZoneGroupMemberInfo {
+    /// Unique identifier for this speaker (RINCON_...)
+    pub uuid: String,
+
+    /// Network location URL of the speaker
+    pub location: String,
+
+    /// Human-readable name of the room/zone
+    pub zone_name: String,
+
+    /// Software version running on the speaker
+    pub software_version: String,
+
+    /// Network configuration (WiFi, ethernet, etc.)
+    pub network_info: NetworkInfo,
+
+    /// Satellite speakers for home theater configurations
+    pub satellites: Vec<SatelliteInfo>,
+
+    /// Additional metadata (can be extended as needed)
+    pub metadata: std::collections::HashMap<String, String>,
+}
+
+/// Network configuration information for a speaker.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkInfo {
+    /// Wireless mode (0=wired, 1=2.4GHz, 2=5GHz)
+    pub wireless_mode: String,
+
+    /// Whether WiFi is enabled
+    pub wifi_enabled: String,
+
+    /// Ethernet link status
+    pub eth_link: String,
+
+    /// WiFi channel frequency
+    pub channel_freq: String,
+
+    /// Whether behind a WiFi extender
+    pub behind_wifi_extender: String,
+}
+
+/// Information about a satellite speaker.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SatelliteInfo {
+    /// Unique identifier for this satellite speaker
+    pub uuid: String,
+
+    /// Network location of the satellite
+    pub location: String,
+
+    /// Zone name (usually same as main speaker)
+    pub zone_name: String,
+
+    /// Home theater satellite channel mapping
+    pub ht_sat_chan_map_set: String,
+
+    /// Whether this satellite is invisible in UI
+    pub invisible: String,
 }
 
 /// A resync event with additional context
@@ -358,75 +413,6 @@ impl ResyncEvent {
     }
 }
 
-/// Utility functions for working with event data
-impl AVTransportDelta {
-    /// Check if this delta contains any changes
-    pub fn has_changes(&self) -> bool {
-        self.transport_state.is_some()
-            || self.current_track_uri.is_some()
-            || self.track_duration.is_some()
-            || self.rel_time.is_some()
-            || self.play_mode.is_some()
-            || self.track_metadata.is_some()
-    }
-
-    /// Create a delta with only transport state change
-    pub fn transport_state_change(new_state: String) -> Self {
-        Self {
-            transport_state: Some(new_state),
-            current_track_uri: None,
-            track_duration: None,
-            rel_time: None,
-            play_mode: None,
-            track_metadata: None,
-        }
-    }
-
-    /// Create a delta with only track change
-    pub fn track_change(track_uri: String, track_metadata: Option<String>) -> Self {
-        Self {
-            transport_state: None,
-            current_track_uri: Some(track_uri),
-            track_duration: None,
-            rel_time: None,
-            play_mode: None,
-            track_metadata,
-        }
-    }
-}
-
-impl RenderingControlDelta {
-    /// Check if this delta contains any changes
-    pub fn has_changes(&self) -> bool {
-        self.volume.is_some()
-            || self.mute.is_some()
-            || self.bass.is_some()
-            || self.treble.is_some()
-            || self.loudness.is_some()
-    }
-
-    /// Create a delta with only volume change
-    pub fn volume_change(new_volume: u16) -> Self {
-        Self {
-            volume: Some(new_volume),
-            mute: None,
-            bass: None,
-            treble: None,
-            loudness: None,
-        }
-    }
-
-    /// Create a delta with only mute change
-    pub fn mute_change(muted: bool) -> Self {
-        Self {
-            volume: None,
-            mute: Some(muted),
-            bass: None,
-            treble: None,
-            loudness: None,
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {

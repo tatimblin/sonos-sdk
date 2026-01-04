@@ -7,6 +7,7 @@
 //! ## Available Services
 //!
 //! - [`av_transport`]: Parser for AVTransport service events and responses
+//! - [`zone_group_topology`]: Parser for ZoneGroupTopology service events and responses
 //!
 //! ## Usage
 //!
@@ -21,3 +22,4 @@
 //! ```
 
 pub mod av_transport;
+pub mod zone_group_topology;

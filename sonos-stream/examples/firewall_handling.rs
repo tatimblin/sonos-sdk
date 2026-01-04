@@ -8,7 +8,7 @@ use sonos_stream::{
     BrokerConfig, EventBroker, EventData, PollingReason,
     events::types::{EventSource, ResyncReason}
 };
-use sonos_api::{SonosClient, Service};
+use sonos_api::Service;
 use callback_server::firewall_detection::FirewallStatus;
 use std::net::IpAddr;
 use std::time::Duration;
@@ -206,28 +206,30 @@ async fn monitor_events(
                     }
                 }
 
-                // Show what changed
+                // Show event content
                 match &event.event_data {
-                    EventData::AVTransportChange(delta) => {
-                        if delta.transport_state.is_some() || delta.current_track_uri.is_some() {
-                            println!("       🎵 Transport changed: state={:?}, track={:?}",
-                                     delta.transport_state, delta.current_track_uri);
+                    EventData::AVTransportEvent(transport_event) => {
+                        if transport_event.transport_state.is_some() || transport_event.current_track_uri.is_some() {
+                            println!("       🎵 Transport event: state={:?}, track={:?}",
+                                     transport_event.transport_state, transport_event.current_track_uri);
                         }
                     }
-                    EventData::RenderingControlChange(delta) => {
-                        if delta.volume.is_some() || delta.mute.is_some() {
-                            println!("       🔊 Volume changed: level={:?}, mute={:?}",
-                                     delta.volume, delta.mute);
+                    EventData::RenderingControlEvent(volume_event) => {
+                        if volume_event.master_volume.is_some() || volume_event.master_mute.is_some() {
+                            println!("       🔊 Volume event: level={:?}, mute={:?}",
+                                     volume_event.master_volume, volume_event.master_mute);
                         }
                     }
-                    EventData::AVTransportResync(_) => {
-                        println!("       🔄 Full transport state resync received");
+                    EventData::ZoneGroupTopologyEvent(topology) => {
+                        println!("       🏠 Topology event: {} groups, {} total speakers",
+                                 topology.zone_groups.len(),
+                                 topology.zone_groups.iter()
+                                     .map(|g| g.members.len() + g.members.iter().map(|m| m.satellites.len()).sum::<usize>())
+                                     .sum::<usize>());
                     }
-                    EventData::RenderingControlResync(_) => {
-                        println!("       🔄 Full volume state resync received");
+                    EventData::DevicePropertiesEvent(_) => {
+                        println!("       ⚙️ Device properties event received");
                     }
-                    EventData::DevicePropertiesChange(_device_properties_delta) => todo!(),
-                    EventData::DevicePropertiesResync(_device_properties_full_state) => todo!(),
                 }
             }
             Ok(None) => {

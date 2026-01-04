@@ -274,6 +274,37 @@ struct RenderingControlState {
     pub mute: bool,
 }
 
+/// Polling strategy for ZoneGroupTopology service (STUB - not yet implemented)
+pub struct ZoneGroupTopologyPoller;
+
+#[async_trait]
+impl ServicePoller for ZoneGroupTopologyPoller {
+    async fn poll_state(&self, _client: &SonosClient, _pair: &SpeakerServicePair) -> PollingResult<String> {
+        // TODO: Implement ZoneGroupTopology polling
+        // This would require:
+        // 1. Adding ZoneGroupTopology operations to sonos-api crate
+        // 2. Querying GetZoneGroupState operation
+        // 3. Serializing the topology state for comparison
+        Err(PollingError::UnsupportedService {
+            service: Service::ZoneGroupTopology,
+        })
+    }
+
+    async fn parse_for_changes(&self, _old_state: &str, _new_state: &str) -> Vec<StateChange> {
+        // TODO: Implement topology change detection
+        // This would detect:
+        // - Speakers joining/leaving groups
+        // - Coordinator changes
+        // - Network configuration changes
+        // - New/vanished devices
+        vec![]
+    }
+
+    fn service_type(&self) -> Service {
+        Service::ZoneGroupTopology
+    }
+}
+
 /// Main device state poller that coordinates different service strategies
 pub struct DeviceStatePoller {
     /// Service-specific polling strategies
@@ -295,6 +326,10 @@ impl DeviceStatePoller {
         service_pollers.insert(
             Service::RenderingControl,
             Box::new(RenderingControlPoller),
+        );
+        service_pollers.insert(
+            Service::ZoneGroupTopology,
+            Box::new(ZoneGroupTopologyPoller),
         );
 
         Self {
@@ -380,10 +415,10 @@ mod tests {
         let poller = DeviceStatePoller::new();
         let stats = poller.stats();
 
-        assert_eq!(stats.total_pollers, 2); // AVTransport and RenderingControl
+        assert_eq!(stats.total_pollers, 3); // AVTransport, RenderingControl, and ZoneGroupTopology (stub)
         assert!(poller.is_service_supported(&Service::AVTransport));
         assert!(poller.is_service_supported(&Service::RenderingControl));
-        assert!(!poller.is_service_supported(&Service::ZoneGroupTopology));
+        assert!(poller.is_service_supported(&Service::ZoneGroupTopology));
     }
 
     #[test]
@@ -465,8 +500,34 @@ mod tests {
     async fn test_service_poller_types() {
         let av_poller = AVTransportPoller;
         let rc_poller = RenderingControlPoller;
+        let zgt_poller = ZoneGroupTopologyPoller;
 
         assert_eq!(av_poller.service_type(), Service::AVTransport);
         assert_eq!(rc_poller.service_type(), Service::RenderingControl);
+        assert_eq!(zgt_poller.service_type(), Service::ZoneGroupTopology);
+    }
+
+    #[tokio::test]
+    async fn test_zone_group_topology_poller_stub() {
+        let poller = ZoneGroupTopologyPoller;
+        let pair = SpeakerServicePair {
+            speaker_ip: "192.168.1.100".parse().unwrap(),
+            service: Service::ZoneGroupTopology,
+        };
+
+        // Test that polling returns an unsupported service error (stubbed behavior)
+        let result = poller.poll_state(&SonosClient::new(), &pair).await;
+        assert!(result.is_err());
+
+        match result.unwrap_err() {
+            PollingError::UnsupportedService { service } => {
+                assert_eq!(service, Service::ZoneGroupTopology);
+            }
+            _ => panic!("Expected UnsupportedService error for stubbed ZoneGroupTopology poller"),
+        }
+
+        // Test that change parsing returns empty vec (no-op for stub)
+        let changes = poller.parse_for_changes("old_state", "new_state").await;
+        assert!(changes.is_empty());
     }
 }

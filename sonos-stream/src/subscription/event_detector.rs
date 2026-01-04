@@ -363,39 +363,56 @@ impl ResyncDetector {
         current_state: String,
         reason: ResyncReason,
     ) -> EnrichedEvent {
-        // This is a placeholder - in real implementation we'd create proper EventData
+        // Create event data using new complete event structure
         let event_data = match pair.service {
             sonos_api::Service::AVTransport => {
-                EventData::AVTransportResync(crate::events::types::AVTransportFullState {
-                    transport_state: current_state,
+                EventData::AVTransportEvent(crate::events::types::AVTransportEvent {
+                    transport_state: Some(current_state),
+                    transport_status: None,
+                    speed: None,
                     current_track_uri: None,
                     track_duration: None,
                     rel_time: None,
+                    abs_time: None,
+                    rel_count: None,
+                    abs_count: None,
                     play_mode: None,
                     track_metadata: None,
+                    next_track_uri: None,
+                    next_track_metadata: None,
                     queue_length: None,
-                    track_number: None,
                 })
             }
             sonos_api::Service::RenderingControl => {
-                EventData::RenderingControlResync(crate::events::types::RenderingControlFullState {
-                    volume: current_state,
-                    mute: None,
+                EventData::RenderingControlEvent(crate::events::types::RenderingControlEvent {
+                    master_volume: Some(current_state),
+                    lf_volume: None,
+                    rf_volume: None,
+                    master_mute: None,
+                    lf_mute: None,
+                    rf_mute: None,
                     bass: None,
                     treble: None,
                     loudness: None,
                     balance: None,
+                    other_channels: std::collections::HashMap::new(),
                 })
             }
-            _ => EventData::AVTransportResync(crate::events::types::AVTransportFullState {
-                transport_state: "unknown".to_string(),
+            _ => EventData::AVTransportEvent(crate::events::types::AVTransportEvent {
+                transport_state: Some("unknown".to_string()),
+                transport_status: None,
+                speed: None,
                 current_track_uri: None,
                 track_duration: None,
                 rel_time: None,
+                abs_time: None,
+                rel_count: None,
+                abs_count: None,
                 play_mode: None,
                 track_metadata: None,
+                next_track_uri: None,
+                next_track_metadata: None,
                 queue_length: None,
-                track_number: None,
             }),
         };
 

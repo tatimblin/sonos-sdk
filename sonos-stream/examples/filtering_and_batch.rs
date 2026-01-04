@@ -183,18 +183,27 @@ async fn demonstrate_batch_processing(broker: &mut EventBroker) -> Result<(), Bo
             devices_affected.insert(event.speaker_ip);
 
             match &event.event_data {
-                EventData::AVTransportChange(_) | EventData::AVTransportResync(_) => {
+                EventData::AVTransportEvent(_) => {
                     transport_changes += 1;
                     println!("   {}. 🎵 Transport event from {} ({})",
                              i + 1, event.speaker_ip, format_event_source(&event.event_source));
                 }
-                EventData::RenderingControlChange(_) | EventData::RenderingControlResync(_) => {
+                EventData::RenderingControlEvent(_) => {
                     volume_changes += 1;
                     println!("   {}. 🔊 Volume event from {} ({})",
                              i + 1, event.speaker_ip, format_event_source(&event.event_source));
                 }
-                EventData::DevicePropertiesChange(_device_properties_delta) => todo!(),
-                EventData::DevicePropertiesResync(_device_properties_full_state) => todo!(),
+                EventData::ZoneGroupTopologyEvent(topology) => {
+                    println!("   {}. 🏠 Topology event from {} ({} groups, {})",
+                             i + 1,
+                             event.speaker_ip,
+                             topology.zone_groups.len(),
+                             format_event_source(&event.event_source));
+                }
+                EventData::DevicePropertiesEvent(_) => {
+                    println!("   {}. ⚙️  Device properties event from {} ({})",
+                             i + 1, event.speaker_ip, format_event_source(&event.event_source));
+                }
             }
         }
 
@@ -298,14 +307,15 @@ async fn demonstrate_multi_device_coordination(
 
                 // Track device state changes
                 match &event.event_data {
-                    EventData::AVTransportChange(delta) => {
-                        if let Some(ref state) = delta.transport_state {
-                            device_states.insert(event.speaker_ip, state.clone());
+                    EventData::AVTransportEvent(transport_event) => {
+                        if let Some(ref state) = transport_event.transport_state {
+                            device_states.insert(event.speaker_ip, Some(state.clone()));
 
                             // Check for synchronized playback
                             if device_states.len() > 1 {
-                                let all_playing = device_states.values().all(|s| s == "PLAYING");
-                                let all_paused = device_states.values().all(|s| s.contains("PAUSED"));
+                                let states: Vec<&Option<String>> = device_states.values().collect();
+                                let all_playing = states.iter().all(|s| s.as_ref().map_or(false, |st| st == "PLAYING"));
+                                let all_paused = states.iter().all(|s| s.as_ref().map_or(false, |st| st.contains("PAUSED")));
 
                                 if all_playing {
                                     println!("   🎵 All devices are now playing - synchronized!");
@@ -399,12 +409,12 @@ fn analyze_collected_events(events: &[sonos_stream::events::types::EnrichedEvent
 /// Format event data for display
 fn format_event_data(data: &EventData) -> String {
     match data {
-        EventData::AVTransportChange(_) => "AVTransport Change".to_string(),
-        EventData::RenderingControlChange(_) => "Volume Change".to_string(),
-        EventData::AVTransportResync(_) => "AVTransport Resync".to_string(),
-        EventData::RenderingControlResync(_) => "Volume Resync".to_string(),
-        EventData::DevicePropertiesChange(_) => "Device Properties Change".to_string(),
-        EventData::DevicePropertiesResync(_) => "Device Properties Resync".to_string(),
+        EventData::AVTransportEvent(_) => "AVTransport Event".to_string(),
+        EventData::RenderingControlEvent(_) => "Volume Event".to_string(),
+        EventData::ZoneGroupTopologyEvent(topology) => {
+            format!("Topology Event ({} groups)", topology.zone_groups.len())
+        }
+        EventData::DevicePropertiesEvent(_) => "Device Properties Event".to_string(),
     }
 }
 
