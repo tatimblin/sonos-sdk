@@ -3,6 +3,10 @@
 //! This module provides operations for managing UPnP event subscriptions
 //! across all Sonos services. These operations handle the HTTP-based
 //! subscription protocol rather than SOAP.
+//!
+//! Note: This module is being deprecated in favor of the new event framework
+//! in `crate::events`. Service-specific event handling is now done in
+//! individual service modules.
 
 use serde::{Deserialize, Serialize};
 use crate::{ApiError, Result, Service};

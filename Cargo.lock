@@ -1859,6 +1859,7 @@ dependencies = [
  "mockito",
  "paste",
  "proptest",
+ "quick-xml",
  "rstest",
  "serde",
  "soap-client",
@@ -1877,17 +1878,6 @@ dependencies = [
  "reqwest",
  "rstest",
  "serde",
-]
-
-[[package]]
-name = "sonos-parser"
-version = "0.1.0"
-dependencies = [
- "quick-xml",
- "rstest",
- "serde",
- "serde_json",
- "thiserror",
 ]
 
 [[package]]
@@ -1911,7 +1901,6 @@ dependencies = [
  "soap-client",
  "sonos-api",
  "sonos-discovery",
- "sonos-parser",
  "thiserror",
  "tokio",
  "tokio-test",

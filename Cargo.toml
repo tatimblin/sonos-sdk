@@ -3,7 +3,6 @@ members = [
     "callback-server",
     # "integration-example",  # Temporarily disabled while refactoring UPnP client
     "sonos-discovery",
-    "sonos-parser",
     "sonos-stream",
     "soap-client",
     "sonos-api",

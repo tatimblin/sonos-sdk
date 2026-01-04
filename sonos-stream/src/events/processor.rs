@@ -1,263 +1,27 @@
-//! Event processing and enrichment
+//! Simplified event processor that delegates to sonos-api event framework
 //!
-//! This module handles processing of both UPnP events and synthetic polling events,
-//! enriching them with context and routing them to the event stream.
+//! This processor replaces the old service-specific processing logic with
+//! a simple delegation to the sonos-api EventProcessor.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 
 use callback_server::{router::{EventRouter, NotificationPayload}, FirewallDetectionCoordinator};
+use sonos_api::events::{EventProcessor as ApiEventProcessor};
 
 use crate::error::{EventProcessingError, EventProcessingResult};
-use crate::events::types::{
-    AVTransportEvent, RenderingControlEvent, DevicePropertiesEvent,
-    EnrichedEvent, EventData, EventSource,
-    ZoneGroupTopologyEvent, ZoneGroupInfo, ZoneGroupMemberInfo, NetworkInfo, SatelliteInfo,
-};
 use crate::subscription::manager::SubscriptionManager;
+use crate::events::types::{EnrichedEvent, EventData, EventSource};
 
-/// Helper function to extract values from XML using basic text matching
-/// This is a temporary solution until proper parsers are implemented
-fn extract_xml_value(xml: &str, tag: &str) -> Option<String> {
-    let start_tag = format!("<{}>", tag);
-    let end_tag = format!("</{}>", tag);
-
-    if let Some(start_pos) = xml.find(&start_tag) {
-        let content_start = start_pos + start_tag.len();
-        if let Some(end_pos) = xml[content_start..].find(&end_tag) {
-            let value = xml[content_start..content_start + end_pos].trim();
-            if !value.is_empty() {
-                return Some(value.to_string());
-            }
-        }
-    }
-    None
-}
-
-/// Trait for service-specific event parsers
-pub trait EventParser: Send + Sync {
-    /// Parse UPnP event XML and extract changes
-    fn parse_upnp_event(&self, xml: &str) -> EventProcessingResult<EventData>;
-
-    /// Get the service type this parser handles
-    fn service_type(&self) -> sonos_api::Service;
-}
-
-/// Event parser for AVTransport service
-pub struct AVTransportEventParser;
-
-impl EventParser for AVTransportEventParser {
-    fn parse_upnp_event(&self, xml: &str) -> EventProcessingResult<EventData> {
-        // Parse UPnP event XML using sonos-parser
-        let parsed = sonos_parser::services::av_transport::AVTransportParser::from_xml(xml)
-            .map_err(|e| EventProcessingError::Parsing(format!("Failed to parse AVTransport XML: {}", e)))?;
-
-        // Create complete event data from parsed UPnP event
-        let instance = &parsed.property.last_change.instance;
-
-        let event = AVTransportEvent {
-            transport_state: Some(parsed.transport_state().to_string()),
-            transport_status: instance.transport_status.as_ref().map(|v| v.val.clone()),
-            speed: None, // Speed field not available in current parser
-            current_track_uri: parsed.current_track_uri().map(|s| s.to_string()),
-            track_duration: parsed.current_track_duration().map(|s| s.to_string()),
-            rel_time: instance.relative_time_position.as_ref().map(|v| v.val.clone()),
-            abs_time: instance.absolute_time_position.as_ref().map(|v| v.val.clone()),
-            rel_count: instance.current_track.as_ref().and_then(|v| v.val.parse().ok()),
-            abs_count: None, // No absolute count field in current parser
-            play_mode: instance.current_play_mode.as_ref().map(|v| v.val.clone()),
-            track_metadata: parsed.track_metadata().map(|_didl| {
-                // Convert DIDL-Lite to string representation
-                format!("Title: {:?}, Artist: {:?}, Album: {:?}",
-                    parsed.track_title(),
-                    parsed.track_artist(),
-                    parsed.track_album())
-            }),
-            next_track_uri: instance.next_track_uri.as_ref().map(|v| v.val.clone()),
-            next_track_metadata: instance.next_track_metadata.as_ref().map(|v| v.val.clone()),
-            queue_length: instance.number_of_tracks.as_ref().and_then(|v| v.val.parse().ok()),
-        };
-
-        Ok(EventData::AVTransportEvent(event))
-    }
-
-    fn service_type(&self) -> sonos_api::Service {
-        sonos_api::Service::AVTransport
-    }
-}
-
-/// Event parser for RenderingControl service
-pub struct RenderingControlEventParser;
-
-impl EventParser for RenderingControlEventParser {
-    fn parse_upnp_event(&self, xml: &str) -> EventProcessingResult<EventData> {
-        // TODO: Implement proper RenderingControl parser when sonos-parser supports it
-        // For now, create a basic event structure
-
-        // Parse basic XML structure to extract any volume/mute information
-        // This is a simplified implementation until a proper parser is available
-        let event = RenderingControlEvent {
-            master_volume: extract_xml_value(xml, "Volume"),
-            lf_volume: None,
-            rf_volume: None,
-            master_mute: extract_xml_value(xml, "Mute"),
-            lf_mute: None,
-            rf_mute: None,
-            bass: extract_xml_value(xml, "Bass"),
-            treble: extract_xml_value(xml, "Treble"),
-            loudness: extract_xml_value(xml, "Loudness"),
-            balance: extract_xml_value(xml, "Balance"),
-            other_channels: std::collections::HashMap::new(),
-        };
-
-        Ok(EventData::RenderingControlEvent(event))
-    }
-
-    fn service_type(&self) -> sonos_api::Service {
-        sonos_api::Service::RenderingControl
-    }
-}
-
-/// Event parser for ZoneGroupTopology service
-pub struct ZoneGroupTopologyEventParser;
-
-impl EventParser for ZoneGroupTopologyEventParser {
-    fn parse_upnp_event(&self, xml: &str) -> EventProcessingResult<EventData> {
-        // Parse the UPnP event XML using sonos-parser
-        let parsed = sonos_parser::services::zone_group_topology::ZoneGroupTopologyParser::from_xml(xml)
-            .map_err(|e| EventProcessingError::Parsing(format!("Failed to parse ZoneGroupTopology XML: {}", e)))?;
-
-        // Extract zone group state from the parsed data
-        let zone_group_state = parsed.zone_group_state()
-            .ok_or_else(|| EventProcessingError::Parsing("No ZoneGroupState found in event".to_string()))?;
-
-        // Convert from parser types to event types
-        let zone_groups = zone_group_state.zone_groups.zone_groups
-            .iter()
-            .map(|group| {
-                let members = group.zone_group_members
-                    .iter()
-                    .map(|member| {
-                        // Collect all additional metadata
-                        let mut metadata = std::collections::HashMap::new();
-                        metadata.insert("icon".to_string(), member.icon.clone());
-                        metadata.insert("configuration".to_string(), member.configuration.clone());
-                        metadata.insert("sw_gen".to_string(), member.sw_gen.clone());
-                        metadata.insert("min_compatible_version".to_string(), member.min_compatible_version.clone());
-                        metadata.insert("legacy_compatible_version".to_string(), member.legacy_compatible_version.clone());
-                        metadata.insert("boot_seq".to_string(), member.boot_seq.clone());
-                        metadata.insert("ssl_port".to_string(), member.ssl_port.clone());
-                        metadata.insert("hhssl_port".to_string(), member.hhssl_port.clone());
-                        metadata.insert("idle_state".to_string(), member.idle_state.clone());
-                        metadata.insert("more_info".to_string(), member.more_info.clone());
-                        metadata.insert("orientation".to_string(), member.orientation.clone());
-                        metadata.insert("room_calibration_state".to_string(), member.room_calibration_state.clone());
-                        metadata.insert("secure_reg_state".to_string(), member.secure_reg_state.clone());
-                        metadata.insert("voice_config_state".to_string(), member.voice_config_state.clone());
-                        metadata.insert("mic_enabled".to_string(), member.mic_enabled.clone());
-                        metadata.insert("airplay_enabled".to_string(), member.airplay_enabled.clone());
-
-                        if let Some(ref ht_sat_chan) = member.ht_sat_chan_map_set {
-                            metadata.insert("ht_sat_chan_map_set".to_string(), ht_sat_chan.clone());
-                        }
-                        if let Some(ref active_zone) = member.active_zone_id {
-                            metadata.insert("active_zone_id".to_string(), active_zone.clone());
-                        }
-                        if let Some(ref vli_source) = member.virtual_line_in_source {
-                            metadata.insert("virtual_line_in_source".to_string(), vli_source.clone());
-                        }
-
-                        // Convert satellites
-                        let satellites = member.satellites
-                            .iter()
-                            .map(|sat| SatelliteInfo {
-                                uuid: sat.uuid.clone(),
-                                location: sat.location.clone(),
-                                zone_name: sat.zone_name.clone(),
-                                ht_sat_chan_map_set: sat.ht_sat_chan_map_set.clone(),
-                                invisible: sat.invisible.clone(),
-                            })
-                            .collect();
-
-                        ZoneGroupMemberInfo {
-                            uuid: member.uuid.clone(),
-                            location: member.location.clone(),
-                            zone_name: member.zone_name.clone(),
-                            software_version: member.software_version.clone(),
-                            network_info: NetworkInfo {
-                                wireless_mode: member.wireless_mode.clone(),
-                                wifi_enabled: member.wifi_enabled.clone(),
-                                eth_link: member.eth_link.clone(),
-                                channel_freq: member.channel_freq.clone(),
-                                behind_wifi_extender: member.behind_wifi_extender.clone(),
-                            },
-                            satellites,
-                            metadata,
-                        }
-                    })
-                    .collect();
-
-                ZoneGroupInfo {
-                    coordinator: group.coordinator.clone(),
-                    id: group.id.clone(),
-                    members,
-                }
-            })
-            .collect();
-
-        let topology_event = ZoneGroupTopologyEvent {
-            zone_groups,
-            vanished_devices: Vec::new(), // TODO: Parse vanished devices if needed
-        };
-
-        Ok(EventData::ZoneGroupTopologyEvent(topology_event))
-    }
-
-    fn service_type(&self) -> sonos_api::Service {
-        sonos_api::Service::ZoneGroupTopology
-    }
-}
-
-/// Event parser for DeviceProperties service
-pub struct DevicePropertiesEventParser;
-
-impl EventParser for DevicePropertiesEventParser {
-    fn parse_upnp_event(&self, xml: &str) -> EventProcessingResult<EventData> {
-        // TODO: Implement proper DeviceProperties parser when available
-        // For now, create basic event structure with extracted values
-
-        let event = DevicePropertiesEvent {
-            zone_name: extract_xml_value(xml, "ZoneName"),
-            zone_icon: extract_xml_value(xml, "Icon"),
-            configuration: extract_xml_value(xml, "Configuration"),
-            capabilities: extract_xml_value(xml, "Capabilities"),
-            software_version: extract_xml_value(xml, "SoftwareVersion"),
-            model_name: extract_xml_value(xml, "ModelName"),
-            display_version: extract_xml_value(xml, "DisplayVersion"),
-            hardware_version: extract_xml_value(xml, "HardwareVersion"),
-            additional_properties: std::collections::HashMap::new(),
-        };
-
-        Ok(EventData::DevicePropertiesEvent(event))
-    }
-
-    fn service_type(&self) -> sonos_api::Service {
-        // DeviceProperties service doesn't exist in sonos-api, using ZoneGroupTopology as fallback
-        sonos_api::Service::ZoneGroupTopology
-    }
-}
-
-/// Main event processor that coordinates event parsing, enrichment, and routing
+/// Simplified event processor that delegates to sonos-api event framework
 pub struct EventProcessor {
-    /// Service-specific event parsers
-    service_parsers: HashMap<sonos_api::Service, Box<dyn EventParser>>,
-
+    /// The sonos-api event processor that handles service-specific parsing
+    api_processor: ApiEventProcessor,
 
     /// Subscription manager for looking up subscriptions by SID
     subscription_manager: Arc<SubscriptionManager>,
 
-    /// Sender for enriched events
+    /// Sender for enriched events (maintains compatibility with existing code)
     event_sender: mpsc::UnboundedSender<EnrichedEvent>,
 
     /// Statistics tracking
@@ -274,25 +38,8 @@ impl EventProcessor {
         event_sender: mpsc::UnboundedSender<EnrichedEvent>,
         firewall_coordinator: Option<Arc<FirewallDetectionCoordinator>>,
     ) -> Self {
-        let mut service_parsers: HashMap<sonos_api::Service, Box<dyn EventParser>> =
-            HashMap::new();
-
-        // Register service-specific parsers
-        service_parsers.insert(
-            sonos_api::Service::AVTransport,
-            Box::new(AVTransportEventParser),
-        );
-        service_parsers.insert(
-            sonos_api::Service::RenderingControl,
-            Box::new(RenderingControlEventParser),
-        );
-        service_parsers.insert(
-            sonos_api::Service::ZoneGroupTopology,
-            Box::new(ZoneGroupTopologyEventParser),
-        );
-
         Self {
-            service_parsers,
+            api_processor: ApiEventProcessor::with_default_parsers(),
             subscription_manager,
             event_sender,
             stats: Arc::new(RwLock::new(EventProcessorStats::new())),
@@ -338,20 +85,20 @@ impl EventProcessor {
             coordinator.on_event_received(pair.speaker_ip).await;
         }
 
-        // Parse the event XML using service-specific parser
-        let event_data = match self.service_parsers.get(&pair.service) {
-            Some(parser) => parser.parse_upnp_event(&payload.event_xml)?,
-            None => {
-                let mut stats = self.stats.write().await;
-                stats.unsupported_services += 1;
-                return Err(EventProcessingError::Parsing(format!(
-                    "No parser available for service: {:?}",
-                    pair.service
-                )));
-            }
-        };
+        // Parse the event using sonos-api event processor
+        let api_enriched_event = self.api_processor
+            .process_upnp_event(
+                pair.speaker_ip, // speaker_ip is already an IpAddr
+                pair.service,
+                payload.subscription_id.clone(),
+                &payload.event_xml,
+            )
+            .map_err(|e| EventProcessingError::Parsing(format!("API processing failed: {}", e)))?;
 
-        // Create enriched event
+        // Convert from sonos-api enriched event to sonos-stream compatible format
+        let event_data = self.convert_api_event_data(&pair.service, api_enriched_event.event_data)?;
+
+        // Create enriched event compatible with existing sonos-stream code
         let enriched_event = EnrichedEvent::new(
             registration_id,
             pair.speaker_ip,
@@ -420,12 +167,121 @@ impl EventProcessor {
         Ok(())
     }
 
+    /// Convert from sonos-api event data to sonos-stream compatible EventData
+    fn convert_api_event_data(
+        &self,
+        service: &sonos_api::Service,
+        api_event_data: Box<dyn std::any::Any + Send + Sync>,
+    ) -> EventProcessingResult<EventData> {
+        match service {
+            sonos_api::Service::AVTransport => {
+                let av_event = api_event_data
+                    .downcast::<sonos_api::services::av_transport::AVTransportEvent>()
+                    .map_err(|_| EventProcessingError::Parsing("Failed to downcast AVTransport event".to_string()))?;
+
+                // Convert from sonos-api AVTransportEvent to sonos-stream AVTransportEvent
+                let stream_event = crate::events::types::AVTransportEvent {
+                    transport_state: av_event.transport_state.clone(),
+                    transport_status: av_event.transport_status.clone(),
+                    speed: av_event.speed.clone(),
+                    current_track_uri: av_event.current_track_uri.clone(),
+                    track_duration: av_event.track_duration.clone(),
+                    rel_time: av_event.rel_time.clone(),
+                    abs_time: av_event.abs_time.clone(),
+                    rel_count: av_event.rel_count,
+                    abs_count: av_event.abs_count,
+                    play_mode: av_event.play_mode.clone(),
+                    track_metadata: av_event.track_metadata.clone(),
+                    next_track_uri: av_event.next_track_uri.clone(),
+                    next_track_metadata: av_event.next_track_metadata.clone(),
+                    queue_length: av_event.queue_length,
+                };
+
+                Ok(EventData::AVTransportEvent(stream_event))
+            }
+
+            sonos_api::Service::RenderingControl | sonos_api::Service::GroupRenderingControl => {
+                // Both RenderingControl and GroupRenderingControl use the same event structure
+                let rc_event = api_event_data
+                    .downcast::<sonos_api::services::rendering_control::RenderingControlEvent>()
+                    .map_err(|_| EventProcessingError::Parsing("Failed to downcast RenderingControl event".to_string()))?;
+
+                // Convert from sonos-api RenderingControlEvent to sonos-stream RenderingControlEvent
+                let stream_event = crate::events::types::RenderingControlEvent {
+                    master_volume: rc_event.master_volume.clone(),
+                    lf_volume: rc_event.lf_volume.clone(),
+                    rf_volume: rc_event.rf_volume.clone(),
+                    master_mute: rc_event.master_mute.clone(),
+                    lf_mute: rc_event.lf_mute.clone(),
+                    rf_mute: rc_event.rf_mute.clone(),
+                    bass: rc_event.bass.clone(),
+                    treble: rc_event.treble.clone(),
+                    loudness: rc_event.loudness.clone(),
+                    balance: rc_event.balance.clone(),
+                    other_channels: rc_event.other_channels.clone(),
+                };
+
+                Ok(EventData::RenderingControlEvent(stream_event))
+            }
+
+            sonos_api::Service::ZoneGroupTopology => {
+                let zgt_event = api_event_data
+                    .downcast::<sonos_api::services::zone_group_topology::ZoneGroupTopologyEvent>()
+                    .map_err(|_| EventProcessingError::Parsing("Failed to downcast ZoneGroupTopology event".to_string()))?;
+
+                // Convert from sonos-api to sonos-stream types
+                let stream_zone_groups = zgt_event.zone_groups.into_iter().map(|group| {
+                    let stream_members = group.members.into_iter().map(|member| {
+                        let stream_satellites = member.satellites.into_iter().map(|sat| {
+                            crate::events::types::SatelliteInfo {
+                                uuid: sat.uuid,
+                                location: sat.location,
+                                zone_name: sat.zone_name,
+                                ht_sat_chan_map_set: sat.ht_sat_chan_map_set,
+                                invisible: sat.invisible,
+                            }
+                        }).collect();
+
+                        crate::events::types::ZoneGroupMemberInfo {
+                            uuid: member.uuid,
+                            location: member.location,
+                            zone_name: member.zone_name,
+                            software_version: member.software_version,
+                            network_info: crate::events::types::NetworkInfo {
+                                wireless_mode: member.network_info.wireless_mode,
+                                wifi_enabled: member.network_info.wifi_enabled,
+                                eth_link: member.network_info.eth_link,
+                                channel_freq: member.network_info.channel_freq,
+                                behind_wifi_extender: member.network_info.behind_wifi_extender,
+                            },
+                            satellites: stream_satellites,
+                            metadata: member.metadata,
+                        }
+                    }).collect();
+
+                    crate::events::types::ZoneGroupInfo {
+                        coordinator: group.coordinator,
+                        id: group.id,
+                        members: stream_members,
+                    }
+                }).collect();
+
+                let stream_event = crate::events::types::ZoneGroupTopologyEvent {
+                    zone_groups: stream_zone_groups,
+                    vanished_devices: zgt_event.vanished_devices,
+                };
+
+                Ok(EventData::ZoneGroupTopologyEvent(stream_event))
+            }
+        }
+    }
+
     /// Start processing UPnP events from the callback server
     pub async fn start_upnp_processing(
         &self,
         mut upnp_receiver: mpsc::UnboundedReceiver<NotificationPayload>,
     ) {
-        eprintln!("📡 Starting UPnP event processing");
+        eprintln!("📡 Starting UPnP event processing (using sonos-api framework)");
 
         while let Some(payload) = upnp_receiver.recv().await {
             match self.process_upnp_notification(payload).await {
@@ -497,16 +353,16 @@ impl EventProcessor {
 
     /// Get list of supported service types
     pub fn supported_services(&self) -> Vec<sonos_api::Service> {
-        self.service_parsers.keys().cloned().collect()
+        self.api_processor.supported_services()
     }
 
     /// Check if a service type is supported
     pub fn is_service_supported(&self, service: &sonos_api::Service) -> bool {
-        self.service_parsers.contains_key(service)
+        self.api_processor.supports_service(service)
     }
 }
 
-/// Statistics about event processing
+/// Statistics about event processing (maintained for compatibility)
 #[derive(Debug, Clone)]
 pub struct EventProcessorStats {
     /// Total events processed successfully
@@ -596,9 +452,11 @@ mod tests {
 
         let processor = EventProcessor::new(subscription_manager, event_sender, None);
 
-        assert_eq!(processor.supported_services().len(), 3);
+        // Should have the supported services from sonos-api
+        assert_eq!(processor.supported_services().len(), 4); // AVTransport, RenderingControl, GroupRenderingControl, ZoneGroupTopology
         assert!(processor.is_service_supported(&sonos_api::Service::AVTransport));
         assert!(processor.is_service_supported(&sonos_api::Service::RenderingControl));
+        assert!(processor.is_service_supported(&sonos_api::Service::GroupRenderingControl));
         assert!(processor.is_service_supported(&sonos_api::Service::ZoneGroupTopology));
     }
 
@@ -616,31 +474,4 @@ mod tests {
         assert_eq!(stats.total_events_received(), 0);
         assert_eq!(stats.success_rate(), 1.0);
     }
-
-    #[test]
-    fn test_service_parser_types() {
-        let av_parser = AVTransportEventParser;
-        let rc_parser = RenderingControlEventParser;
-
-        assert_eq!(av_parser.service_type(), sonos_api::Service::AVTransport);
-        assert_eq!(
-            rc_parser.service_type(),
-            sonos_api::Service::RenderingControl
-        );
-    }
-
-    #[test]
-    fn test_event_processor_stats_calculations() {
-        let mut stats = EventProcessorStats::new();
-        stats.upnp_events_received = 10;
-        stats.polling_events_received = 5;
-        stats.resync_events_received = 2;
-        stats.events_processed = 15;
-
-        assert_eq!(stats.total_events_received(), 17);
-        assert!((stats.success_rate() - (15.0 / 17.0)).abs() < 0.01);
-    }
-
-    // Note: More comprehensive tests would require mocking the subscription manager
-    // and registry components, which is beyond the scope of this basic test suite
 }

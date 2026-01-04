@@ -160,6 +160,7 @@ pub mod operation; // Enhanced operation framework
 pub mod service;
 pub mod services; // Enhanced services
 pub mod subscription;
+pub mod events; // New event handling framework
 
 // Legacy exports for backward compatibility
 pub use client::SonosClient;
@@ -174,6 +175,12 @@ pub use operation::{
     UPnPOperation, OperationBuilder,
     ValidationLevel, ValidationError, Validate,
     OperationMetadata,
+};
+
+// New event handling framework exports
+pub use events::{
+    EnrichedEvent, EventSource, EventParser, EventParserRegistry, EventProcessor,
+    extract_xml_value,
 };
 
 // Enhanced services are available through the services module
