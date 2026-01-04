@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 
-use callback_server::router::{EventRouter, NotificationPayload};
+use callback_server::{router::{EventRouter, NotificationPayload}, FirewallDetectionCoordinator};
 
 use crate::error::{EventProcessingError, EventProcessingResult};
 use crate::events::types::{
@@ -85,6 +85,9 @@ pub struct EventProcessor {
 
     /// Statistics tracking
     stats: Arc<RwLock<EventProcessorStats>>,
+
+    /// Firewall detection coordinator for event arrival notifications
+    firewall_coordinator: Option<Arc<FirewallDetectionCoordinator>>,
 }
 
 impl EventProcessor {
@@ -92,6 +95,7 @@ impl EventProcessor {
     pub fn new(
         subscription_manager: Arc<SubscriptionManager>,
         event_sender: mpsc::UnboundedSender<EnrichedEvent>,
+        firewall_coordinator: Option<Arc<FirewallDetectionCoordinator>>,
     ) -> Self {
         let mut service_parsers: HashMap<sonos_api::Service, Box<dyn EventParser>> =
             HashMap::new();
@@ -111,6 +115,7 @@ impl EventProcessor {
             subscription_manager,
             event_sender,
             stats: Arc::new(RwLock::new(EventProcessorStats::new())),
+            firewall_coordinator,
         }
     }
 
@@ -146,6 +151,11 @@ impl EventProcessor {
         self.subscription_manager
             .record_event_received(&payload.subscription_id)
             .await;
+
+        // Notify firewall coordinator that an event was received
+        if let Some(coordinator) = &self.firewall_coordinator {
+            coordinator.on_event_received(pair.speaker_ip).await;
+        }
 
         // Parse the event XML using service-specific parser
         let event_data = match self.service_parsers.get(&pair.service) {
@@ -403,7 +413,7 @@ mod tests {
             "http://callback.url".to_string(),
         ));
 
-        let processor = EventProcessor::new(subscription_manager, event_sender);
+        let processor = EventProcessor::new(subscription_manager, event_sender, None);
 
         assert_eq!(processor.supported_services().len(), 2);
         assert!(processor.is_service_supported(&sonos_api::Service::AVTransport));
@@ -418,7 +428,7 @@ mod tests {
             "http://callback.url".to_string(),
         ));
 
-        let processor = EventProcessor::new(subscription_manager, event_sender);
+        let processor = EventProcessor::new(subscription_manager, event_sender, None);
 
         let stats = processor.stats().await;
         assert_eq!(stats.events_processed, 0);

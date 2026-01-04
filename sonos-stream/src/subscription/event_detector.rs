@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::sync::{mpsc, RwLock};
 
-use callback_server::firewall_detection::{FirewallDetectionPlugin, FirewallStatus};
+use callback_server::{FirewallDetectionCoordinator, FirewallStatus};
 
 use crate::error::{SubscriptionError, SubscriptionResult};
 use crate::events::types::{EnrichedEvent, EventData, EventSource, ResyncReason};
@@ -26,8 +26,8 @@ pub struct EventDetector {
     /// Delay before activating polling after proactive firewall detection
     polling_activation_delay: Duration,
 
-    /// Integration with firewall detection plugin
-    firewall_detector: Option<Arc<FirewallDetectionPlugin>>,
+    /// Integration with firewall detection coordinator
+    firewall_coordinator: Option<Arc<FirewallDetectionCoordinator>>,
 
     /// Sender for requesting polling activation
     polling_request_sender: Option<mpsc::UnboundedSender<PollingRequest>>,
@@ -58,15 +58,15 @@ impl EventDetector {
             last_event_times: Arc::new(RwLock::new(HashMap::new())),
             event_timeout,
             polling_activation_delay,
-            firewall_detector: None,
+            firewall_coordinator: None,
             polling_request_sender: None,
             resync_event_sender: None,
         }
     }
 
-    /// Set the firewall detector (must be called during initialization)
-    pub fn set_firewall_detector(&mut self, detector: Arc<FirewallDetectionPlugin>) {
-        self.firewall_detector = Some(detector);
+    /// Set the firewall coordinator (must be called during initialization)
+    pub fn set_firewall_coordinator(&mut self, coordinator: Arc<FirewallDetectionCoordinator>) {
+        self.firewall_coordinator = Some(coordinator);
     }
 
     /// Set the polling request sender
@@ -120,8 +120,8 @@ impl EventDetector {
         registration_id: RegistrationId,
         pair: &SpeakerServicePair,
     ) -> Option<PollingRequest> {
-        if let Some(firewall_detector) = &self.firewall_detector {
-            let status = firewall_detector.get_status().await;
+        if let Some(firewall_coordinator) = &self.firewall_coordinator {
+            let status = firewall_coordinator.get_device_status(pair.speaker_ip).await;
 
             match status {
                 FirewallStatus::Blocked => {
@@ -230,11 +230,8 @@ impl EventDetector {
             }
         }
 
-        let firewall_status = if let Some(detector) = &self.firewall_detector {
-            detector.get_status().await
-        } else {
-            FirewallStatus::Unknown
-        };
+        // Firewall status is now per-device, so we return Unknown for global stats
+        let firewall_status = FirewallStatus::Unknown;
 
         EventDetectorStats {
             total_monitored,

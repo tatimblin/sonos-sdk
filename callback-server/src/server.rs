@@ -5,7 +5,6 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use warp::Filter;
 
-use super::plugin::{PluginContext, PluginRegistry};
 use super::router::{EventRouter, NotificationPayload};
 
 /// HTTP callback server for receiving UPnP event notifications.
@@ -13,9 +12,6 @@ use super::router::{EventRouter, NotificationPayload};
 /// The `CallbackServer` binds to a local port and provides an HTTP endpoint
 /// for receiving UPnP NOTIFY requests. It validates UPnP headers and routes
 /// events through an `EventRouter` to a channel.
-///
-/// The server also supports a plugin system that allows extending functionality
-/// with features like firewall detection, monitoring, logging, etc.
 ///
 /// # Example
 ///
@@ -46,8 +42,6 @@ pub struct CallbackServer {
     base_url: String,
     /// Event router for handling incoming events
     event_router: Arc<EventRouter>,
-    /// Plugin registry for managing server extensions
-    plugin_registry: Arc<tokio::sync::Mutex<PluginRegistry>>,
     /// Shutdown signal sender
     shutdown_tx: Option<mpsc::Sender<()>>,
     /// Server task handle
@@ -55,101 +49,6 @@ pub struct CallbackServer {
 }
 
 impl CallbackServer {
-    /// Create and start a new unified callback server with plugins.
-    ///
-    /// This method creates a single HTTP server that efficiently handles all UPnP
-    /// event notifications from multiple speakers and services. The server:
-    /// - Finds an available port in the specified range
-    /// - Detects the local IP address for callback URLs
-    /// - Starts an HTTP server to receive all UPnP NOTIFY requests
-    /// - Routes events through a unified event router to registered handlers
-    /// - Initializes all registered plugins during startup
-    ///
-    /// # Arguments
-    ///
-    /// * `port_range` - Range of ports to try binding to (start, end)
-    /// * `event_sender` - Channel for sending notification payloads to the unified processor
-    /// * `plugins` - Optional vector of plugins to register and initialize
-    ///
-    /// # Returns
-    ///
-    /// Returns the callback server instance or an error if no port could be bound
-    /// or the local IP address could not be detected.
-    pub async fn with_plugins(
-        port_range: (u16, u16),
-        event_sender: mpsc::UnboundedSender<NotificationPayload>,
-        plugins: Option<Vec<Box<dyn crate::plugin::Plugin>>>,
-    ) -> Result<Self, String> {
-        // Find an available port in the range
-        let port = Self::find_available_port(port_range.0, port_range.1)
-            .ok_or_else(|| {
-                format!(
-                    "No available port found in range {}-{}",
-                    port_range.0, port_range.1
-                )
-            })?;
-
-        // Detect local IP address
-        let local_ip = Self::detect_local_ip().ok_or_else(|| {
-            "Failed to detect local IP address".to_string()
-        })?;
-
-        let base_url = format!("http://{local_ip}:{port}");
-
-        // Create event router
-        let event_router = Arc::new(EventRouter::new(event_sender));
-
-        // Create plugin registry and register plugins
-        let mut plugin_registry = PluginRegistry::new();
-        if let Some(plugins) = plugins {
-            for plugin in plugins {
-                plugin_registry.register(plugin);
-            }
-        }
-        let plugin_registry = Arc::new(tokio::sync::Mutex::new(plugin_registry));
-
-        // Create shutdown channel
-        let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>(1);
-
-        // Create ready signal channel
-        let (ready_tx, mut ready_rx) = mpsc::channel::<()>(1);
-
-        // Create test result tracker for firewall detection
-        let test_result_tracker = Arc::new(crate::TestResultTracker::new());
-
-        // Start the HTTP server
-        let server_handle = Self::start_server(
-            port, 
-            event_router.clone(), 
-            test_result_tracker.clone(),
-            shutdown_rx, 
-            ready_tx
-        );
-
-        // Wait for server to be ready
-        ready_rx.recv().await.ok_or_else(|| {
-            "Server failed to start".to_string()
-        })?;
-
-        // Initialize plugins after server is ready
-        let plugin_context = PluginContext::new(base_url.clone(), port);
-        
-        {
-            let mut registry = plugin_registry.lock().await;
-            if let Err(e) = registry.initialize_all(&plugin_context).await {
-                eprintln!("⚠️  Plugin initialization completed with errors: {}", e);
-            }
-        }
-
-        Ok(Self {
-            port,
-            base_url,
-            event_router,
-            plugin_registry,
-            shutdown_tx: Some(shutdown_tx),
-            server_handle: Some(server_handle),
-        })
-    }
     /// Create and start a new unified callback server.
     ///
     /// This method creates a single HTTP server that efficiently handles all UPnP
@@ -192,7 +91,51 @@ impl CallbackServer {
         port_range: (u16, u16),
         event_sender: mpsc::UnboundedSender<NotificationPayload>,
     ) -> Result<Self, String> {
-        Self::with_plugins(port_range, event_sender, None).await
+        // Find an available port in the range
+        let port = Self::find_available_port(port_range.0, port_range.1)
+            .ok_or_else(|| {
+                format!(
+                    "No available port found in range {}-{}",
+                    port_range.0, port_range.1
+                )
+            })?;
+
+        // Detect local IP address
+        let local_ip = Self::detect_local_ip().ok_or_else(|| {
+            "Failed to detect local IP address".to_string()
+        })?;
+
+        let base_url = format!("http://{local_ip}:{port}");
+
+        // Create event router
+        let event_router = Arc::new(EventRouter::new(event_sender));
+
+        // Create shutdown channel
+        let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>(1);
+
+        // Create ready signal channel
+        let (ready_tx, mut ready_rx) = mpsc::channel::<()>(1);
+
+        // Start the HTTP server
+        let server_handle = Self::start_server(
+            port,
+            event_router.clone(),
+            shutdown_rx,
+            ready_tx
+        );
+
+        // Wait for server to be ready
+        ready_rx.recv().await.ok_or_else(|| {
+            "Server failed to start".to_string()
+        })?;
+
+        Ok(Self {
+            port,
+            base_url,
+            event_router,
+            shutdown_tx: Some(shutdown_tx),
+            server_handle: Some(server_handle),
+        })
     }
 
     /// Get the unified callback URL for subscription registration.
@@ -247,75 +190,12 @@ impl CallbackServer {
         &self.event_router
     }
 
-    /// Get a reference to the plugin registry.
-    ///
-    /// The registry can be used to register plugins before server startup.
-    /// Note that plugins should be registered before calling `new()` if you
-    /// want them to be initialized during server startup.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # use tokio::sync::mpsc;
-    /// # use callback_server::{CallbackServer, NotificationPayload};
-    /// # #[tokio::main]
-    /// # async fn main() {
-    /// # let (tx, _rx) = mpsc::unbounded_channel::<NotificationPayload>();
-    /// # let server = CallbackServer::new((3400, 3500), tx).await.unwrap();
-    /// let registry = server.plugin_registry();
-    /// let count = registry.lock().await.plugin_count();
-    /// println!("Registered plugins: {}", count);
-    /// # }
-    /// ```
-    pub fn plugin_registry(&self) -> &Arc<tokio::sync::Mutex<PluginRegistry>> {
-        &self.plugin_registry
-    }
 
-    /// Get the current firewall detection status.
-    ///
-    /// Returns the status of firewall detection if the firewall detection plugin
-    /// is registered and has been initialized. Returns None if the plugin is not
-    /// found or hasn't been initialized yet.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # use tokio::sync::mpsc;
-    /// # use callback_server::{CallbackServer, NotificationPayload, FirewallStatus};
-    /// # #[tokio::main]
-    /// # async fn main() {
-    /// # let (tx, _rx) = mpsc::unbounded_channel::<NotificationPayload>();
-    /// # let server = CallbackServer::new((3400, 3500), tx).await.unwrap();
-    /// if let Some(status) = server.get_firewall_status().await {
-    ///     match status {
-    ///         FirewallStatus::Accessible => println!("Server is accessible"),
-    ///         FirewallStatus::Blocked => println!("Server is blocked by firewall"),
-    ///         FirewallStatus::Unknown => println!("Firewall status unknown"),
-    ///         FirewallStatus::Error => println!("Error detecting firewall status"),
-    ///     }
-    /// }
-    /// # }
-    /// ```
-    pub async fn get_firewall_status(&self) -> Option<crate::FirewallStatus> {
-        let registry = self.plugin_registry.lock().await;
-        
-        // Look for firewall detection plugin by name
-        if let Some(plugin) = registry.get_plugin("firewall-detection") {
-            // Try to downcast to FirewallDetectionPlugin to access its status
-            // This is a bit of a hack, but it works for our specific use case
-            // In a more sophisticated implementation, we might want a trait for status queries
-            if let Some(firewall_plugin) = plugin.as_any().downcast_ref::<crate::FirewallDetectionPlugin>() {
-                return Some(firewall_plugin.get_status().await);
-            }
-        }
-        
-        None
-    }
 
     /// Shutdown the callback server gracefully.
     ///
-    /// This shuts down all registered plugins first, then sends a shutdown signal 
-    /// to the HTTP server and waits for it to complete any in-flight requests.
+    /// Sends a shutdown signal to the HTTP server and waits for it to complete
+    /// any in-flight requests.
     ///
     /// # Example
     ///
@@ -330,14 +210,6 @@ impl CallbackServer {
     /// # }
     /// ```
     pub async fn shutdown(mut self) -> Result<(), String> {
-        // Shutdown plugins first
-        {
-            let mut registry = self.plugin_registry.lock().await;
-            if let Err(e) = registry.shutdown_all().await {
-                eprintln!("⚠️  Plugin shutdown completed with errors: {}", e);
-            }
-        }
-
         // Send shutdown signal to HTTP server
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(()).await;
@@ -382,7 +254,6 @@ impl CallbackServer {
     fn start_server(
         port: u16,
         event_router: Arc<EventRouter>,
-        test_result_tracker: Arc<crate::TestResultTracker>,
         mut shutdown_rx: mpsc::Receiver<()>,
         ready_tx: mpsc::Sender<()>,
     ) -> tokio::task::JoinHandle<()> {
@@ -465,17 +336,8 @@ impl CallbackServer {
                     }
                 });
 
-            // Add firewall test endpoint
-            let firewall_test_route = crate::firewall_detection::firewall_test_endpoint();
-
-            // Add test NOTIFY endpoint for UPnP firewall testing
-            let test_notify_route = crate::firewall_detection::test_notify_endpoint(test_result_tracker);
-
-            // Combine routes
-            let routes = notify_route
-                .or(firewall_test_route)
-                .or(test_notify_route)
-                .recover(handle_rejection);
+            // Configure routes with just the NOTIFY endpoint
+            let routes = notify_route.recover(handle_rejection);
 
             // Create server with graceful shutdown
             let (addr, server) = warp::serve(routes)
@@ -643,7 +505,7 @@ mod tests {
     #[tokio::test]
     async fn test_callback_server_register_unregister() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let server = CallbackServer::new((50000, 50100), tx).await.unwrap();
+        let server = CallbackServer::new((51000, 51100), tx).await.unwrap();
 
         let sub_id = "test-sub-123".to_string();
 
@@ -653,378 +515,10 @@ mod tests {
         // Unregister subscription via router
         server.router().unregister(&sub_id).await;
 
-        // Check plugin registry is accessible
-        let plugin_count = server.plugin_registry().lock().await.plugin_count();
-        assert_eq!(plugin_count, 0); // No plugins registered by default
+        // Plugin system has been removed
 
         // Cleanup
         server.shutdown().await.unwrap();
     }
 }
 
-#[cfg(test)]
-mod plugin_integration_tests {
-    use super::*;
-    use crate::plugin::{Plugin, PluginContext, PluginError};
-    use async_trait::async_trait;
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
-
-    /// Test plugin that tracks its lifecycle state.
-    struct TestLifecyclePlugin {
-        name: &'static str,
-        state: Arc<Mutex<PluginState>>,
-    }
-
-    #[derive(Debug, Clone)]
-    struct PluginState {
-        initialized: bool,
-        shutdown: bool,
-        context_received: Option<PluginContext>,
-    }
-
-    impl TestLifecyclePlugin {
-        fn new(name: &'static str) -> (Self, Arc<Mutex<PluginState>>) {
-            let state = Arc::new(Mutex::new(PluginState {
-                initialized: false,
-                shutdown: false,
-                context_received: None,
-            }));
-            
-            let plugin = Self {
-                name,
-                state: state.clone(),
-            };
-            
-            (plugin, state)
-        }
-    }
-
-    #[async_trait]
-    impl Plugin for TestLifecyclePlugin {
-        fn name(&self) -> &'static str {
-            self.name
-        }
-
-        async fn initialize(&mut self, context: &PluginContext) -> Result<(), PluginError> {
-            let mut state = self.state.lock().await;
-            state.initialized = true;
-            state.context_received = Some(context.clone());
-            Ok(())
-        }
-
-        async fn shutdown(&mut self) -> Result<(), PluginError> {
-            let mut state = self.state.lock().await;
-            state.shutdown = true;
-            Ok(())
-        }
-
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
-        }
-    }
-
-    /// Test plugin that fails during initialization.
-    struct FailingInitPlugin {
-        name: &'static str,
-    }
-
-    impl FailingInitPlugin {
-        fn new(name: &'static str) -> Self {
-            Self { name }
-        }
-    }
-
-    #[async_trait]
-    impl Plugin for FailingInitPlugin {
-        fn name(&self) -> &'static str {
-            self.name
-        }
-
-        async fn initialize(&mut self, _context: &PluginContext) -> Result<(), PluginError> {
-            Err(PluginError::InitializationFailed("Test failure".to_string()))
-        }
-
-        async fn shutdown(&mut self) -> Result<(), PluginError> {
-            Ok(())
-        }
-
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
-        }
-    }
-
-    /// Test plugin that fails during shutdown.
-    struct FailingShutdownPlugin {
-        name: &'static str,
-        initialized: bool,
-    }
-
-    impl FailingShutdownPlugin {
-        fn new(name: &'static str) -> Self {
-            Self { 
-                name,
-                initialized: false,
-            }
-        }
-    }
-
-    #[async_trait]
-    impl Plugin for FailingShutdownPlugin {
-        fn name(&self) -> &'static str {
-            self.name
-        }
-
-        async fn initialize(&mut self, _context: &PluginContext) -> Result<(), PluginError> {
-            self.initialized = true;
-            Ok(())
-        }
-
-        async fn shutdown(&mut self) -> Result<(), PluginError> {
-            Err(PluginError::ShutdownFailed("Test failure".to_string()))
-        }
-
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
-        }
-    }
-
-    #[tokio::test]
-    async fn test_server_startup_with_plugins() {
-        let (tx, _rx) = mpsc::unbounded_channel();
-        
-        // Create test plugins
-        let (plugin1, state1) = TestLifecyclePlugin::new("test-plugin-1");
-        let (plugin2, state2) = TestLifecyclePlugin::new("test-plugin-2");
-        
-        let plugins: Vec<Box<dyn Plugin>> = vec![
-            Box::new(plugin1),
-            Box::new(plugin2),
-        ];
-        
-        // Create server with plugins
-        let server = CallbackServer::with_plugins((50100, 50200), tx, Some(plugins))
-            .await
-            .expect("Failed to create server with plugins");
-        
-        // Verify plugins were initialized
-        {
-            let state = state1.lock().await;
-            assert!(state.initialized, "Plugin 1 should be initialized");
-            assert!(!state.shutdown, "Plugin 1 should not be shut down yet");
-            assert!(state.context_received.is_some(), "Plugin 1 should have received context");
-            
-            // Verify context contains server information
-            let context = state.context_received.as_ref().unwrap();
-            assert!(context.server_url.contains(&server.port().to_string()), 
-                    "Context should contain server port");
-            assert_eq!(context.server_port, server.port(), 
-                       "Context port should match server port");
-            assert_eq!(context.test_endpoint, "/firewall-test", 
-                       "Context should have test endpoint");
-        }
-        
-        {
-            let state = state2.lock().await;
-            assert!(state.initialized, "Plugin 2 should be initialized");
-            assert!(!state.shutdown, "Plugin 2 should not be shut down yet");
-            assert!(state.context_received.is_some(), "Plugin 2 should have received context");
-        }
-        
-        // Verify server is running
-        assert!(server.port() >= 50100 && server.port() <= 50200);
-        assert!(server.base_url().contains(&server.port().to_string()));
-        
-        // Cleanup
-        server.shutdown().await.expect("Failed to shutdown server");
-    }
-
-    #[tokio::test]
-    async fn test_server_shutdown_with_plugins() {
-        let (tx, _rx) = mpsc::unbounded_channel();
-        
-        // Create test plugins
-        let (plugin1, state1) = TestLifecyclePlugin::new("test-plugin-1");
-        let (plugin2, state2) = TestLifecyclePlugin::new("test-plugin-2");
-        
-        let plugins: Vec<Box<dyn Plugin>> = vec![
-            Box::new(plugin1),
-            Box::new(plugin2),
-        ];
-        
-        // Create server with plugins
-        let server = CallbackServer::with_plugins((50200, 50300), tx, Some(plugins))
-            .await
-            .expect("Failed to create server with plugins");
-        
-        // Verify plugins are initialized
-        {
-            let state = state1.lock().await;
-            assert!(state.initialized, "Plugin 1 should be initialized");
-            assert!(!state.shutdown, "Plugin 1 should not be shut down yet");
-        }
-        
-        // Shutdown server
-        server.shutdown().await.expect("Failed to shutdown server");
-        
-        // Verify plugins were shut down
-        {
-            let state = state1.lock().await;
-            assert!(state.initialized, "Plugin 1 should still be marked as initialized");
-            assert!(state.shutdown, "Plugin 1 should be shut down");
-        }
-        
-        {
-            let state = state2.lock().await;
-            assert!(state.initialized, "Plugin 2 should still be marked as initialized");
-            assert!(state.shutdown, "Plugin 2 should be shut down");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_plugin_context_creation() {
-        let (tx, _rx) = mpsc::unbounded_channel();
-        
-        // Create test plugin
-        let (plugin, state) = TestLifecyclePlugin::new("context-test-plugin");
-        let plugins: Vec<Box<dyn Plugin>> = vec![Box::new(plugin)];
-        
-        // Create server with plugin
-        let server = CallbackServer::with_plugins((50300, 50400), tx, Some(plugins))
-            .await
-            .expect("Failed to create server with plugins");
-        
-        // Verify plugin received proper context
-        {
-            let state = state.lock().await;
-            assert!(state.context_received.is_some(), "Plugin should have received context");
-            
-            let context = state.context_received.as_ref().unwrap();
-            
-            // Verify context fields
-            assert!(context.server_url.starts_with("http://"), 
-                    "Server URL should start with http://");
-            assert!(context.server_url.contains(&server.port().to_string()), 
-                    "Server URL should contain the port");
-            assert_eq!(context.server_port, server.port(), 
-                       "Context port should match server port");
-            assert_eq!(context.test_endpoint, "/firewall-test", 
-                       "Test endpoint should be /firewall-test");
-            
-            // Verify HTTP client is present (we can't test much about it without making requests)
-            // Just verify it's not panicking when accessed
-            let _client = &context.http_client;
-        }
-        
-        // Cleanup
-        server.shutdown().await.expect("Failed to shutdown server");
-    }
-
-    #[tokio::test]
-    async fn test_server_startup_with_failing_plugin() {
-        let (tx, _rx) = mpsc::unbounded_channel();
-        
-        // Create mix of good and failing plugins
-        let (good_plugin, good_state) = TestLifecyclePlugin::new("good-plugin");
-        let failing_plugin = FailingInitPlugin::new("failing-plugin");
-        
-        let plugins: Vec<Box<dyn Plugin>> = vec![
-            Box::new(good_plugin),
-            Box::new(failing_plugin),
-        ];
-        
-        // Server should still start even with failing plugin
-        let server = CallbackServer::with_plugins((50400, 50500), tx, Some(plugins))
-            .await
-            .expect("Server should start even with failing plugin");
-        
-        // Good plugin should still be initialized
-        {
-            let state = good_state.lock().await;
-            assert!(state.initialized, "Good plugin should be initialized");
-        }
-        
-        // Server should be running normally
-        assert!(server.port() >= 50400 && server.port() <= 50500);
-        
-        // Cleanup
-        server.shutdown().await.expect("Failed to shutdown server");
-    }
-
-    #[tokio::test]
-    async fn test_server_shutdown_with_failing_plugin() {
-        let (tx, _rx) = mpsc::unbounded_channel();
-        
-        // Create mix of good and failing plugins
-        let (good_plugin, good_state) = TestLifecyclePlugin::new("good-plugin");
-        let failing_plugin = FailingShutdownPlugin::new("failing-shutdown-plugin");
-        
-        let plugins: Vec<Box<dyn Plugin>> = vec![
-            Box::new(good_plugin),
-            Box::new(failing_plugin),
-        ];
-        
-        // Create server with plugins
-        let server = CallbackServer::with_plugins((50500, 50600), tx, Some(plugins))
-            .await
-            .expect("Failed to create server with plugins");
-        
-        // Shutdown should succeed even with failing plugin
-        server.shutdown().await.expect("Shutdown should succeed even with failing plugin");
-        
-        // Good plugin should still be shut down
-        {
-            let state = good_state.lock().await;
-            assert!(state.shutdown, "Good plugin should be shut down");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_server_without_plugins() {
-        let (tx, _rx) = mpsc::unbounded_channel();
-        
-        // Create server without plugins (using the regular new method)
-        let server = CallbackServer::new((50600, 50700), tx)
-            .await
-            .expect("Failed to create server without plugins");
-        
-        // Server should work normally
-        assert!(server.port() >= 50600 && server.port() <= 50700);
-        assert!(server.base_url().contains(&server.port().to_string()));
-        
-        // Plugin registry should be empty
-        let plugin_count = server.plugin_registry().lock().await.plugin_count();
-        assert_eq!(plugin_count, 0, "Server without plugins should have empty registry");
-        
-        // Cleanup
-        server.shutdown().await.expect("Failed to shutdown server");
-    }
-
-    #[tokio::test]
-    async fn test_plugin_registry_access() {
-        let (tx, _rx) = mpsc::unbounded_channel();
-        
-        // Create test plugin
-        let (plugin, _state) = TestLifecyclePlugin::new("registry-test-plugin");
-        let plugins: Vec<Box<dyn Plugin>> = vec![Box::new(plugin)];
-        
-        // Create server with plugin
-        let server = CallbackServer::with_plugins((50700, 50800), tx, Some(plugins))
-            .await
-            .expect("Failed to create server with plugins");
-        
-        // Verify plugin registry is accessible and contains the plugin
-        {
-            let registry = server.plugin_registry().lock().await;
-            assert_eq!(registry.plugin_count(), 1, "Registry should contain one plugin");
-            assert!(registry.is_initialized(), "Registry should be initialized");
-            
-            let names = registry.plugin_names();
-            assert_eq!(names.len(), 1, "Should have one plugin name");
-            assert_eq!(names[0], "registry-test-plugin", "Plugin name should match");
-        }
-        
-        // Cleanup
-        server.shutdown().await.expect("Failed to shutdown server");
-    }
-}

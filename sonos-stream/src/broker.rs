@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 
-use callback_server::{CallbackServer, firewall_detection::{FirewallDetectionPlugin, FirewallStatus}};
+use callback_server::{CallbackServer, FirewallDetectionCoordinator, FirewallDetectionConfig, FirewallStatus};
 use sonos_api::Service;
 
 use crate::config::BrokerConfig;
@@ -80,11 +80,8 @@ pub struct EventBroker {
     /// Callback server for receiving UPnP events
     callback_server: Arc<CallbackServer>,
 
-    /// Proactive firewall detection
-    firewall_detector: Option<Arc<FirewallDetectionPlugin>>,
-
-    /// Current firewall status
-    firewall_status: Arc<RwLock<FirewallStatus>>,
+    /// Per-device firewall detection coordinator
+    firewall_coordinator: Option<Arc<FirewallDetectionCoordinator>>,
 
     /// Event activity detector
     event_detector: Arc<EventDetector>,
@@ -166,24 +163,31 @@ impl EventBroker {
             server_url.clone(),
         ));
 
-        // Initialize event processor with the correct subscription manager
+        // Initialize firewall detection coordinator if enabled
+        let firewall_coordinator = if config.enable_proactive_firewall_detection {
+            let coordinator_config = FirewallDetectionConfig {
+                event_wait_timeout: config.firewall_event_wait_timeout,
+                enable_caching: config.enable_firewall_caching,
+                max_cached_devices: config.max_cached_device_states,
+            };
+
+            let coordinator = Arc::new(FirewallDetectionCoordinator::new(coordinator_config));
+
+            eprintln!("🔍 Firewall detection coordinator enabled (timeout: {:?})",
+                     config.firewall_event_wait_timeout);
+
+            Some(coordinator)
+        } else {
+            eprintln!("⚠️  Firewall detection disabled");
+            None
+        };
+
+        // Initialize event processor with the correct subscription manager and firewall coordinator
         let event_processor = Arc::new(EventProcessor::new(
             Arc::clone(&subscription_manager),
             event_sender.clone(),
+            firewall_coordinator.clone(),
         ));
-
-        // Initialize firewall detection if enabled
-        let (firewall_detector, firewall_status) = if config.enable_proactive_firewall_detection {
-            let detector = Self::create_firewall_detector(&config, &server_url).await?;
-            let initial_status = detector.get_status().await;
-
-            eprintln!("🔍 Firewall detection enabled, initial status: {:?}", initial_status);
-
-            (Some(detector), Arc::new(RwLock::new(initial_status)))
-        } else {
-            eprintln!("⚠️  Firewall detection disabled");
-            (None, Arc::new(RwLock::new(FirewallStatus::Unknown)))
-        };
 
         // Initialize polling scheduler
         let polling_scheduler = Arc::new(PollingScheduler::new(
@@ -208,8 +212,7 @@ impl EventBroker {
             subscription_manager,
             event_processor,
             callback_server,
-            firewall_detector,
-            firewall_status,
+            firewall_coordinator,
             event_detector,
             resync_detector,
             polling_scheduler,
@@ -242,27 +245,21 @@ impl EventBroker {
         Ok(Arc::new(server))
     }
 
-    /// Create firewall detector if enabled
-    async fn create_firewall_detector(
-        config: &BrokerConfig,
-        _server_url: &str,
-    ) -> BrokerResult<Arc<FirewallDetectionPlugin>> {
-        use callback_server::firewall_detection::{FirewallDetectionConfig, FirewallDetectionPlugin};
+    /// Check if this is the first subscription for a given device IP
+    /// This should be called BEFORE creating the new subscription
+    async fn is_first_subscription_for_device(&self, device_ip: IpAddr) -> bool {
+        // Check all currently registered speaker/service pairs
+        let registered_pairs = self.registry.list_registrations().await;
 
-        let fw_config = FirewallDetectionConfig {
-            test_timeout: config.firewall_detection_timeout,
-            max_retries: config.firewall_detection_retries,
-            fallback_to_basic: config.firewall_detection_fallback,
-        };
+        // Count how many are for this device IP
+        let existing_count = registered_pairs
+            .iter()
+            .filter(|(_, pair)| pair.speaker_ip == device_ip)
+            .count();
 
-        let detector = FirewallDetectionPlugin::with_config(fw_config)
-            .map_err(|e| BrokerError::FirewallDetection(e.to_string()))?;
-
-        // Trigger initial detection
-        // Note: This would require access to PluginContext, which we don't have here
-        // In a real implementation, this would be coordinated with the callback server
-
-        Ok(Arc::new(detector))
+        // If there are no existing pairs for this device, it will be the first
+        // If there's 1, it means we just registered it, so this is still the first
+        existing_count <= 1
     }
 
     /// Start all background processing tasks
@@ -407,8 +404,22 @@ impl EventBroker {
 
         let pair = SpeakerServicePair::new(speaker_ip, service);
 
-        // Get current firewall status
-        let firewall_status = *self.firewall_status.read().await;
+        // Check if this is the first subscription for this device
+        let is_first_for_device = self.is_first_subscription_for_device(speaker_ip).await;
+
+        // Get or trigger firewall detection for this device
+        let firewall_status = if let Some(coordinator) = &self.firewall_coordinator {
+            if is_first_for_device {
+                // First subscription for this device - trigger detection
+                eprintln!("🔍 First subscription for device {}, triggering firewall detection", speaker_ip);
+                coordinator.on_first_subscription(speaker_ip).await
+            } else {
+                // Use cached status
+                coordinator.get_device_status(speaker_ip).await
+            }
+        } else {
+            FirewallStatus::Unknown
+        };
 
         // Create subscription
         let subscription_result = self
@@ -554,22 +565,33 @@ impl EventBroker {
             polling_stats,
             event_processor_stats,
             event_detector_stats,
-            firewall_status: *self.firewall_status.read().await,
+            firewall_status: FirewallStatus::Unknown, // Status is now per-device
             background_tasks_count: self.background_tasks.len(),
         }
     }
 
-    /// Get current firewall status
+    /// Get current firewall status (returns Unknown since status is now per-device)
     pub async fn firewall_status(&self) -> FirewallStatus {
-        *self.firewall_status.read().await
+        // Since firewall status is now per-device, this method returns Unknown
+        // Use get_device_firewall_status() for specific device status
+        FirewallStatus::Unknown
     }
 
-    /// Manually trigger firewall detection
-    pub async fn trigger_firewall_detection(&self) -> BrokerResult<FirewallStatus> {
-        if let Some(detector) = &self.firewall_detector {
-            // This would require proper integration with callback server context
-            // For now, just return current status
-            Ok(detector.get_status().await)
+    /// Get firewall status for a specific device
+    pub async fn get_device_firewall_status(&self, device_ip: IpAddr) -> FirewallStatus {
+        if let Some(coordinator) = &self.firewall_coordinator {
+            coordinator.get_device_status(device_ip).await
+        } else {
+            FirewallStatus::Unknown
+        }
+    }
+
+    /// Manually trigger firewall detection for a specific device
+    pub async fn trigger_firewall_detection(&self, device_ip: IpAddr) -> BrokerResult<FirewallStatus> {
+        if let Some(coordinator) = &self.firewall_coordinator {
+            // Trigger detection by calling on_first_subscription
+            // This will start monitoring for the device
+            Ok(coordinator.on_first_subscription(device_ip).await)
         } else {
             Err(BrokerError::Configuration(
                 "Firewall detection is disabled".to_string()

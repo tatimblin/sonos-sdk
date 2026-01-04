@@ -60,6 +60,18 @@ pub struct BrokerConfig {
     /// Default: true
     pub firewall_detection_fallback: bool,
 
+    /// Timeout for waiting for first event to determine firewall status
+    /// Default: 15 seconds
+    pub firewall_event_wait_timeout: Duration,
+
+    /// Enable per-device firewall detection caching
+    /// Default: true
+    pub enable_firewall_caching: bool,
+
+    /// Maximum number of cached device firewall states
+    /// Default: 100
+    pub max_cached_device_states: usize,
+
     /// Cooldown period between resync events to prevent spam
     /// Default: 30 seconds
     pub resync_cooldown: Duration,
@@ -92,6 +104,9 @@ impl Default for BrokerConfig {
             firewall_detection_timeout: Duration::from_secs(10),
             firewall_detection_retries: 2,
             firewall_detection_fallback: true,
+            firewall_event_wait_timeout: Duration::from_secs(15),
+            enable_firewall_caching: true,
+            max_cached_device_states: 100,
             resync_cooldown: Duration::from_secs(30),
             max_registrations: 1000,
             adaptive_polling: true,
@@ -114,6 +129,7 @@ impl BrokerConfig {
             polling_activation_delay: Duration::from_secs(1),
             event_timeout: Duration::from_secs(15),
             firewall_detection_timeout: Duration::from_secs(5),
+            firewall_event_wait_timeout: Duration::from_secs(5), // Faster detection
             ..Default::default()
         }
     }
@@ -126,6 +142,7 @@ impl BrokerConfig {
             event_buffer_size: 100,
             max_concurrent_polls: 10,
             max_registrations: 100,
+            max_cached_device_states: 50, // Fewer cached devices for resource efficiency
             ..Default::default()
         }
     }
@@ -168,6 +185,18 @@ impl BrokerConfig {
         if self.max_registrations == 0 {
             return Err(crate::BrokerError::Configuration(
                 "Max registrations must be greater than 0".to_string(),
+            ));
+        }
+
+        if self.max_cached_device_states == 0 {
+            return Err(crate::BrokerError::Configuration(
+                "Max cached device states must be greater than 0".to_string(),
+            ));
+        }
+
+        if self.firewall_event_wait_timeout == Duration::ZERO {
+            return Err(crate::BrokerError::Configuration(
+                "Firewall event wait timeout must be greater than 0".to_string(),
             ));
         }
 
