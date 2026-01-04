@@ -8,13 +8,11 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 
 use callback_server::router::{EventRouter, NotificationPayload};
-use sonos_parser::services::av_transport;
 
 use crate::error::{EventProcessingError, EventProcessingResult};
 use crate::events::types::{
     AVTransportDelta, EnrichedEvent, EventData, EventSource, RenderingControlDelta,
 };
-use crate::registry::{RegistrationId, SpeakerServicePair, SpeakerServiceRegistry};
 use crate::subscription::manager::SubscriptionManager;
 
 /// Trait for service-specific event parsers
@@ -78,8 +76,6 @@ pub struct EventProcessor {
     /// Service-specific event parsers
     service_parsers: HashMap<sonos_api::Service, Box<dyn EventParser>>,
 
-    /// Registry for looking up speaker/service pairs by registration ID
-    registry: Arc<SpeakerServiceRegistry>,
 
     /// Subscription manager for looking up subscriptions by SID
     subscription_manager: Arc<SubscriptionManager>,
@@ -94,7 +90,6 @@ pub struct EventProcessor {
 impl EventProcessor {
     /// Create a new event processor
     pub fn new(
-        registry: Arc<SpeakerServiceRegistry>,
         subscription_manager: Arc<SubscriptionManager>,
         event_sender: mpsc::UnboundedSender<EnrichedEvent>,
     ) -> Self {
@@ -113,7 +108,6 @@ impl EventProcessor {
 
         Self {
             service_parsers,
-            registry,
             subscription_manager,
             event_sender,
             stats: Arc::new(RwLock::new(EventProcessorStats::new())),
@@ -389,7 +383,7 @@ impl std::fmt::Display for EventProcessorStats {
 
 /// Helper function to create an EventRouter integrated with EventProcessor
 pub async fn create_integrated_event_router(
-    event_processor: Arc<EventProcessor>,
+    _event_processor: Arc<EventProcessor>,
 ) -> (Arc<EventRouter>, mpsc::UnboundedReceiver<NotificationPayload>) {
     let (upnp_sender, upnp_receiver) = mpsc::unbounded_channel();
     let router = Arc::new(EventRouter::new(upnp_sender));
@@ -405,30 +399,26 @@ mod tests {
     #[test]
     fn test_event_processor_creation() {
         let (event_sender, _event_receiver) = mpsc::unbounded_channel();
-        let registry = Arc::new(SpeakerServiceRegistry::new(100));
         let subscription_manager = Arc::new(SubscriptionManager::new(
             "http://callback.url".to_string(),
-            1800,
         ));
 
-        let processor = EventProcessor::new(registry, subscription_manager, event_sender);
+        let processor = EventProcessor::new(subscription_manager, event_sender);
 
         assert_eq!(processor.supported_services().len(), 2);
         assert!(processor.is_service_supported(&sonos_api::Service::AVTransport));
         assert!(processor.is_service_supported(&sonos_api::Service::RenderingControl));
-        assert!(!processor.is_service_supported(&sonos_api::Service::DeviceProperties));
+        assert!(!processor.is_service_supported(&sonos_api::Service::ZoneGroupTopology));
     }
 
     #[tokio::test]
     async fn test_event_processor_stats() {
         let (event_sender, _event_receiver) = mpsc::unbounded_channel();
-        let registry = Arc::new(SpeakerServiceRegistry::new(100));
         let subscription_manager = Arc::new(SubscriptionManager::new(
             "http://callback.url".to_string(),
-            1800,
         ));
 
-        let processor = EventProcessor::new(registry, subscription_manager, event_sender);
+        let processor = EventProcessor::new(subscription_manager, event_sender);
 
         let stats = processor.stats().await;
         assert_eq!(stats.events_processed, 0);

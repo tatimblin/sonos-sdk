@@ -141,6 +141,8 @@ pub type EventProcessingResult<T> = Result<T, EventProcessingError>;
 
 #[cfg(test)]
 mod tests {
+    use std::error::Error;
+
     use super::*;
 
     #[test]

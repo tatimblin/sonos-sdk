@@ -7,17 +7,16 @@
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
 
-use callback_server::{CallbackServer, firewall_detection::{FirewallDetectionPlugin, FirewallStatus}, router::EventRouter};
+use callback_server::{CallbackServer, firewall_detection::{FirewallDetectionPlugin, FirewallStatus}};
 use sonos_api::Service;
 
 use crate::config::BrokerConfig;
 use crate::error::{BrokerError, BrokerResult};
 use crate::events::{
     iterator::EventIterator,
-    processor::{EventProcessor, create_integrated_event_router},
+    processor::EventProcessor,
     types::EnrichedEvent,
 };
 use crate::polling::scheduler::PollingScheduler;
@@ -165,12 +164,10 @@ impl EventBroker {
         // Initialize subscription manager with correct callback URL
         let subscription_manager = Arc::new(SubscriptionManager::new(
             server_url.clone(),
-            config.subscription_timeout.as_secs() as u32,
         ));
 
         // Initialize event processor with the correct subscription manager
         let event_processor = Arc::new(EventProcessor::new(
-            Arc::clone(&registry),
             Arc::clone(&subscription_manager),
             event_sender.clone(),
         ));
@@ -248,7 +245,7 @@ impl EventBroker {
     /// Create firewall detector if enabled
     async fn create_firewall_detector(
         config: &BrokerConfig,
-        server_url: &str,
+        _server_url: &str,
     ) -> BrokerResult<Arc<FirewallDetectionPlugin>> {
         use callback_server::firewall_detection::{FirewallDetectionConfig, FirewallDetectionPlugin};
 
@@ -282,7 +279,7 @@ impl EventBroker {
         }
 
         // Start polling request processing
-        let (polling_request_sender, polling_request_receiver) = mpsc::unbounded_channel();
+        let (_polling_request_sender, polling_request_receiver) = mpsc::unbounded_channel();
         self.start_polling_request_processing(polling_request_receiver).await;
 
         // Start event activity monitoring
@@ -538,7 +535,7 @@ impl EventBroker {
                 "Event iterator already created".to_string()
             ))?;
 
-        let iterator = EventIterator::new(receiver, Some(Arc::clone(&self.resync_detector)));
+        let iterator = EventIterator::new(receiver);
 
         Ok(iterator)
     }
@@ -581,7 +578,7 @@ impl EventBroker {
     }
 
     /// Shutdown the broker and all background tasks
-    pub async fn shutdown(mut self) -> BrokerResult<()> {
+    pub async fn shutdown(self) -> BrokerResult<()> {
         eprintln!("🛑 Shutting down EventBroker");
 
         // Signal shutdown

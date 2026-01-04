@@ -5,10 +5,10 @@
 //! multiple event streams concurrently.
 
 use sonos_stream::{
-    BrokerConfig, EventBroker, EventData, PollingReason,
+    BrokerConfig, EventBroker, EventData,
     events::types::{AVTransportDelta, RenderingControlDelta, ResyncReason}
 };
-use sonos_api::{SonosClient, ServiceType};
+use sonos_api::Service;
 use std::net::IpAddr;
 use std::time::Duration;
 use tokio::time::timeout;
@@ -28,8 +28,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n📋 Registering Sonos services...");
 
     // Register multiple services
-    let transport_reg = broker.register_speaker_service(device_ip, ServiceType::AVTransport).await?;
-    let volume_reg = broker.register_speaker_service(device_ip, ServiceType::RenderingControl).await?;
+    let transport_reg = broker.register_speaker_service(device_ip, Service::AVTransport).await?;
+    let volume_reg = broker.register_speaker_service(device_ip, Service::RenderingControl).await?;
 
     println!("✅ Services registered with IDs: {} and {}",
              transport_reg.registration_id, volume_reg.registration_id);
@@ -65,18 +65,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 // Process different event types with async operations
                 match event.event_data {
-                    EventData::AVTransportChange(delta) => {
-                        handle_transport_change_async(event.speaker_ip, delta).await;
-                    }
-                    EventData::RenderingControlChange(delta) => {
-                        handle_volume_change_async(event.speaker_ip, delta).await;
-                    }
-                    EventData::AVTransportResync(full_state) => {
-                        handle_transport_resync_async(event.speaker_ip, full_state, &event.event_source).await;
-                    }
-                    EventData::RenderingControlResync(full_state) => {
-                        handle_volume_resync_async(event.speaker_ip, full_state, &event.event_source).await;
-                    }
+                    EventData::AVTransportChange(delta)=>{handle_transport_change_async(event.speaker_ip,delta).await;}
+                    EventData::RenderingControlChange(delta)=>{handle_volume_change_async(event.speaker_ip,delta).await;}
+                    EventData::AVTransportResync(full_state)=>{handle_transport_resync_async(event.speaker_ip,full_state, &event.event_source).await;}
+                    EventData::RenderingControlResync(full_state)=>{handle_volume_resync_async(event.speaker_ip,full_state, &event.event_source).await;}
+EventData::DevicePropertiesChange(_device_properties_delta) => todo!(),
+                    EventData::DevicePropertiesResync(_device_properties_full_state) => todo!(),
                 }
 
                 println!();
@@ -298,5 +292,8 @@ fn format_resync_reason_enum(reason: &ResyncReason) -> String {
         ResyncReason::PollingDiscrepancy => "polling found different state".to_string(),
         ResyncReason::SubscriptionRenewal => "subscription was renewed".to_string(),
         ResyncReason::ExplicitRefresh => "explicit refresh requested".to_string(),
+        ResyncReason::FirewallBlocked => todo!(),
+        ResyncReason::NetworkIssues => todo!(),
+        ResyncReason::InitialState => todo!(),
     }
 }

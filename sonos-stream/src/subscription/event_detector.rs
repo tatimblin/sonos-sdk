@@ -10,7 +10,6 @@ use std::time::{Duration, SystemTime};
 use tokio::sync::{mpsc, RwLock};
 
 use callback_server::firewall_detection::{FirewallDetectionPlugin, FirewallStatus};
-use sonos_api::SonosClient;
 
 use crate::error::{SubscriptionError, SubscriptionResult};
 use crate::events::types::{EnrichedEvent, EventData, EventSource, ResyncReason};
@@ -188,7 +187,7 @@ impl EventDetector {
                     };
 
                     if should_poll {
-                        if let Some(sender) = &polling_request_sender {
+                        if let Some(_sender) = &polling_request_sender {
                             // We need the speaker/service pair to make the request
                             // In a real implementation, this would be looked up from the registry
                             // For now, we'll emit a placeholder request
@@ -258,8 +257,6 @@ pub struct ResyncDetector {
     /// Minimum time between resync events to prevent spam
     resync_cooldown: Duration,
 
-    /// SonosClient for querying current device state
-    sonos_client: SonosClient,
 }
 
 impl ResyncDetector {
@@ -269,7 +266,6 @@ impl ResyncDetector {
             expected_state: Arc::new(RwLock::new(HashMap::new())),
             last_resync_times: Arc::new(RwLock::new(HashMap::new())),
             resync_cooldown,
-            sonos_client: SonosClient::new(),
         }
     }
 

@@ -56,7 +56,7 @@ pub mod registry;
 pub mod subscription;
 
 // Re-export main types for easy access
-pub use broker::{EventBroker, PollingReason};
+pub use broker::{EventBroker, PollingReason, RegistrationResult};
 pub use config::BrokerConfig;
 pub use error::{BrokerError, PollingError, RegistryError, SubscriptionError};
 pub use events::types::{EnrichedEvent, EventData, EventSource, ResyncReason};

@@ -436,7 +436,7 @@ mod tests {
     fn test_enriched_event_creation() {
         let reg_id = RegistrationId::new(1);
         let ip: IpAddr = "192.168.1.100".parse().unwrap();
-        let service = sonos_api::ServiceType::AVTransport;
+        let service = sonos_api::Service::AVTransport;
         let source = EventSource::UPnPNotification {
             subscription_id: "uuid:123".to_string(),
         };
@@ -457,7 +457,7 @@ mod tests {
     fn test_resync_event() {
         let reg_id = RegistrationId::new(1);
         let ip: IpAddr = "192.168.1.100".parse().unwrap();
-        let service = sonos_api::ServiceType::AVTransport;
+        let service = sonos_api::Service::AVTransport;
         let source = EventSource::ResyncDetection {
             reason: ResyncReason::FirewallBlocked,
         };
@@ -483,7 +483,7 @@ mod tests {
         let av_change = EventData::AVTransportChange(AVTransportDelta::transport_state_change(
             "PLAYING".to_string(),
         ));
-        assert_eq!(av_change.service_type(), sonos_api::ServiceType::AVTransport);
+        assert_eq!(av_change.service_type(), sonos_api::Service::AVTransport);
         assert!(av_change.is_change_event());
         assert!(!av_change.is_resync_event());
 
@@ -495,7 +495,7 @@ mod tests {
             loudness: None,
             balance: None,
         });
-        assert_eq!(rc_resync.service_type(), sonos_api::ServiceType::RenderingControl);
+        assert_eq!(rc_resync.service_type(), sonos_api::Service::RenderingControl);
         assert!(!rc_resync.is_change_event());
         assert!(rc_resync.is_resync_event());
     }

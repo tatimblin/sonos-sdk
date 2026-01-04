@@ -5,17 +5,15 @@
 
 use std::collections::VecDeque;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 use futures::Stream;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 use crate::error::{EventProcessingError, EventProcessingResult};
-use crate::events::types::{EnrichedEvent, EventSource, ResyncReason};
+use crate::events::types::{EnrichedEvent, EventSource};
 use crate::registry::RegistrationId;
-use crate::subscription::event_detector::ResyncDetector;
 
 /// Main event iterator that provides both sync and async interfaces
 pub struct EventIterator {
@@ -25,8 +23,6 @@ pub struct EventIterator {
     /// Buffer for events when using sync iteration
     buffered_events: VecDeque<EnrichedEvent>,
 
-    /// Resync detector for automatic state drift detection
-    resync_detector: Option<Arc<ResyncDetector>>,
 
     /// Tokio runtime handle for sync iteration
     runtime_handle: tokio::runtime::Handle,
@@ -42,7 +38,6 @@ impl EventIterator {
     /// Create a new event iterator
     pub fn new(
         receiver: mpsc::UnboundedReceiver<EnrichedEvent>,
-        resync_detector: Option<Arc<ResyncDetector>>,
     ) -> Self {
         let runtime_handle = tokio::runtime::Handle::try_current()
             .expect("EventIterator must be created within a Tokio runtime");
@@ -50,7 +45,6 @@ impl EventIterator {
         Self {
             receiver: Some(receiver),
             buffered_events: VecDeque::new(),
-            resync_detector,
             runtime_handle,
             stats: EventIteratorStats::new(),
             consumed: false,
@@ -407,7 +401,7 @@ mod tests {
         EnrichedEvent {
             registration_id,
             speaker_ip: "192.168.1.100".parse().unwrap(),
-            service: sonos_api::ServiceType::AVTransport,
+            service: sonos_api::Service::AVTransport,
             event_source: EventSource::UPnPNotification {
                 subscription_id: "test-sid".to_string(),
             },
@@ -426,7 +420,7 @@ mod tests {
     #[tokio::test]
     async fn test_event_iterator_creation() {
         let (sender, receiver) = mpsc::unbounded_channel();
-        let iterator = EventIterator::new(receiver, None);
+        let iterator = EventIterator::new(receiver);
 
         assert!(!iterator.is_consumed());
         assert_eq!(iterator.stats().events_received, 0);
@@ -436,7 +430,7 @@ mod tests {
     #[tokio::test]
     async fn test_async_iteration() {
         let (sender, receiver) = mpsc::unbounded_channel();
-        let mut iterator = EventIterator::new(receiver, None);
+        let mut iterator = EventIterator::new(receiver);
 
         // Send test event
         let test_event = create_test_event(RegistrationId::new(1));
@@ -454,7 +448,7 @@ mod tests {
     #[tokio::test]
     async fn test_try_next() {
         let (sender, receiver) = mpsc::unbounded_channel();
-        let mut iterator = EventIterator::new(receiver, None);
+        let mut iterator = EventIterator::new(receiver);
 
         // Try without any events
         let result = iterator.try_next().unwrap();
@@ -472,7 +466,7 @@ mod tests {
     #[tokio::test]
     async fn test_next_timeout() {
         let (_sender, receiver) = mpsc::unbounded_channel();
-        let mut iterator = EventIterator::new(receiver, None);
+        let mut iterator = EventIterator::new(receiver);
 
         // Should timeout since no events are sent
         let result = iterator.next_timeout(Duration::from_millis(100)).await;
@@ -484,7 +478,7 @@ mod tests {
     #[tokio::test]
     async fn test_next_batch() {
         let (sender, receiver) = mpsc::unbounded_channel();
-        let mut iterator = EventIterator::new(receiver, None);
+        let mut iterator = EventIterator::new(receiver);
 
         // Send multiple events
         for i in 1..=5 {
@@ -506,7 +500,7 @@ mod tests {
 
         rt.block_on(async {
             let (sender, receiver) = mpsc::unbounded_channel();
-            let mut iterator = EventIterator::new(receiver, None);
+            let mut iterator = EventIterator::new(receiver);
 
             // Send test events
             for i in 1..=3 {
@@ -527,7 +521,7 @@ mod tests {
     #[tokio::test]
     async fn test_filtered_iterator() {
         let (sender, receiver) = mpsc::unbounded_channel();
-        let iterator = EventIterator::new(receiver, None);
+        let iterator = EventIterator::new(receiver);
 
         // Send events with different registration IDs
         let event1 = create_test_event(RegistrationId::new(1));
@@ -551,7 +545,7 @@ mod tests {
     #[tokio::test]
     async fn test_peek() {
         let (sender, receiver) = mpsc::unbounded_channel();
-        let mut iterator = EventIterator::new(receiver, None);
+        let mut iterator = EventIterator::new(receiver);
 
         let test_event = create_test_event(RegistrationId::new(1));
         sender.send(test_event.clone()).unwrap();
