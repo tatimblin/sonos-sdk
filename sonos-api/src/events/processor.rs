@@ -4,7 +4,7 @@
 //! events from any Sonos UPnP service using direct self-parsing methods.
 
 use std::net::IpAddr;
-use crate::{Result, Service, ApiError};
+use crate::{Result, Service};
 use super::types::{EnrichedEvent, EventSource};
 
 /// Generic event processor that can handle events from any service
@@ -240,7 +240,15 @@ mod tests {
         assert!(result.is_ok());
 
         // Test RenderingControl parsing
-        let rc_xml = r#"<Event><Volume>50</Volume></Event>"#;
+        let rc_xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0">
+            <e:property>
+                <LastChange>&lt;Event xmlns="urn:schemas-upnp-org:metadata-1-0/RCS/"&gt;
+                    &lt;InstanceID val="0"&gt;
+                        &lt;Volume val="50"/&gt;
+                    &lt;/InstanceID&gt;
+                &lt;/Event&gt;</LastChange>
+            </e:property>
+        </e:propertyset>"#;
 
         let result = processor.process_upnp_event(
             "192.168.1.100".parse().unwrap(),

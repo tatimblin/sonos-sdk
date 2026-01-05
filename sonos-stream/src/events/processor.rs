@@ -181,20 +181,20 @@ impl EventProcessor {
 
                 // Convert from sonos-api AVTransportEvent to sonos-stream AVTransportEvent
                 let stream_event = crate::events::types::AVTransportEvent {
-                    transport_state: av_event.transport_state.clone(),
-                    transport_status: av_event.transport_status.clone(),
-                    speed: av_event.speed.clone(),
-                    current_track_uri: av_event.current_track_uri.clone(),
-                    track_duration: av_event.track_duration.clone(),
-                    rel_time: av_event.rel_time.clone(),
-                    abs_time: av_event.abs_time.clone(),
-                    rel_count: av_event.rel_count,
-                    abs_count: av_event.abs_count,
-                    play_mode: av_event.play_mode.clone(),
-                    track_metadata: av_event.track_metadata.clone(),
-                    next_track_uri: av_event.next_track_uri.clone(),
-                    next_track_metadata: av_event.next_track_metadata.clone(),
-                    queue_length: av_event.queue_length,
+                    transport_state: av_event.transport_state(),
+                    transport_status: av_event.transport_status(),
+                    speed: av_event.speed(),
+                    current_track_uri: av_event.current_track_uri(),
+                    track_duration: av_event.track_duration(),
+                    rel_time: av_event.rel_time(),
+                    abs_time: av_event.abs_time(),
+                    rel_count: av_event.rel_count(),
+                    abs_count: av_event.abs_count(),
+                    play_mode: av_event.play_mode(),
+                    track_metadata: av_event.track_metadata(),
+                    next_track_uri: av_event.next_track_uri(),
+                    next_track_metadata: av_event.next_track_metadata(),
+                    queue_length: av_event.queue_length(),
                 };
 
                 Ok(EventData::AVTransportEvent(stream_event))
@@ -208,17 +208,17 @@ impl EventProcessor {
 
                 // Convert from sonos-api RenderingControlEvent to sonos-stream RenderingControlEvent
                 let stream_event = crate::events::types::RenderingControlEvent {
-                    master_volume: rc_event.master_volume.clone(),
-                    lf_volume: rc_event.lf_volume.clone(),
-                    rf_volume: rc_event.rf_volume.clone(),
-                    master_mute: rc_event.master_mute.clone(),
-                    lf_mute: rc_event.lf_mute.clone(),
-                    rf_mute: rc_event.rf_mute.clone(),
-                    bass: rc_event.bass.clone(),
-                    treble: rc_event.treble.clone(),
-                    loudness: rc_event.loudness.clone(),
-                    balance: rc_event.balance.clone(),
-                    other_channels: rc_event.other_channels.clone(),
+                    master_volume: rc_event.master_volume(),
+                    lf_volume: rc_event.lf_volume(),
+                    rf_volume: rc_event.rf_volume(),
+                    master_mute: rc_event.master_mute(),
+                    lf_mute: rc_event.lf_mute(),
+                    rf_mute: rc_event.rf_mute(),
+                    bass: rc_event.bass(),
+                    treble: rc_event.treble(),
+                    loudness: rc_event.loudness(),
+                    balance: rc_event.balance(),
+                    other_channels: rc_event.other_channels(),
                 };
 
                 Ok(EventData::RenderingControlEvent(stream_event))
@@ -230,7 +230,7 @@ impl EventProcessor {
                     .map_err(|_| EventProcessingError::Parsing("Failed to downcast ZoneGroupTopology event".to_string()))?;
 
                 // Convert from sonos-api to sonos-stream types
-                let stream_zone_groups = zgt_event.zone_groups.into_iter().map(|group| {
+                let stream_zone_groups = zgt_event.zone_groups().into_iter().map(|group| {
                     let stream_members = group.members.into_iter().map(|member| {
                         let stream_satellites = member.satellites.into_iter().map(|sat| {
                             crate::events::types::SatelliteInfo {
@@ -268,7 +268,7 @@ impl EventProcessor {
 
                 let stream_event = crate::events::types::ZoneGroupTopologyEvent {
                     zone_groups: stream_zone_groups,
-                    vanished_devices: zgt_event.vanished_devices,
+                    vanished_devices: zgt_event.vanished_devices(),
                 };
 
                 Ok(EventData::ZoneGroupTopologyEvent(stream_event))

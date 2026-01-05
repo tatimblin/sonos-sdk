@@ -182,6 +182,23 @@ where
     parse::<T>(&s).map_err(serde::de::Error::custom)
 }
 
+/// Deserialize ZoneGroupState from nested XML string.
+///
+/// Similar to `deserialize_nested` but specifically for ZoneGroupState XML content
+/// that comes nested within the event XML structure.
+pub fn deserialize_zone_group_state<'de, D, T>(deserializer: D) -> std::result::Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: DeserializeOwned,
+{
+    let s = String::deserialize(deserializer)?;
+    if s.trim().is_empty() {
+        return Ok(None);
+    }
+    let parsed = parse::<T>(&s).map_err(serde::de::Error::custom)?;
+    Ok(Some(parsed))
+}
+
 /// Represents an XML element with a `val` attribute.
 ///
 /// Many UPnP state variables are represented as empty elements with a `val` attribute:
