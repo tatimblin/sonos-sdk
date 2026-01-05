@@ -30,6 +30,17 @@ pub struct ServiceInfo {
     pub event_endpoint: &'static str,
 }
 
+/// Defines the subscription scope for UPnP services
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServiceScope {
+    /// Per-speaker service - allows independent subscriptions on each speaker
+    PerSpeaker,
+    /// Per-network service - only one subscription should exist across entire network
+    PerNetwork,
+    /// Per-coordinator service - only run on speakers that are the coordinator for a group
+    PerCoordinator,
+}
+
 impl Service {
     /// Get the name of this service as a string
     ///
@@ -72,5 +83,47 @@ impl Service {
             },
         }
     }
-    
+
+    /// Get the subscription scope for this service
+    ///
+    /// # Returns
+    /// A `ServiceScope` indicating whether this service should have per-speaker,
+    /// per-network, or per-coordinator subscriptions
+    pub fn scope(&self) -> ServiceScope {
+        match self {
+            Service::AVTransport => ServiceScope::PerSpeaker,
+            Service::RenderingControl => ServiceScope::PerSpeaker,
+            Service::GroupRenderingControl => ServiceScope::PerCoordinator,
+            Service::ZoneGroupTopology => ServiceScope::PerNetwork,
+        }
+    }
+
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+
+    #[test]
+    fn test_service_scopes() {
+        assert_eq!(Service::AVTransport.scope(), ServiceScope::PerSpeaker);
+        assert_eq!(Service::RenderingControl.scope(), ServiceScope::PerSpeaker);
+        assert_eq!(Service::GroupRenderingControl.scope(), ServiceScope::PerCoordinator);
+        assert_eq!(Service::ZoneGroupTopology.scope(), ServiceScope::PerNetwork);
+    }
+
+    #[test]
+    fn test_all_services_have_scope() {
+        // Ensure new services added to enum get scope assignments
+        let services = [
+            Service::AVTransport,
+            Service::RenderingControl,
+            Service::GroupRenderingControl,
+            Service::ZoneGroupTopology,
+        ];
+
+        for service in services {
+            let _scope = service.scope(); // Should not panic
+        }
+    }
 }
