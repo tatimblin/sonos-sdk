@@ -166,7 +166,7 @@ pub mod events; // New event handling framework
 pub use client::SonosClient;
 pub use error::{ApiError, Result};
 pub use operation::SonosOperation; // Legacy trait
-pub use service::{Service, ServiceInfo};
+pub use service::{Service, ServiceInfo, ServiceScope};
 pub use subscription::ManagedSubscription;
 
 
