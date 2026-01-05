@@ -3,12 +3,11 @@
 //! This example shows the recommended approach for maintaining local state from Sonos events:
 //! 1. Initialize local state through direct queries (not from events)
 //! 2. Process change events to maintain local state using sync iterator (best practice)
-//! 3. Handle automatic resync events when state drift is detected
+//! 3. Handle events from both UPnP notifications and polling transparently
 //! 4. Get clear feedback about firewall detection and polling reasons
 
 use sonos_stream::{
     BrokerConfig, EventBroker, EventData, PollingReason,
-    events::types::{AVTransportDelta, RenderingControlDelta, ResyncReason}
 };
 use sonos_api::{SonosClient, Service, OperationBuilder};
 use sonos_api::services::av_transport::{GetTransportInfoOperation, GetTransportInfoOperationRequest};
@@ -120,53 +119,95 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                  format_event_source(&event.event_source));
 
         match event.event_data {
-            // Regular delta events - update local state incrementally
-            EventData::AVTransportChange(delta) => {
-                println!("🎵 Transport change detected: {:?}", delta);
-                apply_transport_delta(&mut local_transport_state, &delta);
+            // Complete event data - all services now provide full state
+            EventData::AVTransportEvent(transport_event) => {
+                println!("🎵 Transport event received:");
+                if let Some(ref state) = transport_event.transport_state {
+                    println!("   → Transport state: {}", state);
+                    local_transport_state.transport_state = state.clone();
+                }
+                if let Some(ref uri) = transport_event.current_track_uri {
+                    println!("   → Track URI: {}", uri);
+                    local_transport_state.current_track_uri = uri.clone();
+                }
+                if let Some(ref position) = transport_event.rel_time {
+                    println!("   → Position: {}", position);
+                    local_transport_state.rel_time = position.clone();
+                }
+                if let Some(ref metadata) = transport_event.track_metadata {
+                    local_transport_state.track_metadata = metadata.clone();
+                }
+                if let Some(ref duration) = transport_event.track_duration {
+                    local_transport_state.track_duration = duration.clone();
+                }
 
                 println!("   → Updated state: {} | Position: {}",
                          local_transport_state.transport_state,
                          local_transport_state.rel_time);
             }
 
-            EventData::RenderingControlChange(delta) => {
-                println!("🔊 Volume change detected: {:?}", delta);
-                apply_volume_delta(&mut local_volume_state, &delta);
+            EventData::RenderingControlEvent(volume_event) => {
+                println!("🔊 Volume event received:");
+                if let Some(ref volume) = volume_event.master_volume {
+                    if let Ok(vol_num) = volume.parse::<u16>() {
+                        println!("   → Volume level: {}", vol_num);
+                        local_volume_state.volume = vol_num;
+                    }
+                }
+                if let Some(ref mute) = volume_event.master_mute {
+                    let mute_bool = mute == "1" || mute.to_lowercase() == "true";
+                    println!("   → Mute state: {}", mute_bool);
+                    local_volume_state.mute = mute_bool;
+                }
 
                 println!("   → Updated state: Volume {} | Muted: {}",
                          local_volume_state.volume,
                          local_volume_state.mute);
             }
 
-            // Automatic resync events - replace local state completely
-            EventData::AVTransportResync(full_state) => {
-                println!("🔄 Transport resync triggered ({})",
-                         format_resync_reason(&event.event_source));
+            // ZoneGroupTopology events - complete speaker topology information
+            EventData::ZoneGroupTopologyEvent(topology) => {
+                println!("🏠 Speaker topology event received:");
+                println!("   → {} zone group(s) found", topology.zone_groups.len());
 
-                // Consumer would convert full_state to their local format
-                println!("   → Full state received, local state updated");
+                for (i, group) in topology.zone_groups.iter().enumerate() {
+                    println!("   → Group {}: Coordinator {} with {} member(s)",
+                             i + 1,
+                             group.coordinator,
+                             group.members.len());
 
-                // In a real implementation, you'd convert the full_state to LocalTransportState
-                // For this example, we'll re-query to simulate the resync
-                local_transport_state = query_initial_transport_state(&client, &device_ip).await?;
+                    for member in &group.members {
+                        let wireless_status = if member.network_info.wifi_enabled == "1" {
+                            format!("WiFi ({}MHz)", member.network_info.channel_freq)
+                        } else {
+                            "Ethernet".to_string()
+                        };
+
+                        println!("     • {} ({}) - {} - {}",
+                                 member.zone_name,
+                                 member.uuid,
+                                 member.software_version,
+                                 wireless_status);
+
+                        if !member.satellites.is_empty() {
+                            println!("       └─ {} satellite speaker(s)", member.satellites.len());
+                        }
+                    }
+                }
             }
 
-            EventData::RenderingControlResync(full_state) => {
-                println!("🔊 Volume resync triggered ({})",
-                         format_resync_reason(&event.event_source));
-
-                println!("   → Full state received, local state updated");
-                local_volume_state = query_initial_volume_state(&client, &device_ip).await?;
-            }
-
-            // Device properties events (not commonly used in this example)
-            EventData::DevicePropertiesChange(_delta) => {
-                println!("⚙️  Device properties changed (rarely used in this example)");
-            }
-
-            EventData::DevicePropertiesResync(_full_state) => {
-                println!("⚙️  Device properties resync (rarely used in this example)");
+            // Device properties events
+            EventData::DevicePropertiesEvent(device_event) => {
+                println!("⚙️  Device properties event received:");
+                if let Some(ref zone_name) = device_event.zone_name {
+                    println!("   → Zone name: {}", zone_name);
+                }
+                if let Some(ref model) = device_event.model_name {
+                    println!("   → Model: {}", model);
+                }
+                if let Some(ref version) = device_event.software_version {
+                    println!("   → Software version: {}", version);
+                }
             }
         }
 
@@ -232,34 +273,6 @@ async fn query_initial_volume_state(
     })
 }
 
-/// Apply transport delta to local state
-fn apply_transport_delta(state: &mut LocalTransportState, delta: &AVTransportDelta) {
-    if let Some(ref transport_state) = delta.transport_state {
-        state.transport_state = transport_state.clone();
-    }
-    if let Some(ref current_track_uri) = delta.current_track_uri {
-        state.current_track_uri = current_track_uri.clone();
-    }
-    if let Some(ref track_duration) = delta.track_duration {
-        state.track_duration = track_duration.clone();
-    }
-    if let Some(ref rel_time) = delta.rel_time {
-        state.rel_time = rel_time.clone();
-    }
-    if let Some(ref track_metadata) = delta.track_metadata {
-        state.track_metadata = track_metadata.clone();
-    }
-}
-
-/// Apply volume delta to local state
-fn apply_volume_delta(state: &mut LocalVolumeState, delta: &RenderingControlDelta) {
-    if let Some(volume) = delta.volume {
-        state.volume = volume;
-    }
-    if let Some(mute) = delta.mute {
-        state.mute = mute;
-    }
-}
 
 /// Print user-friendly registration feedback based on firewall status
 fn print_registration_feedback(
@@ -312,34 +325,9 @@ fn format_event_source(source: &sonos_stream::events::types::EventSource) -> Str
         EventSource::PollingDetection { poll_interval } => {
             format!("Polling ({}s interval)", poll_interval.as_secs())
         }
-        EventSource::ResyncDetection { reason } => {
-            format!("Resync ({})", format_resync_reason_enum(reason))
-        }
     }
 }
 
-/// Format resync reason for display
-fn format_resync_reason(source: &sonos_stream::events::types::EventSource) -> String {
-    use sonos_stream::events::types::EventSource;
-
-    match source {
-        EventSource::ResyncDetection { reason } => format_resync_reason_enum(reason),
-        _ => "unknown".to_string(),
-    }
-}
-
-/// Format resync reason enum for display
-fn format_resync_reason_enum(reason: &ResyncReason) -> String {
-    match reason {
-        ResyncReason::EventTimeoutDetected => "event timeout detected".to_string(),
-        ResyncReason::PollingDiscrepancy => "polling found different state".to_string(),
-        ResyncReason::SubscriptionRenewal => "subscription was renewed".to_string(),
-        ResyncReason::FirewallBlocked => "firewall blocking detected".to_string(),
-        ResyncReason::NetworkIssues => "network issues detected".to_string(),
-        ResyncReason::InitialState => "initial state query".to_string(),
-        ResyncReason::ExplicitRefresh => "explicit refresh requested".to_string(),
-    }
-}
 
 /// Extract track title from metadata (simplified)
 fn extract_track_title(metadata: &str) -> String {

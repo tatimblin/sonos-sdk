@@ -25,7 +25,8 @@ async fn test_callback_server_end_to_end() {
 
     // Register a subscription
     let subscription_id = "test-subscription-123".to_string();
-    server.router().register(subscription_id.clone()).await;
+    let full_subscription_id = format!("uuid:{}", subscription_id);
+    server.router().register(full_subscription_id.clone()).await;
 
     // Create HTTP client
     let client = reqwest::Client::new();
@@ -44,7 +45,7 @@ async fn test_callback_server_end_to_end() {
     let notify_url = format!("{}/notify/{}", base_url, subscription_id);
     
     let response = client
-        .post(&notify_url)
+        .request(reqwest::Method::from_bytes(b"NOTIFY").unwrap(), &notify_url)
         .header("SID", format!("uuid:{}", subscription_id))
         .header("NT", "upnp:event")
         .header("NTS", "upnp:propchange")
@@ -62,7 +63,7 @@ async fn test_callback_server_end_to_end() {
         .expect("Timeout waiting for notification")
         .expect("No notification received");
 
-    assert_eq!(notification.subscription_id, subscription_id);
+    assert_eq!(notification.subscription_id, format!("uuid:{}", subscription_id));
     assert!(notification.event_xml.contains("TransportState"));
     assert!(notification.event_xml.contains("PLAYING"));
 
@@ -75,7 +76,7 @@ async fn test_callback_server_end_to_end() {
 </e:propertyset>"#;
 
     let response2 = client
-        .post(&notify_url)
+        .request(reqwest::Method::from_bytes(b"NOTIFY").unwrap(), &notify_url)
         .header("SID", format!("uuid:{}", subscription_id))
         .header("Content-Type", "text/xml")
         .body(event_xml2.to_string())
@@ -91,7 +92,7 @@ async fn test_callback_server_end_to_end() {
         .expect("Timeout waiting for second notification")
         .expect("No second notification received");
 
-    assert_eq!(notification2.subscription_id, subscription_id);
+    assert_eq!(notification2.subscription_id, format!("uuid:{}", subscription_id));
     assert!(notification2.event_xml.contains("Volume"));
     assert!(notification2.event_xml.contains("50"));
 
@@ -99,7 +100,7 @@ async fn test_callback_server_end_to_end() {
     let unregistered_url = format!("{}/notify/unregistered-sub", base_url);
     
     let response3 = client
-        .post(&unregistered_url)
+        .request(reqwest::Method::from_bytes(b"NOTIFY").unwrap(), &unregistered_url)
         .header("SID", "uuid:unregistered-sub")
         .header("Content-Type", "text/xml")
         .body("<event>test</event>")
@@ -115,7 +116,7 @@ async fn test_callback_server_end_to_end() {
 
     // Test 4: Send invalid request (missing SID header)
     let response4 = client
-        .post(&notify_url)
+        .request(reqwest::Method::from_bytes(b"NOTIFY").unwrap(), &notify_url)
         .header("Content-Type", "text/xml")
         .body("<event>test</event>")
         .send()
@@ -143,9 +144,9 @@ async fn test_multiple_subscriptions_concurrent_events() {
     let sub2 = "subscription-2".to_string();
     let sub3 = "subscription-3".to_string();
 
-    server.router().register(sub1.clone()).await;
-    server.router().register(sub2.clone()).await;
-    server.router().register(sub3.clone()).await;
+    server.router().register(format!("uuid:{}", sub1)).await;
+    server.router().register(format!("uuid:{}", sub2)).await;
+    server.router().register(format!("uuid:{}", sub3)).await;
 
     let client = reqwest::Client::new();
 
@@ -157,7 +158,7 @@ async fn test_multiple_subscriptions_concurrent_events() {
             let sub1 = sub1.clone();
             async move {
                 client
-                    .post(format!("{}/notify/{}", base_url, sub1))
+                    .request(reqwest::Method::from_bytes(b"NOTIFY").unwrap(), format!("{}/notify/{}", base_url, sub1))
                     .header("SID", format!("uuid:{}", sub1))
                     .body("<event>data1</event>")
                     .send()
@@ -170,7 +171,7 @@ async fn test_multiple_subscriptions_concurrent_events() {
             let sub2 = sub2.clone();
             async move {
                 client
-                    .post(format!("{}/notify/{}", base_url, sub2))
+                    .request(reqwest::Method::from_bytes(b"NOTIFY").unwrap(), format!("{}/notify/{}", base_url, sub2))
                     .header("SID", format!("uuid:{}", sub2))
                     .body("<event>data2</event>")
                     .send()
@@ -183,7 +184,7 @@ async fn test_multiple_subscriptions_concurrent_events() {
             let sub3 = sub3.clone();
             async move {
                 client
-                    .post(format!("{}/notify/{}", base_url, sub3))
+                    .request(reqwest::Method::from_bytes(b"NOTIFY").unwrap(), format!("{}/notify/{}", base_url, sub3))
                     .header("SID", format!("uuid:{}", sub3))
                     .body("<event>data3</event>")
                     .send()
@@ -215,7 +216,11 @@ async fn test_multiple_subscriptions_concurrent_events() {
         .collect();
     received_subs.sort();
 
-    let mut expected_subs = vec![sub1, sub2, sub3];
+    let mut expected_subs = vec![
+        format!("uuid:{}", sub1),
+        format!("uuid:{}", sub2),
+        format!("uuid:{}", sub3)
+    ];
     expected_subs.sort();
 
     assert_eq!(received_subs, expected_subs);
@@ -223,9 +228,9 @@ async fn test_multiple_subscriptions_concurrent_events() {
     // Verify each notification has the correct content
     for notification in notifications {
         match notification.subscription_id.as_str() {
-            "subscription-1" => assert!(notification.event_xml.contains("data1")),
-            "subscription-2" => assert!(notification.event_xml.contains("data2")),
-            "subscription-3" => assert!(notification.event_xml.contains("data3")),
+            "uuid:subscription-1" => assert!(notification.event_xml.contains("data1")),
+            "uuid:subscription-2" => assert!(notification.event_xml.contains("data2")),
+            "uuid:subscription-3" => assert!(notification.event_xml.contains("data3")),
             _ => panic!("Unexpected subscription ID: {}", notification.subscription_id),
         }
     }
@@ -249,7 +254,7 @@ async fn test_dynamic_subscription_management() {
 
     // Initially, subscription is not registered - should get 404
     let response1 = client
-        .post(&notify_url)
+        .request(reqwest::Method::from_bytes(b"NOTIFY").unwrap(), &notify_url)
         .header("SID", format!("uuid:{}", subscription_id))
         .body("<event>before_register</event>")
         .send()
@@ -259,11 +264,11 @@ async fn test_dynamic_subscription_management() {
     assert_eq!(response1.status(), 404);
 
     // Register the subscription
-    server.router().register(subscription_id.clone()).await;
+    server.router().register(format!("uuid:{}", subscription_id)).await;
 
     // Now the same request should succeed
     let response2 = client
-        .post(&notify_url)
+        .request(reqwest::Method::from_bytes(b"NOTIFY").unwrap(), &notify_url)
         .header("SID", format!("uuid:{}", subscription_id))
         .body("<event>after_register</event>")
         .send()
@@ -278,15 +283,15 @@ async fn test_dynamic_subscription_management() {
         .expect("Timeout waiting for notification")
         .expect("No notification received");
 
-    assert_eq!(notification.subscription_id, subscription_id);
+    assert_eq!(notification.subscription_id, format!("uuid:{}", subscription_id));
     assert!(notification.event_xml.contains("after_register"));
 
     // Unregister the subscription
-    server.router().unregister(&subscription_id).await;
+    server.router().unregister(&format!("uuid:{}", subscription_id)).await;
 
     // Request should now fail again
     let response3 = client
-        .post(&notify_url)
+        .request(reqwest::Method::from_bytes(b"NOTIFY").unwrap(), &notify_url)
         .header("SID", format!("uuid:{}", subscription_id))
         .body("<event>after_unregister</event>")
         .send()
@@ -346,7 +351,7 @@ async fn test_error_handling() {
     let client = reqwest::Client::new();
 
     let subscription_id = "error-test-sub".to_string();
-    server.router().register(subscription_id.clone()).await;
+    server.router().register(format!("uuid:{}", subscription_id)).await;
 
     let notify_url = format!("{}/notify/{}", base_url, subscription_id);
 
@@ -365,7 +370,7 @@ async fn test_error_handling() {
 
     // 2. Invalid NT header value
     let response2 = client
-        .post(&notify_url)
+        .request(reqwest::Method::from_bytes(b"NOTIFY").unwrap(), &notify_url)
         .header("SID", format!("uuid:{}", subscription_id))
         .header("NT", "invalid-value")
         .header("NTS", "upnp:propchange")
@@ -378,7 +383,7 @@ async fn test_error_handling() {
 
     // 3. Invalid NTS header value
     let response3 = client
-        .post(&notify_url)
+        .request(reqwest::Method::from_bytes(b"NOTIFY").unwrap(), &notify_url)
         .header("SID", format!("uuid:{}", subscription_id))
         .header("NT", "upnp:event")
         .header("NTS", "invalid-value")

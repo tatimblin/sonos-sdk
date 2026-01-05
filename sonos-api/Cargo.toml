@@ -16,6 +16,7 @@ thiserror = "1.0"
 xmltree = "0.10"
 sonos-discovery = { path = "../sonos-discovery" }
 paste = "1.0"
+quick-xml = { version = "0.31", features = ["serialize"] }
 
 [dev-dependencies]
 rstest = "0.18"

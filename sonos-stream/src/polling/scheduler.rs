@@ -281,72 +281,76 @@ impl PollingTask {
 
     /// Convert state change to EventData
     fn change_to_event_data(change: StateChange, service: &sonos_api::Service) -> EventData {
+        // TODO: Update polling to use new complete event structures
+        // For now, create minimal events based on detected changes
         match service {
-            sonos_api::Service::AVTransport => match change {
-                StateChange::TransportState { new_state, .. } => {
-                    EventData::AVTransportChange(crate::events::types::AVTransportDelta {
-                        transport_state: Some(new_state),
-                        current_track_uri: None,
-                        track_duration: None,
-                        rel_time: None,
-                        play_mode: None,
-                        track_metadata: None,
-                    })
-                }
-                StateChange::TrackChanged { new_uri, .. } => {
-                    EventData::AVTransportChange(crate::events::types::AVTransportDelta {
-                        transport_state: None,
-                        current_track_uri: Some(new_uri),
-                        track_duration: None,
-                        rel_time: None,
-                        play_mode: None,
-                        track_metadata: None,
-                    })
-                }
-                _ => EventData::AVTransportChange(crate::events::types::AVTransportDelta {
-                    transport_state: None,
-                    current_track_uri: None,
+            sonos_api::Service::AVTransport => {
+                let transport_event = crate::events::types::AVTransportEvent {
+                    transport_state: match &change {
+                        StateChange::TransportState { new_state, .. } => Some(new_state.clone()),
+                        _ => None,
+                    },
+                    transport_status: None,
+                    speed: None,
+                    current_track_uri: match &change {
+                        StateChange::TrackChanged { new_uri, .. } => Some(new_uri.clone()),
+                        _ => None,
+                    },
                     track_duration: None,
                     rel_time: None,
+                    abs_time: None,
+                    rel_count: None,
+                    abs_count: None,
                     play_mode: None,
                     track_metadata: None,
-                }),
-            },
-            sonos_api::Service::RenderingControl => match change {
-                StateChange::VolumeChanged { new_volume, .. } => {
-                    EventData::RenderingControlChange(crate::events::types::RenderingControlDelta {
-                        volume: new_volume.parse().ok(),
-                        mute: None,
-                        bass: None,
-                        treble: None,
-                        loudness: None,
-                    })
-                }
-                StateChange::MuteChanged { new_mute, .. } => {
-                    EventData::RenderingControlChange(crate::events::types::RenderingControlDelta {
-                        volume: None,
-                        mute: Some(new_mute),
-                        bass: None,
-                        treble: None,
-                        loudness: None,
-                    })
-                }
-                _ => EventData::RenderingControlChange(crate::events::types::RenderingControlDelta {
-                    volume: None,
-                    mute: None,
+                    next_track_uri: None,
+                    next_track_metadata: None,
+                    queue_length: None,
+                };
+                EventData::AVTransportEvent(transport_event)
+            }
+            sonos_api::Service::RenderingControl => {
+                let volume_event = crate::events::types::RenderingControlEvent {
+                    master_volume: match &change {
+                        StateChange::VolumeChanged { new_volume, .. } => Some(new_volume.clone()),
+                        _ => None,
+                    },
+                    lf_volume: None,
+                    rf_volume: None,
+                    master_mute: match &change {
+                        StateChange::MuteChanged { new_mute, .. } => Some(new_mute.to_string()),
+                        _ => None,
+                    },
+                    lf_mute: None,
+                    rf_mute: None,
                     bass: None,
                     treble: None,
                     loudness: None,
-                }),
-            },
-            _ => EventData::AVTransportChange(crate::events::types::AVTransportDelta {
-                transport_state: None,
-                current_track_uri: None,
-                track_duration: None,
-                rel_time: None,
-                play_mode: None,
-                track_metadata: None,
-            }),
+                    balance: None,
+                    other_channels: std::collections::HashMap::new(),
+                };
+                EventData::RenderingControlEvent(volume_event)
+            }
+            _ => {
+                // Default to empty transport event for unknown services
+                let transport_event = crate::events::types::AVTransportEvent {
+                    transport_state: None,
+                    transport_status: None,
+                    speed: None,
+                    current_track_uri: None,
+                    track_duration: None,
+                    rel_time: None,
+                    abs_time: None,
+                    rel_count: None,
+                    abs_count: None,
+                    play_mode: None,
+                    track_metadata: None,
+                    next_track_uri: None,
+                    next_track_metadata: None,
+                    queue_length: None,
+                };
+                EventData::AVTransportEvent(transport_event)
+            }
         }
     }
 

@@ -206,13 +206,12 @@ impl EventIterator {
         FilteredEventIterator::new(self, move |event| event.service == service)
     }
 
-    /// Filter events by source type (UPnP, polling, resync)
+    /// Filter events by source type (UPnP or polling)
     pub fn filter_by_source_type(self, source_type: EventSourceType) -> FilteredEventIterator {
         FilteredEventIterator::new(self, move |event| {
             match (&event.event_source, source_type) {
                 (EventSource::UPnPNotification { .. }, EventSourceType::UPnP) => true,
                 (EventSource::PollingDetection { .. }, EventSourceType::Polling) => true,
-                (EventSource::ResyncDetection { .. }, EventSourceType::Resync) => true,
                 _ => false,
             }
         })
@@ -281,7 +280,6 @@ impl Stream for EventIterator {
 pub enum EventSourceType {
     UPnP,
     Polling,
-    Resync,
 }
 
 /// Filtered event iterator that applies a predicate to events
@@ -395,7 +393,7 @@ mod tests {
     use super::*;
     use std::net::IpAddr;
     use std::time::SystemTime;
-    use crate::events::types::{EventData, AVTransportDelta, EventSource};
+    use crate::events::types::{EventData, AVTransportEvent, EventSource};
 
     fn create_test_event(registration_id: RegistrationId) -> EnrichedEvent {
         EnrichedEvent {
@@ -406,13 +404,21 @@ mod tests {
                 subscription_id: "test-sid".to_string(),
             },
             timestamp: SystemTime::now(),
-            event_data: EventData::AVTransportChange(AVTransportDelta {
+            event_data: EventData::AVTransportEvent(AVTransportEvent {
                 transport_state: Some("PLAYING".to_string()),
+                transport_status: None,
+                speed: None,
                 current_track_uri: None,
                 track_duration: None,
                 rel_time: None,
+                abs_time: None,
+                rel_count: None,
+                abs_count: None,
                 play_mode: None,
                 track_metadata: None,
+                next_track_uri: None,
+                next_track_metadata: None,
+                queue_length: None,
             }),
         }
     }

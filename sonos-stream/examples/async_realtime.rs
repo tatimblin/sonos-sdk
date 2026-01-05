@@ -6,7 +6,6 @@
 
 use sonos_stream::{
     BrokerConfig, EventBroker, EventData,
-    events::types::{AVTransportDelta, RenderingControlDelta, ResyncReason}
 };
 use sonos_api::Service;
 use std::net::IpAddr;
@@ -65,12 +64,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 // Process different event types with async operations
                 match event.event_data {
-                    EventData::AVTransportChange(delta)=>{handle_transport_change_async(event.speaker_ip,delta).await;}
-                    EventData::RenderingControlChange(delta)=>{handle_volume_change_async(event.speaker_ip,delta).await;}
-                    EventData::AVTransportResync(full_state)=>{handle_transport_resync_async(event.speaker_ip,full_state, &event.event_source).await;}
-                    EventData::RenderingControlResync(full_state)=>{handle_volume_resync_async(event.speaker_ip,full_state, &event.event_source).await;}
-EventData::DevicePropertiesChange(_device_properties_delta) => todo!(),
-                    EventData::DevicePropertiesResync(_device_properties_full_state) => todo!(),
+                    EventData::AVTransportEvent(transport_event) => {
+                        handle_transport_event_async(event.speaker_ip, transport_event).await;
+                    }
+                    EventData::RenderingControlEvent(volume_event) => {
+                        handle_volume_event_async(event.speaker_ip, volume_event).await;
+                    }
+                    EventData::ZoneGroupTopologyEvent(topology) => {
+                        handle_topology_change_async(event.speaker_ip, topology).await;
+                    }
+                    EventData::DevicePropertiesEvent(device_event) => {
+                        handle_device_properties_async(event.speaker_ip, device_event).await;
+                    }
                 }
 
                 println!();
@@ -106,11 +111,11 @@ EventData::DevicePropertiesChange(_device_properties_delta) => todo!(),
     Ok(())
 }
 
-/// Handle transport changes asynchronously
-async fn handle_transport_change_async(device_ip: IpAddr, delta: AVTransportDelta) {
-    println!("🎵 Processing transport change asynchronously...");
+/// Handle transport events asynchronously
+async fn handle_transport_event_async(device_ip: IpAddr, transport_event: sonos_stream::events::types::AVTransportEvent) {
+    println!("🎵 Processing transport event asynchronously...");
 
-    if let Some(ref state) = delta.transport_state {
+    if let Some(ref state) = transport_event.transport_state {
         match state.as_str() {
             "PLAYING" => {
                 println!("   ▶️  Playback started on {}", device_ip);
@@ -131,69 +136,139 @@ async fn handle_transport_change_async(device_ip: IpAddr, delta: AVTransportDelt
         }
     }
 
-    if let Some(ref track_uri) = delta.current_track_uri {
+    if let Some(ref track_uri) = transport_event.current_track_uri {
         println!("   🎵 Track changed to: {}", track_uri);
         // Example: Update external playlist or database
         simulate_track_update(device_ip, track_uri).await;
     }
 
-    if let Some(ref position) = delta.rel_time {
+    if let Some(ref position) = transport_event.rel_time {
         println!("   ⏱️  Position updated: {}", position);
+    }
+
+    if let Some(ref metadata) = transport_event.track_metadata {
+        println!("   📄 Track metadata available ({} chars)", metadata.len());
     }
 }
 
-/// Handle volume changes asynchronously
-async fn handle_volume_change_async(device_ip: IpAddr, delta: RenderingControlDelta) {
-    println!("🔊 Processing volume change asynchronously...");
+/// Handle volume events asynchronously
+async fn handle_volume_event_async(device_ip: IpAddr, volume_event: sonos_stream::events::types::RenderingControlEvent) {
+    println!("🔊 Processing volume event asynchronously...");
 
-    if let Some(volume) = delta.volume {
-        println!("   🎚️  Volume changed to {} on {}", volume, device_ip);
+    if let Some(ref volume_str) = volume_event.master_volume {
+        if let Ok(volume) = volume_str.parse::<u16>() {
+            println!("   🎚️  Volume changed to {} on {}", volume, device_ip);
 
-        // Example: Adjust related systems based on volume
-        if volume == 0 {
-            simulate_external_notification("volume_muted", device_ip).await;
-        } else if volume > 75 {
-            simulate_external_notification("volume_high", device_ip).await;
+            // Example: Adjust related systems based on volume
+            if volume == 0 {
+                simulate_external_notification("volume_muted", device_ip).await;
+            } else if volume > 75 {
+                simulate_external_notification("volume_high", device_ip).await;
+            }
         }
     }
 
-    if let Some(mute) = delta.mute {
+    if let Some(ref mute_str) = volume_event.master_mute {
+        let mute = mute_str == "1" || mute_str.to_lowercase() == "true";
         println!("   🔇 Mute {} on {}", if mute { "enabled" } else { "disabled" }, device_ip);
         if mute {
             simulate_external_notification("device_muted", device_ip).await;
         }
     }
+
+    if let Some(ref bass) = volume_event.bass {
+        println!("   🎵 Bass level: {}", bass);
+    }
+
+    if let Some(ref treble) = volume_event.treble {
+        println!("   🎶 Treble level: {}", treble);
+    }
 }
 
-/// Handle transport resync events asynchronously
-async fn handle_transport_resync_async(
+/// Handle topology changes asynchronously
+async fn handle_topology_change_async(
     device_ip: IpAddr,
-    full_state: sonos_stream::events::types::AVTransportFullState,
-    source: &sonos_stream::events::types::EventSource
+    topology: sonos_stream::events::types::ZoneGroupTopologyEvent
 ) {
-    println!("🔄 Processing transport resync asynchronously...");
-    println!("   Reason: {}", format_resync_reason(source));
-    println!("   Device: {}", device_ip);
+    println!("🏠 Processing topology change asynchronously...");
+    println!("   📡 Received from: {}", device_ip);
+    println!("   🔢 Zone groups: {}", topology.zone_groups.len());
 
-    // In a real application, you would:
-    // 1. Update your complete local state with the full_state
-    // 2. Potentially notify other systems about the resync
-    // 3. Log the resync event for monitoring
+    // Analyze topology changes
+    let total_speakers = topology.zone_groups.iter()
+        .map(|group| group.members.len() + group.members.iter().map(|m| m.satellites.len()).sum::<usize>())
+        .sum::<usize>();
 
-    simulate_resync_notification(device_ip, "transport").await;
+    println!("   📊 Total speakers in household: {}", total_speakers);
+
+    // Process each zone group
+    for (i, group) in topology.zone_groups.iter().enumerate() {
+        println!("   🏠 Group {}: {} ({} members)",
+                 i + 1, group.coordinator, group.members.len());
+
+        // Check for multi-room groups
+        if group.members.len() > 1 {
+            let zone_names: Vec<&str> = group.members.iter()
+                .map(|m| m.zone_name.as_str())
+                .collect();
+            println!("      🔗 Multi-room group: {}", zone_names.join(" + "));
+
+            // Example: Notify external system about multi-room group
+            simulate_external_notification("multiroom_group_detected", device_ip).await;
+        }
+
+        // Check for home theater setups
+        for member in &group.members {
+            if !member.satellites.is_empty() {
+                println!("      🎭 Home theater setup detected in {}: {} satellites",
+                         member.zone_name, member.satellites.len());
+                simulate_external_notification("hometheater_detected", device_ip).await;
+            }
+
+            // Check network configuration
+            if member.network_info.wifi_enabled == "1" {
+                println!("      📶 {} using WiFi on {}MHz",
+                         member.zone_name, member.network_info.channel_freq);
+            } else if member.network_info.eth_link == "1" {
+                println!("      🔌 {} using Ethernet", member.zone_name);
+            }
+        }
+    }
+
+    // Example: Update external topology database
+    simulate_topology_update(device_ip, &topology).await;
 }
 
-/// Handle volume resync events asynchronously
-async fn handle_volume_resync_async(
+/// Handle device properties events asynchronously
+async fn handle_device_properties_async(
     device_ip: IpAddr,
-    full_state: sonos_stream::events::types::RenderingControlFullState,
-    source: &sonos_stream::events::types::EventSource
+    device_event: sonos_stream::events::types::DevicePropertiesEvent
 ) {
-    println!("🔊 Processing volume resync asynchronously...");
-    println!("   Reason: {}", format_resync_reason(source));
+    println!("⚙️  Processing device properties event asynchronously...");
     println!("   Device: {}", device_ip);
 
-    simulate_resync_notification(device_ip, "volume").await;
+    if let Some(ref zone_name) = device_event.zone_name {
+        println!("   📍 Zone name: {}", zone_name);
+        // Example: Update room database
+        simulate_external_notification("zone_renamed", device_ip).await;
+    }
+
+    if let Some(ref model) = device_event.model_name {
+        println!("   📱 Model: {}", model);
+    }
+
+    if let Some(ref version) = device_event.software_version {
+        println!("   💾 Software version: {}", version);
+        // Example: Track firmware updates
+        simulate_external_notification("firmware_updated", device_ip).await;
+    }
+
+    if let Some(ref config) = device_event.configuration {
+        println!("   ⚙️  Configuration: {}", config);
+    }
+
+    // Example: Update device registry
+    simulate_device_update(device_ip, &device_event).await;
 }
 
 /// Demonstrate additional async iterator features
@@ -232,7 +307,6 @@ async fn demonstrate_async_features(events: &mut sonos_stream::events::iterator:
     println!("\nIterator Statistics:");
     println!("  Events received: {}", stats.events_received);
     println!("  Events delivered: {}", stats.events_delivered);
-    println!("  Resync events: {}", stats.resync_events_emitted);
     println!("  Timeouts: {}", stats.timeouts);
     println!("  Delivery rate: {:.1}%", stats.delivery_rate() * 100.0);
 }
@@ -251,11 +325,32 @@ async fn simulate_track_update(device_ip: IpAddr, track_uri: &str) {
     println!("   💾 Updated track database: {} -> {}", device_ip, track_uri);
 }
 
-/// Simulate resync notification to monitoring system
-async fn simulate_resync_notification(device_ip: IpAddr, component: &str) {
-    // Simulate async monitoring notification
-    tokio::time::sleep(Duration::from_millis(75)).await;
-    println!("   🔄 Sent resync notification: {} {} resynced", device_ip, component);
+
+/// Simulate topology database update
+async fn simulate_topology_update(
+    device_ip: IpAddr,
+    topology: &sonos_stream::events::types::ZoneGroupTopologyEvent
+) {
+    // Simulate async database update
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    println!("   💾 Updated topology database: {} with {} groups",
+             device_ip, topology.zone_groups.len());
+}
+
+/// Simulate device properties database update
+async fn simulate_device_update(
+    device_ip: IpAddr,
+    device_event: &sonos_stream::events::types::DevicePropertiesEvent
+) {
+    // Simulate async database update
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let properties_count = [
+        &device_event.zone_name, &device_event.model_name,
+        &device_event.software_version, &device_event.configuration
+    ].iter().filter(|prop| prop.is_some()).count();
+
+    println!("   💾 Updated device database: {} with {} properties",
+             device_ip, properties_count);
 }
 
 /// Format event source for display
@@ -269,31 +364,6 @@ fn format_event_source(source: &sonos_stream::events::types::EventSource) -> Str
         EventSource::PollingDetection { poll_interval } => {
             format!("Polling ({}s)", poll_interval.as_secs())
         }
-        EventSource::ResyncDetection { reason } => {
-            format!("Resync ({})", format_resync_reason_enum(reason))
-        }
     }
 }
 
-/// Format resync reason for display
-fn format_resync_reason(source: &sonos_stream::events::types::EventSource) -> String {
-    use sonos_stream::events::types::EventSource;
-
-    match source {
-        EventSource::ResyncDetection { reason } => format_resync_reason_enum(reason),
-        _ => "not a resync event".to_string(),
-    }
-}
-
-/// Format resync reason enum for display
-fn format_resync_reason_enum(reason: &ResyncReason) -> String {
-    match reason {
-        ResyncReason::EventTimeoutDetected => "event timeout detected".to_string(),
-        ResyncReason::PollingDiscrepancy => "polling found different state".to_string(),
-        ResyncReason::SubscriptionRenewal => "subscription was renewed".to_string(),
-        ResyncReason::ExplicitRefresh => "explicit refresh requested".to_string(),
-        ResyncReason::FirewallBlocked => todo!(),
-        ResyncReason::NetworkIssues => todo!(),
-        ResyncReason::InitialState => todo!(),
-    }
-}

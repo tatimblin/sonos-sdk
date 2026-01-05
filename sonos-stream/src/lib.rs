@@ -13,7 +13,7 @@
 //! - **Optimal State Management**: Provides both sync and async iterator interfaces, with sync being
 //!   best practice for local state management
 //! - **Changes Only Pattern**: Events contain only deltas, consumers handle initial state via queries
-//! - **Automatic Resync**: System detects state drift and emits resync events with full state
+//! - **Intelligent Fallback**: Automatically falls back to polling when events are unavailable
 //! - **Resource Efficient**: Shares HTTP clients and connection pools across operations
 //!
 //! ## Basic Usage
@@ -59,7 +59,7 @@ pub mod subscription;
 pub use broker::{EventBroker, PollingReason, RegistrationResult};
 pub use config::BrokerConfig;
 pub use error::{BrokerError, PollingError, RegistryError, SubscriptionError};
-pub use events::types::{EnrichedEvent, EventData, EventSource, ResyncReason};
+pub use events::types::{EnrichedEvent, EventData, EventSource};
 pub use events::iterator::EventIterator;
 pub use registry::{RegistrationId, SpeakerServicePair};
 

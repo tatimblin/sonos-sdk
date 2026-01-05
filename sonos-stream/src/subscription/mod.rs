@@ -7,5 +7,5 @@
 pub mod event_detector;
 pub mod manager;
 
-pub use event_detector::{EventDetector, ResyncDetector};
+pub use event_detector::EventDetector;
 pub use manager::{ManagedSubscriptionWrapper, SubscriptionManager};

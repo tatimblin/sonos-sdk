@@ -9,7 +9,6 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 # Local workspace dependencies
 callback-server = { path = "../callback-server" }
-sonos-parser = { path = "../sonos-parser" }
 sonos-api = { path = "../sonos-api" }
 sonos-discovery = { path = "../sonos-discovery" }
 soap-client = { path = "../soap-client" }
