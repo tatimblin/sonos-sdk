@@ -1,0 +1,19 @@
+[package]
+name = "sonos-state"
+version = "0.1.0"
+edition = "2021"
+description = "State management for Sonos devices"
+license = "MIT"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+url = "2.5"
+
+# Workspace dependencies
+sonos-api = { path = "../sonos-api" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+sonos-discovery = { path = "../sonos-discovery" }
+sonos-stream = { path = "../sonos-stream" }
+ctrlc = "3.4"
