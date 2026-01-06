@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 
 /// Information about a Sonos speaker device
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Speaker {
     /// Unique speaker identifier
     pub id: SpeakerId,
