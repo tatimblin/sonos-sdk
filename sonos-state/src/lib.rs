@@ -85,7 +85,7 @@ pub use property::{
 };
 
 // Model types
-pub use model::{Group, GroupId, Speaker, SpeakerId, SpeakerInfo, SpeakerRef};
+pub use model::{GroupId, Speaker, SpeakerId, SpeakerInfo};
 
 // Decoder types
 pub use decoder::{
