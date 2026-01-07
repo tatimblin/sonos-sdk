@@ -5,7 +5,6 @@
 
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
-use std::collections::HashMap;
 
 use crate::{Result, Service, ApiError};
 use crate::events::{EnrichedEvent, EventSource, EventParser, xml_utils};
@@ -14,8 +13,9 @@ use crate::events::{EnrichedEvent, EventSource, EventParser, xml_utils};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename = "propertyset")]
 pub struct ZoneGroupTopologyEvent {
-    #[serde(rename = "property")]
-    property: ZoneGroupTopologyProperty,
+    /// Multiple property elements can exist in a single event
+    #[serde(rename = "property", default)]
+    properties: Vec<ZoneGroupTopologyProperty>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,8 +62,79 @@ struct ZoneGroupMember {
     #[serde(rename = "@SoftwareVersion", default)]
     software_version: Option<String>,
 
-    #[serde(flatten)]
-    other_attributes: HashMap<String, String>,
+    #[serde(rename = "@WirelessMode", default)]
+    wireless_mode: Option<String>,
+
+    #[serde(rename = "@WifiEnabled", default)]
+    wifi_enabled: Option<String>,
+
+    #[serde(rename = "@EthLink", default)]
+    eth_link: Option<String>,
+
+    #[serde(rename = "@ChannelFreq", default)]
+    channel_freq: Option<String>,
+
+    #[serde(rename = "@BehindWifiExtender", default)]
+    behind_wifi_extender: Option<String>,
+
+    #[serde(rename = "@HTSatChanMapSet", default)]
+    ht_sat_chan_map_set: Option<String>,
+
+    #[serde(rename = "@Icon", default)]
+    icon: Option<String>,
+
+    #[serde(rename = "@Invisible", default)]
+    invisible: Option<String>,
+
+    #[serde(rename = "@IsZoneBridge", default)]
+    is_zone_bridge: Option<String>,
+
+    #[serde(rename = "@BootSeq", default)]
+    boot_seq: Option<String>,
+
+    #[serde(rename = "@TVConfigurationError", default)]
+    tv_configuration_error: Option<String>,
+
+    #[serde(rename = "@HdmiCecAvailable", default)]
+    hdmi_cec_available: Option<String>,
+
+    #[serde(rename = "@HasConfiguredSSID", default)]
+    has_configured_ssid: Option<String>,
+
+    #[serde(rename = "@MicEnabled", default)]
+    mic_enabled: Option<String>,
+
+    #[serde(rename = "@AirPlayEnabled", default)]
+    airplay_enabled: Option<String>,
+
+    #[serde(rename = "@IdleState", default)]
+    idle_state: Option<String>,
+
+    #[serde(rename = "@MoreInfo", default)]
+    more_info: Option<String>,
+
+    /// Nested satellite speakers (for home theater setups with sub/surrounds)
+    #[serde(rename = "Satellite", default)]
+    satellites: Vec<Satellite>,
+}
+
+/// A satellite speaker in a home theater setup (subwoofer, surround speakers)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Satellite {
+    #[serde(rename = "@UUID")]
+    uuid: String,
+
+    #[serde(rename = "@Location", default)]
+    location: Option<String>,
+
+    #[serde(rename = "@ZoneName", default)]
+    zone_name: Option<String>,
+
+    #[serde(rename = "@HTSatChanMapSet", default)]
+    ht_sat_chan_map_set: Option<String>,
+
+    #[serde(rename = "@Invisible", default)]
+    invisible: Option<String>,
 }
 
 /// Information about a single zone group (public interface for sonos-stream)
@@ -83,7 +154,6 @@ pub struct ZoneGroupMemberInfo {
     pub software_version: String,
     pub network_info: NetworkInfo,
     pub satellites: Vec<SatelliteInfo>,
-    pub metadata: HashMap<String, String>,
 }
 
 /// Network configuration information for a speaker
@@ -121,7 +191,11 @@ pub struct SatelliteInfo {
 impl ZoneGroupTopologyEvent {
     /// Get zone groups from the topology event
     pub fn zone_groups(&self) -> Vec<ZoneGroupInfo> {
-        if let Some(zone_group_state) = &self.property.zone_group_state {
+        // Find the first property with zone_group_state
+        let zone_group_state = self.properties.iter()
+            .find_map(|p| p.zone_group_state.as_ref());
+
+        if let Some(zone_group_state) = zone_group_state {
             zone_group_state.zone_groups.zone_groups.iter().map(|group| {
                 ZoneGroupInfo {
                     coordinator: group.coordinator.clone(),
@@ -133,14 +207,21 @@ impl ZoneGroupTopologyEvent {
                             zone_name: member.zone_name.clone(),
                             software_version: member.software_version.clone().unwrap_or_default(),
                             network_info: NetworkInfo {
-                                wireless_mode: member.other_attributes.get("WirelessMode").cloned().unwrap_or_default(),
-                                wifi_enabled: member.other_attributes.get("WifiEnabled").cloned().unwrap_or_default(),
-                                eth_link: member.other_attributes.get("EthLink").cloned().unwrap_or_default(),
-                                channel_freq: member.other_attributes.get("ChannelFreq").cloned().unwrap_or_default(),
-                                behind_wifi_extender: member.other_attributes.get("BehindWifiExtender").cloned().unwrap_or_default(),
+                                wireless_mode: member.wireless_mode.clone().unwrap_or_default(),
+                                wifi_enabled: member.wifi_enabled.clone().unwrap_or_default(),
+                                eth_link: member.eth_link.clone().unwrap_or_default(),
+                                channel_freq: member.channel_freq.clone().unwrap_or_default(),
+                                behind_wifi_extender: member.behind_wifi_extender.clone().unwrap_or_default(),
                             },
-                            satellites: Vec::new(), // Simplified for now
-                            metadata: member.other_attributes.clone(),
+                            satellites: member.satellites.iter().map(|sat| {
+                                SatelliteInfo {
+                                    uuid: sat.uuid.clone(),
+                                    location: sat.location.clone().unwrap_or_default(),
+                                    zone_name: sat.zone_name.clone().unwrap_or_default(),
+                                    ht_sat_chan_map_set: sat.ht_sat_chan_map_set.clone().unwrap_or_default(),
+                                    invisible: sat.invisible.clone().unwrap_or_default(),
+                                }
+                            }).collect(),
                         }
                     }).collect(),
                 }
@@ -228,7 +309,6 @@ mod tests {
                 behind_wifi_extender: "0".to_string(),
             },
             satellites: Vec::new(),
-            metadata: HashMap::new(),
         };
 
         let zone_group = ZoneGroupInfo {
@@ -248,9 +328,9 @@ mod tests {
         };
 
         let event = ZoneGroupTopologyEvent {
-            property: ZoneGroupTopologyProperty {
+            properties: vec![ZoneGroupTopologyProperty {
                 zone_group_state: Some(event_data),
-            }
+            }]
         };
 
         let zone_groups = event.zone_groups();
@@ -265,9 +345,9 @@ mod tests {
             subscription_id: "uuid:123".to_string(),
         };
         let event_data = ZoneGroupTopologyEvent {
-            property: ZoneGroupTopologyProperty {
+            properties: vec![ZoneGroupTopologyProperty {
                 zone_group_state: None,
-            }
+            }]
         };
 
         let enriched = create_enriched_event(ip, source, event_data);
@@ -284,13 +364,88 @@ mod tests {
             subscription_id: "uuid:123".to_string(),
         };
         let event_data = ZoneGroupTopologyEvent {
-            property: ZoneGroupTopologyProperty {
+            properties: vec![ZoneGroupTopologyProperty {
                 zone_group_state: None,
-            }
+            }]
         };
 
         let enriched = create_enriched_event_with_registration_id(42, ip, source, event_data);
 
         assert_eq!(enriched.registration_id, Some(42));
+    }
+}
+#[cfg(test)]
+mod xml_parsing_tests {
+    use super::*;
+
+    #[test]
+    fn test_multi_property_event() {
+        // Real Sonos events can have multiple <e:property> elements
+        let xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0">
+<e:property>
+<ZoneGroupState>&lt;ZoneGroupState&gt;&lt;ZoneGroups&gt;&lt;ZoneGroup Coordinator="RINCON_5CAAFDAE58BD01400" ID="RINCON_5CAAFDAE58BD01400:0"&gt;&lt;ZoneGroupMember UUID="RINCON_5CAAFDAE58BD01400" Location="http://192.168.1.100:1400/xml/device_description.xml" ZoneName="Living Room"/&gt;&lt;/ZoneGroup&gt;&lt;/ZoneGroups&gt;&lt;/ZoneGroupState&gt;</ZoneGroupState>
+</e:property>
+<e:property>
+<ThirdPartyMediaServersX></ThirdPartyMediaServersX>
+</e:property>
+</e:propertyset>"#;
+
+        let result = ZoneGroupTopologyEvent::from_xml(xml);
+        assert!(result.is_ok(), "Failed to parse multi-property event: {:?}", result);
+
+        let event = result.unwrap();
+        let zone_groups = event.zone_groups();
+        assert_eq!(zone_groups.len(), 1);
+        assert_eq!(zone_groups[0].members[0].zone_name, "Living Room");
+    }
+
+    #[test]
+    fn test_empty_zone_group_state() {
+        let xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0">
+<e:property>
+<ZoneGroupState></ZoneGroupState>
+</e:property>
+</e:propertyset>"#;
+
+        let result = ZoneGroupTopologyEvent::from_xml(xml);
+        assert!(result.is_ok(), "Failed with empty ZoneGroupState: {:?}", result);
+
+        let event = result.unwrap();
+        assert!(event.zone_groups().is_empty());
+    }
+
+    #[test]
+    fn test_non_zone_group_state_property() {
+        let xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0">
+<e:property>
+<ThirdPartyMediaServersX></ThirdPartyMediaServersX>
+</e:property>
+</e:propertyset>"#;
+
+        let result = ZoneGroupTopologyEvent::from_xml(xml);
+        assert!(result.is_ok());
+
+        let event = result.unwrap();
+        assert!(event.zone_groups().is_empty());
+    }
+
+    #[test]
+    fn test_home_theater_with_satellites() {
+        // Test with nested Satellite elements inside ZoneGroupMember (common in Sonos home theater setups)
+        let xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0">
+<e:property>
+<ZoneGroupState>&lt;ZoneGroupState&gt;&lt;ZoneGroups&gt;&lt;ZoneGroup Coordinator=&quot;RINCON_123&quot; ID=&quot;RINCON_123:0&quot;&gt;&lt;ZoneGroupMember UUID=&quot;RINCON_123&quot; Location=&quot;http://192.168.1.100:1400/xml/device_description.xml&quot; ZoneName=&quot;Living Room&quot;&gt;&lt;Satellite UUID=&quot;RINCON_456&quot; Location=&quot;http://192.168.1.101:1400/xml/device_description.xml&quot; ZoneName=&quot;Sub&quot;/&gt;&lt;/ZoneGroupMember&gt;&lt;/ZoneGroup&gt;&lt;/ZoneGroups&gt;&lt;/ZoneGroupState&gt;</ZoneGroupState>
+</e:property>
+</e:propertyset>"#;
+
+        let result = ZoneGroupTopologyEvent::from_xml(xml);
+        assert!(result.is_ok(), "Failed with satellites: {:?}", result);
+
+        let event = result.unwrap();
+        let zone_groups = event.zone_groups();
+        assert_eq!(zone_groups.len(), 1);
+        assert_eq!(zone_groups[0].members.len(), 1);
+        assert_eq!(zone_groups[0].members[0].satellites.len(), 1);
+        assert_eq!(zone_groups[0].members[0].satellites[0].uuid, "RINCON_456");
     }
 }

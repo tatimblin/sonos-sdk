@@ -255,7 +255,6 @@ impl EventProcessor {
                                 behind_wifi_extender: member.network_info.behind_wifi_extender,
                             },
                             satellites: stream_satellites,
-                            metadata: member.metadata,
                         }
                     }).collect();
 
