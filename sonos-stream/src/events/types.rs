@@ -273,9 +273,6 @@ pub struct ZoneGroupMemberInfo {
 
     /// Satellite speakers for home theater configurations
     pub satellites: Vec<SatelliteInfo>,
-
-    /// Additional metadata (can be extended as needed)
-    pub metadata: std::collections::HashMap<String, String>,
 }
 
 /// Network configuration information for a speaker.

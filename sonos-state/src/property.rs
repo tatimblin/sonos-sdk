@@ -1,0 +1,507 @@
+//! Property trait and built-in properties for Sonos state management
+//!
+//! Properties are the fundamental unit of state in sonos-state. Each property:
+//! - Has a unique key for identification
+//! - Belongs to a scope (Speaker, Group, or System)
+//! - Is associated with a UPnP service (for subscription hints)
+//! - Can be watched for changes using tokio::sync::watch channels
+
+use serde::{Deserialize, Serialize};
+use sonos_api::Service;
+
+use crate::model::{GroupId, SpeakerInfo};
+
+// ============================================================================
+// Core Types
+// ============================================================================
+
+/// Scope of a property - determines where it's stored and how it's queried
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Scope {
+    /// Property belongs to individual speakers (e.g., volume, mute)
+    Speaker,
+    /// Property belongs to groups/zones (e.g., group playback state)
+    Group,
+    /// Property is system-wide (e.g., topology, alarms)
+    System,
+}
+
+/// Marker trait for properties that can be stored and watched
+///
+/// Properties must be:
+/// - Clone: For copying values to watchers
+/// - Send + Sync: For thread-safe access
+/// - PartialEq: For change detection
+/// - 'static: For type-erased storage
+///
+/// # Example
+///
+/// ```rust,ignore
+/// #[derive(Clone, PartialEq, Debug)]
+/// pub struct Volume(pub u8);
+///
+/// impl Property for Volume {
+///     const KEY: &'static str = "volume";
+///     const SCOPE: Scope = Scope::Speaker;
+///     const SERVICE: Service = Service::RenderingControl;
+/// }
+/// ```
+pub trait Property: Clone + Send + Sync + PartialEq + 'static {
+    /// Unique key for this property (e.g., "volume", "playback_state")
+    ///
+    /// Used for debugging and logging. Must be unique within a scope.
+    const KEY: &'static str;
+
+    /// Scope of this property
+    const SCOPE: Scope;
+
+    /// UPnP service this property comes from
+    ///
+    /// Used for subscription hints - to know which services need subscriptions
+    /// when this property is being watched.
+    const SERVICE: Service;
+}
+
+// ============================================================================
+// Speaker-scoped Properties (from RenderingControl)
+// ============================================================================
+
+/// Master volume level (0-100)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Volume(pub u8);
+
+impl Property for Volume {
+    const KEY: &'static str = "volume";
+    const SCOPE: Scope = Scope::Speaker;
+    const SERVICE: Service = Service::RenderingControl;
+}
+
+impl Volume {
+    pub fn new(value: u8) -> Self {
+        Self(value.min(100))
+    }
+
+    pub fn value(&self) -> u8 {
+        self.0
+    }
+}
+
+/// Master mute state
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Mute(pub bool);
+
+impl Property for Mute {
+    const KEY: &'static str = "mute";
+    const SCOPE: Scope = Scope::Speaker;
+    const SERVICE: Service = Service::RenderingControl;
+}
+
+impl Mute {
+    pub fn new(muted: bool) -> Self {
+        Self(muted)
+    }
+
+    pub fn is_muted(&self) -> bool {
+        self.0
+    }
+}
+
+/// Bass EQ setting (-10 to +10)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Bass(pub i8);
+
+impl Property for Bass {
+    const KEY: &'static str = "bass";
+    const SCOPE: Scope = Scope::Speaker;
+    const SERVICE: Service = Service::RenderingControl;
+}
+
+impl Bass {
+    pub fn new(value: i8) -> Self {
+        Self(value.clamp(-10, 10))
+    }
+
+    pub fn value(&self) -> i8 {
+        self.0
+    }
+}
+
+/// Treble EQ setting (-10 to +10)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Treble(pub i8);
+
+impl Property for Treble {
+    const KEY: &'static str = "treble";
+    const SCOPE: Scope = Scope::Speaker;
+    const SERVICE: Service = Service::RenderingControl;
+}
+
+impl Treble {
+    pub fn new(value: i8) -> Self {
+        Self(value.clamp(-10, 10))
+    }
+
+    pub fn value(&self) -> i8 {
+        self.0
+    }
+}
+
+/// Loudness compensation setting
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Loudness(pub bool);
+
+impl Property for Loudness {
+    const KEY: &'static str = "loudness";
+    const SCOPE: Scope = Scope::Speaker;
+    const SERVICE: Service = Service::RenderingControl;
+}
+
+impl Loudness {
+    pub fn new(enabled: bool) -> Self {
+        Self(enabled)
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.0
+    }
+}
+
+// ============================================================================
+// Speaker-scoped Properties (from AVTransport)
+// ============================================================================
+
+/// Current playback state
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum PlaybackState {
+    Playing,
+    Paused,
+    Stopped,
+    Transitioning,
+}
+
+impl Property for PlaybackState {
+    const KEY: &'static str = "playback_state";
+    const SCOPE: Scope = Scope::Speaker;
+    const SERVICE: Service = Service::AVTransport;
+}
+
+impl PlaybackState {
+    /// Parse from UPnP transport state string
+    pub fn from_transport_state(state: &str) -> Self {
+        match state.to_uppercase().as_str() {
+            "PLAYING" => PlaybackState::Playing,
+            "PAUSED_PLAYBACK" | "PAUSED" => PlaybackState::Paused,
+            "STOPPED" => PlaybackState::Stopped,
+            "TRANSITIONING" => PlaybackState::Transitioning,
+            _ => PlaybackState::Stopped,
+        }
+    }
+
+    pub fn is_playing(&self) -> bool {
+        matches!(self, PlaybackState::Playing)
+    }
+
+    pub fn is_paused(&self) -> bool {
+        matches!(self, PlaybackState::Paused)
+    }
+
+    pub fn is_stopped(&self) -> bool {
+        matches!(self, PlaybackState::Stopped)
+    }
+}
+
+/// Current playback position and duration
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Position {
+    /// Current position in milliseconds
+    pub position_ms: u64,
+    /// Total duration in milliseconds
+    pub duration_ms: u64,
+}
+
+impl Property for Position {
+    const KEY: &'static str = "position";
+    const SCOPE: Scope = Scope::Speaker;
+    const SERVICE: Service = Service::AVTransport;
+}
+
+impl Position {
+    pub fn new(position_ms: u64, duration_ms: u64) -> Self {
+        Self {
+            position_ms,
+            duration_ms,
+        }
+    }
+
+    /// Get position as a fraction (0.0 to 1.0)
+    pub fn progress(&self) -> f64 {
+        if self.duration_ms == 0 {
+            0.0
+        } else {
+            (self.position_ms as f64) / (self.duration_ms as f64)
+        }
+    }
+
+    /// Parse time string (HH:MM:SS or HH:MM:SS.mmm) to milliseconds
+    pub fn parse_time_to_ms(time_str: &str) -> Option<u64> {
+        if !time_str.contains(':') {
+            return None;
+        }
+
+        let parts: Vec<&str> = time_str.split(':').collect();
+        if parts.len() != 3 {
+            return None;
+        }
+
+        let hours: u64 = parts[0].parse().ok()?;
+        let minutes: u64 = parts[1].parse().ok()?;
+
+        let seconds_parts: Vec<&str> = parts[2].split('.').collect();
+        let seconds: u64 = seconds_parts[0].parse().ok()?;
+        let millis: u64 = seconds_parts.get(1).and_then(|m| m.parse().ok()).unwrap_or(0);
+
+        Some((hours * 3600 + minutes * 60 + seconds) * 1000 + millis)
+    }
+}
+
+/// Information about the currently playing track
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CurrentTrack {
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub album_art_uri: Option<String>,
+    pub uri: Option<String>,
+}
+
+impl Property for CurrentTrack {
+    const KEY: &'static str = "current_track";
+    const SCOPE: Scope = Scope::Speaker;
+    const SERVICE: Service = Service::AVTransport;
+}
+
+impl CurrentTrack {
+    pub fn new() -> Self {
+        Self {
+            title: None,
+            artist: None,
+            album: None,
+            album_art_uri: None,
+            uri: None,
+        }
+    }
+
+    /// Check if the track has any meaningful content
+    pub fn is_empty(&self) -> bool {
+        self.title.is_none() && self.artist.is_none() && self.uri.is_none()
+    }
+
+    /// Get a display string for the track
+    pub fn display(&self) -> String {
+        match (&self.artist, &self.title) {
+            (Some(artist), Some(title)) => format!("{} - {}", artist, title),
+            (None, Some(title)) => title.clone(),
+            (Some(artist), None) => artist.clone(),
+            (None, None) => "Unknown".to_string(),
+        }
+    }
+}
+
+impl Default for CurrentTrack {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Speaker's group membership
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GroupMembership {
+    /// ID of the group this speaker belongs to (None if ungrouped)
+    pub group_id: Option<GroupId>,
+    /// Whether this speaker is the coordinator (master) of its group
+    pub is_coordinator: bool,
+}
+
+impl Property for GroupMembership {
+    const KEY: &'static str = "group_membership";
+    const SCOPE: Scope = Scope::Speaker;
+    const SERVICE: Service = Service::ZoneGroupTopology;
+}
+
+impl GroupMembership {
+    pub fn new(group_id: Option<GroupId>, is_coordinator: bool) -> Self {
+        Self {
+            group_id,
+            is_coordinator,
+        }
+    }
+
+    pub fn standalone() -> Self {
+        Self {
+            group_id: None,
+            is_coordinator: true,
+        }
+    }
+}
+
+// ============================================================================
+// System-scoped Properties
+// ============================================================================
+
+/// System-wide topology of all speakers and groups
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Topology {
+    pub speakers: Vec<SpeakerInfo>,
+    pub groups: Vec<GroupInfo>,
+}
+
+impl Property for Topology {
+    const KEY: &'static str = "topology";
+    const SCOPE: Scope = Scope::System;
+    const SERVICE: Service = Service::ZoneGroupTopology;
+}
+
+impl Topology {
+    pub fn new(speakers: Vec<SpeakerInfo>, groups: Vec<GroupInfo>) -> Self {
+        Self { speakers, groups }
+    }
+
+    pub fn empty() -> Self {
+        Self {
+            speakers: vec![],
+            groups: vec![],
+        }
+    }
+
+    pub fn speaker_count(&self) -> usize {
+        self.speakers.len()
+    }
+
+    pub fn group_count(&self) -> usize {
+        self.groups.len()
+    }
+}
+
+impl Default for Topology {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+/// Group information for topology
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GroupInfo {
+    pub id: GroupId,
+    pub coordinator_id: crate::model::SpeakerId,
+    pub member_ids: Vec<crate::model::SpeakerId>,
+}
+
+impl GroupInfo {
+    pub fn new(
+        id: GroupId,
+        coordinator_id: crate::model::SpeakerId,
+        member_ids: Vec<crate::model::SpeakerId>,
+    ) -> Self {
+        Self {
+            id,
+            coordinator_id,
+            member_ids,
+        }
+    }
+
+    pub fn is_standalone(&self) -> bool {
+        self.member_ids.len() == 1
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_volume_clamping() {
+        assert_eq!(Volume::new(50).value(), 50);
+        assert_eq!(Volume::new(150).value(), 100);
+        assert_eq!(Volume::new(0).value(), 0);
+    }
+
+    #[test]
+    fn test_bass_clamping() {
+        assert_eq!(Bass::new(0).value(), 0);
+        assert_eq!(Bass::new(-15).value(), -10);
+        assert_eq!(Bass::new(15).value(), 10);
+    }
+
+    #[test]
+    fn test_playback_state_parsing() {
+        assert_eq!(
+            PlaybackState::from_transport_state("PLAYING"),
+            PlaybackState::Playing
+        );
+        assert_eq!(
+            PlaybackState::from_transport_state("PAUSED_PLAYBACK"),
+            PlaybackState::Paused
+        );
+        assert_eq!(
+            PlaybackState::from_transport_state("STOPPED"),
+            PlaybackState::Stopped
+        );
+        assert_eq!(
+            PlaybackState::from_transport_state("unknown"),
+            PlaybackState::Stopped
+        );
+    }
+
+    #[test]
+    fn test_position_progress() {
+        let pos = Position::new(30_000, 180_000); // 30s / 3min
+        assert!((pos.progress() - 0.1667).abs() < 0.001);
+
+        let zero_duration = Position::new(1000, 0);
+        assert_eq!(zero_duration.progress(), 0.0);
+    }
+
+    #[test]
+    fn test_position_time_parsing() {
+        assert_eq!(Position::parse_time_to_ms("0:00:00"), Some(0));
+        assert_eq!(Position::parse_time_to_ms("0:01:00"), Some(60_000));
+        assert_eq!(Position::parse_time_to_ms("1:00:00"), Some(3_600_000));
+        assert_eq!(Position::parse_time_to_ms("0:03:45"), Some(225_000));
+        assert_eq!(Position::parse_time_to_ms("0:03:45.500"), Some(225_500));
+        assert_eq!(Position::parse_time_to_ms("NOT_IMPLEMENTED"), None);
+    }
+
+    #[test]
+    fn test_current_track_display() {
+        let track = CurrentTrack {
+            title: Some("Song".to_string()),
+            artist: Some("Artist".to_string()),
+            album: None,
+            album_art_uri: None,
+            uri: None,
+        };
+        assert_eq!(track.display(), "Artist - Song");
+
+        let title_only = CurrentTrack {
+            title: Some("Song".to_string()),
+            artist: None,
+            album: None,
+            album_art_uri: None,
+            uri: None,
+        };
+        assert_eq!(title_only.display(), "Song");
+    }
+
+    #[test]
+    fn test_property_constants() {
+        assert_eq!(Volume::KEY, "volume");
+        assert_eq!(Volume::SCOPE, Scope::Speaker);
+
+        assert_eq!(Topology::KEY, "topology");
+        assert_eq!(Topology::SCOPE, Scope::System);
+    }
+}
