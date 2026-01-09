@@ -19,27 +19,26 @@
 //! # Quick Start
 //!
 //! ```rust,ignore
-//! use sonos_state::{StateManager, RawEvent, Volume, PlaybackState};
+//! use sonos_state::{StateManager, Volume};
+//! use sonos_discovery;
 //!
-//! // Create state manager
-//! let mut manager = StateManager::new();
+//! // Create state manager with automatic event processing
+//! let mut manager = StateManager::new().await?;
+//! let devices = sonos_discovery::get();
+//! manager.add_devices(devices).await?;
 //!
-//! // Process incoming events
-//! manager.process(event);
-//!
-//! // Query current state
-//! if let Some(vol) = manager.store().get::<Volume>(&speaker_id) {
-//!     println!("Volume: {}%", vol.0);
+//! // Watch for property changes - automatic subscription management
+//! let mut volume_watcher = manager.watch_property::<Volume>(speaker_id).await?;
+//! while volume_watcher.changed().await.is_ok() {
+//!     if let Some(volume) = volume_watcher.current() {
+//!         println!("Volume: {}%", volume.0);
+//!     }
 //! }
 //!
-//! // Watch for changes (reactive)
-//! let mut rx = manager.store().watch::<Volume>(&speaker_id);
-//! tokio::spawn(async move {
-//!     loop {
-//!         rx.changed().await.unwrap();
-//!         println!("Volume changed: {:?}", *rx.borrow());
-//!     }
-//! });
+//! // Or get current value without watching
+//! if let Some(vol) = manager.get_property::<Volume>(&speaker_id) {
+//!     println!("Current volume: {}%", vol.0);
+//! }
 //! ```
 //!
 //! # Sync Usage (CLI)
@@ -61,9 +60,14 @@ pub mod decoder;
 pub mod decoders;
 pub mod model;
 pub mod property;
-pub mod state_manager;
 pub mod store;
 pub mod watcher;
+
+// Internal state manager (used by reactive system)
+mod state_manager;
+
+// Reactive state manager (main interface)
+pub mod reactive;
 
 // Error types
 pub mod error;
@@ -72,8 +76,8 @@ pub mod error;
 // Re-exports - New API
 // ============================================================================
 
-// State Manager (main entry point)
-pub use state_manager::StateManager;
+// Main reactive state manager
+pub use reactive::StateManager;
 
 // Store
 pub use store::{StateChange, StateStore};
@@ -99,6 +103,9 @@ pub use decoders::{AVTransportDecoder, RenderingControlDecoder, TopologyDecoder}
 // Watcher utilities
 pub use watcher::{SyncWatchExt, SyncWatcher};
 
+// Reactive property watcher
+pub use reactive::PropertyWatcher;
+
 // ============================================================================
 // Re-exports - Error types
 // ============================================================================
@@ -115,7 +122,7 @@ pub mod prelude {
         Bass, CurrentTrack, GroupMembership, Loudness, Mute, PlaybackState, Position, Property,
         Scope, Topology, Treble, Volume,
     };
-    pub use crate::state_manager::StateManager;
+    pub use crate::reactive::{StateManager, PropertyWatcher};
     pub use crate::store::{StateChange, StateStore};
     pub use crate::model::{GroupId, SpeakerId, SpeakerInfo};
     pub use crate::decoder::RawEvent;

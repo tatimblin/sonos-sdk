@@ -110,6 +110,8 @@ impl EventProcessor {
         );
 
         // Send enriched event
+        eprintln!("📤 ROUTING EVENT: {} {:?} to EventIterator channel",
+                       enriched_event.speaker_ip, enriched_event.service);
         self.event_sender
             .send(enriched_event)
             .map_err(|_| EventProcessingError::ChannelClosed)?;
@@ -132,6 +134,8 @@ impl EventProcessor {
         }
 
         // Send the event (it's already enriched)
+        eprintln!("📤 ROUTING POLLING EVENT: {} {:?} to EventIterator channel",
+                       event.speaker_ip, event.service);
         self.event_sender
             .send(event)
             .map_err(|_| EventProcessingError::ChannelClosed)?;
@@ -154,6 +158,8 @@ impl EventProcessor {
         }
 
         // Send the event (it's already enriched)
+        eprintln!("📤 ROUTING RESYNC EVENT: {} {:?} to EventIterator channel",
+                       event.speaker_ip, event.service);
         self.event_sender
             .send(event)
             .map_err(|_| EventProcessingError::ChannelClosed)?;
@@ -282,15 +288,35 @@ impl EventProcessor {
     ) {
         eprintln!("📡 Starting UPnP event processing (using sonos-api framework)");
 
-        while let Some(payload) = upnp_receiver.recv().await {
-            match self.process_upnp_notification(payload).await {
-                Ok(()) => {
-                    // Event processed successfully
+        let mut event_count = 0;
+        loop {
+            tokio::select! {
+                maybe_payload = upnp_receiver.recv() => {
+                    match maybe_payload {
+                        Some(payload) => {
+                            event_count += 1;
+                            eprintln!("🎯 UPNP PROCESSOR: Received UPnP event #{}: SID={}",
+                                          event_count, payload.subscription_id);
+
+                            match self.process_upnp_notification(payload).await {
+                                Ok(()) => {
+                                    eprintln!("✅ UPNP PROCESSOR: Event #{} processed successfully", event_count);
+                                }
+                                Err(e) => {
+                                    eprintln!("❌ UPNP PROCESSOR: Failed to process UPnP event #{}: {}", event_count, e);
+                                    let mut stats = self.stats.write().await;
+                                    stats.processing_errors += 1;
+                                }
+                            }
+                        }
+                        None => {
+                            eprintln!("🚫 UPNP PROCESSOR: UPnP receiver channel closed");
+                            break;
+                        }
+                    }
                 }
-                Err(e) => {
-                    eprintln!("❌ Failed to process UPnP event: {}", e);
-                    let mut stats = self.stats.write().await;
-                    stats.processing_errors += 1;
+                _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+                    eprintln!("🕐 UPNP PROCESSOR: Still waiting for UPnP events (processed {} so far)", event_count);
                 }
             }
         }
