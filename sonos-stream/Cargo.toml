@@ -30,6 +30,9 @@ url = "2.4"
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 
+# Logging
+tracing = "0.1"
+
 # HTTP and networking
 reqwest = "0.11"
 warp = "0.3"

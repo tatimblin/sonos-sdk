@@ -27,10 +27,22 @@ pub enum StateError {
     LockError(String),
 
     /// Speaker not found
-    SpeakerNotFound(String),
+    SpeakerNotFound(crate::model::SpeakerId),
 
     /// Invalid URL
     InvalidUrl(String),
+
+    /// Initialization failed
+    InitializationFailed(String),
+
+    /// Device registration failed
+    DeviceRegistrationFailed(String),
+
+    /// Subscription failed
+    SubscriptionFailed(String),
+
+    /// Invalid IP address
+    InvalidIpAddress(String),
 }
 
 impl fmt::Display for StateError {
@@ -42,8 +54,12 @@ impl fmt::Display for StateError {
             StateError::AlreadyRunning => write!(f, "State manager is already running"),
             StateError::ShutdownFailed => write!(f, "Shutdown failed"),
             StateError::LockError(msg) => write!(f, "Lock error: {}", msg),
-            StateError::SpeakerNotFound(id) => write!(f, "Speaker not found: {}", id),
+            StateError::SpeakerNotFound(id) => write!(f, "Speaker not found: {:?}", id),
             StateError::InvalidUrl(url) => write!(f, "Invalid URL: {}", url),
+            StateError::InitializationFailed(msg) => write!(f, "Initialization failed: {}", msg),
+            StateError::DeviceRegistrationFailed(msg) => write!(f, "Device registration failed: {}", msg),
+            StateError::SubscriptionFailed(msg) => write!(f, "Subscription failed: {}", msg),
+            StateError::InvalidIpAddress(ip) => write!(f, "Invalid IP address: {}", ip),
         }
     }
 }

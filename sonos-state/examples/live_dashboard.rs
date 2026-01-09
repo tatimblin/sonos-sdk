@@ -1,28 +1,20 @@
-//! Live Dashboard - displays real-time Sonos state using the new sonos-state system
+//! Live Dashboard - displays real-time Sonos state using the consolidated reactive StateManager
 //!
 //! Run with: cargo run -p sonos-state --example live_dashboard
 
-use std::collections::HashMap;
-use std::net::IpAddr;
 use std::time::Duration;
 
-use sonos_api::Service;
 use sonos_state::{
-    decoder::{
-        AVTransportData, EventData, RawEvent, RenderingControlData, TopologyData, ZoneGroupData,
-        ZoneMemberData,
-    },
     model::SpeakerId,
     property::{CurrentTrack, GroupMembership, Mute, PlaybackState, Position, Volume},
     StateManager,
 };
-use sonos_stream::{BrokerConfig, EventBroker, EventData as StreamEventData, EnrichedEvent};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Sonos Live Dashboard ===\n");
 
-    // Step 1: Discover devices (run in blocking context since discovery uses blocking I/O)
+    // Step 1: Discover devices
     println!("Discovering Sonos devices...");
     let devices = tokio::task::spawn_blocking(|| {
         sonos_discovery::get_with_timeout(Duration::from_secs(5))
@@ -43,89 +35,67 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!();
 
-    // Step 2: Create StateManager
-    let mut manager = StateManager::new();
+    // Step 2: Create reactive StateManager (automatic event processing)
+    let manager = StateManager::new().await?;
 
-    // Step 3: Create EventBroker and register services
-    let mut broker = EventBroker::new(BrokerConfig::default()).await?;
+    // Step 3: Add devices (automatically sets up subscriptions as needed)
+    manager.add_devices(devices.clone()).await?;
 
-    // Register all devices for all relevant services
-    for device in &devices {
-        let ip: IpAddr = device.ip_address.parse()?;
-
-        // Register for RenderingControl (volume, mute)
-        if let Err(e) = broker
-            .register_speaker_service(ip, Service::RenderingControl)
-            .await
-        {
-            eprintln!(
-                "Warning: Failed to register RenderingControl for {}: {}",
-                device.name, e
-            );
-        }
-
-        // Register for AVTransport (playback state, track info)
-        if let Err(e) = broker
-            .register_speaker_service(ip, Service::AVTransport)
-            .await
-        {
-            eprintln!(
-                "Warning: Failed to register AVTransport for {}: {}",
-                device.name, e
-            );
-        }
-
-        // Register for ZoneGroupTopology (groups)
-        if let Err(e) = broker
-            .register_speaker_service(ip, Service::ZoneGroupTopology)
-            .await
-        {
-            eprintln!(
-                "Warning: Failed to register ZoneGroupTopology for {}: {}",
-                device.name, e
-            );
-        }
-
-        // Add speaker to state manager with basic info
-        manager
-            .store()
-            .add_speaker(sonos_state::model::SpeakerInfo {
-                id: SpeakerId::new(&device.id),
-                name: device.name.clone(),
-                room_name: device.name.clone(),
-                ip_address: ip,
-                port: 1400,
-                model_name: device.model_name.clone(),
-                software_version: "unknown".to_string(),
-                satellites: vec![],
-            });
-    }
-
-    // Build IP to speaker name map for display
-    let ip_to_name: HashMap<IpAddr, String> = devices
+    // Build speaker ID map for display
+    let speaker_info: Vec<_> = devices
         .iter()
-        .filter_map(|d| d.ip_address.parse().ok().map(|ip| (ip, d.name.clone())))
+        .map(|device| (SpeakerId::new(&device.id), device.name.clone()))
         .collect();
 
-    println!("Starting event stream (Ctrl+C to quit)...\n");
+    // Set up subscriptions for all properties we want to display
+    // This triggers automatic UPnP subscriptions
+    println!("Setting up property subscriptions...");
+    let mut _volume_watchers = Vec::new();
+    let mut _mute_watchers = Vec::new();
+    let mut _playback_watchers = Vec::new();
 
-    // Step 4: Process events using async iteration
-    let mut events = broker.event_iterator()?;
+    for (speaker_id, _) in &speaker_info {
+        // Set up watchers for properties we'll display
+        // The watchers will trigger automatic subscriptions
+        _volume_watchers.push(manager.watch_property::<Volume>(speaker_id.clone()).await?);
+        _mute_watchers.push(manager.watch_property::<Mute>(speaker_id.clone()).await?);
+        _playback_watchers.push(manager.watch_property::<PlaybackState>(speaker_id.clone()).await?);
 
-    while let Some(event) = events.next_async().await {
-        // Convert sonos-stream event to sonos-state RawEvent
-        if let Some(raw_event) = convert_event(&event) {
-            // Process through StateManager
-            let update_count = manager.process(raw_event);
+        // Uncomment these if you want to display track info (might take longer to set up)
+        // let _track_watcher = manager.watch_property::<CurrentTrack>(speaker_id.clone()).await?;
+        // let _position_watcher = manager.watch_property::<Position>(speaker_id.clone()).await?;
+        // let _group_watcher = manager.watch_property::<GroupMembership>(speaker_id.clone()).await?;
+    }
+    println!("✓ Property subscriptions set up");
 
-            if update_count > 0 {
-                // Print current state for this speaker
-                let speaker_name = ip_to_name
-                    .get(&event.speaker_ip)
-                    .map(|s| s.as_str())
-                    .unwrap_or("Unknown");
+    // Give subscriptions a moment to receive initial state
+    tokio::time::sleep(Duration::from_secs(2)).await;
 
-                print_speaker_state(&manager, &event.speaker_ip, speaker_name);
+    println!("Starting live dashboard (Ctrl+C to quit)...\n");
+
+    // Step 4: Periodically display current state
+    let mut interval = tokio::time::interval(Duration::from_secs(2));
+
+    loop {
+        interval.tick().await;
+
+        // Clear screen (simple approach)
+        print!("\x1B[2J\x1B[1;1H");
+
+        println!("=== Sonos Live Dashboard ===");
+        println!("Last updated: {}\n", chrono::Utc::now().format("%H:%M:%S"));
+
+        // Display state for each speaker
+        for (speaker_id, name) in &speaker_info {
+            print_speaker_state(&manager, speaker_id, name).await;
+        }
+
+        // Handle Ctrl+C gracefully
+        tokio::select! {
+            _ = interval.tick() => continue,
+            _ = tokio::signal::ctrl_c() => {
+                println!("\nShutting down...");
+                break;
             }
         }
     }
@@ -133,99 +103,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Convert a sonos-stream EnrichedEvent to a sonos-state RawEvent
-fn convert_event(event: &EnrichedEvent) -> Option<RawEvent> {
-    let data = match &event.event_data {
-        StreamEventData::RenderingControlEvent(rc) => {
-            let mut data = RenderingControlData::new();
-
-            if let Some(vol) = &rc.master_volume {
-                if let Ok(v) = vol.parse::<u8>() {
-                    data = data.with_volume(v);
-                }
-            }
-            if let Some(mute) = &rc.master_mute {
-                data = data.with_mute(mute == "1" || mute.to_lowercase() == "true");
-            }
-
-            EventData::RenderingControl(data)
-        }
-
-        StreamEventData::AVTransportEvent(av) => {
-            let mut data = AVTransportData::new();
-
-            if let Some(state) = &av.transport_state {
-                data = data.with_transport_state(state);
-            }
-
-            EventData::AVTransport(data)
-        }
-
-        StreamEventData::ZoneGroupTopologyEvent(topo) => {
-            let zone_groups = topo
-                .zone_groups
-                .iter()
-                .map(|zg| ZoneGroupData {
-                    id: zg.id.clone(),
-                    coordinator: zg.coordinator.clone(),
-                    members: zg
-                        .members
-                        .iter()
-                        .map(|m| ZoneMemberData {
-                            uuid: m.uuid.clone(),
-                            location: m.location.clone(),
-                            zone_name: m.zone_name.clone(),
-                            software_version: m.software_version.clone(),
-                            ip_address: parse_ip_from_location(&m.location),
-                            satellites: m.satellites.iter().map(|s| s.uuid.clone()).collect(),
-                        })
-                        .collect(),
-                })
-                .collect();
-
-            EventData::ZoneGroupTopology(TopologyData {
-                zone_groups,
-                vanished_devices: topo.vanished_devices.clone(),
-            })
-        }
-
-        StreamEventData::DevicePropertiesEvent(_) => {
-            return None;
-        }
-    };
-
-    Some(RawEvent::new(event.speaker_ip, event.service, data))
-}
-
-/// Parse IP address from a location URL
-fn parse_ip_from_location(location: &str) -> Option<IpAddr> {
-    let without_scheme = location.strip_prefix("http://")?;
-    let host_port = without_scheme.split('/').next()?;
-    let host = host_port.split(':').next()?;
-    host.parse().ok()
-}
-
-/// Print current state for a speaker
-fn print_speaker_state(manager: &StateManager, ip: &IpAddr, name: &str) {
-    let store = manager.store();
-
-    let Some(speaker_id) = store.speaker_id_for_ip(*ip) else {
-        return;
-    };
-
+/// Print current state for a speaker using the new consolidated API
+async fn print_speaker_state(manager: &StateManager, speaker_id: &SpeakerId, name: &str) {
     println!("--- {} ---", name);
 
-    // Volume & Mute
-    if let Some(vol) = store.get::<Volume>(&speaker_id) {
-        let mute_str = store
-            .get::<Mute>(&speaker_id)
+    // Volume & Mute (these will automatically subscribe to RenderingControl if needed)
+    if let Some(vol) = manager.get_property::<Volume>(speaker_id) {
+        let mute_str = manager
+            .get_property::<Mute>(speaker_id)
             .map(|m| if m.0 { " [MUTED]" } else { "" })
             .unwrap_or("");
         println!("  Volume: {}%{}", vol.0, mute_str);
     }
 
-    // Playback State
-    if let Some(state) = store.get::<PlaybackState>(&speaker_id) {
+    // Playback State (automatically subscribes to AVTransport if needed)
+    if let Some(state) = manager.get_property::<PlaybackState>(speaker_id) {
         let state_str = match state {
             PlaybackState::Playing => "Playing",
             PlaybackState::Paused => "Paused",
@@ -236,7 +128,7 @@ fn print_speaker_state(manager: &StateManager, ip: &IpAddr, name: &str) {
     }
 
     // Current Track
-    if let Some(track) = store.get::<CurrentTrack>(&speaker_id) {
+    if let Some(track) = manager.get_property::<CurrentTrack>(speaker_id) {
         if let Some(title) = &track.title {
             println!("  Track: {}", title);
         }
@@ -246,7 +138,7 @@ fn print_speaker_state(manager: &StateManager, ip: &IpAddr, name: &str) {
     }
 
     // Position
-    if let Some(pos) = store.get::<Position>(&speaker_id) {
+    if let Some(pos) = manager.get_property::<Position>(speaker_id) {
         if pos.duration_ms > 0 {
             let progress = pos.progress();
             let pos_str = format_time(pos.position_ms);
@@ -256,7 +148,7 @@ fn print_speaker_state(manager: &StateManager, ip: &IpAddr, name: &str) {
     }
 
     // Group membership
-    if let Some(membership) = store.get::<GroupMembership>(&speaker_id) {
+    if let Some(membership) = manager.get_property::<GroupMembership>(speaker_id) {
         if membership.is_coordinator {
             println!("  Role: Coordinator");
         } else if membership.group_id.is_some() {

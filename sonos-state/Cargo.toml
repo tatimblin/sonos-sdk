@@ -14,8 +14,14 @@ quick-xml = { version = "0.34", features = ["serialize"] }
 # Workspace dependencies
 sonos-api = { path = "../sonos-api" }
 sonos-stream = { path = "../sonos-stream" }
+sonos-event-manager = { path = "../sonos-event-manager" }
+sonos-discovery = { path = "../sonos-discovery" }
+tracing = { version = "0.1" }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 sonos-discovery = { path = "../sonos-discovery" }
+sonos-event-manager = { path = "../sonos-event-manager" }
+chrono = "0.4"
 ctrlc = "3.4"
+

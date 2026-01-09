@@ -1,0 +1,32 @@
+[package]
+name = "sonos-event-manager"
+version = "0.1.0"
+edition = "2021"
+description = "High-level facade for intelligent Sonos event subscription management with reference counting"
+authors = ["Claude Code"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# Local workspace dependencies
+sonos-api = { path = "../sonos-api" }
+sonos-stream = { path = "../sonos-stream" }
+sonos-discovery = { path = "../sonos-discovery" }
+
+# Async runtime and utilities
+tokio = { version = "1.0", features = ["full"] }
+
+# Error handling and utilities
+thiserror = "1.0"
+tracing = "0.1"
+
+# Concurrent data structures for reference counting
+dashmap = "5.0"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+sonos-state = { path = "../sonos-state" }
+chrono = "0.4"
+
+[[example]]
+name = "smart_dashboard"
+path = "examples/smart_dashboard.rs"
