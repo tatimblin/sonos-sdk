@@ -8,15 +8,26 @@
 //! Run with: cargo run -p sonos-sdk --example basic_usage
 
 use sonos_sdk::{SonosSystem, SdkError};
+use sonos_discovery::{self, Device};
 
-#[tokio::main]
-async fn main() -> Result<(), SdkError> {
+fn main() -> Result<(), SdkError> {
     println!("🎵 Sonos SDK - DOM-like API Example");
     println!("===================================");
 
-    // Create system and discover devices
+    // Discover devices (must be done in blocking context due to reqwest::blocking)
     println!("🔍 Discovering Sonos devices...");
-    let system = SonosSystem::new().await?;
+    let devices = sonos_discovery::get();
+
+    // Create tokio runtime
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
+    // Run the async main function with discovered devices
+    rt.block_on(async_main(devices))
+}
+
+async fn async_main(devices: Vec<Device>) -> Result<(), SdkError> {
+    // Create system from pre-discovered devices
+    let system = SonosSystem::from_discovered_devices(devices).await?;
 
     let speaker_names = system.speaker_names().await;
     if speaker_names.is_empty() {

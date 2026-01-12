@@ -2136,6 +2136,8 @@ dependencies = [
 name = "sonos-sdk"
 version = "0.1.0"
 dependencies = [
+ "crossterm",
+ "ratatui",
  "sonos-api",
  "sonos-discovery",
  "sonos-state",

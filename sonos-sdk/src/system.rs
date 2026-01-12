@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use sonos_state::{StateManager, SpeakerId};
 use sonos_api::SonosClient;
-use sonos_discovery;
+use sonos_discovery::{self, Device};
 use crate::{Speaker, SdkError};
 
 /// Main system entry point - provides DOM-like API
@@ -24,6 +24,27 @@ impl SonosSystem {
         let devices = sonos_discovery::get();
         state_manager.add_devices(devices.clone()).await.map_err(SdkError::StateError)?;
 
+        Self::from_devices(devices, state_manager, api_client).await
+    }
+
+    /// Create a new SonosSystem from pre-discovered devices (avoids runtime panic)
+    pub async fn from_discovered_devices(devices: Vec<Device>) -> Result<Self, SdkError> {
+        // Initialize core reactive system
+        let state_manager = Arc::new(StateManager::new().await.map_err(SdkError::StateError)?);
+        let api_client = SonosClient::new();
+
+        // Use pre-discovered devices
+        state_manager.add_devices(devices.clone()).await.map_err(SdkError::StateError)?;
+
+        Self::from_devices(devices, state_manager, api_client).await
+    }
+
+    /// Common implementation for creating SonosSystem from devices
+    async fn from_devices(
+        devices: Vec<Device>,
+        state_manager: Arc<StateManager>,
+        api_client: SonosClient,
+    ) -> Result<Self, SdkError> {
         // Create speaker handles
         let mut speakers = HashMap::new();
         for device in devices {
