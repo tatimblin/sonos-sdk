@@ -41,6 +41,55 @@
 //! }
 //! ```
 //!
+//! # Global Change Iterator (for Applications)
+//!
+//! For applications that need to detect when to rerender (like TUIs), use the global change iterator:
+//!
+//! ```rust,ignore
+//! use sonos_state::{StateManager, ChangeFilter, RerenderScope};
+//!
+//! let manager = StateManager::new().await?;
+//! let mut changes = manager.changes_filtered(ChangeFilter::rerender_only());
+//!
+//! while let Some(change) = changes.next().await {
+//!     match change.context.rerender_scope {
+//!         RerenderScope::Full => refresh_entire_ui(),
+//!         RerenderScope::Device(speaker_id) => refresh_device_ui(&speaker_id),
+//!         RerenderScope::Group(group_id) => refresh_group_ui(&group_id),
+//!         RerenderScope::System => refresh_status_bar(),
+//!     }
+//! }
+//! ```
+//!
+//! # Ratatui Integration
+//!
+//! For ratatui TUI applications, use `WidgetStateManager` for efficient widget-level property watching:
+//!
+//! ```rust,ignore
+//! use sonos_state::{StateManager, WidgetStateManager, Volume};
+//!
+//! let state_manager = Arc::new(StateManager::new().await?);
+//! let mut widget_state = WidgetStateManager::new(Arc::clone(&state_manager)).await?;
+//!
+//! // In widget render functions:
+//! async fn render_volume_bar(widget_state: &mut WidgetStateManager, speaker_id: &SpeakerId) {
+//!     let (volume, changed) = widget_state.watch_property::<Volume>(speaker_id).await?;
+//!     if changed {
+//!         // Only render when volume actually changed
+//!         let gauge = Gauge::default().percent(volume.unwrap_or_default().0 as u16);
+//!         frame.render_widget(gauge, area);
+//!     }
+//! }
+//!
+//! // In main event loop:
+//! loop {
+//!     widget_state.process_global_changes(); // Process all Sonos changes
+//!     if widget_state.has_any_changes() {
+//!         terminal.draw(|frame| render_ui(frame, &mut widget_state))?;
+//!     }
+//! }
+//! ```
+//!
 //! # Sync Usage (CLI)
 //!
 //! ```rust,ignore
@@ -68,6 +117,9 @@ mod state_manager;
 
 // Reactive state manager (main interface)
 pub mod reactive;
+
+// Global change iterator for application rerender triggering
+pub mod change_iterator;
 
 // Error types
 pub mod error;
@@ -106,6 +158,12 @@ pub use watcher::{SyncWatchExt, SyncWatcher};
 // Reactive property watcher
 pub use reactive::PropertyWatcher;
 
+// Global change iterator types
+pub use change_iterator::{
+    BlockingChangeIterator, ChangeContext, ChangeEvent, ChangeFilter, ChangeStream, ChangeType,
+    ChangeTypeFilter, RerenderScope, TryRecvError, WidgetStateManager,
+};
+
 // ============================================================================
 // Re-exports - Error types
 // ============================================================================
@@ -127,4 +185,7 @@ pub mod prelude {
     pub use crate::model::{GroupId, SpeakerId, SpeakerInfo};
     pub use crate::decoder::RawEvent;
     pub use crate::watcher::{SyncWatchExt, SyncWatcher};
+    pub use crate::change_iterator::{
+        ChangeEvent, ChangeFilter, ChangeStream, ChangeType, RerenderScope, WidgetStateManager,
+    };
 }

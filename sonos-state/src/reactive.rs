@@ -33,6 +33,7 @@ use sonos_discovery::Device;
 use sonos_event_manager::SonosEventManager;
 use sonos_stream::events::types as stream_types;
 
+use crate::change_iterator::{BlockingChangeIterator, ChangeFilter, ChangeStream};
 use crate::model::{SpeakerId, SpeakerInfo};
 use crate::property::Property;
 use crate::state_manager::StateManager as CoreStateManager;
@@ -436,10 +437,95 @@ impl StateManager {
         self.core_state_manager.store().get::<P>(speaker_id)
     }
 
+    /// Manually update a property value (for API fetch integration)
+    /// This allows external API calls to push fresh values into the reactive state system
+    pub fn update_property<P: Property>(&self, speaker_id: &SpeakerId, value: P) {
+        self.core_state_manager.store().set::<P>(speaker_id, value);
+    }
+
     /// Get subscription statistics (for debugging)
     #[cfg(debug_assertions)]
     pub async fn subscription_stats(&self) -> HashMap<SubscriptionKey, usize> {
         self.subscription_manager.subscription_stats().await
+    }
+
+    // ========================================================================
+    // Global Change Iterator API
+    // ========================================================================
+
+    /// Create an async change stream for all state changes
+    ///
+    /// Returns a stream that emits `ChangeEvent`s for all property changes,
+    /// device lifecycle events, and group changes across all speakers.
+    /// Perfect for applications that need to react to any Sonos state change.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let mut changes = state_manager.changes();
+    /// while let Some(change) = changes.next().await {
+    ///     match change.context.rerender_scope {
+    ///         RerenderScope::Full => refresh_entire_ui(),
+    ///         RerenderScope::Device(speaker_id) => refresh_device_ui(&speaker_id),
+    ///         _ => {}
+    ///     }
+    /// }
+    /// ```
+    pub fn changes(&self) -> ChangeStream {
+        ChangeStream::new(self.core_state_manager.store().subscribe_changes())
+    }
+
+    /// Create a filtered async change stream
+    ///
+    /// Only emits changes that match the provided filter criteria.
+    /// Useful for applications that only care about specific devices,
+    /// services, or property types.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Only volume/mute changes for specific speaker
+    /// let filter = ChangeFilter::for_speaker(speaker_id)
+    ///     .and_properties(["volume", "mute"]);
+    /// let mut changes = state_manager.changes_filtered(filter);
+    /// ```
+    pub fn changes_filtered(&self, filter: ChangeFilter) -> ChangeStream {
+        ChangeStream::filtered(self.core_state_manager.store().subscribe_changes(), filter)
+    }
+
+    /// Create a blocking iterator for synchronous code
+    ///
+    /// Useful for CLI applications or other synchronous contexts that
+    /// need to process Sonos state changes without async/await.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let rt = tokio::runtime::Runtime::new()?;
+    /// let mut changes = state_manager.changes_blocking(rt.handle().clone());
+    ///
+    /// for change in changes {
+    ///     println!("Change: {}", change.context.description);
+    /// }
+    /// ```
+    pub fn changes_blocking(&self, rt: tokio::runtime::Handle) -> BlockingChangeIterator {
+        BlockingChangeIterator::new(self.core_state_manager.store().subscribe_changes(), rt)
+    }
+
+    /// Create a filtered blocking iterator
+    ///
+    /// Combines filtering with blocking iteration for synchronous code
+    /// that only needs specific types of changes.
+    pub fn changes_blocking_filtered(
+        &self,
+        filter: ChangeFilter,
+        rt: tokio::runtime::Handle,
+    ) -> BlockingChangeIterator {
+        BlockingChangeIterator::filtered(
+            self.core_state_manager.store().subscribe_changes(),
+            filter,
+            rt,
+        )
     }
 }
 
