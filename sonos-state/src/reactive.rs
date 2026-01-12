@@ -436,6 +436,12 @@ impl StateManager {
         self.core_state_manager.store().get::<P>(speaker_id)
     }
 
+    /// Manually update a property value (for API fetch integration)
+    /// This allows external API calls to push fresh values into the reactive state system
+    pub fn update_property<P: Property>(&self, speaker_id: &SpeakerId, value: P) {
+        self.core_state_manager.store().set::<P>(speaker_id, value);
+    }
+
     /// Get subscription statistics (for debugging)
     #[cfg(debug_assertions)]
     pub async fn subscription_stats(&self) -> HashMap<SubscriptionKey, usize> {

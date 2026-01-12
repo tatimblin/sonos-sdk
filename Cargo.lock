@@ -1971,6 +1971,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sonos-sdk"
+version = "0.1.0"
+dependencies = [
+ "sonos-api",
+ "sonos-discovery",
+ "sonos-state",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "sonos-state"
 version = "0.1.0"
 dependencies = [

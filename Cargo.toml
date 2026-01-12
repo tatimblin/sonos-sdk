@@ -8,5 +8,6 @@ members = [
     "sonos-stream",
     "soap-client",
     "sonos-api",
+    "sonos-sdk",
 ]
 resolver = "2"
