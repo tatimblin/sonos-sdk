@@ -8,7 +8,6 @@
 //!
 //! Run with: `cargo run -p sonos-state --example ratatui_example`
 
-use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -25,9 +24,9 @@ use sonos_state::{
     Mute, PlaybackState, SpeakerId, StateManager, Volume, WidgetStateManager,
 };
 
-/// Pre-fetched property data for a speaker (synchronous access)
+/// Current speaker data queried directly from state (no caching)
 #[derive(Debug, Clone)]
-struct SpeakerData {
+struct CurrentSpeakerData {
     volume: Option<Volume>,
     volume_changed: bool,
     mute: Option<Mute>,
@@ -44,8 +43,6 @@ struct SonosApp {
     show_help: bool,
     demo_mode: bool, // For when no devices are found
     volume_override: Option<u8>, // For demo mode
-    /// Pre-fetched speaker property data (updated each frame)
-    speaker_data: HashMap<SpeakerId, SpeakerData>,
 }
 
 impl SonosApp {
@@ -70,47 +67,9 @@ impl SonosApp {
             show_help: false,
             demo_mode,
             volume_override: Some(50), // Start with 50% for demo
-            speaker_data: HashMap::new(),
         }
     }
 
-    /// Fetch all property data for all speakers (called before rendering)
-    async fn update_speaker_data(&mut self, widget_state: &mut WidgetStateManager) -> Result<(), Box<dyn std::error::Error>> {
-        for speaker_id in &self.speakers {
-            // Fetch volume data
-            let (volume, volume_changed) = if self.demo_mode {
-                // For demo mode, use volume override
-                (self.volume_override.map(Volume::new), false)
-            } else {
-                widget_state.watch_property::<Volume>(speaker_id).await.unwrap_or((None, false))
-            };
-
-            // Fetch mute data
-            let (mute, mute_changed) = if self.demo_mode {
-                (Some(Mute::new(false)), false) // Demo: never muted
-            } else {
-                widget_state.watch_property::<Mute>(speaker_id).await.unwrap_or((None, false))
-            };
-
-            // Fetch playback state
-            let (playback_state, playback_changed) = if self.demo_mode {
-                (Some(PlaybackState::Paused), false) // Demo: always paused
-            } else {
-                widget_state.watch_property::<PlaybackState>(speaker_id).await.unwrap_or((None, false))
-            };
-
-            // Store the fetched data
-            self.speaker_data.insert(speaker_id.clone(), SpeakerData {
-                volume,
-                volume_changed,
-                mute,
-                mute_changed,
-                playback_state,
-                playback_changed,
-            });
-        }
-        Ok(())
-    }
 
     /// Handle keyboard input
     fn handle_input(&mut self, key: KeyCode, state_manager: &StateManager) {
@@ -186,6 +145,7 @@ impl SonosApp {
     fn render(
         &self,
         frame: &mut Frame<'_>,
+        current_speaker_data: Option<&CurrentSpeakerData>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         if self.show_help {
             render_help(frame);
@@ -202,7 +162,9 @@ impl SonosApp {
 
         // Right side: Selected speaker details
         if let Some(speaker_id) = self.speakers.get(self.selected_speaker) {
-            self.render_speaker_details(frame, chunks[1], speaker_id)?;
+            if let Some(data) = current_speaker_data {
+                self.render_speaker_details(frame, chunks[1], speaker_id, data)?;
+            }
         }
 
         Ok(())
@@ -290,6 +252,7 @@ impl SonosApp {
         frame: &mut Frame<'_>,
         area: Rect,
         speaker_id: &SpeakerId,
+        speaker_data: &CurrentSpeakerData,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -325,17 +288,15 @@ impl SonosApp {
             .alignment(Alignment::Center);
         frame.render_widget(title, chunks[0]);
 
-        // Get pre-fetched speaker data
-        if let Some(speaker_data) = self.speaker_data.get(speaker_id) {
-            // Volume bar widget - demonstrates localized property watching
-            render_volume_bar(speaker_data, frame, chunks[1], speaker_id)?;
+        // Render with current speaker data (queried from state before rendering)
+        // Volume bar widget - demonstrates direct state usage without caching
+        render_volume_bar(speaker_data, frame, chunks[1], speaker_id)?;
 
-            // Playback controls widget
-            render_playback_controls(speaker_data, frame, chunks[2], speaker_id)?;
+        // Playback controls widget
+        render_playback_controls(speaker_data, frame, chunks[2], speaker_id)?;
 
-            // Mute status widget
-            render_mute_status(speaker_data, frame, chunks[3], speaker_id)?;
-        }
+        // Mute status widget
+        render_mute_status(speaker_data, frame, chunks[3], speaker_id)?;
 
         // Current track widget (placeholder)
         render_current_track_info(frame, chunks[4], speaker_id)?;
@@ -344,14 +305,14 @@ impl SonosApp {
     }
 }
 
-/// Volume bar widget - demonstrates WidgetStateManager usage
+/// Volume bar widget - demonstrates direct state access without caching
 fn render_volume_bar(
-    speaker_data: &SpeakerData,
+    speaker_data: &CurrentSpeakerData,
     frame: &mut Frame<'_>,
     area: Rect,
     _speaker_id: &SpeakerId,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // 🚀 KEY PATTERN: Use pre-fetched property data from WidgetStateManager
+    // 🚀 KEY PATTERN: Use state data queried directly before rendering (no caching)
     let volume_opt = speaker_data.volume.clone();
     let changed = speaker_data.volume_changed;
 
@@ -404,12 +365,12 @@ fn render_volume_bar(
 
 /// Playback controls widget
 fn render_playback_controls(
-    speaker_data: &SpeakerData,
+    speaker_data: &CurrentSpeakerData,
     frame: &mut Frame<'_>,
     area: Rect,
     _speaker_id: &SpeakerId,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Use pre-fetched playback state property
+    // Use playback state queried directly before rendering
     let playback_state = speaker_data.playback_state.clone();
     let changed = speaker_data.playback_changed;
 
@@ -449,12 +410,12 @@ fn render_playback_controls(
 
 /// Mute status widget
 fn render_mute_status(
-    speaker_data: &SpeakerData,
+    speaker_data: &CurrentSpeakerData,
     frame: &mut Frame<'_>,
     area: Rect,
     _speaker_id: &SpeakerId,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Use pre-fetched mute property
+    // Use mute state queried directly before rendering
     let mute_state = speaker_data.mute.clone();
     let changed = speaker_data.mute_changed;
 
@@ -683,12 +644,39 @@ async fn run_app<B: Backend>(
             || app.show_help; // Always render when showing help
 
         if should_render {
-            // Update speaker data before rendering (async context)
-            let _ = app.update_speaker_data(widget_state).await;
+            // Query current speaker data and render in one step
+            let current_speaker_data = if let Some(speaker_id) = app.speakers.get(app.selected_speaker) {
+                if app.demo_mode {
+                    Some(CurrentSpeakerData {
+                        volume: app.volume_override.map(Volume::new),
+                        mute: Some(Mute::new(false)),
+                        playback_state: Some(PlaybackState::Paused),
+                        volume_changed: false,
+                        mute_changed: false,
+                        playback_changed: false,
+                    })
+                } else {
+                    // Query state directly for current speaker
+                    let volume_result = widget_state.watch_property::<Volume>(speaker_id).await.unwrap_or((None, false));
+                    let mute_result = widget_state.watch_property::<Mute>(speaker_id).await.unwrap_or((None, false));
+                    let playback_result = widget_state.watch_property::<PlaybackState>(speaker_id).await.unwrap_or((None, false));
+
+                    Some(CurrentSpeakerData {
+                        volume: volume_result.0,
+                        mute: mute_result.0,
+                        playback_state: playback_result.0,
+                        volume_changed: volume_result.1,
+                        mute_changed: mute_result.1,
+                        playback_changed: playback_result.1,
+                    })
+                }
+            } else {
+                None
+            };
 
             terminal.draw(|frame| {
                 // Render main UI
-                if let Err(e) = app.render(frame) {
+                if let Err(e) = app.render(frame, current_speaker_data.as_ref()) {
                     // In a real app, you'd handle this error better
                     eprintln!("Render error: {}", e);
                 }

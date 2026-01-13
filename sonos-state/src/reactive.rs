@@ -27,6 +27,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use tokio::sync::{watch, RwLock};
 use tokio::task::JoinHandle;
+use tracing::{debug, info, trace, warn};
 
 use sonos_api::Service;
 use sonos_discovery::Device;
@@ -245,7 +246,7 @@ impl StateManager {
         };
 
         let task = tokio::spawn(async move {
-            eprintln!("Single event processor started - handling ALL events from ALL speakers/services");
+            info!("Event processor started - handling events from all speakers and services");
 
             // Add timeout to detect if we're getting ANY events
             let mut event_count = 0;
@@ -255,8 +256,12 @@ impl StateManager {
                         match maybe_event {
                             Some(enriched_event) => {
                                 event_count += 1;
-                                eprintln!("🎯 EVENT PROCESSOR: Received event #{}: {} {:?}",
-                                              event_count, enriched_event.speaker_ip, enriched_event.service);
+                                debug!(
+                                    event_count,
+                                    speaker_ip = %enriched_event.speaker_ip,
+                                    service = ?enriched_event.service,
+                                    "Received event from speaker"
+                                );
 
                                 // Store fields before moving enriched_event
                                 let speaker_ip = enriched_event.speaker_ip;
@@ -265,21 +270,28 @@ impl StateManager {
                                 let raw_event = Self::convert_enriched_to_raw_event(enriched_event);
                                 core_state_manager.process(raw_event);
 
-                                eprintln!("📊 State change detected for {} {:?}", speaker_ip, service);
+                                debug!(
+                                    speaker_ip = %speaker_ip,
+                                    service = ?service,
+                                    "State change processed"
+                                );
                             }
                             None => {
-                                eprintln!("🚫 EVENT PROCESSOR: EventIterator ended (channel closed)");
+                                warn!("EventIterator ended - channel closed");
                                 break;
                             }
                         }
                     }
                     _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
-                        eprintln!("🕐 EVENT PROCESSOR: Still waiting for events (received {} so far)", event_count);
+                        trace!(
+                            events_received = event_count,
+                            "Event processor waiting for events"
+                        );
                     }
                 }
             }
 
-            eprintln!("Event processor ended - event iterator closed");
+            info!("Event processor ended - event iterator closed");
         });
 
         Ok(task)

@@ -45,10 +45,13 @@ enum PropertyStatus {
 /// Main application state
 struct SdkTuiApp {
     system: SonosSystem,
-    speakers: Vec<Speaker>,
+    speaker_names: Vec<String>,  // Just store names, query system for Speaker instances
     selected_index: usize,
     should_quit: bool,
     demo_mode: bool,
+
+    // Cache selected speaker name for synchronous rendering
+    selected_speaker_name: Option<String>,
 
     // Async state for selected speaker
     volume_watcher: Option<PropertyWatcher<Volume>>,
@@ -67,36 +70,37 @@ impl SdkTuiApp {
     async fn new(devices: Vec<Device>) -> Result<Self, SdkError> {
         let demo_mode = devices.is_empty();
 
-        let (system, speakers) = if demo_mode {
-            // Demo mode: create mock system and speakers
-            (SonosSystem::from_discovered_devices(vec![]).await?, Self::create_demo_speakers())
+        let (system, speaker_names) = if demo_mode {
+            // Demo mode: create mock system and speaker names
+            (SonosSystem::from_discovered_devices(vec![]).await?, Self::create_demo_speaker_names())
         } else {
             // Real mode: use discovered devices
             let system = SonosSystem::from_discovered_devices(devices).await?;
             let speaker_names = system.speaker_names().await;
-            let mut speakers = Vec::new();
-
-            for name in &speaker_names {
-                if let Some(speaker) = system.get_speaker_by_name(name).await {
-                    speakers.push(speaker);
-                }
-            }
-
-            (system, speakers)
+            (system, speaker_names)
         };
 
         let status_message = if demo_mode {
             "Demo Mode: No speakers found, showing mock data".to_string()
         } else {
-            format!("Found {} speaker(s)", speakers.len())
+            format!("Found {} speaker(s)", speaker_names.len())
+        };
+
+        let selected_speaker_name = if demo_mode && !speaker_names.is_empty() {
+            Some(speaker_names[0].clone())
+        } else if !speaker_names.is_empty() {
+            Some(speaker_names[0].clone())
+        } else {
+            None
         };
 
         Ok(Self {
             system,
-            speakers,
+            speaker_names,
             selected_index: 0,
             should_quit: false,
             demo_mode,
+            selected_speaker_name,
             volume_watcher: None,
             current_volume: None,
             volume_status: PropertyStatus::Cached,
@@ -107,31 +111,36 @@ impl SdkTuiApp {
         })
     }
 
-    /// Create demo speakers for when no real devices are found
-    fn create_demo_speakers() -> Vec<Speaker> {
-        // Note: This is a placeholder - in demo mode we'll simulate the API
-        vec![]
+    /// Create demo speaker names for when no real devices are found
+    fn create_demo_speaker_names() -> Vec<String> {
+        vec![
+            "Demo Kitchen".to_string(),
+            "Demo Living Room".to_string(),
+            "Demo Bedroom".to_string(),
+        ]
     }
 
-    /// Get the currently selected speaker
-    fn selected_speaker(&self) -> Option<&Speaker> {
-        if self.demo_mode || self.speakers.is_empty() {
+    /// Get the currently selected speaker from the system
+    async fn selected_speaker(&self) -> Option<Speaker> {
+        if self.demo_mode || self.speaker_names.is_empty() {
             None
+        } else if let Some(speaker_name) = self.speaker_names.get(self.selected_index) {
+            self.system.get_speaker_by_name(speaker_name).await
         } else {
-            self.speakers.get(self.selected_index)
+            None
         }
     }
 
     /// Handle navigation input
     async fn handle_navigation(&mut self, direction: NavigationDirection) -> Result<(), SdkError> {
-        if self.speakers.is_empty() && !self.demo_mode {
+        if self.speaker_names.is_empty() && !self.demo_mode {
             return Ok(());
         }
 
         let speaker_count = if self.demo_mode {
             3 // Mock 3 demo speakers
         } else {
-            self.speakers.len()
+            self.speaker_names.len()
         };
 
         match direction {
@@ -153,6 +162,9 @@ impl SdkTuiApp {
 
         self.last_navigation = Instant::now();
 
+        // Update cached speaker name for rendering
+        self.selected_speaker_name = self.speaker_names.get(self.selected_index).cloned();
+
         // Update watchers and fetch fresh data for the new selection
         self.update_watchers().await?;
         self.refresh_playback_state().await?;
@@ -167,7 +179,7 @@ impl SdkTuiApp {
         self.current_volume = None;
         self.volume_status = PropertyStatus::Cached;
 
-        if let Some(speaker) = self.selected_speaker() {
+        if let Some(speaker) = self.selected_speaker().await {
             // Start watching volume for the selected speaker
             match speaker.volume.watch().await {
                 Ok(watcher) => {
@@ -190,7 +202,7 @@ impl SdkTuiApp {
 
     /// Refresh playback state for selected speaker
     async fn refresh_playback_state(&mut self) -> Result<(), SdkError> {
-        if let Some(speaker) = self.selected_speaker() {
+        if let Some(speaker) = self.selected_speaker().await {
             // Fetch fresh playback state
             match speaker.playback_state.fetch().await {
                 Ok(state) => {
@@ -272,11 +284,11 @@ impl SdkTuiApp {
                 })
                 .collect()
         } else {
-            self.speakers
+            self.speaker_names
                 .iter()
                 .enumerate()
-                .map(|(i, speaker)| {
-                    let display = format!("🔊 {}", speaker.name);
+                .map(|(i, speaker_name)| {
+                    let display = format!("🔊 {}", speaker_name);
                     let style = if i == self.selected_index {
                         Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
                     } else {
@@ -314,14 +326,10 @@ impl SdkTuiApp {
             .split(area);
 
         // Header
-        let speaker_name = if self.demo_mode {
-            let demo_names = ["Kitchen", "Living Room", "Bedroom"];
-            demo_names[self.selected_index].to_string()
-        } else if let Some(speaker) = self.selected_speaker() {
-            speaker.name.clone()
-        } else {
-            "No Speaker Selected".to_string()
-        };
+        let speaker_name = self.selected_speaker_name
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| "No Speaker Selected".to_string());
 
         let header = Paragraph::new(format!("🔊 {}", speaker_name))
             .block(Block::default().borders(Borders::ALL))
@@ -543,14 +551,13 @@ fn restore_terminal() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Main entry point
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("🎵 Sonos SDK - Interactive TUI Example");
-    println!("======================================");
-    println!("🔍 Discovering Sonos devices...");
+    // CRITICAL: Initialize logging in silent mode FIRST to prevent TUI interference
+    sonos_state::init_silent()?;
 
-    // Discover devices (must be done in blocking context)
+    // Discover devices (must be done in blocking context) - now silent
     let devices = sonos_discovery::get();
 
-    // Setup terminal
+    // Setup terminal AFTER logging is configured
     let terminal = setup_terminal()?;
 
     // Create tokio runtime and run the app
@@ -568,9 +575,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Restore terminal
     restore_terminal()?;
 
+    // Now safe to print to stdout after terminal restoration
     match result {
-        Ok(_) => println!("✨ Thanks for using the Sonos SDK TUI!"),
-        Err(e) => println!("❌ Error: {}", e),
+        Ok(_) => {
+            println!("🎵 Sonos SDK - Interactive TUI Example");
+            println!("✨ Thanks for using the Sonos SDK TUI!");
+        },
+        Err(e) => {
+            println!("🎵 Sonos SDK - Interactive TUI Example");
+            println!("❌ Error: {}", e);
+        },
     }
 
     Ok(())
