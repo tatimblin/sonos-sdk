@@ -37,7 +37,9 @@ use sonos_stream::events::types as stream_types;
 use crate::change_iterator::{BlockingChangeIterator, ChangeFilter, ChangeStream};
 use crate::model::{SpeakerId, SpeakerInfo};
 use crate::property::Property;
+use crate::speaker_handle::Speaker;
 use crate::state_manager::StateManager as CoreStateManager;
+use crate::watch_cache::WatchCache;
 use crate::{Result, StateError};
 
 /// Key for tracking service subscriptions (speaker IP + service)
@@ -206,6 +208,8 @@ pub struct StateManager {
     subscription_manager: Arc<PropertySubscriptionManager>,
     /// Single event processor task
     _event_processor: JoinHandle<()>,
+    /// Watch cache for property handles (shared across all Speaker instances)
+    watch_cache: Arc<WatchCache>,
 }
 
 impl StateManager {
@@ -219,6 +223,9 @@ impl StateManager {
         let event_manager = Arc::new(RwLock::new(event_manager));
         let subscription_manager = Arc::new(PropertySubscriptionManager::new(Arc::clone(&event_manager)));
 
+        // Create the shared watch cache with default 5-second cleanup timeout
+        let watch_cache = Arc::new(WatchCache::with_default_timeout());
+
         // Start the single event processor
         let event_processor = Self::start_event_processor(
             core_state_manager.clone(),
@@ -230,6 +237,7 @@ impl StateManager {
             event_manager,
             subscription_manager,
             _event_processor: event_processor,
+            watch_cache,
         })
     }
 
@@ -459,6 +467,84 @@ impl StateManager {
     #[cfg(debug_assertions)]
     pub async fn subscription_stats(&self) -> HashMap<SubscriptionKey, usize> {
         self.subscription_manager.subscription_stats().await
+    }
+
+    // ========================================================================
+    // Speaker Handle API (High-level Property Access)
+    // ========================================================================
+
+    /// Get all speakers as Speaker handles with property accessors.
+    ///
+    /// Returns a list of Speaker handles that provide clean property access:
+    /// - `speaker.volume.get()`: Synchronous read
+    /// - `speaker.volume.watch().await`: Ensures subscription exists
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let speakers = state_manager.speakers();
+    /// for speaker in &speakers {
+    ///     if let Some(vol) = speaker.volume.get() {
+    ///         println!("{}: {}%", speaker.name, vol.0);
+    ///     }
+    /// }
+    /// ```
+    pub fn speakers(&self) -> Vec<Speaker> {
+        // Get all registered speakers from the state store
+        let speaker_infos = self.core_state_manager.store().speakers();
+
+        // Create Speaker handles with shared state_manager and watch_cache
+        speaker_infos
+            .into_iter()
+            .map(|info| {
+                Speaker::from_info(
+                    &info,
+                    Arc::new(self.clone_for_speaker_handle()),
+                    Arc::clone(&self.watch_cache),
+                )
+            })
+            .collect()
+    }
+
+    /// Get a specific speaker by ID as a Speaker handle.
+    ///
+    /// Returns None if the speaker is not found.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// if let Some(speaker) = state_manager.speaker(&speaker_id) {
+    ///     let volume = speaker.volume.watch().await?;
+    /// }
+    /// ```
+    pub fn speaker(&self, speaker_id: &SpeakerId) -> Option<Speaker> {
+        let speaker_info = self.core_state_manager.store().speaker(speaker_id)?;
+
+        Some(Speaker::from_info(
+            &speaker_info,
+            Arc::new(self.clone_for_speaker_handle()),
+            Arc::clone(&self.watch_cache),
+        ))
+    }
+
+    /// Internal: Create a clone of this StateManager suitable for Speaker handles.
+    ///
+    /// This is needed because Speaker handles need an Arc<StateManager>, but we
+    /// can't easily get that from &self. This creates a lightweight clone that
+    /// shares the underlying state.
+    fn clone_for_speaker_handle(&self) -> Self {
+        Self {
+            core_state_manager: self.core_state_manager.clone(),
+            event_manager: Arc::clone(&self.event_manager),
+            subscription_manager: Arc::clone(&self.subscription_manager),
+            _event_processor: tokio::spawn(async {}), // Dummy handle - original keeps running
+            watch_cache: Arc::clone(&self.watch_cache),
+        }
+    }
+
+    /// Get the shared watch cache (for advanced use)
+    pub(crate) fn watch_cache(&self) -> &Arc<WatchCache> {
+        &self.watch_cache
     }
 
     // ========================================================================

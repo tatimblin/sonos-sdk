@@ -121,6 +121,11 @@ pub mod reactive;
 // Global change iterator for application rerender triggering
 pub mod change_iterator;
 
+// High-level property access API
+mod watch_cache;
+mod property_handle;
+mod speaker_handle;
+
 // Error types
 pub mod error;
 
@@ -134,6 +139,10 @@ pub mod logging;
 // Main reactive state manager
 pub use reactive::StateManager;
 
+// High-level property access API
+pub use speaker_handle::Speaker;
+pub use property_handle::PropertyHandle;
+
 // Store
 pub use store::{StateChange, StateStore};
 
@@ -143,8 +152,8 @@ pub use property::{
     Property, Scope, Topology, Treble, Volume,
 };
 
-// Model types
-pub use model::{GroupId, Speaker, SpeakerId, SpeakerInfo};
+// Model types (Note: Speaker is the handle type from speaker_handle, SpeakerInfo is the data type)
+pub use model::{GroupId, SpeakerId, SpeakerInfo};
 
 // Decoder types
 pub use decoder::{
@@ -197,4 +206,8 @@ pub mod prelude {
     pub use crate::change_iterator::{
         ChangeEvent, ChangeFilter, ChangeStream, ChangeType, RerenderScope, WidgetStateManager,
     };
+
+    // High-level property access API
+    pub use crate::speaker_handle::Speaker;
+    pub use crate::property_handle::PropertyHandle;
 }
