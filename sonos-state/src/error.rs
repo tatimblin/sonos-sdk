@@ -43,6 +43,9 @@ pub enum StateError {
 
     /// Invalid IP address
     InvalidIpAddress(String),
+
+    /// Lock poisoned (internal mutex error)
+    LockPoisoned,
 }
 
 impl fmt::Display for StateError {
@@ -60,6 +63,7 @@ impl fmt::Display for StateError {
             StateError::DeviceRegistrationFailed(msg) => write!(f, "Device registration failed: {}", msg),
             StateError::SubscriptionFailed(msg) => write!(f, "Subscription failed: {}", msg),
             StateError::InvalidIpAddress(ip) => write!(f, "Invalid IP address: {}", ip),
+            StateError::LockPoisoned => write!(f, "Internal lock poisoned"),
         }
     }
 }

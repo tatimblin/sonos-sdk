@@ -32,6 +32,7 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # Logging
 tracing = "0.1"
+tracing-subscriber = { workspace = true }
 
 # HTTP and networking
 reqwest = "0.11"

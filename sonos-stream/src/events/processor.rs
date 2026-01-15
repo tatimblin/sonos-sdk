@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
+use tracing::{debug, error, info, trace, warn};
 
 use callback_server::{router::{EventRouter, NotificationPayload}, FirewallDetectionCoordinator};
 use sonos_api::events::{EventProcessor as ApiEventProcessor};
@@ -110,8 +111,12 @@ impl EventProcessor {
         );
 
         // Send enriched event
-        eprintln!("📤 ROUTING EVENT: {} {:?} to EventIterator channel",
-                       enriched_event.speaker_ip, enriched_event.service);
+        debug!(
+            speaker_ip = %enriched_event.speaker_ip,
+            service = ?enriched_event.service,
+            event_source = ?enriched_event.event_source,
+            "Routing event to EventIterator channel"
+        );
         self.event_sender
             .send(enriched_event)
             .map_err(|_| EventProcessingError::ChannelClosed)?;
@@ -134,8 +139,12 @@ impl EventProcessor {
         }
 
         // Send the event (it's already enriched)
-        eprintln!("📤 ROUTING POLLING EVENT: {} {:?} to EventIterator channel",
-                       event.speaker_ip, event.service);
+        debug!(
+            speaker_ip = %event.speaker_ip,
+            service = ?event.service,
+            event_source = ?event.event_source,
+            "Routing polling event to EventIterator channel"
+        );
         self.event_sender
             .send(event)
             .map_err(|_| EventProcessingError::ChannelClosed)?;
@@ -158,8 +167,12 @@ impl EventProcessor {
         }
 
         // Send the event (it's already enriched)
-        eprintln!("📤 ROUTING RESYNC EVENT: {} {:?} to EventIterator channel",
-                       event.speaker_ip, event.service);
+        debug!(
+            speaker_ip = %event.speaker_ip,
+            service = ?event.service,
+            event_source = ?event.event_source,
+            "Routing resync event to EventIterator channel"
+        );
         self.event_sender
             .send(event)
             .map_err(|_| EventProcessingError::ChannelClosed)?;
@@ -286,7 +299,7 @@ impl EventProcessor {
         &self,
         mut upnp_receiver: mpsc::UnboundedReceiver<NotificationPayload>,
     ) {
-        eprintln!("📡 Starting UPnP event processing (using sonos-api framework)");
+        info!("Starting UPnP event processing using sonos-api framework");
 
         let mut event_count = 0;
         loop {
@@ -295,33 +308,43 @@ impl EventProcessor {
                     match maybe_payload {
                         Some(payload) => {
                             event_count += 1;
-                            eprintln!("🎯 UPNP PROCESSOR: Received UPnP event #{}: SID={}",
-                                          event_count, payload.subscription_id);
+                            debug!(
+                                event_count,
+                                subscription_id = %payload.subscription_id,
+                                "Processing UPnP event"
+                            );
 
                             match self.process_upnp_notification(payload).await {
                                 Ok(()) => {
-                                    eprintln!("✅ UPNP PROCESSOR: Event #{} processed successfully", event_count);
+                                    trace!(event_count, "UPnP event processed successfully");
                                 }
                                 Err(e) => {
-                                    eprintln!("❌ UPNP PROCESSOR: Failed to process UPnP event #{}: {}", event_count, e);
+                                    error!(
+                                        event_count,
+                                        error = %e,
+                                        "Failed to process UPnP event"
+                                    );
                                     let mut stats = self.stats.write().await;
                                     stats.processing_errors += 1;
                                 }
                             }
                         }
                         None => {
-                            eprintln!("🚫 UPNP PROCESSOR: UPnP receiver channel closed");
+                            warn!("UPnP receiver channel closed");
                             break;
                         }
                     }
                 }
                 _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
-                    eprintln!("🕐 UPNP PROCESSOR: Still waiting for UPnP events (processed {} so far)", event_count);
+                    trace!(
+                        events_processed = event_count,
+                        "UPnP processor waiting for events"
+                    );
                 }
             }
         }
 
-        eprintln!("🛑 UPnP event processing stopped");
+        info!("UPnP event processing stopped");
     }
 
     /// Start processing polling events
@@ -329,7 +352,7 @@ impl EventProcessor {
         &self,
         mut polling_receiver: mpsc::UnboundedReceiver<EnrichedEvent>,
     ) {
-        eprintln!("🔄 Starting polling event processing");
+        info!("Starting polling event processing");
 
         while let Some(event) = polling_receiver.recv().await {
             match self.process_polling_event(event).await {
@@ -337,14 +360,17 @@ impl EventProcessor {
                     // Event processed successfully
                 }
                 Err(e) => {
-                    eprintln!("❌ Failed to process polling event: {}", e);
+                    error!(
+                        error = %e,
+                        "Failed to process polling event"
+                    );
                     let mut stats = self.stats.write().await;
                     stats.processing_errors += 1;
                 }
             }
         }
 
-        eprintln!("🛑 Polling event processing stopped");
+        info!("Polling event processing stopped");
     }
 
     /// Start processing resync events
@@ -352,7 +378,7 @@ impl EventProcessor {
         &self,
         mut resync_receiver: mpsc::UnboundedReceiver<EnrichedEvent>,
     ) {
-        eprintln!("🔄 Starting resync event processing");
+        info!("Starting resync event processing");
 
         while let Some(event) = resync_receiver.recv().await {
             match self.process_resync_event(event).await {
@@ -360,14 +386,17 @@ impl EventProcessor {
                     // Event processed successfully
                 }
                 Err(e) => {
-                    eprintln!("❌ Failed to process resync event: {}", e);
+                    error!(
+                        error = %e,
+                        "Failed to process resync event"
+                    );
                     let mut stats = self.stats.write().await;
                     stats.processing_errors += 1;
                 }
             }
         }
 
-        eprintln!("🛑 Resync event processing stopped");
+        info!("Resync event processing stopped");
     }
 
     /// Get event processor statistics

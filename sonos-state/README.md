@@ -1,33 +1,34 @@
 # sonos-state
 
-A lightweight, reactive state management system for Sonos devices with automatic UPnP subscription management.
+A sync-first state management system for Sonos devices with automatic change detection and blocking iteration.
 
 ## Overview
 
-`sonos-state` provides a unified, type-safe, and reactive approach to managing Sonos device state. It automatically handles UPnP event subscriptions and delivers real-time property updates through an elegant Rust API.
+`sonos-state` provides a type-safe, synchronous approach to managing Sonos device state. It delivers property changes through a blocking iterator pattern, making it ideal for CLI tools, TUI applications (like ratatui), and any context where a simple synchronous API is preferred.
 
 ## Features
 
-- **🏪 Local State**: Type-safe unified store for all Sonos device properties
-- **⚡ Reactive Updates**: Watch properties for changes using `tokio::sync::watch` channels
-- **🔄 Event-driven**: Processes events from sonos-stream with automatic decoding
-- **📡 Automatic Subscriptions**: Demand-driven UPnP service subscriptions with reference counting
-- **🛠️ Extensible**: Add custom properties and decoders
-- **🔧 Zero Configuration**: No manual service management required
+- **Sync API**: All operations are synchronous - no async/await required
+- **Type-safe State**: Strongly typed properties with automatic change detection
+- **Change Events**: Blocking iterator over property changes
+- **Watch Pattern**: Register for property changes, iterate to receive them
+- **Speaker Handles**: Convenient per-speaker property accessors
 
 ## Architecture
 
 ```text
-External Events → Decoders → StateStore → PropertyWatchers
-                              (queries)    (reactive)
+Devices → StateManager → PropertyHandles → ChangeIterator
+              │                │                │
+              │                │                └── Blocking iteration
+              │                └── get()/watch()/fetch()
+              └── Property storage + change detection
 ```
 
-The StateManager automatically:
-1. Subscribes to UPnP services when properties are first watched
-2. Shares subscriptions across multiple property watchers (reference counting)
-3. Processes events and updates the state store
-4. Notifies watchers of property changes
-5. Cleans up subscriptions when no longer needed
+The StateManager:
+1. Stores property values for all registered speakers
+2. Tracks which properties are being watched
+3. Emits change events when watched properties update
+4. Provides blocking iteration via `iter()`
 
 ## Installation
 
@@ -40,30 +41,75 @@ sonos-state = { path = "../sonos-state" }
 
 ## Quick Start
 
-### Basic Reactive Usage
+### Basic Usage
 
 ```rust
-use sonos_state::{StateManager, Volume, Mute, PlaybackState};
+use sonos_state::{StateManager, Speaker, Volume, SpeakerId};
 use sonos_discovery;
+use std::sync::Arc;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Create state manager with automatic event processing
-    let manager = StateManager::new().await?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Create state manager (sync - no async runtime needed)
+    let manager = StateManager::new()?;
 
     // Discover and add devices
     let devices = sonos_discovery::get();
-    manager.add_devices(devices).await?;
+    manager.add_devices(devices)?;
 
-    let speaker_id = sonos_state::model::SpeakerId::new(&devices[0].id);
+    // Get speaker info
+    for info in manager.speaker_infos() {
+        println!("Found: {} at {}", info.name, info.ip_address);
+    }
 
-    // Watch for volume changes - automatically subscribes to RenderingControl
-    let mut volume_watcher = manager.watch_property::<Volume>(speaker_id.clone()).await?;
+    Ok(())
+}
+```
 
-    // React to changes
-    while volume_watcher.changed().await.is_ok() {
-        if let Some(volume) = volume_watcher.current() {
-            println!("Volume changed: {}%", volume.0);
+### Property Access with Speaker Handles
+
+```rust
+use sonos_state::{StateManager, Speaker, Volume, Mute};
+use std::sync::Arc;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let manager = Arc::new(StateManager::new()?);
+    // ... add devices ...
+
+    // Create speaker handle from info
+    for info in manager.speaker_infos() {
+        let speaker = Speaker::new(info, Arc::clone(&manager));
+
+        // Read current cached value (instant, no network)
+        if let Some(vol) = speaker.volume.get() {
+            println!("{}: {}%", speaker.name, vol.0);
+        }
+
+        // Register for change events
+        speaker.volume.watch()?;
+        speaker.mute.watch()?;
+    }
+
+    Ok(())
+}
+```
+
+### Blocking Iteration Over Changes
+
+```rust
+use sonos_state::{StateManager, Speaker, Volume};
+use std::sync::Arc;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let manager = Arc::new(StateManager::new()?);
+    // ... add devices and watch properties ...
+
+    // Blocking iteration over change events
+    for event in manager.iter() {
+        println!("{} changed on {}", event.property_key, event.speaker_id);
+
+        // Get the new value
+        if let Some(vol) = manager.get_property::<Volume>(&event.speaker_id) {
+            println!("New volume: {}%", vol.0);
         }
     }
 
@@ -71,34 +117,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### Non-Reactive Property Access
+### Non-Blocking Iteration
 
 ```rust
-// Get current property values without watching
-if let Some(vol) = manager.get_property::<Volume>(&speaker_id) {
-    println!("Current volume: {}%", vol.0);
+use std::time::Duration;
+
+// Check for events without blocking
+for event in manager.iter().try_iter() {
+    println!("Event: {:?}", event);
 }
 
-if let Some(state) = manager.get_property::<PlaybackState>(&speaker_id) {
-    match state {
-        PlaybackState::Playing => println!("Currently playing"),
-        PlaybackState::Paused => println!("Paused"),
-        PlaybackState::Stopped => println!("Stopped"),
-        PlaybackState::Transitioning => println!("Changing state"),
-    }
+// Wait with timeout
+if let Some(event) = manager.iter().recv_timeout(Duration::from_secs(1)) {
+    println!("Got event: {:?}", event);
 }
-```
-
-### Multiple Property Watching
-
-```rust
-// Multiple properties sharing the same service subscription
-let volume_watcher = manager.watch_property::<Volume>(speaker_id.clone()).await?;
-let mute_watcher = manager.watch_property::<Mute>(speaker_id.clone()).await?;
-// Both watchers share the same RenderingControl subscription!
-
-let playback_watcher = manager.watch_property::<PlaybackState>(speaker_id.clone()).await?;
-// This creates a separate AVTransport subscription
 ```
 
 ## Available Properties
@@ -119,99 +151,169 @@ let playback_watcher = manager.watch_property::<PlaybackState>(speaker_id.clone(
 - `GroupMembership` - Speaker's group membership and coordinator status
 - `Topology` - System-wide speaker and group topology
 
-## Examples
-
-The crate includes two comprehensive examples:
-
-### Live Dashboard
-```bash
-cargo run -p sonos-state --example live_dashboard
-```
-A real-time dashboard showing current state of all discovered Sonos devices.
-
-### Reactive Dashboard
-```bash
-cargo run -p sonos-state --example reactive_dashboard
-```
-Demonstrates demand-driven subscriptions and automatic subscription management.
-
 ## API Documentation
 
-### Core Types
+### `StateManager`
 
-#### `StateManager`
-The main entry point for reactive state management:
-- `new()` - Create a new state manager
-- `add_devices(devices)` - Register discovered devices
-- `watch_property<P>(speaker_id)` - Watch a property with automatic subscriptions
-- `get_property<P>(speaker_id)` - Get current property value (non-reactive)
-
-#### `PropertyWatcher<P>`
-Handle for watching property changes:
-- `changed()` - Wait for the property to change
-- `current()` - Get the current property value
-- `speaker_id()` - Get the speaker ID being watched
-
-#### `Property` Trait
-All properties implement this trait with:
-- `KEY` - Unique string identifier
-- `SCOPE` - Where the property is stored (Speaker, Group, System)
-- `SERVICE` - Which UPnP service provides this property
-
-### Subscription Management
-
-Subscriptions are automatically managed:
-- **Reference Counting**: Multiple watchers share the same service subscription
-- **Automatic Cleanup**: Subscriptions are removed when no watchers remain
-- **Demand-Driven**: Services are only subscribed when properties are actively watched
-
-## Synchronous Usage (CLI/Non-async)
+The main entry point for state management:
 
 ```rust
-use sonos_state::{SyncWatchExt, SyncWatcher};
+// Create with defaults
+let manager = StateManager::new()?;
 
-let rt = tokio::runtime::Handle::current();
-let sync_watcher = store.sync_watch::<Volume>(&speaker_id, rt);
+// Or use builder for custom configuration
+let manager = StateManager::builder()
+    .cleanup_timeout(Duration::from_secs(10))
+    .build()?;
+```
 
-// Blocking wait for changes
-while let Some(volume) = sync_watcher.wait() {
-    println!("Volume: {}%", volume.0);
+**Methods:**
+- `new()` - Create a new state manager
+- `builder()` - Create a builder for custom configuration
+- `add_devices(devices)` - Register discovered devices
+- `speaker_infos()` - Get all speaker metadata
+- `speaker_info(id)` - Get specific speaker metadata
+- `get_property<P>(speaker_id)` - Get current property value
+- `set_property<P>(speaker_id, value)` - Set a property value
+- `iter()` - Create a blocking iterator over change events
+- `register_watch(speaker_id, property_key)` - Watch a property for changes
+- `unregister_watch(speaker_id, property_key)` - Stop watching a property
+- `is_watched(speaker_id, property_key)` - Check if a property is being watched
+
+### `Speaker`
+
+Handle for a Sonos speaker with typed property accessors:
+
+```rust
+let speaker = Speaker::new(info, Arc::clone(&manager));
+
+// Metadata
+println!("ID: {}", speaker.id);
+println!("Name: {}", speaker.name);
+println!("IP: {}", speaker.ip_address);
+println!("Model: {}", speaker.model_name);
+
+// Property handles
+speaker.volume.get();      // Option<Volume>
+speaker.mute.get();        // Option<Mute>
+speaker.playback_state.get(); // Option<PlaybackState>
+// ... etc
+```
+
+**Property Handles:**
+- `volume` - Volume control
+- `mute` - Mute control
+- `bass` - Bass EQ
+- `treble` - Treble EQ
+- `loudness` - Loudness compensation
+- `playback_state` - Current playback state
+- `position` - Playback position
+- `current_track` - Track metadata
+- `group_membership` - Group membership info
+
+### `PropertyHandle<P>`
+
+Handle for accessing a specific property:
+
+```rust
+// Get current cached value (instant, no network)
+let volume: Option<Volume> = speaker.volume.get();
+
+// Register for change events (returns current value)
+let current = speaker.volume.watch()?;
+
+// Stop watching
+speaker.volume.unwatch();
+
+// Check if watched
+if speaker.volume.is_watched() {
+    println!("Volume is being watched");
+}
+
+// Fetch fresh value from device (blocking network call)
+let fresh = speaker.volume.fetch()?;
+```
+
+### `ChangeIterator`
+
+Blocking iterator over property change events:
+
+```rust
+let iter = manager.iter();
+
+// Block until next event
+let event = iter.recv();
+
+// Block with timeout
+let event = iter.recv_timeout(Duration::from_secs(5));
+
+// Non-blocking check
+let event = iter.try_recv();
+
+// Non-blocking iterator over available events
+for event in iter.try_iter() {
+    // Process events without blocking
+}
+
+// Iterator with timeout per event
+for event in iter.timeout_iter(Duration::from_secs(1)) {
+    // Stops when timeout expires without events
 }
 ```
 
-## Dependencies
+### `ChangeEvent`
 
-- **Core**: `tokio`, `serde`, `quick-xml`, `url`, `tracing`
-- **Workspace**: `sonos-api`, `sonos-stream`, `sonos-event-manager`, `sonos-discovery`
+Event emitted when a watched property changes:
+
+```rust
+pub struct ChangeEvent {
+    pub speaker_id: SpeakerId,    // Which speaker changed
+    pub property_key: &'static str, // Which property (e.g., "volume")
+    pub service: Service,          // Which UPnP service
+    pub timestamp: Instant,        // When it changed
+}
+```
+
+### `Property` Trait
+
+All properties implement this trait:
+
+```rust
+pub trait Property: Clone + Send + Sync + PartialEq + 'static {
+    const KEY: &'static str;       // Unique identifier
+    const SCOPE: Scope;            // Speaker, Group, or System
+    const SERVICE: Service;        // UPnP service source
+}
+```
 
 ## Error Handling
 
 The crate provides structured error types:
-- `StateError::InitializationFailed` - EventManager or state setup failed
-- `StateError::SubscriptionFailed` - UPnP subscription error
+
+- `StateError::Init` - Initialization error
+- `StateError::Parse` - Data parsing error
+- `StateError::Api` - Error from sonos-api
 - `StateError::SpeakerNotFound` - Invalid speaker ID
-- `StateError::DeviceRegistrationFailed` - Device setup error
+- `StateError::InvalidIpAddress` - IP address parsing failed
+- `StateError::LockPoisoned` - Internal mutex error
+
+## Dependencies
+
+- **Core**: `serde`, `tracing`
+- **Workspace**: `sonos-api`, `sonos-discovery`
 
 ## Performance Characteristics
 
-- **Memory Efficient**: Shared HTTP connection pools and event processing
-- **Low Latency**: Direct event streaming with minimal processing overhead
-- **Resource Management**: Automatic cleanup prevents resource leaks
-- **Scalable**: Single event processor handles all devices and services
-
-## Limitations
-
-- Requires active network connection to Sonos devices
-- Initial state discovery may take 2-3 seconds for subscriptions to establish
-- Best suited for async Rust applications (sync support available but limited)
-- UPnP events depend on device network configuration
+- **Low Latency**: Property reads are instant from local cache
+- **Thread-Safe**: All operations are internally synchronized
+- **Memory Efficient**: Shared state across cloned managers
 
 ## Thread Safety
 
 All public APIs are thread-safe:
-- `StateManager` can be shared across threads with `Arc`
-- Property watchers are `Send + Sync`
-- State store operations are internally synchronized
+- `StateManager` can be cloned and shared across threads
+- Property handles are `Send + Sync`
+- State operations are internally synchronized with `RwLock`
 
 ## Contributing
 
@@ -224,6 +326,4 @@ MIT License
 ## See Also
 
 - [`sonos-api`](../sonos-api) - Low-level Sonos UPnP API interactions
-- [`sonos-stream`](../sonos-stream) - Event streaming for Sonos devices
-- [`sonos-event-manager`](../sonos-event-manager) - UPnP event subscription management
 - [`sonos-discovery`](../sonos-discovery) - Device discovery utilities

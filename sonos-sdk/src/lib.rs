@@ -1,25 +1,34 @@
-//! # Sonos SDK - DOM-like API for Sonos Control
+//! # Sonos SDK - Sync-First API for Sonos Control
 //!
-//! Provides a clean, property-centric API for controlling Sonos devices:
+//! Provides a clean, property-centric API for controlling Sonos devices.
+//! All operations are **synchronous** - no async/await required.
 //!
-//! ```rust,no_run
+//! ## Quick Start
+//!
+//! ```rust,ignore
 //! use sonos_sdk::SonosSystem;
 //!
-//! #[tokio::main]
-//! async fn main() -> Result<(), sonos_sdk::SdkError> {
-//!     let system = SonosSystem::new().await?;
-//!     let speaker = system.get_speaker_by_name("Living Room").await
+//! fn main() -> Result<(), sonos_sdk::SdkError> {
+//!     // Create system with automatic device discovery (sync)
+//!     let system = SonosSystem::new()?;
+//!
+//!     // Get speaker by name
+//!     let speaker = system.get_speaker_by_name("Living Room")
 //!         .ok_or_else(|| sonos_sdk::SdkError::SpeakerNotFound("Living Room".to_string()))?;
 //!
 //!     // Three methods on each property:
-//!     let volume = speaker.volume.get();                    // Get cached value
-//!     let fresh_volume = speaker.volume.fetch().await?;     // API call + update cache
-//!     let mut watcher = speaker.volume.watch().await?;      // UPnP event stream
+//!     let volume = speaker.volume.get();             // Get cached value
+//!     let fresh_volume = speaker.volume.fetch()?;    // API call + update cache
+//!     let current = speaker.volume.watch()?;         // Start watching for changes
 //!
-//!     // PropertyWatcher provides reactive updates:
-//!     println!("Current volume: {:?}", watcher.current());
-//!     watcher.changed().await.ok(); // Wait for next change
-//!     println!("Volume changed to: {:?}", watcher.current());
+//!     // Iterate over changes (blocking)
+//!     for event in system.iter() {
+//!         println!("Changed: {} on {}", event.property_key, event.speaker_id);
+//!         if event.property_key == "volume" {
+//!             let new_vol = speaker.volume.get();
+//!             println!("New volume: {:?}", new_vol);
+//!         }
+//!     }
 //!
 //!     Ok(())
 //! }
@@ -27,11 +36,11 @@
 //!
 //! ## Key Features
 //!
+//! - **Sync-First API**: All methods are synchronous - no async/await required
 //! - **DOM-like API**: Access properties directly on speaker objects
-//! - **Three access patterns**: `get()` for cached values, `fetch()` for fresh API calls, `watch()` for reactive updates
-//! - **Automatic state management**: `fetch()` updates the reactive state system automatically
-//! - **UPnP event streaming**: `watch()` returns PropertyWatcher with automatic subscription management
-//! - **Type safety**: All properties are strongly typed with compile-time correctness
+//! - **Three access patterns**: `get()` for cached, `fetch()` for fresh, `watch()` for reactive
+//! - **Automatic event management**: UPnP subscriptions managed automatically via watch/unwatch
+//! - **Type safety**: All properties are strongly typed
 //! - **Resource efficiency**: Shared state management and HTTP connections
 //!
 //! ## Available Properties
@@ -39,37 +48,31 @@
 //! Currently implemented:
 //! - `volume` - Speaker volume (0-100)
 //! - `playback_state` - Current playback state (Playing/Paused/Stopped/Transitioning)
-//!
-//! Coming soon:
 //! - `mute` - Mute state
+//! - `bass`, `treble`, `loudness` - EQ settings
 //! - `position` - Current track position
 //! - `current_track` - Track metadata
-//! - `bass`, `treble`, `loudness` - EQ settings
 //!
 //! ## Architecture
 //!
-//! This SDK builds on top of the existing sonos-state reactive architecture:
-//!
 //! ```text
-//! sonos-sdk (DOM-like API)
+//! sonos-sdk (Sync-First DOM-like API)
 //!     ↓
-//! Property Handles (get/fetch/watch)
-//!     ↓
-//! sonos-state (Reactive State Management)
-//!     ↓
-//! sonos-api (Direct UPnP Operations)
+//! sonos-state (State Management) ←→ sonos-event-manager (Event Subscriptions)
+//!     ↓                                    ↓
+//! sonos-api (UPnP Operations)         sonos-stream (Event Processing)
 //! ```
 
 // Main exports
-pub use system::SonosSystem;
-pub use speaker::Speaker;
 pub use error::SdkError;
+pub use speaker::Speaker;
+pub use system::SonosSystem;
 
 // Re-export commonly used types from sonos-state
-pub use sonos_state::{Volume, PlaybackState, PropertyWatcher, SpeakerId};
+pub use sonos_state::{ChangeEvent, ChangeIterator, PlaybackState, SpeakerId, Volume};
 
 // Internal modules
 mod error;
-mod system;
-mod speaker;
 mod property;
+mod speaker;
+mod system;

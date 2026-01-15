@@ -9,6 +9,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::sync::{mpsc, RwLock};
+use tracing::{debug, info, warn};
 
 /// Status of firewall detection for a device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,16 +121,28 @@ impl FirewallDetectionCoordinator {
             while let Some(result) = detection_complete_rx.recv().await {
                 match result.reason {
                     DetectionReason::EventReceived => {
-                        eprintln!("✅ Firewall detection: Events accessible from {} (reason: {:?})",
-                                 result.device_ip, result.reason);
+                        info!(
+                            device_ip = %result.device_ip,
+                            reason = ?result.reason,
+                            status = ?result.status,
+                            "Firewall detection: Events accessible from device"
+                        );
                     }
                     DetectionReason::Timeout => {
-                        eprintln!("🚫 Firewall detection: No events from {} within timeout (reason: {:?})",
-                                 result.device_ip, result.reason);
+                        warn!(
+                            device_ip = %result.device_ip,
+                            reason = ?result.reason,
+                            status = ?result.status,
+                            "Firewall detection: No events received within timeout"
+                        );
                     }
                     DetectionReason::SubscriptionFailed => {
-                        eprintln!("❌ Firewall detection: Subscription failed for {} (reason: {:?})",
-                                 result.device_ip, result.reason);
+                        warn!(
+                            device_ip = %result.device_ip,
+                            reason = ?result.reason,
+                            status = ?result.status,
+                            "Firewall detection: Subscription failed for device"
+                        );
                     }
                 }
             }
@@ -160,8 +173,11 @@ impl FirewallDetectionCoordinator {
         if let Some(state_arc) = device_states.get(&device_ip) {
             let state = state_arc.read().await;
             if state.detection_completed {
-                eprintln!("ℹ️  Firewall detection: Using cached status {:?} for {}",
-                         state.status, device_ip);
+                debug!(
+                    device_ip = %device_ip,
+                    status = ?state.status,
+                    "Firewall detection: Using cached status for device"
+                );
                 return state.status;
             }
         }
@@ -171,8 +187,11 @@ impl FirewallDetectionCoordinator {
         // First subscription for this device - start monitoring
         self.start_detection_for_device(device_ip).await;
 
-        eprintln!("🔍 Firewall detection: Started monitoring {} for events (timeout: {:?})",
-                 device_ip, self.config.event_wait_timeout);
+        debug!(
+            device_ip = %device_ip,
+            timeout = ?self.config.event_wait_timeout,
+            "Firewall detection: Started monitoring device for events"
+        );
 
         FirewallStatus::Unknown
     }
@@ -203,8 +222,12 @@ impl FirewallDetectionCoordinator {
                     reason: DetectionReason::EventReceived,
                 });
 
-                eprintln!("✅ Firewall detection: Event received from {} after {:?}, marking as ACCESSIBLE",
-                         device_ip, elapsed);
+                info!(
+                    device_ip = %device_ip,
+                    elapsed = ?elapsed,
+                    status = ?FirewallStatus::Accessible,
+                    "Firewall detection: Event received from device, marking as accessible"
+                );
             }
         }
     }
@@ -225,7 +248,10 @@ impl FirewallDetectionCoordinator {
     pub async fn clear_device_cache(&self, device_ip: IpAddr) {
         let mut device_states = self.device_states.write().await;
         device_states.remove(&device_ip);
-        eprintln!("🧹 Firewall detection: Cleared cache for {}", device_ip);
+        debug!(
+            device_ip = %device_ip,
+            "Firewall detection: Cleared cache for device"
+        );
     }
 
     /// Start detection monitoring for a specific device.
@@ -247,7 +273,11 @@ impl FirewallDetectionCoordinator {
             // Remove oldest entry (this is a simple LRU-like behavior)
             if let Some(oldest_ip) = device_states.keys().next().copied() {
                 device_states.remove(&oldest_ip);
-                eprintln!("🧹 Firewall detection: Removed oldest cached entry for {} (cache full)", oldest_ip);
+                debug!(
+                    oldest_ip = %oldest_ip,
+                    cache_size = self.config.max_cached_devices,
+                    "Firewall detection: Removed oldest cached entry due to cache being full"
+                );
             }
         }
 
@@ -286,8 +316,12 @@ impl FirewallDetectionCoordinator {
                             reason: DetectionReason::Timeout,
                         });
 
-                        eprintln!("🚫 Firewall detection: No events from {} within {:?}, marking as BLOCKED",
-                                 device_ip, state.timeout_duration);
+                        warn!(
+                            device_ip = %device_ip,
+                            timeout = ?state.timeout_duration,
+                            status = ?FirewallStatus::Blocked,
+                            "Firewall detection: No events received within timeout, marking as blocked"
+                        );
                     }
                 }
             }

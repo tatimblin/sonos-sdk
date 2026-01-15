@@ -7,5 +7,9 @@ edition = "2021"
 sonos-state = { path = "../sonos-state" }
 sonos-api = { path = "../sonos-api" }
 sonos-discovery = { path = "../sonos-discovery" }
-tokio = { version = "1.0", features = ["full"] }
+sonos-event-manager = { path = "../sonos-event-manager" }
 thiserror = "1.0"
+
+[dev-dependencies]
+ratatui = "0.26"
+crossterm = "0.27"

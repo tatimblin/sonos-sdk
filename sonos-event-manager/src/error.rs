@@ -55,6 +55,18 @@ pub enum EventManagerError {
     /// Internal synchronization error
     #[error("Internal synchronization error: {0}")]
     Sync(String),
+
+    /// Lock poisoned
+    #[error("Internal lock was poisoned")]
+    LockPoisoned,
+
+    /// Invalid IP address
+    #[error("Invalid IP address: {0}")]
+    InvalidIpAddress(String),
+
+    /// Background worker disconnected
+    #[error("Background worker has disconnected")]
+    WorkerDisconnected,
 }
 
 /// Result type for Event Manager operations

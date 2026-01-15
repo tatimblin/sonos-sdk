@@ -4,6 +4,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use warp::Filter;
+use tracing::{debug, error, info, trace, warn};
 
 use super::router::{EventRouter, NotificationPayload};
 
@@ -281,55 +282,65 @@ impl CallbackServer {
                             }
 
                             // Log incoming request details for unified event stream monitoring
-                            eprintln!("\n🌐 === UNIFIED CALLBACK SERVER: INCOMING NOTIFY ===");
-                            eprintln!("📡 Method: {}", method);
-                            eprintln!("📡 Path: {}", path.as_str());
-                            eprintln!("📏 Body size: {} bytes", body.len());
-                            eprintln!("📋 Headers:");
-                            if let Some(ref sid_val) = sid {
-                                eprintln!("   SID: {}", sid_val);
-                            }
-                            if let Some(ref nt_val) = nt {
-                                eprintln!("   NT: {}", nt_val);
-                            }
-                            if let Some(ref nts_val) = nts {
-                                eprintln!("   NTS: {}", nts_val);
-                            }
+                            debug!(
+                                method = %method,
+                                path = %path.as_str(),
+                                body_size = body.len(),
+                                sid = ?sid,
+                                nt = ?nt,
+                                nts = ?nts,
+                                "Received UPnP NOTIFY event"
+                            );
 
-                            // Convert body to string and log it
+                            // Convert body to string and log content at trace level only
                             let event_xml = String::from_utf8_lossy(&body).to_string();
-                            eprintln!("📄 Event XML (first 200 chars):");
-                            let preview = if event_xml.len() > 200 {
-                                format!("{}...", &event_xml[..200])
+                            if event_xml.len() > 200 {
+                                trace!(
+                                    event_xml_preview = %&event_xml[..200],
+                                    total_length = event_xml.len(),
+                                    "UPnP event XML content (truncated)"
+                                );
                             } else {
-                                event_xml.clone()
-                            };
-                            eprintln!("{}", preview);
-                            eprintln!("🌐 === END UNIFIED CALLBACK NOTIFICATION ===\n");
+                                trace!(
+                                    event_xml = %event_xml,
+                                    "UPnP event XML content (full)"
+                                );
+                            }
 
                             // Validate UPnP headers
                             if !Self::validate_upnp_headers(&sid, &nt, &nts) {
-                                eprintln!("❌ Invalid UPnP headers");
+                                error!(
+                                    sid = ?sid,
+                                    nt = ?nt,
+                                    nts = ?nts,
+                                    "Invalid UPnP headers in NOTIFY request"
+                                );
                                 return Err(warp::reject::custom(InvalidUpnpHeaders));
                             }
 
                             // Extract subscription ID from SID header (required for UPnP events)
                             let sub_id = sid.ok_or_else(|| {
-                                eprintln!("❌ Missing SID header");
+                                error!("Missing required SID header in UPnP NOTIFY request");
                                 warp::reject::custom(InvalidUpnpHeaders)
                             })?;
 
                             // Route the event through the unified event stream
-                            let routed = router.route_event(sub_id, event_xml).await;
+                            let routed = router.route_event(sub_id.clone(), event_xml).await;
 
                             if routed {
-                                eprintln!("✅ Unified event stream: Event routed successfully");
+                                debug!(
+                                    subscription_id = %sub_id,
+                                    "UPnP event routed successfully"
+                                );
                                 Ok::<_ , warp::Rejection>(warp::reply::with_status(
                                     "",
                                     warp::http::StatusCode::OK,
                                 ))
                             } else {
-                                eprintln!("❌ Unified event stream: Event routing failed - subscription not found");
+                                warn!(
+                                    subscription_id = %sub_id,
+                                    "UPnP event routing failed - subscription not found"
+                                );
                                 Err(warp::reject::not_found())
                             }
                         }
@@ -348,7 +359,10 @@ impl CallbackServer {
                     },
                 );
 
-            eprintln!("🌐 Unified CallbackServer listening on {addr} - ready to process events from all speakers and services");
+            info!(
+                address = %addr,
+                "CallbackServer listening - ready to process UPnP events"
+            );
             // Signal that server is ready
             let _ = ready_tx.send(()).await;
             server.await;

@@ -1,174 +1,134 @@
 //! Sonos State Management
 //!
-//! A lightweight, reactive state management system for Sonos devices.
+//! A sync-first state management system for Sonos devices.
 //!
 //! # Features
 //!
-//! - **Local State**: Type-safe unified store for all Sonos state
-//! - **Reactive Updates**: Watch properties for changes using `tokio::sync::watch`
-//! - **Event-driven**: Process events from sonos-stream or other sources
-//! - **Extensible**: Add custom properties and decoders
-//!
-//! # Architecture
-//!
-//! ```text
-//! External Events → Decoders → StateStore → Watchers
-//!                              (queries)   (reactive)
-//! ```
+//! - **Sync API**: All operations are synchronous - no async/await required
+//! - **Type-safe State**: Strongly typed properties with automatic change detection
+//! - **Change Events**: Blocking iterator over property changes
+//! - **Watch Pattern**: Register for property changes, iterate to receive them
 //!
 //! # Quick Start
 //!
 //! ```rust,ignore
-//! use sonos_state::{StateManager, Volume};
+//! use sonos_state::{StateManager, Volume, SpeakerId};
 //! use sonos_discovery;
 //!
-//! // Create state manager with automatic event processing
-//! let mut manager = StateManager::new().await?;
+//! // Create state manager (sync - no .await!)
+//! let manager = StateManager::new()?;
+//!
+//! // Add discovered devices
 //! let devices = sonos_discovery::get();
-//! manager.add_devices(devices).await?;
+//! manager.add_devices(devices)?;
 //!
-//! // Watch for property changes - automatic subscription management
-//! let mut volume_watcher = manager.watch_property::<Volume>(speaker_id).await?;
-//! while volume_watcher.changed().await.is_ok() {
-//!     if let Some(volume) = volume_watcher.current() {
-//!         println!("Volume: {}%", volume.0);
-//!     }
-//! }
-//!
-//! // Or get current value without watching
+//! // Get current property value
+//! let speaker_id = SpeakerId::new("RINCON_123");
 //! if let Some(vol) = manager.get_property::<Volume>(&speaker_id) {
 //!     println!("Current volume: {}%", vol.0);
 //! }
-//! ```
 //!
-//! # Global Change Iterator (for Applications)
+//! // Watch for changes
+//! manager.register_watch(&speaker_id, "volume");
 //!
-//! For applications that need to detect when to rerender (like TUIs), use the global change iterator:
-//!
-//! ```rust,ignore
-//! use sonos_state::{StateManager, ChangeFilter, RerenderScope};
-//!
-//! let manager = StateManager::new().await?;
-//! let mut changes = manager.changes_filtered(ChangeFilter::rerender_only());
-//!
-//! while let Some(change) = changes.next().await {
-//!     match change.context.rerender_scope {
-//!         RerenderScope::Full => refresh_entire_ui(),
-//!         RerenderScope::Device(speaker_id) => refresh_device_ui(&speaker_id),
-//!         RerenderScope::Group(group_id) => refresh_group_ui(&group_id),
-//!         RerenderScope::System => refresh_status_bar(),
+//! // Blocking iteration over changes
+//! for event in manager.iter() {
+//!     println!("{} changed on {}", event.property_key, event.speaker_id);
+//!     if let Some(vol) = manager.get_property::<Volume>(&event.speaker_id) {
+//!         println!("New volume: {}%", vol.0);
 //!     }
 //! }
 //! ```
 //!
-//! # Ratatui Integration
+//! # Speaker Handles
 //!
-//! For ratatui TUI applications, use `WidgetStateManager` for efficient widget-level property watching:
+//! For convenient property access, use Speaker handles:
 //!
 //! ```rust,ignore
-//! use sonos_state::{StateManager, WidgetStateManager, Volume};
+//! use sonos_state::{StateManager, Speaker, Volume};
 //!
-//! let state_manager = Arc::new(StateManager::new().await?);
-//! let mut widget_state = WidgetStateManager::new(Arc::clone(&state_manager)).await?;
+//! let manager = StateManager::new()?;
+//! // ... add devices ...
 //!
-//! // In widget render functions:
-//! async fn render_volume_bar(widget_state: &mut WidgetStateManager, speaker_id: &SpeakerId) {
-//!     let (volume, changed) = widget_state.watch_property::<Volume>(speaker_id).await?;
-//!     if changed {
-//!         // Only render when volume actually changed
-//!         let gauge = Gauge::default().percent(volume.unwrap_or_default().0 as u16);
-//!         frame.render_widget(gauge, area);
+//! // Get speaker info and create handle
+//! for info in manager.speaker_infos() {
+//!     let speaker = Speaker::new(info, Arc::new(manager.clone()));
+//!
+//!     // Read property
+//!     if let Some(vol) = speaker.volume.get() {
+//!         println!("{}: {}%", speaker.name, vol.0);
 //!     }
-//! }
 //!
-//! // In main event loop:
-//! loop {
-//!     widget_state.process_global_changes(); // Process all Sonos changes
-//!     if widget_state.has_any_changes() {
-//!         terminal.draw(|frame| render_ui(frame, &mut widget_state))?;
-//!     }
+//!     // Watch for changes
+//!     speaker.volume.watch()?;
 //! }
 //! ```
 //!
-//! # Sync Usage (CLI)
+//! # Non-blocking Iteration
 //!
 //! ```rust,ignore
-//! use sonos_state::{SyncWatcher, SyncWatchExt};
+//! // Check for events without blocking
+//! for event in manager.iter().try_iter() {
+//!     println!("Event: {:?}", event);
+//! }
 //!
-//! let rt = tokio::runtime::Handle::current();
-//! let watcher = store.sync_watch::<Volume>(&speaker_id, rt);
-//!
-//! // Blocking wait for changes
-//! while let Some(vol) = watcher.wait() {
-//!     println!("Volume: {}%", vol.0);
+//! // Wait with timeout
+//! if let Some(event) = manager.iter().recv_timeout(Duration::from_secs(1)) {
+//!     println!("Got event: {:?}", event);
 //! }
 //! ```
 
 // Core modules
-pub mod decoder;
-pub mod decoders;
 pub mod model;
 pub mod property;
-pub mod store;
-pub mod watcher;
 
-// Internal state manager (used by reactive system)
-mod state_manager;
+// Event decoding
+pub mod decoder;
 
-// Reactive state manager (main interface)
-pub mod reactive;
+// Event processing
+pub(crate) mod event_worker;
 
-// Global change iterator for application rerender triggering
-pub mod change_iterator;
+// Sync-first API
+pub mod state;
+pub mod iter;
+pub mod speaker;
 
 // Error types
 pub mod error;
 
+// Logging infrastructure
+pub mod logging;
+
 // ============================================================================
-// Re-exports - New API
+// Re-exports - Main API
 // ============================================================================
 
-// Main reactive state manager
-pub use reactive::StateManager;
+// State manager
+pub use state::{StateManager, StateManagerBuilder, ChangeEvent};
 
-// Store
-pub use store::{StateChange, StateStore};
+// Change iterator
+pub use iter::ChangeIterator;
 
-// Properties (commonly used)
+// Speaker handles
+pub use speaker::{Speaker, PropertyHandle};
+
+// Properties
 pub use property::{
     Bass, CurrentTrack, GroupInfo, GroupMembership, Loudness, Mute, PlaybackState, Position,
     Property, Scope, Topology, Treble, Volume,
 };
 
 // Model types
-pub use model::{GroupId, Speaker, SpeakerId, SpeakerInfo};
+pub use model::{GroupId, SpeakerId, SpeakerInfo};
 
-// Decoder types
-pub use decoder::{
-    AVTransportData, DevicePropertiesData, EventData, EventDecoder, PropertyUpdate, RawEvent,
-    RenderingControlData, TopologyData, ZoneGroupData, ZoneMemberData,
-};
+// Event decoder
+pub use decoder::{decode_event, DecodedChanges, PropertyChange};
 
-// Decoders
-pub use decoders::{AVTransportDecoder, RenderingControlDecoder, TopologyDecoder};
-
-// Watcher utilities
-pub use watcher::{SyncWatchExt, SyncWatcher};
-
-// Reactive property watcher
-pub use reactive::PropertyWatcher;
-
-// Global change iterator types
-pub use change_iterator::{
-    BlockingChangeIterator, ChangeContext, ChangeEvent, ChangeFilter, ChangeStream, ChangeType,
-    ChangeTypeFilter, RerenderScope, TryRecvError, WidgetStateManager,
-};
-
-// ============================================================================
-// Re-exports - Error types
-// ============================================================================
-
+// Error types
 pub use error::{Result, StateError};
+
+// Logging
+pub use logging::{LoggingError, LoggingMode, init_logging, init_logging_from_env, init_silent};
 
 // ============================================================================
 // Prelude
@@ -176,16 +136,20 @@ pub use error::{Result, StateError};
 
 /// Commonly used types for convenient importing
 pub mod prelude {
+    // Properties
     pub use crate::property::{
         Bass, CurrentTrack, GroupMembership, Loudness, Mute, PlaybackState, Position, Property,
         Scope, Topology, Treble, Volume,
     };
-    pub use crate::reactive::{StateManager, PropertyWatcher};
-    pub use crate::store::{StateChange, StateStore};
+
+    // Model types
     pub use crate::model::{GroupId, SpeakerId, SpeakerInfo};
-    pub use crate::decoder::RawEvent;
-    pub use crate::watcher::{SyncWatchExt, SyncWatcher};
-    pub use crate::change_iterator::{
-        ChangeEvent, ChangeFilter, ChangeStream, ChangeType, RerenderScope, WidgetStateManager,
-    };
+
+    // State management
+    pub use crate::state::{StateManager, ChangeEvent};
+    pub use crate::iter::ChangeIterator;
+    pub use crate::speaker::{Speaker, PropertyHandle};
+
+    // Error types
+    pub use crate::error::{Result, StateError};
 }
