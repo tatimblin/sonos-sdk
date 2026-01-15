@@ -2151,6 +2151,7 @@ name = "sonos-event-manager"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "ctrlc",
  "dashmap",
  "sonos-api",
  "sonos-discovery",
@@ -2159,6 +2160,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -2169,9 +2171,9 @@ dependencies = [
  "ratatui",
  "sonos-api",
  "sonos-discovery",
+ "sonos-event-manager",
  "sonos-state",
  "thiserror",
- "tokio",
 ]
 
 [[package]]

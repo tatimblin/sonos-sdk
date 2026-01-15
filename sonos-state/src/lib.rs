@@ -82,6 +82,12 @@
 pub mod model;
 pub mod property;
 
+// Event decoding
+pub mod decoder;
+
+// Event processing
+pub(crate) mod event_worker;
+
 // Sync-first API
 pub mod state;
 pub mod iter;
@@ -114,6 +120,9 @@ pub use property::{
 
 // Model types
 pub use model::{GroupId, SpeakerId, SpeakerInfo};
+
+// Event decoder
+pub use decoder::{decode_event, DecodedChanges, PropertyChange};
 
 // Error types
 pub use error::{Result, StateError};

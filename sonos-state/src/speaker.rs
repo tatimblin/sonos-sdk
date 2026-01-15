@@ -86,6 +86,9 @@ impl<P: Property> PropertyHandle<P> {
     /// in `manager.iter()`. The subscription stays active until
     /// `unwatch()` is called or the StateManager is dropped.
     ///
+    /// When an event manager is configured, this will also subscribe
+    /// to the UPnP service for this property.
+    ///
     /// # Example
     ///
     /// ```rust,ignore
@@ -100,7 +103,21 @@ impl<P: Property> PropertyHandle<P> {
     /// }
     /// ```
     pub fn watch(&self) -> Result<Option<P>> {
+        // Register in local watched set
         self.state_manager.register_watch(&self.speaker_id, P::KEY);
+
+        // Subscribe via event manager (sync call)
+        if let Some(em) = self.state_manager.event_manager() {
+            if let Err(e) = em.ensure_service_subscribed(self.speaker_ip, P::SERVICE) {
+                tracing::warn!(
+                    "Failed to subscribe to {:?} for {}: {}",
+                    P::SERVICE,
+                    self.speaker_id.as_str(),
+                    e
+                );
+            }
+        }
+
         Ok(self.get())
     }
 
@@ -108,8 +125,24 @@ impl<P: Property> PropertyHandle<P> {
     ///
     /// After calling `unwatch()`, changes to this property will no longer
     /// appear in `manager.iter()`.
+    ///
+    /// When an event manager is configured, this will release the
+    /// UPnP service subscription (if no other watchers remain).
     pub fn unwatch(&self) {
+        // Unregister from local watched set
         self.state_manager.unregister_watch(&self.speaker_id, P::KEY);
+
+        // Release subscription via event manager (sync call)
+        if let Some(em) = self.state_manager.event_manager() {
+            if let Err(e) = em.release_service_subscription(self.speaker_ip, P::SERVICE) {
+                tracing::warn!(
+                    "Failed to unsubscribe from {:?} for {}: {}",
+                    P::SERVICE,
+                    self.speaker_id.as_str(),
+                    e
+                );
+            }
+        }
     }
 
     /// Check if this property is currently being watched

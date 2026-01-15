@@ -1,34 +1,51 @@
-//! Smart Dashboard - demonstrates the consolidated reactive StateManager
+//! Smart Dashboard - demonstrates the sync-first reactive StateManager
 //!
-//! This example shows how the consolidated StateManager simplifies Sonos integration:
+//! This example shows how the sync-first StateManager simplifies Sonos integration:
 //! - Single StateManager handles both state and events automatically
-//! - No manual event manager setup required
+//! - No async/await required - pure synchronous API
 //! - Automatic UPnP subscription management
-//! - Property-driven reactive updates
+//! - Property-driven reactive updates via iter()
 //!
 //! Run with: cargo run -p sonos-event-manager --example smart_dashboard
 
+use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
+
+use sonos_event_manager::SonosEventManager;
+use tracing_subscriber;
 use sonos_state::{
     model::SpeakerId,
-    property::{Volume, Mute, PlaybackState, CurrentTrack, Position},
+    property::{CurrentTrack, Mute, PlaybackState, Position, Volume},
     StateManager,
 };
 
-#[tokio::main]
-async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
-    println!("=== Sonos Smart Dashboard (using Consolidated StateManager) ===\n");
+fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    // Initialize tracing for debug output
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive("sonos_stream=debug".parse().unwrap())
+                .add_directive("sonos_event_manager=debug".parse().unwrap())
+                .add_directive("sonos_state=debug".parse().unwrap())
+        )
+        .init();
 
-    // Step 1: Create reactive state manager (handles events automatically!)
-    let manager = StateManager::new().await?;
-    println!("✓ Created reactive state manager with integrated event processing");
+    println!("=== Sonos Smart Dashboard (Sync-First API) ===\n");
 
-    // Step 2: Discover and add devices (simplified!)
-    println!("Discovering Sonos devices...");
-    let devices = tokio::task::spawn_blocking(|| {
-        sonos_discovery::get_with_timeout(Duration::from_secs(5))
-    })
-    .await?;
+    // Step 1: Create event manager (sync)
+    let event_manager = Arc::new(SonosEventManager::new()?);
+    println!("Created event manager");
+
+    // Step 2: Create state manager with event manager wired up (sync)
+    let manager = StateManager::builder()
+        .with_event_manager(Arc::clone(&event_manager))
+        .build()?;
+    println!("Created state manager with event integration");
+
+    // Step 3: Discover and add devices (sync)
+    println!("\nDiscovering Sonos devices...");
+    let devices = sonos_discovery::get_with_timeout(Duration::from_secs(5));
 
     if devices.is_empty() {
         println!("No Sonos devices found on the network.");
@@ -36,7 +53,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     }
 
     // Add devices - this automatically sets up event management
-    manager.add_devices(devices.clone()).await?;
+    manager.add_devices(devices.clone())?;
 
     println!("Found {} devices:", devices.len());
     for device in &devices {
@@ -45,9 +62,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             device.name, device.model_name, device.ip_address
         );
     }
-    println!("✓ Added all devices to state manager");
+    println!("Added all devices to state manager");
 
-    // Step 3: Create speaker IDs for property watching
+    // Step 4: Create speaker IDs for property watching
     let speaker_ids: Vec<(SpeakerId, String)> = devices
         .iter()
         .map(|d| (SpeakerId::new(&d.id), d.name.clone()))
@@ -58,147 +75,130 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Step 4: Set up property watching (triggers automatic UPnP subscriptions!)
+    // Step 5: Set up property watching (triggers automatic UPnP subscriptions!)
     println!("\nSetting up property subscriptions...");
-    let mut _volume_watchers = Vec::new();
-    let mut _mute_watchers = Vec::new();
-    let mut _playback_watchers = Vec::new();
 
     for (speaker_id, name) in &speaker_ids {
         // Watch volume - automatically subscribes to RenderingControl service!
-        match manager.watch_property::<Volume>(speaker_id.clone()).await {
-            Ok(watcher) => {
-                println!("  ✓ Watching volume for {}", name);
-                _volume_watchers.push(watcher);
-            }
-            Err(e) => {
-                println!("  ✗ Failed to watch volume for {}: {}", name, e);
-            }
+        if let Err(e) = manager.watch_property_with_subscription::<Volume>(speaker_id) {
+            println!("  Failed to watch volume for {}: {}", name, e);
+        } else {
+            println!("  Watching volume for {}", name);
         }
 
         // Watch mute - shares the same RenderingControl subscription!
-        match manager.watch_property::<Mute>(speaker_id.clone()).await {
-            Ok(watcher) => {
-                println!("  ✓ Watching mute for {}", name);
-                _mute_watchers.push(watcher);
-            }
-            Err(e) => {
-                println!("  ✗ Failed to watch mute for {}: {}", name, e);
-            }
+        if let Err(e) = manager.watch_property_with_subscription::<Mute>(speaker_id) {
+            println!("  Failed to watch mute for {}: {}", name, e);
+        } else {
+            println!("  Watching mute for {}", name);
         }
 
         // Watch playback state - automatically subscribes to AVTransport service!
-        match manager.watch_property::<PlaybackState>(speaker_id.clone()).await {
-            Ok(watcher) => {
-                println!("  ✓ Watching playback state for {}", name);
-                _playback_watchers.push(watcher);
-            }
-            Err(e) => {
-                println!("  ✗ Failed to watch playback state for {}: {}", name, e);
-            }
-        }
-    }
-
-    // Step 5: Show subscription stats (debug only in release builds)
-    #[cfg(debug_assertions)]
-    {
-        let stats = manager.subscription_stats().await;
-        println!("\nActive UPnP subscriptions:");
-        for (key, ref_count) in &stats {
-            println!("  - {:?} at {} -> {} watchers", key.service, key.speaker_ip, ref_count);
+        if let Err(e) = manager.watch_property_with_subscription::<PlaybackState>(speaker_id) {
+            println!("  Failed to watch playback state for {}: {}", name, e);
+        } else {
+            println!("  Watching playback state for {}", name);
         }
     }
 
     println!("\n=== Live Property Dashboard ===");
-    println!("Showing current state every 3 seconds (Ctrl+C to quit)...\n");
+    println!("Waiting for events (Ctrl+C to quit)...\n");
 
     // Give initial subscriptions time to receive data
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    thread::sleep(Duration::from_secs(2));
 
-    let mut interval = tokio::time::interval(Duration::from_secs(3));
-    let mut iteration = 0;
+    // Set up Ctrl+C handler
+    let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let r = Arc::clone(&running);
+    ctrlc::set_handler(move || {
+        r.store(false, std::sync::atomic::Ordering::SeqCst);
+    })?;
 
-    loop {
-        interval.tick().await;
-        iteration += 1;
+    // Display initial state
+    display_dashboard(&manager, &speaker_ids);
 
-        // Clear screen (simple approach)
-        print!("\x1B[2J\x1B[1;1H");
+    // Process events via blocking iterator with timeout
+    let iter = manager.iter();
+    while running.load(std::sync::atomic::Ordering::SeqCst) {
+        // Try to receive an event with timeout
+        if let Some(event) = iter.recv_timeout(Duration::from_secs(1)) {
+            println!(
+                "\n[Event] {} changed for {}",
+                event.property_key,
+                event.speaker_id.as_str()
+            );
 
-        println!("=== Sonos Smart Dashboard === (Update #{})", iteration);
-        println!("Last updated: {}\n", chrono::Utc::now().format("%H:%M:%S"));
-
-        // Display current state for each speaker using consolidated API
-        for (speaker_id, name) in &speaker_ids {
-            println!("--- {} ---", name);
-
-            // Volume & Mute (automatically managed subscriptions!)
-            if let Some(vol) = manager.get_property::<Volume>(speaker_id) {
-                let mute_str = manager
-                    .get_property::<Mute>(speaker_id)
-                    .map(|m| if m.0 { " [MUTED]" } else { "" })
-                    .unwrap_or("");
-                println!("  Volume: {}%{}", vol.0, mute_str);
-            } else {
-                println!("  Volume: Not available");
-            }
-
-            // Playback State (automatically managed subscriptions!)
-            if let Some(state) = manager.get_property::<PlaybackState>(speaker_id) {
-                let state_str = match state {
-                    PlaybackState::Playing => "Playing",
-                    PlaybackState::Paused => "Paused",
-                    PlaybackState::Stopped => "Stopped",
-                    PlaybackState::Transitioning => "Transitioning",
-                };
-                println!("  State: {}", state_str);
-            } else {
-                println!("  State: Not available");
-            }
-
-            // Current Track (if available)
-            if let Some(track) = manager.get_property::<CurrentTrack>(speaker_id) {
-                if let Some(title) = &track.title {
-                    println!("  Track: {}", title);
-                }
-                if let Some(artist) = &track.artist {
-                    println!("  Artist: {}", artist);
-                }
-            }
-
-            // Position (if available)
-            if let Some(pos) = manager.get_property::<Position>(speaker_id) {
-                if pos.duration_ms > 0 {
-                    let progress = pos.progress();
-                    let pos_str = format_time(pos.position_ms);
-                    let dur_str = format_time(pos.duration_ms);
-                    println!("  Position: {} / {} ({:.0}%)", pos_str, dur_str, progress);
-                }
-            }
-
-            println!();
-        }
-
-        // Handle Ctrl+C gracefully
-        tokio::select! {
-            _ = interval.tick() => continue,
-            _ = tokio::signal::ctrl_c() => {
-                println!("\nShutting down gracefully...");
-                break;
-            }
+            // Refresh dashboard on change
+            display_dashboard(&manager, &speaker_ids);
         }
     }
 
+    println!("\nShutting down gracefully...");
     println!("\nDemo complete! All subscriptions cleaned up automatically.");
     println!("Key benefits demonstrated:");
-    println!("  ✓ Single StateManager handles both state and events");
-    println!("  ✓ Properties automatically trigger UPnP subscriptions");
-    println!("  ✓ Multiple properties efficiently share subscriptions");
-    println!("  ✓ Reference counting ensures optimal resource usage");
-    println!("  ✓ Automatic cleanup when watchers are dropped");
-    println!("  ✓ Zero manual service management required");
+    println!("  - Single StateManager handles both state and events");
+    println!("  - Pure synchronous API - no async/await required");
+    println!("  - Properties automatically trigger UPnP subscriptions");
+    println!("  - Multiple properties efficiently share subscriptions");
+    println!("  - Reference counting ensures optimal resource usage");
+    println!("  - Automatic cleanup when manager is dropped");
 
     Ok(())
+}
+
+/// Display dashboard showing current state of all speakers
+fn display_dashboard(manager: &StateManager, speaker_ids: &[(SpeakerId, String)]) {
+    println!("\n--- Dashboard Update ---");
+    println!("Time: {}", chrono::Utc::now().format("%H:%M:%S"));
+
+    for (speaker_id, name) in speaker_ids {
+        println!("\n{}", name);
+        println!("{}", "=".repeat(name.len()));
+
+        // Volume & Mute
+        if let Some(vol) = manager.get_property::<Volume>(speaker_id) {
+            let mute_str = manager
+                .get_property::<Mute>(speaker_id)
+                .map(|m| if m.0 { " [MUTED]" } else { "" })
+                .unwrap_or("");
+            println!("  Volume: {}%{}", vol.0, mute_str);
+        } else {
+            println!("  Volume: Not available");
+        }
+
+        // Playback State
+        if let Some(state) = manager.get_property::<PlaybackState>(speaker_id) {
+            let state_str = match state {
+                PlaybackState::Playing => "Playing",
+                PlaybackState::Paused => "Paused",
+                PlaybackState::Stopped => "Stopped",
+                PlaybackState::Transitioning => "Transitioning",
+            };
+            println!("  State: {}", state_str);
+        } else {
+            println!("  State: Not available");
+        }
+
+        // Current Track
+        if let Some(track) = manager.get_property::<CurrentTrack>(speaker_id) {
+            if let Some(title) = &track.title {
+                println!("  Track: {}", title);
+            }
+            if let Some(artist) = &track.artist {
+                println!("  Artist: {}", artist);
+            }
+        }
+
+        // Position
+        if let Some(pos) = manager.get_property::<Position>(speaker_id) {
+            if pos.duration_ms > 0 {
+                let progress = pos.progress();
+                let pos_str = format_time(pos.position_ms);
+                let dur_str = format_time(pos.duration_ms);
+                println!("  Position: {} / {} ({:.0}%)", pos_str, dur_str, progress);
+            }
+        }
+    }
 }
 
 /// Format milliseconds as MM:SS

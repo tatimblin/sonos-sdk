@@ -26,6 +26,8 @@ dashmap = "5.0"
 tokio = { version = "1", features = ["full"] }
 sonos-state = { path = "../sonos-state" }
 chrono = "0.4"
+ctrlc = "3.4"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [[example]]
 name = "smart_dashboard"
