@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **IMPORTANT: AI agents must read and follow the rules in [AGENTS.md](AGENTS.md) before making any changes to this repository.** This includes reading the relevant SPEC file before working on any crate, keeping documentation up to date, and following the standard development workflow.
+
 ## Project Overview
 
 This is a Rust-based modular SDK for interacting with Sonos devices via their UPnP/SOAP interface. The project is structured as a Cargo workspace with multiple interdependent crates, each handling a specific aspect of Sonos device communication.
