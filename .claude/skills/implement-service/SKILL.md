@@ -43,24 +43,40 @@ cargo run -p sonos-discovery --example discover_json
 
 Present discovered speakers to user. Get user selection for which speaker to test against.
 
-### Step 4: Test Operations
+### Step 4: Test Operations and Discover Validation Requirements
 
-For each operation, test against the real speaker using:
+**IMPORTANT**: This step determines what validation is needed for each operation.
+
+For each operation with parameters, test against the real speaker:
 
 ```bash
-cargo run -p sonos-api --example test_operation -- <ip> <service> <action> [Param=Value...]
+# Test with valid values to get response format
+cargo run -p sonos-api --example test_operation -- <ip> <service> <action> Param=ValidValue
+
+# Test with INVALID values to discover validation requirements
+cargo run -p sonos-api --example test_operation -- <ip> <service> <action> Param=INVALID
 ```
 
-Example:
+Examples:
 ```bash
-cargo run -p sonos-api --example test_operation -- 192.168.1.100 AVTransport GetTransportInfo
+# Valid - returns 200 with response
+cargo run -p sonos-api --example test_operation -- 192.168.1.100 AVTransport Seek Unit=TRACK_NR Target=1
+
+# Invalid - returns 500 error (needs validation)
+cargo run -p sonos-api --example test_operation -- 192.168.1.100 AVTransport Seek Unit=INVALID Target=1
+
+# Valid channel
 cargo run -p sonos-api --example test_operation -- 192.168.1.100 RenderingControl GetVolume Channel=Master
+
+# Invalid channel - returns 500 (needs enum validation)
+cargo run -p sonos-api --example test_operation -- 192.168.1.100 RenderingControl GetVolume Channel=InvalidChannel
 ```
 
-Capture and analyze the XML responses to understand:
-- Response field names (exact XML element names)
-- Response value types
-- Error conditions
+Record which parameters need validation:
+- **HTTP 500 on invalid value** = Add validation
+- **Parameters with documented allowed values** = Add enum validation
+- **Numeric parameters with bounds** = Add range validation
+- **URI/metadata strings** = Usually no validation (device validates)
 
 ### Step 5: Register Service
 
@@ -101,13 +117,15 @@ Register in `sonos-api/src/services/mod.rs`:
 pub mod {service_name};
 ```
 
-### Step 7: Implement Operations
+### Step 7: Implement Operations with Validation
 
-Read `references/macro-patterns.md` for macro usage patterns.
+**CRITICAL**: Every operation MUST have a `Validate` implementation or the code will not compile.
 
-For each operation, use appropriate macro:
+Read `references/macro-patterns.md` for detailed patterns including validation.
 
-**No response data:**
+For each operation:
+
+**1. Define the operation:**
 ```rust
 define_upnp_operation! {
     operation: ActionOperation,
@@ -120,48 +138,37 @@ define_upnp_operation! {
 }
 ```
 
-**With response data:**
-```rust
-define_operation_with_response! {
-    operation: GetInfoOperation,
-    action: "GetInfo",
-    service: ServiceName,
-    request: {},
-    response: GetInfoResponse {
-        field_one: String,
-        field_two: u32,
-    },
-    xml_mapping: {
-        field_one: "FieldOne",  // Exact XML element name from response
-        field_two: "FieldTwo",
-    },
-}
-```
-
-### Step 8: Implement Validation
-
-Every request struct needs a `Validate` implementation:
+**2. Implement Validate (REQUIRED):**
 
 ```rust
-impl Validate for MyOperationRequest {
+// No validation needed (parameterless or device validates)
+impl Validate for ActionOperationRequest {}
+
+// With validation
+impl Validate for ActionOperationRequest {
     fn validate_basic(&self) -> Result<(), crate::operation::ValidationError> {
-        // Range check
-        if self.volume > 100 {
-            return Err(crate::operation::ValidationError::range_error("volume", 0, 100, self.volume));
-        }
-        // Enum check
-        match self.channel.as_str() {
-            "Master" | "LF" | "RF" => Ok(()),
+        // Add validation based on Step 4 testing results
+        match self.param.as_str() {
+            "VALID1" | "VALID2" => Ok(()),
             other => Err(crate::operation::ValidationError::Custom {
-                parameter: "channel".to_string(),
-                message: format!("Invalid channel '{}'", other),
+                parameter: "param".to_string(),
+                message: format!("Invalid param '{}'", other),
             })
         }
     }
 }
 ```
 
-### Step 9: Add Tests
+**Validation patterns based on testing:**
+
+| Test Result | Validation Pattern |
+|-------------|-------------------|
+| 500 on out-of-range number | `ValidationError::range_error("param", min, max, value)` |
+| 500 on invalid enum value | `match` with `ValidationError::Custom` |
+| 500 on empty string | Check `is_empty()` with `ValidationError::invalid_value` |
+| Any value accepted | Empty impl: `impl Validate for XxxRequest {}` |
+
+### Step 8: Add Tests
 
 For each operation, add at minimum:
 
@@ -183,14 +190,24 @@ mod tests {
         let payload = {Operation}Operation::build_payload(&request).unwrap();
         assert!(payload.contains("<ExpectedElement>"));
     }
+
+    // If validation was added:
+    #[test]
+    fn test_{operation}_validation() {
+        let valid = {Operation}OperationRequest { instance_id: 0, param: "VALID".to_string() };
+        assert!(valid.validate_basic().is_ok());
+
+        let invalid = {Operation}OperationRequest { instance_id: 0, param: "INVALID".to_string() };
+        assert!(invalid.validate_basic().is_err());
+    }
 }
 ```
 
-### Step 10: Verify
+### Step 9: Verify
 
 Run tests:
 ```bash
-cargo test -p sonos-api {service_name}
+cargo test -p sonos-api --lib
 ```
 
 Test against real speaker:
@@ -200,7 +217,7 @@ cargo run -p sonos-api --example test_operation -- <ip> <Service> <Action>
 
 ## References
 
-- **Macro patterns**: Read `references/macro-patterns.md` for detailed macro usage
+- **Macro patterns & validation**: Read `references/macro-patterns.md` for detailed patterns
 - **Service structure**: Read `references/service-structure.md` for complete module templates
 
 ## Type Mapping
@@ -213,6 +230,16 @@ cargo run -p sonos-api --example test_operation -- <ip> <Service> <Action>
 | i2 | `i16` |
 | i4 | `i32` |
 | boolean | `bool` |
+
+## Common Validation Values (Discovered Through Testing)
+
+| Parameter | Valid Values |
+|-----------|--------------|
+| Channel | "Master", "LF", "RF" |
+| Volume | 0-100 |
+| Speed | "1", "0", numeric strings |
+| Unit (Seek) | "TRACK_NR", "REL_TIME", "TIME_DELTA" |
+| PlayMode | "NORMAL", "REPEAT_ALL", "REPEAT_ONE", "SHUFFLE_NOREPEAT", "SHUFFLE", "SHUFFLE_REPEAT_ONE" |
 
 ## Common Services
 
