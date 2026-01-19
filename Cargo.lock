@@ -2132,6 +2132,7 @@ dependencies = [
  "sonos-discovery",
  "thiserror",
  "tokio",
+ "ureq",
  "xmltree",
 ]
 
@@ -2144,6 +2145,7 @@ dependencies = [
  "reqwest",
  "rstest",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
