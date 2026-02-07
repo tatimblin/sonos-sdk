@@ -19,4 +19,7 @@ pub enum SdkError {
 
     #[error("Property watcher closed")]
     WatcherClosed,
+
+    #[error("Property fetch failed: {0}")]
+    FetchFailed(String),
 }

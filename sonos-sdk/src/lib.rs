@@ -68,6 +68,9 @@ pub use error::SdkError;
 pub use speaker::Speaker;
 pub use system::SonosSystem;
 
+// Re-export the generic PropertyHandle
+pub use property::PropertyHandle;
+
 // Re-export commonly used types from sonos-state
 pub use sonos_state::{ChangeEvent, ChangeIterator, PlaybackState, SpeakerId, Volume};
 
