@@ -55,7 +55,7 @@ impl PropertyChange {
 
     /// Get the service this property belongs to
     pub fn service(&self) -> Service {
-        use crate::property::Property;
+        use crate::property::SonosProperty;
         match self {
             PropertyChange::Volume(_) => Volume::SERVICE,
             PropertyChange::Mute(_) => Mute::SERVICE,
@@ -358,7 +358,7 @@ mod tests {
 
     #[test]
     fn test_property_change_service() {
-        use crate::property::Property;
+        use crate::property::SonosProperty;
 
         let vol_change = PropertyChange::Volume(Volume(50));
         assert_eq!(vol_change.service(), Volume::SERVICE);

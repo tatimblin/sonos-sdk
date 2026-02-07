@@ -9,6 +9,7 @@ members = [
     "soap-client",
     "sonos-api",
     "sonos-sdk",
+    "state-store",
 ]
 resolver = "2"
 

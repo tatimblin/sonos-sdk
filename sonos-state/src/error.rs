@@ -82,9 +82,3 @@ impl From<sonos_api::ApiError> for StateError {
         StateError::Api(err)
     }
 }
-
-impl From<url::ParseError> for StateError {
-    fn from(err: url::ParseError) -> Self {
-        StateError::InvalidUrl(err.to_string())
-    }
-}

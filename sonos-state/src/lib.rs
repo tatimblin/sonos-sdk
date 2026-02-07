@@ -40,30 +40,6 @@
 //! }
 //! ```
 //!
-//! # Speaker Handles
-//!
-//! For convenient property access, use Speaker handles:
-//!
-//! ```rust,ignore
-//! use sonos_state::{StateManager, Speaker, Volume};
-//!
-//! let manager = StateManager::new()?;
-//! // ... add devices ...
-//!
-//! // Get speaker info and create handle
-//! for info in manager.speaker_infos() {
-//!     let speaker = Speaker::new(info, Arc::new(manager.clone()));
-//!
-//!     // Read property
-//!     if let Some(vol) = speaker.volume.get() {
-//!         println!("{}: {}%", speaker.name, vol.0);
-//!     }
-//!
-//!     // Watch for changes
-//!     speaker.volume.watch()?;
-//! }
-//! ```
-//!
 //! # Non-blocking Iteration
 //!
 //! ```rust,ignore
@@ -96,9 +72,6 @@ pub mod speaker;
 // Error types
 pub mod error;
 
-// Logging infrastructure
-pub mod logging;
-
 // ============================================================================
 // Re-exports - Main API
 // ============================================================================
@@ -108,9 +81,6 @@ pub use state::{StateManager, StateManagerBuilder, ChangeEvent};
 
 // Change iterator
 pub use iter::ChangeIterator;
-
-// Speaker handles
-pub use speaker::{Speaker, PropertyHandle};
 
 // Properties
 pub use property::{
@@ -126,9 +96,6 @@ pub use decoder::{decode_event, DecodedChanges, PropertyChange};
 
 // Error types
 pub use error::{Result, StateError};
-
-// Logging
-pub use logging::{LoggingError, LoggingMode, init_logging, init_logging_from_env, init_silent};
 
 // ============================================================================
 // Prelude
@@ -148,7 +115,6 @@ pub mod prelude {
     // State management
     pub use crate::state::{StateManager, ChangeEvent};
     pub use crate::iter::ChangeIterator;
-    pub use crate::speaker::{Speaker, PropertyHandle};
 
     // Error types
     pub use crate::error::{Result, StateError};

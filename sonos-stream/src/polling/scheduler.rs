@@ -27,9 +27,6 @@ pub struct PollingTask {
     /// Current polling interval
     current_interval: Duration,
 
-    /// Last known state (for change detection)
-    last_state: Arc<RwLock<Option<String>>>,
-
     /// Task handle for the background polling loop
     task_handle: JoinHandle<()>,
 
@@ -57,7 +54,6 @@ impl PollingTask {
         device_poller: Arc<DeviceStatePoller>,
         event_sender: mpsc::UnboundedSender<EnrichedEvent>,
     ) -> Self {
-        let last_state = Arc::new(RwLock::new(None));
         let shutdown_signal = Arc::new(AtomicBool::new(false));
         let error_count = Arc::new(RwLock::new(0));
         let poll_count = Arc::new(RwLock::new(0));
@@ -65,7 +61,6 @@ impl PollingTask {
         // Clone for the task
         let task_registration_id = registration_id;
         let task_pair = speaker_service_pair.clone();
-        let task_last_state = Arc::clone(&last_state);
         let task_shutdown_signal = Arc::clone(&shutdown_signal);
         let task_error_count = Arc::clone(&error_count);
         let task_poll_count = Arc::clone(&poll_count);
@@ -79,7 +74,6 @@ impl PollingTask {
                 adaptive_polling,
                 device_poller,
                 event_sender,
-                task_last_state,
                 task_shutdown_signal,
                 task_error_count,
                 task_poll_count,
@@ -91,7 +85,6 @@ impl PollingTask {
             registration_id,
             speaker_service_pair,
             current_interval: initial_interval,
-            last_state,
             task_handle,
             shutdown_signal,
             started_at: SystemTime::now(),
@@ -109,7 +102,6 @@ impl PollingTask {
         adaptive_polling: bool,
         device_poller: Arc<DeviceStatePoller>,
         event_sender: mpsc::UnboundedSender<EnrichedEvent>,
-        last_state: Arc<RwLock<Option<String>>>,
         shutdown_signal: Arc<AtomicBool>,
         error_count: Arc<RwLock<u32>>,
         poll_count: Arc<RwLock<u64>>,
@@ -119,7 +111,8 @@ impl PollingTask {
             pair.speaker_ip, pair.service, current_interval
         );
 
-        let mut last_change_time = SystemTime::now();
+        // Track last state locally within the loop
+        let mut last_state: Option<String> = None;
 
         loop {
             // Check for shutdown signal
@@ -151,19 +144,18 @@ impl PollingTask {
 
                     // Check for state changes
                     let state_changed = {
-                        let mut last_state_guard = last_state.write().await;
-                        let previous_state = last_state_guard.clone();
+                        let previous_state = last_state.clone();
 
                         if let Some(ref previous) = previous_state {
                             if previous != &current_state {
-                                *last_state_guard = Some(current_state.clone());
+                                last_state = Some(current_state.clone());
                                 true
                             } else {
                                 false
                             }
                         } else {
                             // First poll - store initial state
-                            *last_state_guard = Some(current_state.clone());
+                            last_state = Some(current_state.clone());
                             true // Treat as change for initial state
                         }
                     };
@@ -175,10 +167,7 @@ impl PollingTask {
                         );
 
                         // Generate change events from the state difference
-                        let previous_state = {
-                            let guard = last_state.read().await;
-                            guard.as_ref().map(|s| s.clone())
-                        };
+                        let previous_state = last_state.clone();
 
                         if let Some(changes) = device_poller
                             .parse_state_changes(&pair.service, previous_state.as_deref(), &current_state)
@@ -209,15 +198,12 @@ impl PollingTask {
                             }
                         }
 
-                        // Update last change time for adaptive intervals
-                        last_change_time = SystemTime::now();
-
                         // Adjust interval if adaptive polling is enabled
                         if adaptive_polling {
                             current_interval = Self::calculate_adaptive_interval(
                                 current_interval,
                                 max_interval,
-                                last_change_time,
+                                SystemTime::now(),
                             );
                         }
                     }

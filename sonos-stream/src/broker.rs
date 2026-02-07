@@ -78,8 +78,8 @@ pub struct EventBroker {
     /// Event processor for parsing and enriching events
     event_processor: Arc<EventProcessor>,
 
-    /// Callback server for receiving UPnP events
-    callback_server: Arc<CallbackServer>,
+    /// Callback server for receiving UPnP events (kept alive via Arc)
+    _callback_server: Arc<CallbackServer>,
 
     /// Per-device firewall detection coordinator
     firewall_coordinator: Option<Arc<FirewallDetectionCoordinator>>,
@@ -91,8 +91,8 @@ pub struct EventBroker {
     /// Polling scheduler
     polling_scheduler: Arc<PollingScheduler>,
 
-    /// Main event stream sender
-    event_sender: mpsc::UnboundedSender<EnrichedEvent>,
+    /// Main event stream sender (kept alive for channel)
+    _event_sender: mpsc::UnboundedSender<EnrichedEvent>,
 
     /// Event receiver for the iterator (taken when creating iterator)
     event_receiver: Option<mpsc::UnboundedReceiver<EnrichedEvent>>,
@@ -210,11 +210,11 @@ impl EventBroker {
             registry,
             subscription_manager,
             event_processor,
-            callback_server,
+            _callback_server: callback_server,
             firewall_coordinator,
             event_detector,
             polling_scheduler,
-            event_sender,
+            _event_sender: event_sender,
             event_receiver: Some(event_receiver),
             config,
             shutdown_signal: Arc::new(AtomicBool::new(false)),

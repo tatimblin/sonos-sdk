@@ -48,8 +48,8 @@ pub struct SonosSystem {
     /// Event manager for UPnP subscriptions (kept alive)
     _event_manager: Arc<SonosEventManager>,
 
-    /// API client for direct operations
-    api_client: SonosClient,
+    /// API client for direct operations (kept for future use)
+    _api_client: SonosClient,
 
     /// Speaker handles by name
     speakers: RwLock<HashMap<String, Speaker>>,
@@ -116,7 +116,7 @@ impl SonosSystem {
         Ok(Self {
             state_manager,
             _event_manager: event_manager,
-            api_client,
+            _api_client: api_client,
             speakers: RwLock::new(speakers),
         })
     }
