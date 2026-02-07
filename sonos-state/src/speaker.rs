@@ -25,7 +25,7 @@ use std::sync::Arc;
 use crate::model::{SpeakerId, SpeakerInfo};
 use crate::property::{
     Bass, CurrentTrack, GroupMembership, Loudness, Mute, PlaybackState, Position, Property,
-    Treble, Volume,
+    SonosProperty, Treble, Volume,
 };
 use crate::state::StateManager;
 use crate::Result;
@@ -42,14 +42,14 @@ use crate::Result;
 /// - `fetch()`: Blocking network call to get fresh value
 ///
 /// All methods are synchronous.
-pub struct PropertyHandle<P: Property> {
+pub struct PropertyHandle<P: SonosProperty> {
     speaker_id: SpeakerId,
     speaker_ip: IpAddr,
     state_manager: Arc<StateManager>,
     _phantom: PhantomData<P>,
 }
 
-impl<P: Property> PropertyHandle<P> {
+impl<P: SonosProperty> PropertyHandle<P> {
     /// Create a new property handle
     pub(crate) fn new(
         speaker_id: SpeakerId,
@@ -184,7 +184,7 @@ impl<P: Property> PropertyHandle<P> {
     }
 }
 
-impl<P: Property> Clone for PropertyHandle<P> {
+impl<P: SonosProperty> Clone for PropertyHandle<P> {
     fn clone(&self) -> Self {
         Self {
             speaker_id: self.speaker_id.clone(),
@@ -195,7 +195,7 @@ impl<P: Property> Clone for PropertyHandle<P> {
     }
 }
 
-impl<P: Property> std::fmt::Debug for PropertyHandle<P> {
+impl<P: SonosProperty> std::fmt::Debug for PropertyHandle<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PropertyHandle")
             .field("speaker_id", &self.speaker_id)

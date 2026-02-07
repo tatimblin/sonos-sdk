@@ -1,18 +1,21 @@
 //! Property trait and built-in properties for Sonos state management
 //!
 //! Properties are the fundamental unit of state in sonos-state. Each property:
-//! - Has a unique key for identification
+//! - Has a unique key for identification (from state-store::Property)
 //! - Belongs to a scope (Speaker, Group, or System)
 //! - Is associated with a UPnP service (for subscription hints)
-//! - Can be watched for changes using tokio::sync::watch channels
+//! - Can be watched for changes
 
 use serde::{Deserialize, Serialize};
 use sonos_api::Service;
 
 use crate::model::{GroupId, SpeakerInfo};
 
+// Re-export the base Property trait from state-store
+pub use state_store::Property;
+
 // ============================================================================
-// Core Types
+// Sonos-specific Extensions
 // ============================================================================
 
 /// Scope of a property - determines where it's stored and how it's queried
@@ -26,13 +29,10 @@ pub enum Scope {
     System,
 }
 
-/// Marker trait for properties that can be stored and watched
+/// Extension trait for Sonos-specific property metadata
 ///
-/// Properties must be:
-/// - Clone: For copying values to watchers
-/// - Send + Sync: For thread-safe access
-/// - PartialEq: For change detection
-/// - 'static: For type-erased storage
+/// Extends the base `state_store::Property` trait with Sonos-specific
+/// information about scope and UPnP service.
 ///
 /// # Example
 ///
@@ -42,16 +42,14 @@ pub enum Scope {
 ///
 /// impl Property for Volume {
 ///     const KEY: &'static str = "volume";
+/// }
+///
+/// impl SonosProperty for Volume {
 ///     const SCOPE: Scope = Scope::Speaker;
 ///     const SERVICE: Service = Service::RenderingControl;
 /// }
 /// ```
-pub trait Property: Clone + Send + Sync + PartialEq + 'static {
-    /// Unique key for this property (e.g., "volume", "playback_state")
-    ///
-    /// Used for debugging and logging. Must be unique within a scope.
-    const KEY: &'static str;
-
+pub trait SonosProperty: Property {
     /// Scope of this property
     const SCOPE: Scope;
 
@@ -72,6 +70,9 @@ pub struct Volume(pub u8);
 
 impl Property for Volume {
     const KEY: &'static str = "volume";
+}
+
+impl SonosProperty for Volume {
     const SCOPE: Scope = Scope::Speaker;
     const SERVICE: Service = Service::RenderingControl;
 }
@@ -92,6 +93,9 @@ pub struct Mute(pub bool);
 
 impl Property for Mute {
     const KEY: &'static str = "mute";
+}
+
+impl SonosProperty for Mute {
     const SCOPE: Scope = Scope::Speaker;
     const SERVICE: Service = Service::RenderingControl;
 }
@@ -112,6 +116,9 @@ pub struct Bass(pub i8);
 
 impl Property for Bass {
     const KEY: &'static str = "bass";
+}
+
+impl SonosProperty for Bass {
     const SCOPE: Scope = Scope::Speaker;
     const SERVICE: Service = Service::RenderingControl;
 }
@@ -132,6 +139,9 @@ pub struct Treble(pub i8);
 
 impl Property for Treble {
     const KEY: &'static str = "treble";
+}
+
+impl SonosProperty for Treble {
     const SCOPE: Scope = Scope::Speaker;
     const SERVICE: Service = Service::RenderingControl;
 }
@@ -152,6 +162,9 @@ pub struct Loudness(pub bool);
 
 impl Property for Loudness {
     const KEY: &'static str = "loudness";
+}
+
+impl SonosProperty for Loudness {
     const SCOPE: Scope = Scope::Speaker;
     const SERVICE: Service = Service::RenderingControl;
 }
@@ -181,6 +194,9 @@ pub enum PlaybackState {
 
 impl Property for PlaybackState {
     const KEY: &'static str = "playback_state";
+}
+
+impl SonosProperty for PlaybackState {
     const SCOPE: Scope = Scope::Speaker;
     const SERVICE: Service = Service::AVTransport;
 }
@@ -221,6 +237,9 @@ pub struct Position {
 
 impl Property for Position {
     const KEY: &'static str = "position";
+}
+
+impl SonosProperty for Position {
     const SCOPE: Scope = Scope::Speaker;
     const SERVICE: Service = Service::AVTransport;
 }
@@ -276,6 +295,9 @@ pub struct CurrentTrack {
 
 impl Property for CurrentTrack {
     const KEY: &'static str = "current_track";
+}
+
+impl SonosProperty for CurrentTrack {
     const SCOPE: Scope = Scope::Speaker;
     const SERVICE: Service = Service::AVTransport;
 }
@@ -324,6 +346,9 @@ pub struct GroupMembership {
 
 impl Property for GroupMembership {
     const KEY: &'static str = "group_membership";
+}
+
+impl SonosProperty for GroupMembership {
     const SCOPE: Scope = Scope::Speaker;
     const SERVICE: Service = Service::ZoneGroupTopology;
 }
@@ -357,6 +382,9 @@ pub struct Topology {
 
 impl Property for Topology {
     const KEY: &'static str = "topology";
+}
+
+impl SonosProperty for Topology {
     const SCOPE: Scope = Scope::System;
     const SERVICE: Service = Service::ZoneGroupTopology;
 }
@@ -499,9 +527,9 @@ mod tests {
     #[test]
     fn test_property_constants() {
         assert_eq!(Volume::KEY, "volume");
-        assert_eq!(Volume::SCOPE, Scope::Speaker);
+        assert_eq!(<Volume as SonosProperty>::SCOPE, Scope::Speaker);
 
         assert_eq!(Topology::KEY, "topology");
-        assert_eq!(Topology::SCOPE, Scope::System);
+        assert_eq!(<Topology as SonosProperty>::SCOPE, Scope::System);
     }
 }

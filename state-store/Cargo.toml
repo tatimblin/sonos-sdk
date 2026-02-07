@@ -1,0 +1,13 @@
+[package]
+name = "state-store"
+version = "0.1.0"
+edition = "2021"
+description = "Generic, type-safe state management with change detection and blocking iteration"
+license = "MIT"
+
+[dependencies]
+# Minimal dependencies - no Sonos-specific crates
+
+[dev-dependencies]
+ratatui = "0.29"
+crossterm = "0.28"

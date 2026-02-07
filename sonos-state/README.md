@@ -21,14 +21,21 @@ Devices → StateManager → PropertyHandles → ChangeIterator
               │                │                │
               │                │                └── Blocking iteration
               │                └── get()/watch()/fetch()
-              └── Property storage + change detection
+              │
+              └── state-store (generic storage)
+                      │
+                      ├── PropertyBag (type-erased storage)
+                      ├── StateStore<SpeakerId> (entity-based)
+                      └── ChangeIterator (blocking iteration)
 ```
 
 The StateManager:
-1. Stores property values for all registered speakers
+1. Stores property values for all registered speakers (via `state-store`)
 2. Tracks which properties are being watched
 3. Emits change events when watched properties update
 4. Provides blocking iteration via `iter()`
+
+**Layered Design**: Generic state management primitives are provided by the `state-store` crate. `sonos-state` adds Sonos-specific property types, UPnP event decoding, and speaker metadata.
 
 ## Installation
 
@@ -274,17 +281,24 @@ pub struct ChangeEvent {
 }
 ```
 
-### `Property` Trait
+### `Property` and `SonosProperty` Traits
 
-All properties implement this trait:
+Properties use a two-tier trait system:
 
 ```rust
+// Generic trait from state-store crate
 pub trait Property: Clone + Send + Sync + PartialEq + 'static {
     const KEY: &'static str;       // Unique identifier
+}
+
+// Sonos-specific extension trait
+pub trait SonosProperty: Property {
     const SCOPE: Scope;            // Speaker, Group, or System
     const SERVICE: Service;        // UPnP service source
 }
 ```
+
+All Sonos properties implement both traits. The base `Property` trait comes from the generic `state-store` crate, while `SonosProperty` adds Sonos-specific metadata.
 
 ## Error Handling
 
@@ -300,7 +314,9 @@ The crate provides structured error types:
 ## Dependencies
 
 - **Core**: `serde`, `tracing`
-- **Workspace**: `sonos-api`, `sonos-discovery`
+- **Workspace**: `sonos-api`, `sonos-discovery`, `state-store`
+
+The `state-store` crate provides generic state management primitives (PropertyBag, StateStore, ChangeIterator) that this crate builds upon.
 
 ## Performance Characteristics
 
@@ -325,5 +341,6 @@ MIT License
 
 ## See Also
 
+- [`state-store`](../state-store) - Generic state management primitives
 - [`sonos-api`](../sonos-api) - Low-level Sonos UPnP API interactions
 - [`sonos-discovery`](../sonos-discovery) - Device discovery utilities

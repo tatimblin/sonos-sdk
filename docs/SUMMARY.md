@@ -28,6 +28,7 @@ This document provides an overview of each Rust crate in the Sonos SDK workspace
 | Crate | Purpose | Specification |
 |-------|---------|---------------|
 | **sonos-state** | Reactive state management layer | [View Spec](specs/sonos-state.md) |
+| **state-store** | Generic state management primitives | [View Spec](specs/state-store.md) |
 | **sonos-stream** | Low-level event streaming with transparent fallback | [View Spec](specs/sonos-stream.md) |
 | **sonos-event-manager** | Reference-counted subscription management | [View Spec](specs/sonos-event-manager.md) |
 | **callback-server** | Generic HTTP server for UPnP event callbacks | [View Spec](specs/callback-server.md) |
@@ -66,7 +67,16 @@ This document provides an overview of each Rust crate in the Sonos SDK workspace
 │ • SSDP multicast │  │ • SonosOperation │  │ • StateManager           │
 │ • Device enum    │  │ • Type-safe APIs │  │ • PropertyWatcher        │
 │ • Deduplication  │  │ • Service groups │  │ • Event Decoders         │
-└──────────────────┘  └────────┬─────────┘  └────────────┬─────────────┘
+└──────────────────┘  └────────┬─────────┘  │                          │
+                               │            │  ┌────────────────────┐  │
+                               │            │  │   state-store      │  │
+                               │            │  │  (Generic Storage) │  │
+                               │            │  │                    │  │
+                               │            │  │ • PropertyBag      │  │
+                               │            │  │ • StateStore<Id>   │  │
+                               │            │  │ • ChangeIterator   │  │
+                               │            │  └────────────────────┘  │
+                               │            └────────────┬─────────────┘
                                │                         │
                                │         Internal APIs   │
                                │                         ▼
@@ -346,6 +356,7 @@ while watcher.changed().await.is_ok() {
 | sonos-discovery | 40 KB | Public | SSDP device discovery |
 | sonos-stream | 204 KB | Internal | Event streaming with fallback |
 | sonos-state | 148 KB | Internal | Reactive state management |
+| state-store | ~20 KB | Internal | Generic property storage |
 | callback-server | 56 KB | Internal | HTTP event server |
 | sonos-event-manager | 20 KB | Internal | Subscription reference counting |
 | soap-client | 20 KB | Internal | SOAP transport (singleton) |

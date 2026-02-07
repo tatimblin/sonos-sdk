@@ -40,7 +40,7 @@ use tracing::info;
 use crate::event_worker::spawn_state_event_worker;
 use crate::iter::ChangeIterator;
 use crate::model::{GroupId, SpeakerId, SpeakerInfo};
-use crate::property::{GroupInfo, Property, Topology};
+use crate::property::{GroupInfo, Property, SonosProperty, Topology};
 use crate::{Result, StateError};
 
 // ============================================================================
@@ -372,7 +372,7 @@ impl StateManager {
     ///
     /// Updates the property value in the store and emits a change event
     /// if the property is being watched.
-    pub fn set_property<P: Property>(&self, speaker_id: &SpeakerId, value: P) {
+    pub fn set_property<P: SonosProperty>(&self, speaker_id: &SpeakerId, value: P) {
         let changed = {
             let mut store = match self.store.write() {
                 Ok(s) => s,
@@ -407,7 +407,7 @@ impl StateManager {
     /// 2. Subscribes to the UPnP service via the event manager
     ///
     /// Returns the current cached value if available.
-    pub fn watch_property_with_subscription<P: Property>(
+    pub fn watch_property_with_subscription<P: SonosProperty>(
         &self,
         speaker_id: &SpeakerId,
     ) -> Result<Option<P>> {
@@ -433,7 +433,7 @@ impl StateManager {
     }
 
     /// Unwatch a property and release UPnP subscription
-    pub fn unwatch_property_with_subscription<P: Property>(&self, speaker_id: &SpeakerId) {
+    pub fn unwatch_property_with_subscription<P: SonosProperty>(&self, speaker_id: &SpeakerId) {
         // Unregister from change notifications
         self.unregister_watch(speaker_id, P::KEY);
 

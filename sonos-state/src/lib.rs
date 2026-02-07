@@ -96,9 +96,6 @@ pub mod speaker;
 // Error types
 pub mod error;
 
-// Logging infrastructure
-pub mod logging;
-
 // ============================================================================
 // Re-exports - Main API
 // ============================================================================
@@ -126,9 +123,6 @@ pub use decoder::{decode_event, DecodedChanges, PropertyChange};
 
 // Error types
 pub use error::{Result, StateError};
-
-// Logging
-pub use logging::{LoggingError, LoggingMode, init_logging, init_logging_from_env, init_silent};
 
 // ============================================================================
 // Prelude
