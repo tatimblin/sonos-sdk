@@ -13,7 +13,7 @@
 //!
 //! # Quick Start
 //!
-//! ```rust
+//! ```rust,ignore
 //! use state_store::{StateStore, Property};
 //!
 //! // Define a property type

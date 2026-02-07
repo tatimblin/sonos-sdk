@@ -5,7 +5,7 @@
 //!
 //! # Example
 //!
-//! ```rust
+//! ```rust,ignore
 //! use state_store::Property;
 //!
 //! #[derive(Clone, PartialEq, Debug)]

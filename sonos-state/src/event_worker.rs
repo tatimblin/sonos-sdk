@@ -12,7 +12,6 @@ use sonos_event_manager::SonosEventManager;
 
 use crate::decoder::{decode_event, PropertyChange};
 use crate::model::SpeakerId;
-use crate::property::Property;
 use crate::state::{ChangeEvent, StateStore};
 
 /// Spawns the state event worker thread
@@ -145,7 +144,7 @@ fn apply_property_change(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::property::Volume;
+    use crate::property::{Property, Volume};
     use sonos_api::Service;
 
     #[test]

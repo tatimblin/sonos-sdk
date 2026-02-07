@@ -119,10 +119,6 @@ impl StateStore {
         self.speakers.values().cloned().collect()
     }
 
-    fn speaker_id_for_ip(&self, ip: IpAddr) -> Option<&SpeakerId> {
-        self.ip_to_speaker.get(&ip)
-    }
-
     fn add_group(&mut self, group: GroupInfo) {
         let id = group.id.clone();
         self.groups.insert(id.clone(), group);
@@ -136,10 +132,6 @@ impl StateStore {
     pub(crate) fn set<P: Property>(&mut self, speaker_id: &SpeakerId, value: P) -> bool {
         let bag = self.speaker_props.entry(speaker_id.clone()).or_insert_with(PropertyBag::new);
         bag.set(value)
-    }
-
-    fn get_system<P: Property>(&self) -> Option<P> {
-        self.system_props.get::<P>()
     }
 
     fn set_system<P: Property>(&mut self, value: P) -> bool {
@@ -505,20 +497,6 @@ impl StateManager {
             .unwrap_or(0)
     }
 
-    /// Get the event sender (for internal use by background workers)
-    pub(crate) fn event_sender(&self) -> mpsc::Sender<ChangeEvent> {
-        self.event_tx.clone()
-    }
-
-    /// Get the store (for internal use)
-    pub(crate) fn store(&self) -> &Arc<RwLock<StateStore>> {
-        &self.store
-    }
-
-    /// Get the event manager (for internal use)
-    pub(crate) fn event_manager(&self) -> Option<&Arc<SonosEventManager>> {
-        self.event_manager.as_ref()
-    }
 }
 
 impl Clone for StateManager {

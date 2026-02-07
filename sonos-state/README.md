@@ -12,15 +12,13 @@ A sync-first state management system for Sonos devices with automatic change det
 - **Type-safe State**: Strongly typed properties with automatic change detection
 - **Change Events**: Blocking iterator over property changes
 - **Watch Pattern**: Register for property changes, iterate to receive them
-- **Speaker Handles**: Convenient per-speaker property accessors
 
 ## Architecture
 
 ```text
-Devices → StateManager → PropertyHandles → ChangeIterator
-              │                │                │
-              │                │                └── Blocking iteration
-              │                └── get()/watch()/fetch()
+Devices → StateManager → ChangeIterator
+              │                │
+              │                └── Blocking iteration
               │
               └── state-store (generic storage)
                       │
@@ -51,9 +49,8 @@ sonos-state = { path = "../sonos-state" }
 ### Basic Usage
 
 ```rust
-use sonos_state::{StateManager, Speaker, Volume, SpeakerId};
+use sonos_state::{StateManager, Volume, SpeakerId};
 use sonos_discovery;
-use std::sync::Arc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create state manager (sync - no async runtime needed)
@@ -72,29 +69,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### Property Access with Speaker Handles
+### Property Access
 
 ```rust
-use sonos_state::{StateManager, Speaker, Volume, Mute};
-use std::sync::Arc;
+use sonos_state::{StateManager, Volume, SpeakerId};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let manager = Arc::new(StateManager::new()?);
+    let manager = StateManager::new()?;
     // ... add devices ...
 
-    // Create speaker handle from info
-    for info in manager.speaker_infos() {
-        let speaker = Speaker::new(info, Arc::clone(&manager));
+    let speaker_id = SpeakerId::new("RINCON_123");
 
-        // Read current cached value (instant, no network)
-        if let Some(vol) = speaker.volume.get() {
-            println!("{}: {}%", speaker.name, vol.0);
-        }
-
-        // Register for change events
-        speaker.volume.watch()?;
-        speaker.mute.watch()?;
+    // Read current cached value (instant, no network)
+    if let Some(vol) = manager.get_property::<Volume>(&speaker_id) {
+        println!("Volume: {}%", vol.0);
     }
+
+    // Register for change events
+    manager.register_watch(&speaker_id, "volume");
 
     Ok(())
 }
@@ -103,11 +95,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Blocking Iteration Over Changes
 
 ```rust
-use sonos_state::{StateManager, Speaker, Volume};
-use std::sync::Arc;
+use sonos_state::{StateManager, Volume};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let manager = Arc::new(StateManager::new()?);
+    let manager = StateManager::new()?;
     // ... add devices and watch properties ...
 
     // Blocking iteration over change events
@@ -186,60 +177,6 @@ let manager = StateManager::builder()
 - `register_watch(speaker_id, property_key)` - Watch a property for changes
 - `unregister_watch(speaker_id, property_key)` - Stop watching a property
 - `is_watched(speaker_id, property_key)` - Check if a property is being watched
-
-### `Speaker`
-
-Handle for a Sonos speaker with typed property accessors:
-
-```rust
-let speaker = Speaker::new(info, Arc::clone(&manager));
-
-// Metadata
-println!("ID: {}", speaker.id);
-println!("Name: {}", speaker.name);
-println!("IP: {}", speaker.ip_address);
-println!("Model: {}", speaker.model_name);
-
-// Property handles
-speaker.volume.get();      // Option<Volume>
-speaker.mute.get();        // Option<Mute>
-speaker.playback_state.get(); // Option<PlaybackState>
-// ... etc
-```
-
-**Property Handles:**
-- `volume` - Volume control
-- `mute` - Mute control
-- `bass` - Bass EQ
-- `treble` - Treble EQ
-- `loudness` - Loudness compensation
-- `playback_state` - Current playback state
-- `position` - Playback position
-- `current_track` - Track metadata
-- `group_membership` - Group membership info
-
-### `PropertyHandle<P>`
-
-Handle for accessing a specific property:
-
-```rust
-// Get current cached value (instant, no network)
-let volume: Option<Volume> = speaker.volume.get();
-
-// Register for change events (returns current value)
-let current = speaker.volume.watch()?;
-
-// Stop watching
-speaker.volume.unwatch();
-
-// Check if watched
-if speaker.volume.is_watched() {
-    println!("Volume is being watched");
-}
-
-// Fetch fresh value from device (blocking network call)
-let fresh = speaker.volume.fetch()?;
-```
 
 ### `ChangeIterator`
 
@@ -328,12 +265,7 @@ The `state-store` crate provides generic state management primitives (PropertyBa
 
 All public APIs are thread-safe:
 - `StateManager` can be cloned and shared across threads
-- Property handles are `Send + Sync`
 - State operations are internally synchronized with `RwLock`
-
-## Contributing
-
-This crate is part of the larger `sonos-sdk` workspace. See the main project for contribution guidelines.
 
 ## License
 

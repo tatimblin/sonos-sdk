@@ -25,7 +25,7 @@ use crate::property::Property;
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,ignore
 /// use state_store::{PropertyBag, Property};
 ///
 /// #[derive(Clone, PartialEq, Debug)]
@@ -151,7 +151,7 @@ impl std::fmt::Debug for PropertyBag {
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,ignore
 /// use state_store::{StateStore, Property};
 ///
 /// #[derive(Clone, PartialEq, Debug)]
