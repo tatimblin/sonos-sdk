@@ -166,10 +166,21 @@ impl<P: SonosProperty> PropertyHandle<P> {
     /// ```
     pub fn watch(&self) -> Result<Option<P>, SdkError> {
         // Register for changes via state manager
-        // This will also subscribe via the event manager if configured
         self.context
             .state_manager
             .register_watch(&self.context.speaker_id, P::KEY);
+
+        // Subscribe to UPnP service via event manager if configured
+        if let Some(em) = self.context.state_manager.event_manager() {
+            if let Err(e) = em.ensure_service_subscribed(self.context.speaker_ip, P::SERVICE) {
+                tracing::warn!(
+                    "Failed to subscribe to {:?} for {}: {}",
+                    P::SERVICE,
+                    self.context.speaker_id.as_str(),
+                    e
+                );
+            }
+        }
 
         // Return current cached value
         Ok(self.get())
@@ -191,6 +202,18 @@ impl<P: SonosProperty> PropertyHandle<P> {
         self.context
             .state_manager
             .unregister_watch(&self.context.speaker_id, P::KEY);
+
+        // Release UPnP service subscription via event manager if configured
+        if let Some(em) = self.context.state_manager.event_manager() {
+            if let Err(e) = em.release_service_subscription(self.context.speaker_ip, P::SERVICE) {
+                tracing::warn!(
+                    "Failed to release subscription for {:?} on {}: {}",
+                    P::SERVICE,
+                    self.context.speaker_id.as_str(),
+                    e
+                );
+            }
+        }
     }
 
     /// Check if this property is currently being watched

@@ -2301,6 +2301,7 @@ dependencies = [
  "sonos-event-manager",
  "sonos-state",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]

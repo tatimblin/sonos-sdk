@@ -497,6 +497,14 @@ impl StateManager {
             .unwrap_or(0)
     }
 
+    /// Get access to the event manager (if configured)
+    ///
+    /// This allows PropertyHandle::watch() to trigger UPnP subscriptions
+    /// via the event manager's ensure_service_subscribed() method.
+    pub fn event_manager(&self) -> Option<&Arc<SonosEventManager>> {
+        self.event_manager.as_ref()
+    }
+
 }
 
 impl Clone for StateManager {
