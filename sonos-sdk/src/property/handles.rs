@@ -16,6 +16,35 @@ use sonos_state::{property::SonosProperty, SpeakerId, StateManager};
 
 use crate::SdkError;
 
+/// Shared context for all property handles on a speaker
+///
+/// This struct holds the common data needed by all PropertyHandles,
+/// allowing them to share a single Arc instead of duplicating data.
+#[derive(Clone)]
+pub struct SpeakerContext {
+    pub(crate) speaker_id: SpeakerId,
+    pub(crate) speaker_ip: IpAddr,
+    pub(crate) state_manager: Arc<StateManager>,
+    pub(crate) api_client: SonosClient,
+}
+
+impl SpeakerContext {
+    /// Create a new SpeakerContext
+    pub fn new(
+        speaker_id: SpeakerId,
+        speaker_ip: IpAddr,
+        state_manager: Arc<StateManager>,
+        api_client: SonosClient,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            speaker_id,
+            speaker_ip,
+            state_manager,
+            api_client,
+        })
+    }
+}
+
 /// Trait for properties that can be fetched from the device
 ///
 /// This trait defines how to fetch a property value from a Sonos device.
@@ -80,26 +109,15 @@ pub trait Fetchable: SonosProperty {
 /// ```
 #[derive(Clone)]
 pub struct PropertyHandle<P: SonosProperty> {
-    speaker_id: SpeakerId,
-    speaker_ip: IpAddr,
-    state_manager: Arc<StateManager>,
-    api_client: SonosClient,
+    context: Arc<SpeakerContext>,
     _phantom: PhantomData<P>,
 }
 
 impl<P: SonosProperty> PropertyHandle<P> {
-    /// Create a new PropertyHandle for a specific speaker and property type
-    pub fn new(
-        speaker_id: SpeakerId,
-        speaker_ip: IpAddr,
-        state_manager: Arc<StateManager>,
-        api_client: SonosClient,
-    ) -> Self {
+    /// Create a new PropertyHandle from a shared SpeakerContext
+    pub fn new(context: Arc<SpeakerContext>) -> Self {
         Self {
-            speaker_id,
-            speaker_ip,
-            state_manager,
-            api_client,
+            context,
             _phantom: PhantomData,
         }
     }
@@ -117,7 +135,9 @@ impl<P: SonosProperty> PropertyHandle<P> {
     /// }
     /// ```
     pub fn get(&self) -> Option<P> {
-        self.state_manager.get_property::<P>(&self.speaker_id)
+        self.context
+            .state_manager
+            .get_property::<P>(&self.context.speaker_id)
     }
 
     /// Start watching this property for changes (sync)
@@ -147,7 +167,9 @@ impl<P: SonosProperty> PropertyHandle<P> {
     pub fn watch(&self) -> Result<Option<P>, SdkError> {
         // Register for changes via state manager
         // This will also subscribe via the event manager if configured
-        self.state_manager.register_watch(&self.speaker_id, P::KEY);
+        self.context
+            .state_manager
+            .register_watch(&self.context.speaker_id, P::KEY);
 
         // Return current cached value
         Ok(self.get())
@@ -166,8 +188,9 @@ impl<P: SonosProperty> PropertyHandle<P> {
     /// speaker.volume.unwatch();
     /// ```
     pub fn unwatch(&self) {
-        self.state_manager
-            .unregister_watch(&self.speaker_id, P::KEY);
+        self.context
+            .state_manager
+            .unregister_watch(&self.context.speaker_id, P::KEY);
     }
 
     /// Check if this property is currently being watched
@@ -185,27 +208,19 @@ impl<P: SonosProperty> PropertyHandle<P> {
     /// assert!(!speaker.volume.is_watched());
     /// ```
     pub fn is_watched(&self) -> bool {
-        self.state_manager.is_watched(&self.speaker_id, P::KEY)
+        self.context
+            .state_manager
+            .is_watched(&self.context.speaker_id, P::KEY)
     }
 
     /// Get the speaker ID this handle is associated with
     pub fn speaker_id(&self) -> &SpeakerId {
-        &self.speaker_id
+        &self.context.speaker_id
     }
 
     /// Get the speaker IP address
     pub fn speaker_ip(&self) -> IpAddr {
-        self.speaker_ip
-    }
-
-    /// Get a reference to the API client (for fetch implementations)
-    pub(crate) fn api_client(&self) -> &SonosClient {
-        &self.api_client
-    }
-
-    /// Get a reference to the state manager (for fetch implementations)
-    pub(crate) fn state_manager(&self) -> &Arc<StateManager> {
-        &self.state_manager
+        self.context.speaker_ip
     }
 }
 
@@ -235,16 +250,18 @@ impl<P: Fetchable> PropertyHandle<P> {
 
         // 2. Execute operation using enhanced API (sync call)
         let response = self
+            .context
             .api_client
-            .execute_enhanced(&self.speaker_ip.to_string(), operation)
+            .execute_enhanced(&self.context.speaker_ip.to_string(), operation)
             .map_err(SdkError::ApiError)?;
 
         // 3. Convert response to property type
         let property_value = P::from_response(response);
 
         // 4. Update state store
-        self.state_manager
-            .set_property(&self.speaker_id, property_value.clone());
+        self.context
+            .state_manager
+            .set_property(&self.context.speaker_id, property_value.clone());
 
         Ok(property_value)
     }
@@ -255,7 +272,10 @@ impl<P: Fetchable> PropertyHandle<P> {
 // ============================================================================
 
 use sonos_api::services::{
-    av_transport::{self, GetTransportInfoOperation, GetTransportInfoResponse},
+    av_transport::{
+        self, GetPositionInfoOperation, GetPositionInfoResponse, GetTransportInfoOperation,
+        GetTransportInfoResponse,
+    },
     rendering_control::{self, GetVolumeOperation, GetVolumeResponse},
 };
 use sonos_state::{
@@ -300,6 +320,45 @@ impl Fetchable for PlaybackState {
         }
     }
 }
+
+impl Fetchable for Position {
+    type Operation = GetPositionInfoOperation;
+
+    fn build_operation() -> Result<ComposableOperation<Self::Operation>, SdkError> {
+        av_transport::get_position_info_operation()
+            .build()
+            .map_err(|e| {
+                SdkError::FetchFailed(format!("Failed to build GetPositionInfo operation: {}", e))
+            })
+    }
+
+    fn from_response(response: GetPositionInfoResponse) -> Self {
+        let position_ms = Position::parse_time_to_ms(&response.rel_time).unwrap_or(0);
+        let duration_ms = Position::parse_time_to_ms(&response.track_duration).unwrap_or(0);
+        Position::new(position_ms, duration_ms)
+    }
+}
+
+// ============================================================================
+// Placeholder implementations for properties without dedicated API operations
+// ============================================================================
+//
+// Note: The following properties don't have dedicated GetXxx operations in the
+// Sonos UPnP API. Their values are typically obtained through:
+// 1. UPnP event subscriptions (RenderingControl LastChange events)
+// 2. Parsing the LastChange XML from events
+//
+// For now, these properties can only be read from cache (via get()) after
+// being populated by the event system. The fetch() method is not available
+// for these property types.
+//
+// Properties without fetch():
+// - Mute: Obtained from RenderingControl events
+// - Bass: Obtained from RenderingControl events
+// - Treble: Obtained from RenderingControl events
+// - Loudness: Obtained from RenderingControl events
+// - CurrentTrack: Obtained from AVTransport events (track metadata)
+// - GroupMembership: Obtained from ZoneGroupTopology events
 
 // ============================================================================
 // Type aliases
@@ -351,15 +410,22 @@ mod tests {
         Arc::new(manager)
     }
 
+    fn create_test_context(state_manager: Arc<StateManager>) -> Arc<SpeakerContext> {
+        SpeakerContext::new(
+            SpeakerId::new("RINCON_TEST123"),
+            "192.168.1.100".parse().unwrap(),
+            state_manager,
+            SonosClient::new(),
+        )
+    }
+
     #[test]
     fn test_property_handle_creation() {
         let state_manager = create_test_state_manager();
-        let speaker_id = SpeakerId::new("RINCON_TEST123");
+        let context = create_test_context(state_manager);
         let speaker_ip: IpAddr = "192.168.1.100".parse().unwrap();
-        let api_client = SonosClient::new();
 
-        let handle: VolumeHandle =
-            PropertyHandle::new(speaker_id.clone(), speaker_ip, state_manager, api_client);
+        let handle: VolumeHandle = PropertyHandle::new(context);
 
         assert_eq!(handle.speaker_id().as_str(), "RINCON_TEST123");
         assert_eq!(handle.speaker_ip(), speaker_ip);
@@ -368,14 +434,10 @@ mod tests {
     #[test]
     fn test_get_returns_none_initially() {
         let state_manager = create_test_state_manager();
-        let speaker_id = SpeakerId::new("RINCON_TEST123");
-        let speaker_ip: IpAddr = "192.168.1.100".parse().unwrap();
-        let api_client = SonosClient::new();
+        let context = create_test_context(state_manager);
 
-        let handle: VolumeHandle =
-            PropertyHandle::new(speaker_id, speaker_ip, state_manager, api_client);
+        let handle: VolumeHandle = PropertyHandle::new(context);
 
-        // Initially no value cached
         assert!(handle.get().is_none());
     }
 
@@ -383,62 +445,34 @@ mod tests {
     fn test_get_returns_cached_value() {
         let state_manager = create_test_state_manager();
         let speaker_id = SpeakerId::new("RINCON_TEST123");
-        let speaker_ip: IpAddr = "192.168.1.100".parse().unwrap();
-        let api_client = SonosClient::new();
 
-        // Set a value in the state manager
         state_manager.set_property(&speaker_id, Volume::new(75));
 
-        let handle: VolumeHandle = PropertyHandle::new(
-            speaker_id,
-            speaker_ip,
-            Arc::clone(&state_manager),
-            api_client,
-        );
+        let context = create_test_context(Arc::clone(&state_manager));
+        let handle: VolumeHandle = PropertyHandle::new(context);
 
-        // Should return the cached value
         assert_eq!(handle.get(), Some(Volume::new(75)));
     }
 
     #[test]
     fn test_watch_registers_property() {
         let state_manager = create_test_state_manager();
-        let speaker_id = SpeakerId::new("RINCON_TEST123");
-        let speaker_ip: IpAddr = "192.168.1.100".parse().unwrap();
-        let api_client = SonosClient::new();
+        let context = create_test_context(Arc::clone(&state_manager));
 
-        let handle: VolumeHandle = PropertyHandle::new(
-            speaker_id.clone(),
-            speaker_ip,
-            Arc::clone(&state_manager),
-            api_client,
-        );
+        let handle: VolumeHandle = PropertyHandle::new(context);
 
-        // Not watched initially
         assert!(!handle.is_watched());
-
-        // Watch the property
         handle.watch().unwrap();
-
-        // Now it should be watched
         assert!(handle.is_watched());
     }
 
     #[test]
     fn test_unwatch_unregisters_property() {
         let state_manager = create_test_state_manager();
-        let speaker_id = SpeakerId::new("RINCON_TEST123");
-        let speaker_ip: IpAddr = "192.168.1.100".parse().unwrap();
-        let api_client = SonosClient::new();
+        let context = create_test_context(Arc::clone(&state_manager));
 
-        let handle: VolumeHandle = PropertyHandle::new(
-            speaker_id.clone(),
-            speaker_ip,
-            Arc::clone(&state_manager),
-            api_client,
-        );
+        let handle: VolumeHandle = PropertyHandle::new(context);
 
-        // Watch then unwatch
         handle.watch().unwrap();
         assert!(handle.is_watched());
 
@@ -450,20 +484,12 @@ mod tests {
     fn test_watch_returns_current_value() {
         let state_manager = create_test_state_manager();
         let speaker_id = SpeakerId::new("RINCON_TEST123");
-        let speaker_ip: IpAddr = "192.168.1.100".parse().unwrap();
-        let api_client = SonosClient::new();
 
-        // Set a value first
         state_manager.set_property(&speaker_id, Volume::new(50));
 
-        let handle: VolumeHandle = PropertyHandle::new(
-            speaker_id,
-            speaker_ip,
-            Arc::clone(&state_manager),
-            api_client,
-        );
+        let context = create_test_context(Arc::clone(&state_manager));
+        let handle: VolumeHandle = PropertyHandle::new(context);
 
-        // Watch should return the current value
         let result = handle.watch().unwrap();
         assert_eq!(result, Some(Volume::new(50)));
     }
@@ -472,23 +498,14 @@ mod tests {
     fn test_property_handle_clone() {
         let state_manager = create_test_state_manager();
         let speaker_id = SpeakerId::new("RINCON_TEST123");
-        let speaker_ip: IpAddr = "192.168.1.100".parse().unwrap();
-        let api_client = SonosClient::new();
 
-        // Set a value
         state_manager.set_property(&speaker_id, Volume::new(60));
 
-        let handle: VolumeHandle = PropertyHandle::new(
-            speaker_id,
-            speaker_ip,
-            Arc::clone(&state_manager),
-            api_client,
-        );
+        let context = create_test_context(Arc::clone(&state_manager));
+        let handle: VolumeHandle = PropertyHandle::new(context);
 
-        // Clone the handle
         let cloned = handle.clone();
 
-        // Both should see the same value
         assert_eq!(handle.get(), cloned.get());
         assert_eq!(handle.get(), Some(Volume::new(60)));
     }

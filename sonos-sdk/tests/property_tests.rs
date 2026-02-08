@@ -9,8 +9,9 @@ use std::sync::Arc;
 
 use sonos_api::SonosClient;
 use sonos_discovery::Device;
+use sonos_sdk::property::SpeakerContext;
 use sonos_sdk::PropertyHandle;
-use sonos_state::{property::SonosProperty, SpeakerId, StateManager, Volume};
+use sonos_state::{SpeakerId, StateManager, Volume};
 
 // ============================================================================
 // Test Helpers
@@ -47,6 +48,18 @@ fn volume_strategy() -> impl Strategy<Value = u8> {
     0u8..=100
 }
 
+/// Create a test SpeakerContext
+fn create_test_context(
+    speaker_id: &str,
+    ip: &str,
+    state_manager: Arc<StateManager>,
+) -> Arc<SpeakerContext> {
+    let speaker_id_obj = SpeakerId::new(speaker_id);
+    let speaker_ip: IpAddr = ip.parse().unwrap();
+    let api_client = SonosClient::new();
+    SpeakerContext::new(speaker_id_obj, speaker_ip, state_manager, api_client)
+}
+
 // ============================================================================
 // Property 3: Watch Registers Property
 // ============================================================================
@@ -66,16 +79,9 @@ proptest! {
         ip in ip_strategy(),
     ) {
         let state_manager = create_test_state_manager(&speaker_id, &ip);
-        let speaker_id_obj = SpeakerId::new(&speaker_id);
-        let speaker_ip: IpAddr = ip.parse().unwrap();
-        let api_client = SonosClient::new();
+        let context = create_test_context(&speaker_id, &ip, state_manager);
 
-        let handle: PropertyHandle<Volume> = PropertyHandle::new(
-            speaker_id_obj,
-            speaker_ip,
-            state_manager,
-            api_client,
-        );
+        let handle: PropertyHandle<Volume> = PropertyHandle::new(context);
 
         // Initially not watched
         prop_assert!(!handle.is_watched(), "Property should not be watched initially");
@@ -106,16 +112,9 @@ proptest! {
         ip in ip_strategy(),
     ) {
         let state_manager = create_test_state_manager(&speaker_id, &ip);
-        let speaker_id_obj = SpeakerId::new(&speaker_id);
-        let speaker_ip: IpAddr = ip.parse().unwrap();
-        let api_client = SonosClient::new();
+        let context = create_test_context(&speaker_id, &ip, state_manager);
 
-        let handle: PropertyHandle<Volume> = PropertyHandle::new(
-            speaker_id_obj,
-            speaker_ip,
-            state_manager,
-            api_client,
-        );
+        let handle: PropertyHandle<Volume> = PropertyHandle::new(context);
 
         // Watch first
         handle.watch().unwrap();
@@ -139,16 +138,9 @@ proptest! {
         cycles in 1usize..5,
     ) {
         let state_manager = create_test_state_manager(&speaker_id, &ip);
-        let speaker_id_obj = SpeakerId::new(&speaker_id);
-        let speaker_ip: IpAddr = ip.parse().unwrap();
-        let api_client = SonosClient::new();
+        let context = create_test_context(&speaker_id, &ip, state_manager);
 
-        let handle: PropertyHandle<Volume> = PropertyHandle::new(
-            speaker_id_obj,
-            speaker_ip,
-            state_manager,
-            api_client,
-        );
+        let handle: PropertyHandle<Volume> = PropertyHandle::new(context);
 
         // Initially not watched
         prop_assert!(!handle.is_watched());
@@ -197,15 +189,9 @@ proptest! {
     ) {
         let state_manager = create_test_state_manager(&speaker_id, &ip);
         let speaker_id_obj = SpeakerId::new(&speaker_id);
-        let speaker_ip: IpAddr = ip.parse().unwrap();
-        let api_client = SonosClient::new();
+        let context = create_test_context(&speaker_id, &ip, Arc::clone(&state_manager));
 
-        let handle: PropertyHandle<Volume> = PropertyHandle::new(
-            speaker_id_obj.clone(),
-            speaker_ip,
-            Arc::clone(&state_manager),
-            api_client,
-        );
+        let handle: PropertyHandle<Volume> = PropertyHandle::new(context);
 
         // Initially no value cached
         prop_assert!(handle.get().is_none(), "Cache should be empty initially");
@@ -238,15 +224,9 @@ proptest! {
     ) {
         let state_manager = create_test_state_manager(&speaker_id, &ip);
         let speaker_id_obj = SpeakerId::new(&speaker_id);
-        let speaker_ip: IpAddr = ip.parse().unwrap();
-        let api_client = SonosClient::new();
+        let context = create_test_context(&speaker_id, &ip, Arc::clone(&state_manager));
 
-        let handle: PropertyHandle<Volume> = PropertyHandle::new(
-            speaker_id_obj.clone(),
-            speaker_ip,
-            Arc::clone(&state_manager),
-            api_client,
-        );
+        let handle: PropertyHandle<Volume> = PropertyHandle::new(context);
 
         // Simulate multiple fetch operations
         for volume_value in volume_values {
@@ -262,5 +242,155 @@ proptest! {
                 "Cache should always reflect the most recent fetched value"
             );
         }
+    }
+}
+
+
+// ============================================================================
+// Property 5: Speaker Clone Equivalence
+// ============================================================================
+
+use sonos_sdk::Speaker;
+use sonos_state::{Bass, Loudness, Mute, PlaybackState, Treble};
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
+
+    /// **Feature: dom-like-sdk, Property 5: Speaker Clone Equivalence**
+    ///
+    /// *For any* Speaker handle, cloning it SHALL produce a handle that provides
+    /// access to the same property values - i.e., for any property P,
+    /// `original.P.get() == clone.P.get()`.
+    ///
+    /// **Validates: Requirements 2.6**
+    #[test]
+    fn prop_speaker_clone_equivalence(
+        speaker_id in speaker_id_strategy(),
+        ip in ip_strategy(),
+        volume_value in volume_strategy(),
+        mute_value in proptest::bool::ANY,
+        bass_value in -10i8..=10,
+        treble_value in -10i8..=10,
+        loudness_value in proptest::bool::ANY,
+    ) {
+        let state_manager = create_test_state_manager(&speaker_id, &ip);
+        let speaker_id_obj = SpeakerId::new(&speaker_id);
+        let speaker_ip: IpAddr = ip.parse().unwrap();
+        let api_client = SonosClient::new();
+
+        // Create a speaker
+        let speaker = Speaker::new(
+            speaker_id_obj.clone(),
+            format!("Test Speaker {}", speaker_id),
+            speaker_ip,
+            "Sonos One".to_string(),
+            Arc::clone(&state_manager),
+            api_client,
+        );
+
+        // Set various property values in the state manager
+        state_manager.set_property(&speaker_id_obj, Volume::new(volume_value));
+        state_manager.set_property(&speaker_id_obj, Mute::new(mute_value));
+        state_manager.set_property(&speaker_id_obj, Bass::new(bass_value));
+        state_manager.set_property(&speaker_id_obj, Treble::new(treble_value));
+        state_manager.set_property(&speaker_id_obj, Loudness::new(loudness_value));
+        state_manager.set_property(&speaker_id_obj, PlaybackState::Stopped);
+
+        // Clone the speaker
+        let cloned = speaker.clone();
+
+        // Verify all property handles return the same values
+        prop_assert_eq!(
+            speaker.volume.get(),
+            cloned.volume.get(),
+            "Volume should be equal after clone"
+        );
+        prop_assert_eq!(
+            speaker.mute.get(),
+            cloned.mute.get(),
+            "Mute should be equal after clone"
+        );
+        prop_assert_eq!(
+            speaker.bass.get(),
+            cloned.bass.get(),
+            "Bass should be equal after clone"
+        );
+        prop_assert_eq!(
+            speaker.treble.get(),
+            cloned.treble.get(),
+            "Treble should be equal after clone"
+        );
+        prop_assert_eq!(
+            speaker.loudness.get(),
+            cloned.loudness.get(),
+            "Loudness should be equal after clone"
+        );
+        prop_assert_eq!(
+            speaker.playback_state.get(),
+            cloned.playback_state.get(),
+            "PlaybackState should be equal after clone"
+        );
+
+        // Verify metadata is also equal
+        prop_assert_eq!(speaker.id, cloned.id, "Speaker ID should be equal after clone");
+        prop_assert_eq!(speaker.name, cloned.name, "Speaker name should be equal after clone");
+        prop_assert_eq!(speaker.ip, cloned.ip, "Speaker IP should be equal after clone");
+        prop_assert_eq!(speaker.model_name, cloned.model_name, "Speaker model_name should be equal after clone");
+    }
+
+    /// **Feature: dom-like-sdk, Property 5: Speaker Clone Shares State**
+    ///
+    /// *For any* Speaker handle, after cloning, changes to the underlying state
+    /// should be visible through both the original and cloned handles.
+    ///
+    /// **Validates: Requirements 2.6**
+    #[test]
+    fn prop_speaker_clone_shares_state(
+        speaker_id in speaker_id_strategy(),
+        ip in ip_strategy(),
+        initial_volume in volume_strategy(),
+        updated_volume in volume_strategy(),
+    ) {
+        let state_manager = create_test_state_manager(&speaker_id, &ip);
+        let speaker_id_obj = SpeakerId::new(&speaker_id);
+        let speaker_ip: IpAddr = ip.parse().unwrap();
+        let api_client = SonosClient::new();
+
+        // Create a speaker and set initial volume
+        let speaker = Speaker::new(
+            speaker_id_obj.clone(),
+            format!("Test Speaker {}", speaker_id),
+            speaker_ip,
+            "Sonos One".to_string(),
+            Arc::clone(&state_manager),
+            api_client,
+        );
+        state_manager.set_property(&speaker_id_obj, Volume::new(initial_volume));
+
+        // Clone the speaker
+        let cloned = speaker.clone();
+
+        // Both should see the initial value
+        prop_assert_eq!(speaker.volume.get(), cloned.volume.get());
+
+        // Update the state through the state manager (simulating an event update)
+        state_manager.set_property(&speaker_id_obj, Volume::new(updated_volume));
+
+        // Both original and clone should see the updated value
+        prop_assert_eq!(
+            speaker.volume.get(),
+            Some(Volume::new(updated_volume)),
+            "Original should see updated value"
+        );
+        prop_assert_eq!(
+            cloned.volume.get(),
+            Some(Volume::new(updated_volume)),
+            "Clone should see updated value"
+        );
+        prop_assert_eq!(
+            speaker.volume.get(),
+            cloned.volume.get(),
+            "Both should see the same updated value"
+        );
     }
 }

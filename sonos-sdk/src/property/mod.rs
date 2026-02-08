@@ -5,8 +5,11 @@
 
 mod handles;
 
-// Re-export the generic PropertyHandle and Fetchable trait
-pub use handles::{Fetchable, PropertyHandle};
+// Re-export the generic PropertyHandle, SpeakerContext, and Fetchable trait
+pub use handles::{Fetchable, PropertyHandle, SpeakerContext};
 
-// Re-export type aliases for common property handles (only those currently used)
-pub use handles::{PlaybackStateHandle, VolumeHandle};
+// Re-export type aliases for all property handles
+pub use handles::{
+    BassHandle, CurrentTrackHandle, GroupMembershipHandle, LoudnessHandle, MuteHandle,
+    PlaybackStateHandle, PositionHandle, TrebleHandle, VolumeHandle,
+};
