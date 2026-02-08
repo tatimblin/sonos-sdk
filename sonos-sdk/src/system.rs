@@ -106,6 +106,7 @@ impl SonosSystem {
                 speaker_id,
                 device.name.clone(),
                 ip,
+                device.model_name.clone(),
                 Arc::clone(&state_manager),
                 api_client.clone(),
             );

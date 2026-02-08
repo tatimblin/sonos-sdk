@@ -55,9 +55,9 @@ fn main() -> Result<(), SdkError> {
     // Method 3: watch() - Register for change notifications (sync)
     println!("watch() - Register for changes:");
     match speaker.volume.watch() {
-        Ok(current) => {
-            println!("   Started watching volume changes");
-            if let Some(vol) = current {
+        Ok(status) => {
+            println!("   Started watching volume changes (mode: {})", status.mode);
+            if let Some(vol) = status.current {
                 println!("   Current volume: {}%", vol.0);
             }
             println!("   (Changes will appear in system.iter())");

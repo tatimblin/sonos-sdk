@@ -9,7 +9,9 @@ sonos-api = { path = "../sonos-api" }
 sonos-discovery = { path = "../sonos-discovery" }
 sonos-event-manager = { path = "../sonos-event-manager" }
 thiserror = "1.0"
+tracing = "0.1"
 
 [dev-dependencies]
 ratatui = "0.26"
 crossterm = "0.27"
+proptest = "1.4"
