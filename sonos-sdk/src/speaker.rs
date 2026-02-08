@@ -6,7 +6,10 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use sonos_api::SonosClient;
+use sonos_discovery::Device;
 use sonos_state::{SpeakerId, StateManager};
+
+use crate::SdkError;
 
 use crate::property::{
     BassHandle, CurrentTrackHandle, GroupMembershipHandle, LoudnessHandle, MuteHandle,
@@ -76,7 +79,45 @@ pub struct Speaker {
 }
 
 impl Speaker {
+    /// Create a Speaker from a discovered Device
+    ///
+    /// This is the preferred way to create a Speaker when you have a Device
+    /// from discovery. It handles IP address parsing and extracts all relevant
+    /// fields from the Device struct.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let devices = sonos_discovery::get();
+    /// for device in devices {
+    ///     let speaker = Speaker::from_device(&device, state_manager.clone(), api_client.clone())?;
+    ///     println!("Created speaker: {}", speaker.name);
+    /// }
+    /// ```
+    pub fn from_device(
+        device: &Device,
+        state_manager: Arc<StateManager>,
+        api_client: SonosClient,
+    ) -> Result<Self, SdkError> {
+        let ip: IpAddr = device
+            .ip_address
+            .parse()
+            .map_err(|_| SdkError::InvalidIpAddress)?;
+
+        Ok(Self::new(
+            SpeakerId::new(&device.id),
+            device.name.clone(),
+            ip,
+            device.model_name.clone(),
+            state_manager,
+            api_client,
+        ))
+    }
+
     /// Create a new Speaker handle
+    ///
+    /// For most use cases, prefer [`Speaker::from_device()`] which handles
+    /// IP parsing and extracts fields from a Device struct.
     pub fn new(
         id: SpeakerId,
         name: String,

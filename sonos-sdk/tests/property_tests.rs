@@ -18,13 +18,18 @@ use sonos_state::{Property, SpeakerId, StateManager, Volume};
 // ============================================================================
 
 /// Create a test StateManager with a speaker
-fn create_test_state_manager(speaker_id: &str, ip: &str) -> Arc<StateManager> {
+fn create_test_state_manager(
+    speaker_id: impl Into<String>,
+    ip: impl Into<String>,
+) -> Arc<StateManager> {
+    let speaker_id = speaker_id.into();
+    let ip = ip.into();
     let manager = StateManager::new().unwrap();
     let devices = vec![Device {
-        id: speaker_id.to_string(),
+        id: speaker_id.clone(),
         name: format!("Test Speaker {}", speaker_id),
         room_name: "Test Room".to_string(),
-        ip_address: ip.to_string(),
+        ip_address: ip,
         port: 1400,
         model_name: "Sonos One".to_string(),
     }];
@@ -50,12 +55,12 @@ fn volume_strategy() -> impl Strategy<Value = u8> {
 
 /// Create a test SpeakerContext
 fn create_test_context(
-    speaker_id: &str,
-    ip: &str,
+    speaker_id: impl AsRef<str>,
+    ip: impl AsRef<str>,
     state_manager: Arc<StateManager>,
 ) -> Arc<SpeakerContext> {
-    let speaker_id_obj = SpeakerId::new(speaker_id);
-    let speaker_ip: IpAddr = ip.parse().unwrap();
+    let speaker_id_obj = SpeakerId::new(speaker_id.as_ref());
+    let speaker_ip: IpAddr = ip.as_ref().parse().unwrap();
     let api_client = SonosClient::new();
     SpeakerContext::new(speaker_id_obj, speaker_ip, state_manager, api_client)
 }

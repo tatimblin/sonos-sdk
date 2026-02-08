@@ -6,6 +6,7 @@
 //! - `watch()` - Register for change notifications
 //! - `unwatch()` - Unregister from change notifications
 
+use std::fmt;
 use std::marker::PhantomData;
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -42,6 +43,77 @@ impl SpeakerContext {
             state_manager,
             api_client,
         })
+    }
+}
+
+// ============================================================================
+// Watch status types
+// ============================================================================
+
+/// How property updates will be delivered after calling `watch()`
+///
+/// This enum indicates the mechanism that will be used to receive property
+/// updates. The SDK automatically selects the best available method.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WatchMode {
+    /// UPnP event subscription is active - real-time updates will be received
+    ///
+    /// This is the preferred mode, providing immediate notifications when
+    /// properties change on the device.
+    Events,
+
+    /// UPnP subscription failed, updates may come via polling fallback
+    ///
+    /// The event manager was configured but subscription failed (possibly due
+    /// to firewall). The SDK's polling fallback may still provide updates,
+    /// but they won't be real-time.
+    Polling,
+
+    /// No event manager configured - cache-only mode
+    ///
+    /// Properties will only update when explicitly fetched via `fetch()`.
+    /// Call `system.configure_events()` to enable automatic updates.
+    CacheOnly,
+}
+
+impl fmt::Display for WatchMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            WatchMode::Events => write!(f, "Events (real-time)"),
+            WatchMode::Polling => write!(f, "Polling (fallback)"),
+            WatchMode::CacheOnly => write!(f, "CacheOnly (no events)"),
+        }
+    }
+}
+
+/// Result of a `watch()` operation
+///
+/// Contains both the current cached value (if any) and information about
+/// how future updates will be delivered.
+#[derive(Debug, Clone)]
+pub struct WatchStatus<P> {
+    /// Current cached value of the property (if any)
+    pub current: Option<P>,
+
+    /// How updates will be delivered
+    ///
+    /// Check this to understand whether real-time events are working:
+    /// - `Events`: Full real-time support
+    /// - `Polling`: Degraded but functional
+    /// - `CacheOnly`: Manual refresh only
+    pub mode: WatchMode,
+}
+
+impl<P> WatchStatus<P> {
+    /// Create a new WatchStatus
+    pub fn new(current: Option<P>, mode: WatchMode) -> Self {
+        Self { current, mode }
+    }
+
+    /// Check if real-time events are active
+    #[must_use]
+    pub fn has_realtime_events(&self) -> bool {
+        self.mode == WatchMode::Events
     }
 }
 
@@ -134,6 +206,7 @@ impl<P: SonosProperty> PropertyHandle<P> {
     ///     println!("Current volume: {}%", volume.value());
     /// }
     /// ```
+    #[must_use = "returns the cached property value"]
     pub fn get(&self) -> Option<P> {
         self.context
             .state_manager
@@ -148,13 +221,20 @@ impl<P: SonosProperty> PropertyHandle<P> {
     /// When an event manager is configured, this will automatically
     /// subscribe to the UPnP service for this property.
     ///
-    /// Returns the current cached value if available.
+    /// Returns a [`WatchStatus`] containing:
+    /// - `current`: The current cached value (if any)
+    /// - `mode`: How updates will be delivered (Events, Polling, or CacheOnly)
     ///
     /// # Example
     ///
     /// ```rust,ignore
     /// // Start watching volume changes
-    /// let current_volume = speaker.volume.watch()?;
+    /// let status = speaker.volume.watch()?;
+    ///
+    /// // Check if real-time events are working
+    /// if !status.has_realtime_events() {
+    ///     println!("Warning: Running in {} mode", status.mode);
+    /// }
     ///
     /// // Now changes will appear in system.iter()
     /// for event in system.iter() {
@@ -164,26 +244,33 @@ impl<P: SonosProperty> PropertyHandle<P> {
     ///     }
     /// }
     /// ```
-    pub fn watch(&self) -> Result<Option<P>, SdkError> {
+    #[must_use = "returns watch status including the delivery mode"]
+    pub fn watch(&self) -> Result<WatchStatus<P>, SdkError> {
         // Register for changes via state manager
         self.context
             .state_manager
             .register_watch(&self.context.speaker_id, P::KEY);
 
-        // Subscribe to UPnP service via event manager if configured
-        if let Some(em) = self.context.state_manager.event_manager() {
-            if let Err(e) = em.ensure_service_subscribed(self.context.speaker_ip, P::SERVICE) {
-                tracing::warn!(
-                    "Failed to subscribe to {:?} for {}: {}",
-                    P::SERVICE,
-                    self.context.speaker_id.as_str(),
-                    e
-                );
+        // Determine watch mode based on event manager status
+        let mode = if let Some(em) = self.context.state_manager.event_manager() {
+            match em.ensure_service_subscribed(self.context.speaker_ip, P::SERVICE) {
+                Ok(()) => WatchMode::Events,
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to subscribe to {:?} for {}: {} - falling back to polling",
+                        P::SERVICE,
+                        self.context.speaker_id.as_str(),
+                        e
+                    );
+                    WatchMode::Polling
+                }
             }
-        }
+        } else {
+            WatchMode::CacheOnly
+        };
 
-        // Return current cached value
-        Ok(self.get())
+        // Return status with current cached value
+        Ok(WatchStatus::new(self.get(), mode))
     }
 
     /// Stop watching this property (sync)
@@ -230,6 +317,7 @@ impl<P: SonosProperty> PropertyHandle<P> {
     /// speaker.volume.unwatch();
     /// assert!(!speaker.volume.is_watched());
     /// ```
+    #[must_use = "returns whether the property is being watched"]
     pub fn is_watched(&self) -> bool {
         self.context
             .state_manager
@@ -267,6 +355,7 @@ impl<P: Fetchable> PropertyHandle<P> {
     /// // The cache is now updated, so get() returns the same value
     /// assert_eq!(speaker.volume.get(), Some(volume));
     /// ```
+    #[must_use = "returns the fetched value from the device"]
     pub fn fetch(&self) -> Result<P, SdkError> {
         // 1. Build operation using the Fetchable trait
         let operation = P::build_operation()?;
@@ -306,6 +395,15 @@ use sonos_state::{
 };
 
 // ============================================================================
+// Helper functions
+// ============================================================================
+
+/// Helper to create consistent error messages for operation build failures
+fn build_error<E: std::fmt::Display>(operation_name: &str, e: E) -> SdkError {
+    SdkError::FetchFailed(format!("Failed to build {operation_name} operation: {e}"))
+}
+
+// ============================================================================
 // Fetchable implementations
 // ============================================================================
 
@@ -315,7 +413,7 @@ impl Fetchable for Volume {
     fn build_operation() -> Result<ComposableOperation<Self::Operation>, SdkError> {
         rendering_control::get_volume_operation("Master".to_string())
             .build()
-            .map_err(|e| SdkError::FetchFailed(format!("Failed to build GetVolume operation: {}", e)))
+            .map_err(|e| build_error("GetVolume", e))
     }
 
     fn from_response(response: GetVolumeResponse) -> Self {
@@ -329,9 +427,7 @@ impl Fetchable for PlaybackState {
     fn build_operation() -> Result<ComposableOperation<Self::Operation>, SdkError> {
         av_transport::get_transport_info_operation()
             .build()
-            .map_err(|e| {
-                SdkError::FetchFailed(format!("Failed to build GetTransportInfo operation: {}", e))
-            })
+            .map_err(|e| build_error("GetTransportInfo", e))
     }
 
     fn from_response(response: GetTransportInfoResponse) -> Self {
@@ -350,9 +446,7 @@ impl Fetchable for Position {
     fn build_operation() -> Result<ComposableOperation<Self::Operation>, SdkError> {
         av_transport::get_position_info_operation()
             .build()
-            .map_err(|e| {
-                SdkError::FetchFailed(format!("Failed to build GetPositionInfo operation: {}", e))
-            })
+            .map_err(|e| build_error("GetPositionInfo", e))
     }
 
     fn from_response(response: GetPositionInfoResponse) -> Self {
@@ -513,8 +607,10 @@ mod tests {
         let context = create_test_context(Arc::clone(&state_manager));
         let handle: VolumeHandle = PropertyHandle::new(context);
 
-        let result = handle.watch().unwrap();
-        assert_eq!(result, Some(Volume::new(50)));
+        let status = handle.watch().unwrap();
+        assert_eq!(status.current, Some(Volume::new(50)));
+        // No event manager configured, so should be CacheOnly mode
+        assert_eq!(status.mode, WatchMode::CacheOnly);
     }
 
     #[test]
