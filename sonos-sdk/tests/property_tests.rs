@@ -11,7 +11,7 @@ use sonos_api::SonosClient;
 use sonos_discovery::Device;
 use sonos_sdk::property::SpeakerContext;
 use sonos_sdk::PropertyHandle;
-use sonos_state::{SpeakerId, StateManager, Volume};
+use sonos_state::{Property, SpeakerId, StateManager, Volume};
 
 // ============================================================================
 // Test Helpers
@@ -391,6 +391,265 @@ proptest! {
             speaker.volume.get(),
             cloned.volume.get(),
             "Both should see the same updated value"
+        );
+    }
+}
+
+
+// ============================================================================
+// Watched Property Changes Emit Events
+// ============================================================================
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
+
+    /// *For any* property that has been watched, when its value changes via `set_property()`,
+    /// a ChangeEvent SHALL be emitted to the iterator.
+    #[test]
+    fn prop_watched_property_changes_emit_events(
+        speaker_id in speaker_id_strategy(),
+        ip in ip_strategy(),
+        initial_volume in volume_strategy(),
+        updated_volume in volume_strategy(),
+    ) {
+        // Skip if volumes are the same (no change = no event)
+        prop_assume!(initial_volume != updated_volume);
+
+        let state_manager = create_test_state_manager(&speaker_id, &ip);
+        let speaker_id_obj = SpeakerId::new(&speaker_id);
+
+        // Set initial value
+        state_manager.set_property(&speaker_id_obj, Volume::new(initial_volume));
+
+        // Register watch for the property
+        state_manager.register_watch(&speaker_id_obj, Volume::KEY);
+
+        // Change the property value
+        state_manager.set_property(&speaker_id_obj, Volume::new(updated_volume));
+
+        // Get the iterator and check for the event
+        let iter = state_manager.iter();
+        let event = iter.recv_timeout(std::time::Duration::from_millis(100));
+
+        prop_assert!(
+            event.is_some(),
+            "A ChangeEvent should be emitted when a watched property changes"
+        );
+    }
+}
+
+// ============================================================================
+// Change Event Contains Correct Data
+// ============================================================================
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
+
+    /// *For any* ChangeEvent emitted when a watched property changes, the event's
+    /// `speaker_id` SHALL match the speaker whose property changed, and the event's
+    /// `property_key` SHALL match the property's KEY constant.
+    #[test]
+    fn prop_change_event_contains_correct_data(
+        speaker_id in speaker_id_strategy(),
+        ip in ip_strategy(),
+        initial_volume in volume_strategy(),
+        updated_volume in volume_strategy(),
+    ) {
+        // Skip if volumes are the same (no change = no event)
+        prop_assume!(initial_volume != updated_volume);
+
+        let state_manager = create_test_state_manager(&speaker_id, &ip);
+        let speaker_id_obj = SpeakerId::new(&speaker_id);
+
+        // Set initial value
+        state_manager.set_property(&speaker_id_obj, Volume::new(initial_volume));
+
+        // Register watch for the property
+        state_manager.register_watch(&speaker_id_obj, Volume::KEY);
+
+        // Change the property value
+        state_manager.set_property(&speaker_id_obj, Volume::new(updated_volume));
+
+        // Get the iterator and check the event data
+        let iter = state_manager.iter();
+        let event = iter.recv_timeout(std::time::Duration::from_millis(100));
+
+        prop_assert!(event.is_some(), "Event should be emitted");
+        let event = event.unwrap();
+
+        // Verify speaker_id matches
+        prop_assert_eq!(
+            event.speaker_id.as_str(),
+            speaker_id_obj.as_str(),
+            "ChangeEvent speaker_id should match the speaker whose property changed"
+        );
+
+        // Verify property_key matches
+        prop_assert_eq!(
+            event.property_key,
+            Volume::KEY,
+            "ChangeEvent property_key should match the property's KEY constant"
+        );
+
+        // Verify service matches
+        prop_assert_eq!(
+            event.service,
+            sonos_api::Service::RenderingControl,
+            "ChangeEvent service should match the property's SERVICE constant"
+        );
+    }
+
+    /// *For any* set of watched properties on a speaker, when each changes,
+    /// the emitted events should contain the correct speaker_id and property_key.
+    #[test]
+    fn prop_multiple_properties_emit_correct_events(
+        speaker_id in speaker_id_strategy(),
+        ip in ip_strategy(),
+        volume_value in volume_strategy(),
+        mute_value in proptest::bool::ANY,
+    ) {
+        let state_manager = create_test_state_manager(&speaker_id, &ip);
+        let speaker_id_obj = SpeakerId::new(&speaker_id);
+
+        // Register watches for multiple properties
+        state_manager.register_watch(&speaker_id_obj, Volume::KEY);
+        state_manager.register_watch(&speaker_id_obj, Mute::KEY);
+
+        // Change volume
+        state_manager.set_property(&speaker_id_obj, Volume::new(volume_value));
+
+        // Change mute
+        state_manager.set_property(&speaker_id_obj, Mute::new(mute_value));
+
+        // Get the iterator and collect events
+        let iter = state_manager.iter();
+        
+        // First event should be for volume
+        let volume_event = iter.recv_timeout(std::time::Duration::from_millis(100));
+        prop_assert!(volume_event.is_some(), "Volume event should be emitted");
+        let volume_event = volume_event.unwrap();
+        prop_assert_eq!(volume_event.speaker_id.as_str(), speaker_id_obj.as_str());
+        prop_assert_eq!(volume_event.property_key, Volume::KEY);
+
+        // Second event should be for mute
+        let mute_event = iter.recv_timeout(std::time::Duration::from_millis(100));
+        prop_assert!(mute_event.is_some(), "Mute event should be emitted");
+        let mute_event = mute_event.unwrap();
+        prop_assert_eq!(mute_event.speaker_id.as_str(), speaker_id_obj.as_str());
+        prop_assert_eq!(mute_event.property_key, Mute::KEY);
+    }
+}
+
+
+// ============================================================================
+// Unwatched Properties Do Not Emit Events
+// ============================================================================
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
+
+    /// *For any* property that has NOT been watched (or has been unwatched),
+    /// when its value changes via `set_property()`, NO ChangeEvent SHALL be
+    /// emitted to the iterator.
+    #[test]
+    fn prop_unwatched_properties_do_not_emit_events(
+        speaker_id in speaker_id_strategy(),
+        ip in ip_strategy(),
+        initial_volume in volume_strategy(),
+        updated_volume in volume_strategy(),
+    ) {
+        // Skip if volumes are the same (no change anyway)
+        prop_assume!(initial_volume != updated_volume);
+
+        let state_manager = create_test_state_manager(&speaker_id, &ip);
+        let speaker_id_obj = SpeakerId::new(&speaker_id);
+
+        // Set initial value (NOT watched)
+        state_manager.set_property(&speaker_id_obj, Volume::new(initial_volume));
+
+        // Change the property value WITHOUT watching it
+        state_manager.set_property(&speaker_id_obj, Volume::new(updated_volume));
+
+        // Get the iterator and check that NO event was emitted
+        let iter = state_manager.iter();
+        let event = iter.recv_timeout(std::time::Duration::from_millis(50));
+
+        prop_assert!(
+            event.is_none(),
+            "No ChangeEvent should be emitted when an unwatched property changes"
+        );
+    }
+
+    /// *For any* property that was watched and then unwatched, when its value
+    /// changes via `set_property()`, NO ChangeEvent SHALL be emitted.
+    #[test]
+    fn prop_unwatched_after_unwatch_does_not_emit(
+        speaker_id in speaker_id_strategy(),
+        ip in ip_strategy(),
+        initial_volume in volume_strategy(),
+        updated_volume in volume_strategy(),
+    ) {
+        // Skip if volumes are the same
+        prop_assume!(initial_volume != updated_volume);
+
+        let state_manager = create_test_state_manager(&speaker_id, &ip);
+        let speaker_id_obj = SpeakerId::new(&speaker_id);
+
+        // Set initial value
+        state_manager.set_property(&speaker_id_obj, Volume::new(initial_volume));
+
+        // Watch the property
+        state_manager.register_watch(&speaker_id_obj, Volume::KEY);
+
+        // Unwatch the property
+        state_manager.unregister_watch(&speaker_id_obj, Volume::KEY);
+
+        // Change the property value (now unwatched)
+        state_manager.set_property(&speaker_id_obj, Volume::new(updated_volume));
+
+        // Get the iterator and check that NO event was emitted
+        let iter = state_manager.iter();
+        let event = iter.recv_timeout(std::time::Duration::from_millis(50));
+
+        prop_assert!(
+            event.is_none(),
+            "No ChangeEvent should be emitted after property is unwatched"
+        );
+    }
+
+    /// *For any* set of properties where only some are watched, only the watched
+    /// properties should emit events when changed.
+    #[test]
+    fn prop_only_watched_properties_emit(
+        speaker_id in speaker_id_strategy(),
+        ip in ip_strategy(),
+        volume_value in volume_strategy(),
+        mute_value in proptest::bool::ANY,
+    ) {
+        let state_manager = create_test_state_manager(&speaker_id, &ip);
+        let speaker_id_obj = SpeakerId::new(&speaker_id);
+
+        // Only watch volume, NOT mute
+        state_manager.register_watch(&speaker_id_obj, Volume::KEY);
+
+        // Change both properties
+        state_manager.set_property(&speaker_id_obj, Volume::new(volume_value));
+        state_manager.set_property(&speaker_id_obj, Mute::new(mute_value));
+
+        // Get the iterator
+        let iter = state_manager.iter();
+
+        // Should get exactly one event (for volume)
+        let first_event = iter.recv_timeout(std::time::Duration::from_millis(100));
+        prop_assert!(first_event.is_some(), "Volume event should be emitted");
+        let first_event = first_event.unwrap();
+        prop_assert_eq!(first_event.property_key, Volume::KEY, "First event should be for volume");
+
+        // Should NOT get a second event (mute is not watched)
+        let second_event = iter.recv_timeout(std::time::Duration::from_millis(50));
+        prop_assert!(
+            second_event.is_none(),
+            "No event should be emitted for unwatched mute property"
         );
     }
 }
