@@ -653,3 +653,299 @@ proptest! {
         );
     }
 }
+
+
+// ============================================================================
+// Property 6: Get Speaker By Name Round-Trip
+// ============================================================================
+
+use sonos_sdk::SonosSystem;
+
+/// Strategy for generating valid speaker names
+fn speaker_name_strategy() -> impl Strategy<Value = String> {
+    "[A-Za-z ]{3,20}".prop_map(|s| s.trim().to_string())
+        .prop_filter("Name must not be empty", |s| !s.is_empty())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
+
+    /// **Feature: dom-like-sdk, Property 6: Get Speaker By Name Round-Trip**
+    ///
+    /// *For any* speaker added to the system, calling `system.get_speaker_by_name(speaker.name)`
+    /// SHALL return a speaker with the same ID as the original.
+    ///
+    /// **Validates: Requirements 3.2**
+    #[test]
+    fn prop_get_speaker_by_name_round_trip(
+        speaker_id in speaker_id_strategy(),
+        speaker_name in speaker_name_strategy(),
+        ip in ip_strategy(),
+    ) {
+        let devices = vec![Device {
+            id: speaker_id.clone(),
+            name: speaker_name.clone(),
+            room_name: "Test Room".to_string(),
+            ip_address: ip.clone(),
+            port: 1400,
+            model_name: "Sonos One".to_string(),
+        }];
+
+        let system = SonosSystem::from_discovered_devices(devices).unwrap();
+
+        // Look up by name
+        let found_speaker = system.get_speaker_by_name(&speaker_name);
+
+        prop_assert!(
+            found_speaker.is_some(),
+            "Speaker should be found by name '{}'", speaker_name
+        );
+
+        let found_speaker = found_speaker.unwrap();
+        let expected_id = SpeakerId::new(&speaker_id);
+
+        prop_assert_eq!(
+            found_speaker.id,
+            expected_id,
+            "Found speaker ID should match the original speaker ID"
+        );
+    }
+
+    /// **Feature: dom-like-sdk, Property 6: Get Speaker By Name Returns None for Unknown**
+    ///
+    /// *For any* name that was not added to the system, `get_speaker_by_name()` SHALL return None.
+    ///
+    /// **Validates: Requirements 3.2**
+    #[test]
+    fn prop_get_speaker_by_name_returns_none_for_unknown(
+        speaker_id in speaker_id_strategy(),
+        speaker_name in speaker_name_strategy(),
+        unknown_name in speaker_name_strategy(),
+        ip in ip_strategy(),
+    ) {
+        // Ensure the unknown name is different from the actual speaker name
+        prop_assume!(speaker_name != unknown_name);
+
+        let devices = vec![Device {
+            id: speaker_id.clone(),
+            name: speaker_name.clone(),
+            room_name: "Test Room".to_string(),
+            ip_address: ip.clone(),
+            port: 1400,
+            model_name: "Sonos One".to_string(),
+        }];
+
+        let system = SonosSystem::from_discovered_devices(devices).unwrap();
+
+        // Look up by unknown name
+        let found_speaker = system.get_speaker_by_name(&unknown_name);
+
+        prop_assert!(
+            found_speaker.is_none(),
+            "Speaker should NOT be found for unknown name '{}' (actual name: '{}')",
+            unknown_name, speaker_name
+        );
+    }
+}
+
+// ============================================================================
+// Property 7: Get Speaker By ID Round-Trip
+// ============================================================================
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
+
+    /// **Feature: dom-like-sdk, Property 7: Get Speaker By ID Round-Trip**
+    ///
+    /// *For any* speaker added to the system, calling `system.get_speaker_by_id(&speaker.id)`
+    /// SHALL return a speaker with the same name as the original.
+    ///
+    /// **Validates: Requirements 3.3**
+    #[test]
+    fn prop_get_speaker_by_id_round_trip(
+        speaker_id in speaker_id_strategy(),
+        speaker_name in speaker_name_strategy(),
+        ip in ip_strategy(),
+    ) {
+        let devices = vec![Device {
+            id: speaker_id.clone(),
+            name: speaker_name.clone(),
+            room_name: "Test Room".to_string(),
+            ip_address: ip.clone(),
+            port: 1400,
+            model_name: "Sonos One".to_string(),
+        }];
+
+        let system = SonosSystem::from_discovered_devices(devices).unwrap();
+
+        // Look up by ID
+        let lookup_id = SpeakerId::new(&speaker_id);
+        let found_speaker = system.get_speaker_by_id(&lookup_id);
+
+        prop_assert!(
+            found_speaker.is_some(),
+            "Speaker should be found by ID '{}'", speaker_id
+        );
+
+        let found_speaker = found_speaker.unwrap();
+
+        prop_assert_eq!(
+            found_speaker.name,
+            speaker_name,
+            "Found speaker name should match the original speaker name"
+        );
+    }
+
+    /// **Feature: dom-like-sdk, Property 7: Get Speaker By ID Returns None for Unknown**
+    ///
+    /// *For any* ID that was not added to the system, `get_speaker_by_id()` SHALL return None.
+    ///
+    /// **Validates: Requirements 3.3**
+    #[test]
+    fn prop_get_speaker_by_id_returns_none_for_unknown(
+        speaker_id in speaker_id_strategy(),
+        unknown_id in speaker_id_strategy(),
+        speaker_name in speaker_name_strategy(),
+        ip in ip_strategy(),
+    ) {
+        // Ensure the unknown ID is different from the actual speaker ID
+        prop_assume!(speaker_id != unknown_id);
+
+        let devices = vec![Device {
+            id: speaker_id.clone(),
+            name: speaker_name.clone(),
+            room_name: "Test Room".to_string(),
+            ip_address: ip.clone(),
+            port: 1400,
+            model_name: "Sonos One".to_string(),
+        }];
+
+        let system = SonosSystem::from_discovered_devices(devices).unwrap();
+
+        // Look up by unknown ID
+        let lookup_id = SpeakerId::new(&unknown_id);
+        let found_speaker = system.get_speaker_by_id(&lookup_id);
+
+        prop_assert!(
+            found_speaker.is_none(),
+            "Speaker should NOT be found for unknown ID '{}' (actual ID: '{}')",
+            unknown_id, speaker_id
+        );
+    }
+}
+
+// ============================================================================
+// Property 8: Speakers Count Consistency
+// ============================================================================
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
+
+    /// **Feature: dom-like-sdk, Property 8: Speakers Count Consistency**
+    ///
+    /// *For any* set of devices added to the system, `system.speakers().len()` SHALL equal
+    /// the number of unique devices added.
+    ///
+    /// **Validates: Requirements 3.4**
+    #[test]
+    fn prop_speakers_count_consistency(
+        device_count in 1usize..5,
+    ) {
+        // Generate unique devices
+        let devices: Vec<Device> = (0..device_count)
+            .map(|i| Device {
+                id: format!("RINCON_{:012}", i),
+                name: format!("Speaker {}", i),
+                room_name: format!("Room {}", i),
+                ip_address: format!("192.168.1.{}", 100 + i),
+                port: 1400,
+                model_name: "Sonos One".to_string(),
+            })
+            .collect();
+
+        let expected_count = devices.len();
+        let system = SonosSystem::from_discovered_devices(devices).unwrap();
+
+        let actual_count = system.speakers().len();
+
+        prop_assert_eq!(
+            actual_count,
+            expected_count,
+            "speakers().len() should equal the number of devices added"
+        );
+    }
+
+    /// **Feature: dom-like-sdk, Property 8: Empty System Has No Speakers**
+    ///
+    /// *For any* empty device list, `system.speakers().len()` SHALL equal 0.
+    ///
+    /// **Validates: Requirements 3.4**
+    #[test]
+    fn prop_empty_system_has_no_speakers(_dummy in Just(())) {
+        let devices: Vec<Device> = vec![];
+        let system = SonosSystem::from_discovered_devices(devices).unwrap();
+
+        let count = system.speakers().len();
+
+        prop_assert_eq!(
+            count,
+            0,
+            "Empty system should have 0 speakers"
+        );
+    }
+
+    /// **Feature: dom-like-sdk, Property 8: All Speakers Accessible**
+    ///
+    /// *For any* set of devices added to the system, every device should be accessible
+    /// via both `get_speaker_by_name()` and `get_speaker_by_id()`.
+    ///
+    /// **Validates: Requirements 3.2, 3.3, 3.4**
+    #[test]
+    fn prop_all_speakers_accessible(
+        device_count in 1usize..5,
+    ) {
+        // Generate unique devices
+        let devices: Vec<Device> = (0..device_count)
+            .map(|i| Device {
+                id: format!("RINCON_{:012}", i),
+                name: format!("Speaker {}", i),
+                room_name: format!("Room {}", i),
+                ip_address: format!("192.168.1.{}", 100 + i),
+                port: 1400,
+                model_name: "Sonos One".to_string(),
+            })
+            .collect();
+
+        let system = SonosSystem::from_discovered_devices(devices.clone()).unwrap();
+
+        // Verify each device is accessible by both name and ID
+        for device in &devices {
+            let by_name = system.get_speaker_by_name(&device.name);
+            prop_assert!(
+                by_name.is_some(),
+                "Device '{}' should be accessible by name", device.name
+            );
+
+            let speaker_id = SpeakerId::new(&device.id);
+            let by_id = system.get_speaker_by_id(&speaker_id);
+            prop_assert!(
+                by_id.is_some(),
+                "Device '{}' should be accessible by ID", device.id
+            );
+
+            // Both lookups should return the same speaker
+            let by_name = by_name.unwrap();
+            let by_id = by_id.unwrap();
+            prop_assert_eq!(
+                by_name.id,
+                by_id.id,
+                "Lookup by name and ID should return the same speaker"
+            );
+            prop_assert_eq!(
+                by_name.name,
+                by_id.name,
+                "Lookup by name and ID should return the same speaker"
+            );
+        }
+    }
+}
