@@ -432,6 +432,183 @@ mod tests {
             PropertyChange::GroupMembership(GroupMembership::new(GroupId::new("RINCON_test:1"), true));
         assert_eq!(gm_change.service(), GroupMembership::SERVICE);
     }
+
+    // ========================================================================
+    // Unit Tests for decode_topology_event
+    // ========================================================================
+
+    use sonos_stream::events::types::{NetworkInfo, ZoneGroupInfo, ZoneGroupMemberInfo};
+
+    /// Helper to create a ZoneGroupMemberInfo for testing
+    fn make_member(uuid: &str, zone_name: &str) -> ZoneGroupMemberInfo {
+        ZoneGroupMemberInfo {
+            uuid: uuid.to_string(),
+            location: format!("http://192.168.1.100:1400/xml/device_description.xml"),
+            zone_name: zone_name.to_string(),
+            software_version: "79.1-56030".to_string(),
+            network_info: NetworkInfo {
+                wireless_mode: "0".to_string(),
+                wifi_enabled: "1".to_string(),
+                eth_link: "1".to_string(),
+                channel_freq: "2412".to_string(),
+                behind_wifi_extender: "0".to_string(),
+            },
+            satellites: vec![],
+        }
+    }
+
+    #[test]
+    fn test_decode_topology_single_group_one_speaker() {
+        // Single speaker in a standalone group
+        let event = ZoneGroupTopologyEvent {
+            zone_groups: vec![ZoneGroupInfo {
+                coordinator: "RINCON_111111111111".to_string(),
+                id: "RINCON_111111111111:0".to_string(),
+                members: vec![make_member("RINCON_111111111111", "Living Room")],
+            }],
+            vanished_devices: vec![],
+        };
+
+        let result = decode_topology_event(&event);
+
+        // Should have 1 group
+        assert_eq!(result.groups.len(), 1);
+        let group = &result.groups[0];
+        assert_eq!(group.id.as_str(), "RINCON_111111111111:0");
+        assert_eq!(group.coordinator_id.as_str(), "RINCON_111111111111");
+        assert_eq!(group.member_ids.len(), 1);
+        assert!(group.is_standalone());
+
+        // Should have 1 membership
+        assert_eq!(result.memberships.len(), 1);
+        let (speaker_id, membership) = &result.memberships[0];
+        assert_eq!(speaker_id.as_str(), "RINCON_111111111111");
+        assert_eq!(membership.group_id.as_str(), "RINCON_111111111111:0");
+        assert!(membership.is_coordinator);
+    }
+
+    #[test]
+    fn test_decode_topology_single_group_multiple_speakers() {
+        // Group with 3 speakers: coordinator + 2 members
+        let event = ZoneGroupTopologyEvent {
+            zone_groups: vec![ZoneGroupInfo {
+                coordinator: "RINCON_111111111111".to_string(),
+                id: "RINCON_111111111111:0".to_string(),
+                members: vec![
+                    make_member("RINCON_111111111111", "Living Room"),
+                    make_member("RINCON_222222222222", "Kitchen"),
+                    make_member("RINCON_333333333333", "Bedroom"),
+                ],
+            }],
+            vanished_devices: vec![],
+        };
+
+        let result = decode_topology_event(&event);
+
+        // Should have 1 group with 3 members
+        assert_eq!(result.groups.len(), 1);
+        let group = &result.groups[0];
+        assert_eq!(group.member_ids.len(), 3);
+        assert!(!group.is_standalone());
+
+        // Should have 3 memberships
+        assert_eq!(result.memberships.len(), 3);
+
+        // Check coordinator membership
+        let coordinator_membership = result.memberships.iter()
+            .find(|(sid, _)| sid.as_str() == "RINCON_111111111111")
+            .map(|(_, m)| m);
+        assert!(coordinator_membership.is_some());
+        assert!(coordinator_membership.unwrap().is_coordinator);
+
+        // Check non-coordinator memberships
+        let kitchen_membership = result.memberships.iter()
+            .find(|(sid, _)| sid.as_str() == "RINCON_222222222222")
+            .map(|(_, m)| m);
+        assert!(kitchen_membership.is_some());
+        assert!(!kitchen_membership.unwrap().is_coordinator);
+
+        let bedroom_membership = result.memberships.iter()
+            .find(|(sid, _)| sid.as_str() == "RINCON_333333333333")
+            .map(|(_, m)| m);
+        assert!(bedroom_membership.is_some());
+        assert!(!bedroom_membership.unwrap().is_coordinator);
+    }
+
+    #[test]
+    fn test_decode_topology_multiple_groups() {
+        // Two separate groups
+        let event = ZoneGroupTopologyEvent {
+            zone_groups: vec![
+                ZoneGroupInfo {
+                    coordinator: "RINCON_111111111111".to_string(),
+                    id: "RINCON_111111111111:0".to_string(),
+                    members: vec![
+                        make_member("RINCON_111111111111", "Living Room"),
+                        make_member("RINCON_222222222222", "Kitchen"),
+                    ],
+                },
+                ZoneGroupInfo {
+                    coordinator: "RINCON_333333333333".to_string(),
+                    id: "RINCON_333333333333:0".to_string(),
+                    members: vec![make_member("RINCON_333333333333", "Bedroom")],
+                },
+            ],
+            vanished_devices: vec![],
+        };
+
+        let result = decode_topology_event(&event);
+
+        // Should have 2 groups
+        assert_eq!(result.groups.len(), 2);
+
+        // First group: 2 members
+        let group1 = &result.groups[0];
+        assert_eq!(group1.id.as_str(), "RINCON_111111111111:0");
+        assert_eq!(group1.member_ids.len(), 2);
+
+        // Second group: 1 member (standalone)
+        let group2 = &result.groups[1];
+        assert_eq!(group2.id.as_str(), "RINCON_333333333333:0");
+        assert_eq!(group2.member_ids.len(), 1);
+        assert!(group2.is_standalone());
+
+        // Should have 3 total memberships
+        assert_eq!(result.memberships.len(), 3);
+
+        // Verify each speaker has correct group_id
+        let living_room = result.memberships.iter()
+            .find(|(sid, _)| sid.as_str() == "RINCON_111111111111")
+            .map(|(_, m)| m).unwrap();
+        assert_eq!(living_room.group_id.as_str(), "RINCON_111111111111:0");
+        assert!(living_room.is_coordinator);
+
+        let kitchen = result.memberships.iter()
+            .find(|(sid, _)| sid.as_str() == "RINCON_222222222222")
+            .map(|(_, m)| m).unwrap();
+        assert_eq!(kitchen.group_id.as_str(), "RINCON_111111111111:0");
+        assert!(!kitchen.is_coordinator);
+
+        let bedroom = result.memberships.iter()
+            .find(|(sid, _)| sid.as_str() == "RINCON_333333333333")
+            .map(|(_, m)| m).unwrap();
+        assert_eq!(bedroom.group_id.as_str(), "RINCON_333333333333:0");
+        assert!(bedroom.is_coordinator);
+    }
+
+    #[test]
+    fn test_decode_topology_empty_event() {
+        // Empty topology (no groups)
+        let event = ZoneGroupTopologyEvent {
+            zone_groups: vec![],
+            vanished_devices: vec![],
+        };
+
+        let result = decode_topology_event(&event);
+
+        assert!(result.groups.is_empty());
+        assert!(result.memberships.is_empty());
+    }
 }
 
 // ============================================================================

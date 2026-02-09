@@ -92,7 +92,7 @@ pub use property::{
 pub use model::{GroupId, SpeakerId, SpeakerInfo};
 
 // Event decoder
-pub use decoder::{decode_event, DecodedChanges, PropertyChange};
+pub use decoder::{decode_event, decode_topology_event, DecodedChanges, PropertyChange, TopologyChanges};
 
 // Error types
 pub use error::{Result, StateError};
