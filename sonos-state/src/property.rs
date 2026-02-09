@@ -336,10 +336,13 @@ impl Default for CurrentTrack {
 }
 
 /// Speaker's group membership
+///
+/// Every speaker is always in a group - a single speaker forms a group of one.
+/// The group_id is always present and valid.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GroupMembership {
-    /// ID of the group this speaker belongs to (None if ungrouped)
-    pub group_id: Option<GroupId>,
+    /// ID of the group this speaker belongs to (always present)
+    pub group_id: GroupId,
     /// Whether this speaker is the coordinator (master) of its group
     pub is_coordinator: bool,
 }
@@ -354,17 +357,11 @@ impl SonosProperty for GroupMembership {
 }
 
 impl GroupMembership {
-    pub fn new(group_id: Option<GroupId>, is_coordinator: bool) -> Self {
+    /// Create a new GroupMembership with the given group ID and coordinator status
+    pub fn new(group_id: GroupId, is_coordinator: bool) -> Self {
         Self {
             group_id,
             is_coordinator,
-        }
-    }
-
-    pub fn standalone() -> Self {
-        Self {
-            group_id: None,
-            is_coordinator: true,
         }
     }
 }
@@ -531,5 +528,55 @@ mod tests {
 
         assert_eq!(Topology::KEY, "topology");
         assert_eq!(<Topology as SonosProperty>::SCOPE, Scope::System);
+    }
+
+    #[test]
+    fn test_group_membership_always_has_valid_group_id() {
+        // GroupMembership always requires a valid GroupId
+        let group_id = GroupId::new("RINCON_12345:1");
+        let membership = GroupMembership::new(group_id.clone(), true);
+        
+        // Verify group_id is always present and matches what was provided
+        assert_eq!(membership.group_id, group_id);
+        assert!(!membership.group_id.as_str().is_empty());
+    }
+
+    #[test]
+    fn test_group_membership_is_coordinator_flag() {
+        let group_id = GroupId::new("RINCON_12345:1");
+        
+        // Test coordinator
+        let coordinator = GroupMembership::new(group_id.clone(), true);
+        assert!(coordinator.is_coordinator);
+        
+        // Test non-coordinator (member)
+        let member = GroupMembership::new(group_id.clone(), false);
+        assert!(!member.is_coordinator);
+    }
+
+    #[test]
+    fn test_group_membership_equality() {
+        let group_id = GroupId::new("RINCON_12345:1");
+        
+        let membership1 = GroupMembership::new(group_id.clone(), true);
+        let membership2 = GroupMembership::new(group_id.clone(), true);
+        let membership3 = GroupMembership::new(group_id.clone(), false);
+        let membership4 = GroupMembership::new(GroupId::new("RINCON_67890:1"), true);
+        
+        // Same group_id and is_coordinator should be equal
+        assert_eq!(membership1, membership2);
+        
+        // Different is_coordinator should not be equal
+        assert_ne!(membership1, membership3);
+        
+        // Different group_id should not be equal
+        assert_ne!(membership1, membership4);
+    }
+
+    #[test]
+    fn test_group_membership_property_metadata() {
+        assert_eq!(GroupMembership::KEY, "group_membership");
+        assert_eq!(<GroupMembership as SonosProperty>::SCOPE, Scope::Speaker);
+        assert_eq!(<GroupMembership as SonosProperty>::SERVICE, Service::ZoneGroupTopology);
     }
 }

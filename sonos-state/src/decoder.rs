@@ -8,9 +8,10 @@ use sonos_stream::events::{
     AVTransportEvent, EnrichedEvent, EventData, RenderingControlEvent, ZoneGroupTopologyEvent,
 };
 
-use crate::model::SpeakerId;
+use crate::model::{GroupId, SpeakerId};
 use crate::property::{
-    Bass, CurrentTrack, GroupMembership, Loudness, Mute, PlaybackState, Position, Treble, Volume,
+    Bass, CurrentTrack, GroupInfo, GroupMembership, Loudness, Mute, PlaybackState, Position,
+    Treble, Volume,
 };
 
 /// Decoded changes from a single event
@@ -20,6 +21,19 @@ pub struct DecodedChanges {
     pub speaker_id: SpeakerId,
     /// List of property changes
     pub changes: Vec<PropertyChange>,
+}
+
+/// Changes extracted from a ZoneGroupTopology event
+///
+/// This struct contains the complete topology update including:
+/// - All groups with their coordinator and members
+/// - GroupMembership for each speaker in the topology
+#[derive(Debug)]
+pub struct TopologyChanges {
+    /// Updated group information
+    pub groups: Vec<GroupInfo>,
+    /// Updated speaker memberships: (speaker_id, membership)
+    pub memberships: Vec<(SpeakerId, GroupMembership)>,
 }
 
 /// A single property change
@@ -168,12 +182,59 @@ fn decode_av_transport(event: &AVTransportEvent) -> Vec<PropertyChange> {
     changes
 }
 
-/// Decode ZoneGroupTopology event data
+/// Decode ZoneGroupTopology event data into property changes
+///
+/// Note: This returns an empty Vec because topology changes are handled
+/// specially via `decode_topology_event()` which returns `TopologyChanges`.
 fn decode_topology(_event: &ZoneGroupTopologyEvent) -> Vec<PropertyChange> {
-    // Topology events typically update the system-wide topology
-    // Individual speaker group membership would need to be extracted from the zone_groups
-    // For now, return empty since this requires more complex processing
+    // Topology events are handled specially via decode_topology_event()
+    // which returns TopologyChanges instead of PropertyChange
     vec![]
+}
+
+/// Decode a ZoneGroupTopology event into TopologyChanges
+///
+/// This extracts group information and speaker memberships from the topology event.
+/// Each zone group becomes a GroupInfo, and each member gets a GroupMembership.
+///
+/// # Arguments
+/// * `event` - The ZoneGroupTopology event to decode
+///
+/// # Returns
+/// TopologyChanges containing all groups and speaker memberships
+pub fn decode_topology_event(event: &ZoneGroupTopologyEvent) -> TopologyChanges {
+    let mut groups = Vec::new();
+    let mut memberships = Vec::new();
+
+    for zone_group in &event.zone_groups {
+        let group_id = GroupId::new(&zone_group.id);
+        let coordinator_id = SpeakerId::new(&zone_group.coordinator);
+
+        // Collect all member IDs
+        let member_ids: Vec<SpeakerId> = zone_group
+            .members
+            .iter()
+            .map(|m| SpeakerId::new(&m.uuid))
+            .collect();
+
+        // Create GroupInfo for this zone group
+        let group_info = GroupInfo::new(
+            group_id.clone(),
+            coordinator_id.clone(),
+            member_ids.clone(),
+        );
+        groups.push(group_info);
+
+        // Create GroupMembership for each member
+        for member in &zone_group.members {
+            let speaker_id = SpeakerId::new(&member.uuid);
+            let is_coordinator = speaker_id == coordinator_id;
+            let membership = GroupMembership::new(group_id.clone(), is_coordinator);
+            memberships.push((speaker_id, membership));
+        }
+    }
+
+    TopologyChanges { groups, memberships }
 }
 
 /// Parse duration string (HH:MM:SS or H:MM:SS) to milliseconds
@@ -359,6 +420,7 @@ mod tests {
     #[test]
     fn test_property_change_service() {
         use crate::property::SonosProperty;
+        use crate::model::GroupId;
 
         let vol_change = PropertyChange::Volume(Volume(50));
         assert_eq!(vol_change.service(), Volume::SERVICE);
@@ -367,7 +429,197 @@ mod tests {
         assert_eq!(ps_change.service(), PlaybackState::SERVICE);
 
         let gm_change =
-            PropertyChange::GroupMembership(GroupMembership::new(None, true));
+            PropertyChange::GroupMembership(GroupMembership::new(GroupId::new("RINCON_test:1"), true));
         assert_eq!(gm_change.service(), GroupMembership::SERVICE);
+    }
+}
+
+// ============================================================================
+// Property-Based Tests for Topology Decoding
+// ============================================================================
+
+#[cfg(test)]
+mod property_tests {
+    use super::*;
+    use proptest::prelude::*;
+    use sonos_stream::events::types::{NetworkInfo, ZoneGroupInfo, ZoneGroupMemberInfo};
+
+    /// Strategy for generating valid RINCON-style speaker UUIDs
+    fn speaker_uuid_strategy() -> impl Strategy<Value = String> {
+        "[A-F0-9]{12}".prop_map(|s| format!("RINCON_{}", s))
+    }
+
+    /// Strategy for generating a zone group member
+    fn zone_group_member_strategy() -> impl Strategy<Value = ZoneGroupMemberInfo> {
+        (
+            speaker_uuid_strategy(),
+            "[A-Za-z ]{3,15}",
+        ).prop_map(|(uuid, zone_name)| {
+            ZoneGroupMemberInfo {
+                uuid,
+                location: "http://192.168.1.100:1400/xml/device_description.xml".to_string(),
+                zone_name: zone_name.trim().to_string(),
+                software_version: "79.1-56030".to_string(),
+                network_info: NetworkInfo {
+                    wireless_mode: "0".to_string(),
+                    wifi_enabled: "1".to_string(),
+                    eth_link: "1".to_string(),
+                    channel_freq: "2412".to_string(),
+                    behind_wifi_extender: "0".to_string(),
+                },
+                satellites: vec![],
+            }
+        })
+    }
+
+    /// Strategy for generating a zone group with 1-5 members
+    fn zone_group_strategy() -> impl Strategy<Value = ZoneGroupInfo> {
+        proptest::collection::vec(zone_group_member_strategy(), 1..=5)
+            .prop_flat_map(|members| {
+                // First member is always the coordinator
+                let coordinator = members[0].uuid.clone();
+                let group_id = format!("{}:0", coordinator);
+                Just(ZoneGroupInfo {
+                    coordinator,
+                    id: group_id,
+                    members,
+                })
+            })
+    }
+
+    /// Strategy for generating a topology event with 1-3 groups
+    fn topology_event_strategy() -> impl Strategy<Value = ZoneGroupTopologyEvent> {
+        proptest::collection::vec(zone_group_strategy(), 1..=3)
+            .prop_map(|zone_groups| {
+                ZoneGroupTopologyEvent {
+                    zone_groups,
+                    vanished_devices: vec![],
+                }
+            })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(100))]
+
+        /// **Feature: speaker-groups, Property 2: Topology Event Processing Round-Trip**
+        ///
+        /// *For any* valid ZoneGroupTopology event containing zone groups, after processing:
+        /// - Each zone group in the event corresponds to a GroupInfo in the result
+        /// - Each member in each zone group has a GroupMembership in the result
+        /// - The GroupMembership.group_id matches the zone group's ID
+        /// - The GroupMembership.is_coordinator is true only for the coordinator
+        ///
+        /// **Validates: Requirements 2.1, 2.2, 2.4, 2.5**
+        #[test]
+        fn prop_topology_event_processing_round_trip(event in topology_event_strategy()) {
+            let result = decode_topology_event(&event);
+
+            // Property: Each zone group in the event corresponds to a GroupInfo
+            prop_assert_eq!(
+                result.groups.len(),
+                event.zone_groups.len(),
+                "Number of groups should match number of zone groups in event"
+            );
+
+            // Property: Each member has a GroupMembership
+            let total_members: usize = event.zone_groups.iter()
+                .map(|zg| zg.members.len())
+                .sum();
+            prop_assert_eq!(
+                result.memberships.len(),
+                total_members,
+                "Number of memberships should match total members across all groups"
+            );
+
+            // Property: GroupInfo matches zone group data
+            for (group_info, zone_group) in result.groups.iter().zip(event.zone_groups.iter()) {
+                prop_assert_eq!(
+                    group_info.id.as_str(),
+                    &zone_group.id,
+                    "GroupInfo ID should match zone group ID"
+                );
+                prop_assert_eq!(
+                    group_info.coordinator_id.as_str(),
+                    &zone_group.coordinator,
+                    "GroupInfo coordinator should match zone group coordinator"
+                );
+                prop_assert_eq!(
+                    group_info.member_ids.len(),
+                    zone_group.members.len(),
+                    "GroupInfo member count should match zone group member count"
+                );
+            }
+
+            // Property: GroupMembership.group_id matches and is_coordinator is correct
+            for zone_group in &event.zone_groups {
+                for member in &zone_group.members {
+                    let membership = result.memberships.iter()
+                        .find(|(sid, _)| sid.as_str() == member.uuid)
+                        .map(|(_, m)| m);
+
+                    prop_assert!(
+                        membership.is_some(),
+                        "Each member should have a GroupMembership"
+                    );
+
+                    let membership = membership.unwrap();
+                    prop_assert_eq!(
+                        membership.group_id.as_str(),
+                        &zone_group.id,
+                        "GroupMembership.group_id should match zone group ID"
+                    );
+
+                    let is_coordinator = member.uuid == zone_group.coordinator;
+                    prop_assert_eq!(
+                        membership.is_coordinator,
+                        is_coordinator,
+                        "is_coordinator should be true only for the coordinator"
+                    );
+                }
+            }
+        }
+
+        /// **Feature: speaker-groups, Property 2: Coordinator is always in member_ids**
+        ///
+        /// *For any* decoded topology, the coordinator_id should always be present
+        /// in the member_ids list.
+        ///
+        /// **Validates: Requirements 1.2, 1.3**
+        #[test]
+        fn prop_coordinator_always_in_members(event in topology_event_strategy()) {
+            let result = decode_topology_event(&event);
+
+            for group_info in &result.groups {
+                prop_assert!(
+                    group_info.member_ids.contains(&group_info.coordinator_id),
+                    "Coordinator should always be in member_ids"
+                );
+            }
+        }
+
+        /// **Feature: speaker-groups, Property 2: Exactly one coordinator per group**
+        ///
+        /// *For any* decoded topology, each group should have exactly one member
+        /// marked as coordinator in the memberships.
+        ///
+        /// **Validates: Requirements 1.4, 8.3**
+        #[test]
+        fn prop_exactly_one_coordinator_per_group(event in topology_event_strategy()) {
+            let result = decode_topology_event(&event);
+
+            for group_info in &result.groups {
+                let coordinator_count = result.memberships.iter()
+                    .filter(|(sid, membership)| {
+                        group_info.member_ids.contains(sid) && membership.is_coordinator
+                    })
+                    .count();
+
+                prop_assert_eq!(
+                    coordinator_count,
+                    1,
+                    "Each group should have exactly one coordinator"
+                );
+            }
+        }
     }
 }

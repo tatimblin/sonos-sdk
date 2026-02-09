@@ -2311,6 +2311,7 @@ dependencies = [
  "chrono",
  "crossterm 0.27.0",
  "ctrlc",
+ "proptest",
  "ratatui 0.26.3",
  "serde",
  "sonos-api",

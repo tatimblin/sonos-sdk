@@ -89,6 +89,8 @@ pub struct StateStore {
     pub(crate) group_props: HashMap<GroupId, PropertyBag>,
     /// System properties
     pub(crate) system_props: PropertyBag,
+    /// Speaker to group mapping for quick lookups
+    pub(crate) speaker_to_group: HashMap<SpeakerId, GroupId>,
 }
 
 impl StateStore {
@@ -100,6 +102,7 @@ impl StateStore {
             groups: HashMap::new(),
             group_props: HashMap::new(),
             system_props: PropertyBag::new(),
+            speaker_to_group: HashMap::new(),
         }
     }
 
@@ -121,8 +124,27 @@ impl StateStore {
 
     fn add_group(&mut self, group: GroupInfo) {
         let id = group.id.clone();
+        // Update speaker_to_group mapping for all members
+        for member_id in &group.member_ids {
+            self.speaker_to_group.insert(member_id.clone(), id.clone());
+        }
         self.groups.insert(id.clone(), group);
         self.group_props.entry(id).or_insert_with(PropertyBag::new);
+    }
+
+    /// Get the group a speaker belongs to
+    pub(crate) fn get_group_for_speaker(&self, speaker_id: &SpeakerId) -> Option<&GroupInfo> {
+        let group_id = self.speaker_to_group.get(speaker_id)?;
+        self.groups.get(group_id)
+    }
+
+    /// Clear all groups and speaker_to_group mappings
+    ///
+    /// Used when processing topology updates to replace all group data
+    pub(crate) fn clear_groups(&mut self) {
+        self.groups.clear();
+        self.group_props.clear();
+        self.speaker_to_group.clear();
     }
 
     pub(crate) fn get<P: Property>(&self, speaker_id: &SpeakerId) -> Option<P> {
@@ -711,5 +733,158 @@ mod tests {
         let event = event.unwrap();
         assert_eq!(event.speaker_id.as_str(), "RINCON_123");
         assert_eq!(event.property_key, "volume");
+    }
+
+    // ========================================================================
+    // StateStore Group Operations Tests
+    // ========================================================================
+
+    #[test]
+    fn test_add_group_updates_speaker_to_group() {
+        let mut store = StateStore::new();
+        
+        let speaker1 = SpeakerId::new("RINCON_111");
+        let speaker2 = SpeakerId::new("RINCON_222");
+        let group_id = GroupId::new("RINCON_111:1");
+        
+        let group = GroupInfo::new(
+            group_id.clone(),
+            speaker1.clone(),
+            vec![speaker1.clone(), speaker2.clone()],
+        );
+        
+        store.add_group(group);
+        
+        // Verify speaker_to_group mapping is updated for all members
+        assert_eq!(store.speaker_to_group.get(&speaker1), Some(&group_id));
+        assert_eq!(store.speaker_to_group.get(&speaker2), Some(&group_id));
+    }
+
+    #[test]
+    fn test_add_group_single_speaker() {
+        let mut store = StateStore::new();
+        
+        let speaker = SpeakerId::new("RINCON_333");
+        let group_id = GroupId::new("RINCON_333:1");
+        
+        let group = GroupInfo::new(
+            group_id.clone(),
+            speaker.clone(),
+            vec![speaker.clone()],
+        );
+        
+        store.add_group(group.clone());
+        
+        // Verify speaker_to_group mapping
+        assert_eq!(store.speaker_to_group.get(&speaker), Some(&group_id));
+        
+        // Verify group is stored
+        assert_eq!(store.groups.get(&group_id), Some(&group));
+    }
+
+    #[test]
+    fn test_get_group_for_speaker_returns_correct_group() {
+        let mut store = StateStore::new();
+        
+        let speaker1 = SpeakerId::new("RINCON_111");
+        let speaker2 = SpeakerId::new("RINCON_222");
+        let speaker3 = SpeakerId::new("RINCON_333");
+        let group1_id = GroupId::new("RINCON_111:1");
+        let group2_id = GroupId::new("RINCON_333:1");
+        
+        // Group 1: speaker1 (coordinator) + speaker2
+        let group1 = GroupInfo::new(
+            group1_id.clone(),
+            speaker1.clone(),
+            vec![speaker1.clone(), speaker2.clone()],
+        );
+        
+        // Group 2: speaker3 alone
+        let group2 = GroupInfo::new(
+            group2_id.clone(),
+            speaker3.clone(),
+            vec![speaker3.clone()],
+        );
+        
+        store.add_group(group1.clone());
+        store.add_group(group2.clone());
+        
+        // Verify get_group_for_speaker returns correct groups
+        assert_eq!(store.get_group_for_speaker(&speaker1), Some(&group1));
+        assert_eq!(store.get_group_for_speaker(&speaker2), Some(&group1));
+        assert_eq!(store.get_group_for_speaker(&speaker3), Some(&group2));
+    }
+
+    #[test]
+    fn test_get_group_for_speaker_returns_none_for_unknown() {
+        let store = StateStore::new();
+        
+        let unknown_speaker = SpeakerId::new("RINCON_UNKNOWN");
+        
+        assert!(store.get_group_for_speaker(&unknown_speaker).is_none());
+    }
+
+    #[test]
+    fn test_clear_groups_removes_all_group_data() {
+        let mut store = StateStore::new();
+        
+        let speaker1 = SpeakerId::new("RINCON_111");
+        let speaker2 = SpeakerId::new("RINCON_222");
+        let group_id = GroupId::new("RINCON_111:1");
+        
+        let group = GroupInfo::new(
+            group_id.clone(),
+            speaker1.clone(),
+            vec![speaker1.clone(), speaker2.clone()],
+        );
+        
+        store.add_group(group);
+        
+        // Verify data exists
+        assert!(!store.groups.is_empty());
+        assert!(!store.speaker_to_group.is_empty());
+        
+        // Clear groups
+        store.clear_groups();
+        
+        // Verify all group data is cleared
+        assert!(store.groups.is_empty());
+        assert!(store.group_props.is_empty());
+        assert!(store.speaker_to_group.is_empty());
+    }
+
+    #[test]
+    fn test_clear_groups_then_add_new_groups() {
+        let mut store = StateStore::new();
+        
+        // Add initial group
+        let speaker1 = SpeakerId::new("RINCON_111");
+        let group1_id = GroupId::new("RINCON_111:1");
+        let group1 = GroupInfo::new(
+            group1_id.clone(),
+            speaker1.clone(),
+            vec![speaker1.clone()],
+        );
+        store.add_group(group1);
+        
+        // Clear and add new group
+        store.clear_groups();
+        
+        let speaker2 = SpeakerId::new("RINCON_222");
+        let group2_id = GroupId::new("RINCON_222:1");
+        let group2 = GroupInfo::new(
+            group2_id.clone(),
+            speaker2.clone(),
+            vec![speaker2.clone()],
+        );
+        store.add_group(group2.clone());
+        
+        // Verify old group is gone, new group exists
+        assert!(store.groups.get(&group1_id).is_none());
+        assert_eq!(store.groups.get(&group2_id), Some(&group2));
+        
+        // Verify speaker_to_group is updated correctly
+        assert!(store.speaker_to_group.get(&speaker1).is_none());
+        assert_eq!(store.speaker_to_group.get(&speaker2), Some(&group2_id));
     }
 }
