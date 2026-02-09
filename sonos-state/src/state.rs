@@ -519,6 +519,31 @@ impl StateManager {
             .unwrap_or(0)
     }
 
+    /// Get all current groups
+    ///
+    /// Returns all groups in the system. Every speaker is always in a group,
+    /// so a single speaker forms a group of one.
+    pub fn groups(&self) -> Vec<GroupInfo> {
+        self.store
+            .read()
+            .map(|s| s.groups.values().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Get a specific group by ID
+    pub fn get_group(&self, group_id: &GroupId) -> Option<GroupInfo> {
+        self.store.read().ok()?.groups.get(group_id).cloned()
+    }
+
+    /// Get the group a speaker belongs to
+    ///
+    /// Uses the speaker_to_group mapping for quick lookup.
+    pub fn get_group_for_speaker(&self, speaker_id: &SpeakerId) -> Option<GroupInfo> {
+        let store = self.store.read().ok()?;
+        let group_id = store.speaker_to_group.get(speaker_id)?;
+        store.groups.get(group_id).cloned()
+    }
+
     /// Get access to the event manager (if configured)
     ///
     /// This allows PropertyHandle::watch() to trigger UPnP subscriptions
@@ -886,5 +911,226 @@ mod tests {
         // Verify speaker_to_group is updated correctly
         assert!(store.speaker_to_group.get(&speaker1).is_none());
         assert_eq!(store.speaker_to_group.get(&speaker2), Some(&group2_id));
+    }
+
+    // ========================================================================
+    // StateManager Group Methods Tests
+    // ========================================================================
+
+    #[test]
+    fn test_state_manager_groups_returns_all_groups() {
+        let manager = StateManager::new().unwrap();
+        
+        // Add devices
+        let devices = vec![
+            Device {
+                id: "RINCON_111".to_string(),
+                name: "Living Room".to_string(),
+                room_name: "Living Room".to_string(),
+                ip_address: "192.168.1.100".to_string(),
+                port: 1400,
+                model_name: "Sonos One".to_string(),
+            },
+            Device {
+                id: "RINCON_222".to_string(),
+                name: "Kitchen".to_string(),
+                room_name: "Kitchen".to_string(),
+                ip_address: "192.168.1.101".to_string(),
+                port: 1400,
+                model_name: "Sonos One".to_string(),
+            },
+        ];
+        manager.add_devices(devices).unwrap();
+        
+        // Create groups via initialize
+        let speaker1 = SpeakerId::new("RINCON_111");
+        let speaker2 = SpeakerId::new("RINCON_222");
+        let group1 = GroupInfo::new(
+            GroupId::new("RINCON_111:1"),
+            speaker1.clone(),
+            vec![speaker1.clone()],
+        );
+        let group2 = GroupInfo::new(
+            GroupId::new("RINCON_222:1"),
+            speaker2.clone(),
+            vec![speaker2.clone()],
+        );
+        
+        let topology = Topology::new(
+            manager.speaker_infos(),
+            vec![group1.clone(), group2.clone()],
+        );
+        manager.initialize(topology);
+        
+        // Verify groups() returns all groups
+        let groups = manager.groups();
+        assert_eq!(groups.len(), 2);
+        
+        // Verify both groups are present (order may vary)
+        let group_ids: Vec<_> = groups.iter().map(|g| g.id.clone()).collect();
+        assert!(group_ids.contains(&GroupId::new("RINCON_111:1")));
+        assert!(group_ids.contains(&GroupId::new("RINCON_222:1")));
+    }
+
+    #[test]
+    fn test_state_manager_groups_returns_empty_when_no_groups() {
+        let manager = StateManager::new().unwrap();
+        
+        // No groups added
+        let groups = manager.groups();
+        assert!(groups.is_empty());
+    }
+
+    #[test]
+    fn test_state_manager_get_group_returns_correct_group() {
+        let manager = StateManager::new().unwrap();
+        
+        // Add device
+        let devices = vec![Device {
+            id: "RINCON_111".to_string(),
+            name: "Living Room".to_string(),
+            room_name: "Living Room".to_string(),
+            ip_address: "192.168.1.100".to_string(),
+            port: 1400,
+            model_name: "Sonos One".to_string(),
+        }];
+        manager.add_devices(devices).unwrap();
+        
+        // Create group via initialize
+        let speaker = SpeakerId::new("RINCON_111");
+        let group_id = GroupId::new("RINCON_111:1");
+        let group = GroupInfo::new(
+            group_id.clone(),
+            speaker.clone(),
+            vec![speaker.clone()],
+        );
+        
+        let topology = Topology::new(
+            manager.speaker_infos(),
+            vec![group.clone()],
+        );
+        manager.initialize(topology);
+        
+        // Verify get_group returns the correct group
+        let found = manager.get_group(&group_id);
+        assert!(found.is_some());
+        assert_eq!(found.unwrap(), group);
+    }
+
+    #[test]
+    fn test_state_manager_get_group_returns_none_for_unknown() {
+        let manager = StateManager::new().unwrap();
+        
+        // No groups added
+        let unknown_id = GroupId::new("RINCON_UNKNOWN:1");
+        let found = manager.get_group(&unknown_id);
+        assert!(found.is_none());
+    }
+
+    #[test]
+    fn test_state_manager_get_group_for_speaker_returns_correct_group() {
+        let manager = StateManager::new().unwrap();
+        
+        // Add devices
+        let devices = vec![
+            Device {
+                id: "RINCON_111".to_string(),
+                name: "Living Room".to_string(),
+                room_name: "Living Room".to_string(),
+                ip_address: "192.168.1.100".to_string(),
+                port: 1400,
+                model_name: "Sonos One".to_string(),
+            },
+            Device {
+                id: "RINCON_222".to_string(),
+                name: "Kitchen".to_string(),
+                room_name: "Kitchen".to_string(),
+                ip_address: "192.168.1.101".to_string(),
+                port: 1400,
+                model_name: "Sonos One".to_string(),
+            },
+        ];
+        manager.add_devices(devices).unwrap();
+        
+        // Create a group with both speakers
+        let speaker1 = SpeakerId::new("RINCON_111");
+        let speaker2 = SpeakerId::new("RINCON_222");
+        let group_id = GroupId::new("RINCON_111:1");
+        let group = GroupInfo::new(
+            group_id.clone(),
+            speaker1.clone(),
+            vec![speaker1.clone(), speaker2.clone()],
+        );
+        
+        let topology = Topology::new(
+            manager.speaker_infos(),
+            vec![group.clone()],
+        );
+        manager.initialize(topology);
+        
+        // Verify get_group_for_speaker returns the correct group for both speakers
+        let found1 = manager.get_group_for_speaker(&speaker1);
+        assert!(found1.is_some());
+        assert_eq!(found1.unwrap(), group);
+        
+        let found2 = manager.get_group_for_speaker(&speaker2);
+        assert!(found2.is_some());
+        assert_eq!(found2.unwrap(), group);
+    }
+
+    #[test]
+    fn test_state_manager_get_group_for_speaker_returns_none_for_unknown() {
+        let manager = StateManager::new().unwrap();
+        
+        // No groups added
+        let unknown_speaker = SpeakerId::new("RINCON_UNKNOWN");
+        let found = manager.get_group_for_speaker(&unknown_speaker);
+        assert!(found.is_none());
+    }
+
+    #[test]
+    fn test_state_manager_group_methods_consistency() {
+        let manager = StateManager::new().unwrap();
+        
+        // Add device
+        let devices = vec![Device {
+            id: "RINCON_111".to_string(),
+            name: "Living Room".to_string(),
+            room_name: "Living Room".to_string(),
+            ip_address: "192.168.1.100".to_string(),
+            port: 1400,
+            model_name: "Sonos One".to_string(),
+        }];
+        manager.add_devices(devices).unwrap();
+        
+        // Create group via initialize
+        let speaker = SpeakerId::new("RINCON_111");
+        let group_id = GroupId::new("RINCON_111:1");
+        let group = GroupInfo::new(
+            group_id.clone(),
+            speaker.clone(),
+            vec![speaker.clone()],
+        );
+        
+        let topology = Topology::new(
+            manager.speaker_infos(),
+            vec![group.clone()],
+        );
+        manager.initialize(topology);
+        
+        // Verify all three methods return consistent data
+        let groups = manager.groups();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0], group);
+        
+        let by_id = manager.get_group(&group_id);
+        assert_eq!(by_id, Some(group.clone()));
+        
+        let by_speaker = manager.get_group_for_speaker(&speaker);
+        assert_eq!(by_speaker, Some(group.clone()));
+        
+        // All should return the same group
+        assert_eq!(groups[0], by_id.unwrap());
+        assert_eq!(groups[0], by_speaker.unwrap());
     }
 }
