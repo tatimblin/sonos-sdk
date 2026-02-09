@@ -122,7 +122,7 @@ impl StateStore {
         self.speakers.values().cloned().collect()
     }
 
-    fn add_group(&mut self, group: GroupInfo) {
+    pub(crate) fn add_group(&mut self, group: GroupInfo) {
         let id = group.id.clone();
         // Update speaker_to_group mapping for all members
         for member_id in &group.member_ids {
