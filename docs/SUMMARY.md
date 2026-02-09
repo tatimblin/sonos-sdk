@@ -10,6 +10,7 @@ This document provides an overview of each Rust crate in the Sonos SDK workspace
   - [Data Flow](#data-flow)
   - [Key Design Patterns](#key-design-patterns)
 - [Crate Size Reference](#crate-size-reference)
+- [Guides](#guides)
 
 ---
 
@@ -360,3 +361,12 @@ while watcher.changed().await.is_ok() {
 | callback-server | 56 KB | Internal | HTTP event server |
 | sonos-event-manager | 20 KB | Internal | Subscription reference counting |
 | soap-client | 20 KB | Internal | SOAP transport (singleton) |
+
+---
+
+## Guides
+
+| Guide | Description |
+|-------|-------------|
+| [Adding Services](adding-services.md) | How to add new Sonos UPnP services to the SDK |
+| [Watchable Properties](watchable-properties.md) | Reference for properties that support reactive updates |
