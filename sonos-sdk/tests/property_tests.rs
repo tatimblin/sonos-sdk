@@ -1189,3 +1189,135 @@ proptest! {
         }
     }
 }
+
+
+// ============================================================================
+// Property 1 (speaker-groups): Group Invariants
+// ============================================================================
+
+// Note: Group invariants are tested using GroupInfo directly since Group::from_info
+// is pub(crate). The invariants are validated through the GroupInfo struct which
+// has the same fields and semantics as Group.
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
+
+    /// **Feature: speaker-groups, Property 1: Group Invariants**
+    ///
+    /// *For any* Group instance (via GroupInfo), the following invariants SHALL hold:
+    /// - The group has a non-empty GroupId
+    /// - The coordinator_id is contained in member_ids
+    /// - member_ids has at least one element (the coordinator)
+    /// - is_standalone() is true for single-speaker groups
+    ///
+    /// **Validates: Requirements 1.1, 1.2, 1.3, 1.4, 1.5, 1.7**
+    #[test]
+    fn prop_group_invariants_single_speaker(
+        speaker_id in speaker_id_strategy(),
+    ) {
+        let speaker_id_obj = SpeakerId::new(&speaker_id);
+        
+        // Create a group with this speaker as coordinator
+        let group_id = GroupId::new(format!("{}:1", speaker_id));
+        let group_info = GroupInfo::new(
+            group_id.clone(),
+            speaker_id_obj.clone(),
+            vec![speaker_id_obj.clone()],
+        );
+        
+        // Invariant 1: Group has a non-empty GroupId
+        prop_assert!(
+            !group_info.id.as_str().is_empty(),
+            "Group should have a non-empty GroupId"
+        );
+        
+        // Invariant 2: coordinator_id is contained in member_ids
+        prop_assert!(
+            group_info.member_ids.contains(&group_info.coordinator_id),
+            "coordinator_id should be contained in member_ids"
+        );
+        
+        // Invariant 3: member_ids has at least one element
+        prop_assert!(
+            !group_info.member_ids.is_empty(),
+            "member_ids should have at least one element"
+        );
+        
+        // Invariant 4: is_standalone() is true for single-speaker groups
+        prop_assert!(
+            group_info.is_standalone(),
+            "Single-speaker group should be standalone"
+        );
+        
+        // Invariant 5: coordinator is correctly identified
+        prop_assert!(
+            group_info.coordinator_id == speaker_id_obj,
+            "Coordinator should be the speaker"
+        );
+    }
+
+    /// **Feature: speaker-groups, Property 1: Group Invariants - Multi-Speaker**
+    ///
+    /// *For any* Group with multiple speakers, the invariants should hold
+    /// and coordinator should be correctly identified.
+    ///
+    /// **Validates: Requirements 1.1, 1.2, 1.3, 1.4, 1.5, 1.7**
+    #[test]
+    fn prop_group_invariants_multi_speaker(
+        member_count in 2usize..5,
+    ) {
+        // Generate unique speakers
+        let speakers: Vec<SpeakerId> = (0..member_count)
+            .map(|i| SpeakerId::new(format!("RINCON_{:012}", i)))
+            .collect();
+        
+        // Create a group with first speaker as coordinator
+        let coordinator_id = speakers[0].clone();
+        let member_ids = speakers.clone();
+        let group_id = GroupId::new(format!("{}:1", coordinator_id.as_str()));
+        let group_info = GroupInfo::new(
+            group_id.clone(),
+            coordinator_id.clone(),
+            member_ids.clone(),
+        );
+        
+        // Invariant 1: Group has a non-empty GroupId
+        prop_assert!(
+            !group_info.id.as_str().is_empty(),
+            "Group should have a non-empty GroupId"
+        );
+        
+        // Invariant 2: coordinator_id is contained in member_ids
+        prop_assert!(
+            group_info.member_ids.contains(&group_info.coordinator_id),
+            "coordinator_id should be contained in member_ids"
+        );
+        
+        // Invariant 3: member_ids has at least one element
+        prop_assert!(
+            !group_info.member_ids.is_empty(),
+            "member_ids should have at least one element"
+        );
+        
+        // Invariant 4: member_ids.len() equals member_count
+        prop_assert_eq!(
+            group_info.member_ids.len(),
+            member_count,
+            "member_ids.len() should equal member_count"
+        );
+        
+        // Invariant 5: is_standalone() is false for multi-speaker groups
+        prop_assert!(
+            !group_info.is_standalone(),
+            "Multi-speaker group should not be standalone"
+        );
+        
+        // Invariant 6: All members are in member_ids
+        for speaker_id in &speakers {
+            prop_assert!(
+                group_info.member_ids.contains(speaker_id),
+                "member_ids should contain speaker '{}'", speaker_id
+            );
+        }
+    }
+}
