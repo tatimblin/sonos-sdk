@@ -376,7 +376,7 @@ mod tests {
     fn test_subscription_wrapper_creation() {
         // Note: We can't easily test ManagedSubscription creation without actual devices
         // So we'll test the basic wrapper functionality that doesn't require network calls
-        let reg_id = RegistrationId::new(1);
+        let _reg_id = RegistrationId::new(1);
         let pair = SpeakerServicePair::new(
             "192.168.1.100".parse().unwrap(),
             Service::AVTransport,

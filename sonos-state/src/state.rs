@@ -133,6 +133,7 @@ impl StateStore {
     }
 
     /// Get the group a speaker belongs to
+    #[allow(dead_code)]
     pub(crate) fn get_group_for_speaker(&self, speaker_id: &SpeakerId) -> Option<&GroupInfo> {
         let group_id = self.speaker_to_group.get(speaker_id)?;
         self.groups.get(group_id)

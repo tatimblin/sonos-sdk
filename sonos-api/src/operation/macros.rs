@@ -146,6 +146,7 @@ macro_rules! define_operation_with_response {
                 fn build_payload(request: &Self::Request) -> Result<String, $crate::operation::ValidationError> {
                     request.validate($crate::operation::ValidationLevel::Basic)?;
 
+                    #[allow(unused_mut)]
                     let mut xml = format!("<InstanceID>{}</InstanceID>", request.instance_id);
                     $(
                         // Capitalize the first letter for proper Sonos XML element names
@@ -195,8 +196,6 @@ macro_rules! define_operation_with_response {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_macro_compilation() {
         // Test that our macros compile without errors

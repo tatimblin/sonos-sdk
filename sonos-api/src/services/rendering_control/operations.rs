@@ -267,7 +267,7 @@ mod tests {
     #[test]
     fn test_subscription_uses_correct_service() {
         // Verify that our subscription helpers would use the correct service
-        let client = crate::SonosClient::new();
+        let _client = crate::SonosClient::new();
 
         // Verify SERVICE constant
         assert_eq!(SERVICE, crate::Service::RenderingControl);

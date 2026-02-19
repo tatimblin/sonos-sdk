@@ -302,7 +302,7 @@ mod tests {
     #[test]
     fn test_subscription_methods_signature() {
         // Test that subscription methods have correct signatures
-        let client = SonosClient::new();
+        let _client = SonosClient::new();
 
         // Test that the methods exist and have correct signatures by creating function pointers
         let _subscribe_fn: fn(&SonosClient, &str, Service, &str) -> Result<ManagedSubscription> =
@@ -331,7 +331,7 @@ mod tests {
     #[test]
     fn test_subscription_delegates_to_create_managed() {
         // Test that subscribe() correctly delegates to create_managed_subscription
-        let client = SonosClient::new();
+        let _client = SonosClient::new();
 
         // We can't test the actual execution without a real device,
         // but we can verify the methods compile and have correct signatures

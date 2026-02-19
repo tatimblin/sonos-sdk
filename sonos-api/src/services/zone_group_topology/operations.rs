@@ -7,7 +7,7 @@
 use crate::{define_operation_with_response, Validate};
 use paste::paste;
 
-/// Get the current zone group topology
+// Get the current zone group topology
 define_operation_with_response! {
     operation: GetZoneGroupStateOperation,
     action: "GetZoneGroupState",
@@ -65,7 +65,6 @@ pub fn subscribe_with_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::operation::UPnPOperation;
 
     #[test]
     fn test_get_zone_group_state_operation() {
