@@ -678,15 +678,11 @@ mod property_tests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(100))]
 
-        /// **Feature: speaker-groups, Property 2: Topology Event Processing Round-Trip**
-        ///
         /// *For any* valid ZoneGroupTopology event containing zone groups, after processing:
         /// - Each zone group in the event corresponds to a GroupInfo in the result
         /// - Each member in each zone group has a GroupMembership in the result
         /// - The GroupMembership.group_id matches the zone group's ID
         /// - The GroupMembership.is_coordinator is true only for the coordinator
-        ///
-        /// **Validates: Requirements 2.1, 2.2, 2.4, 2.5**
         #[test]
         fn prop_topology_event_processing_round_trip(event in topology_event_strategy()) {
             let result = decode_topology_event(&event);
@@ -756,12 +752,8 @@ mod property_tests {
             }
         }
 
-        /// **Feature: speaker-groups, Property 2: Coordinator is always in member_ids**
-        ///
         /// *For any* decoded topology, the coordinator_id should always be present
         /// in the member_ids list.
-        ///
-        /// **Validates: Requirements 1.2, 1.3**
         #[test]
         fn prop_coordinator_always_in_members(event in topology_event_strategy()) {
             let result = decode_topology_event(&event);
@@ -774,12 +766,8 @@ mod property_tests {
             }
         }
 
-        /// **Feature: speaker-groups, Property 2: Exactly one coordinator per group**
-        ///
         /// *For any* decoded topology, each group should have exactly one member
         /// marked as coordinator in the memberships.
-        ///
-        /// **Validates: Requirements 1.4, 8.3**
         #[test]
         fn prop_exactly_one_coordinator_per_group(event in topology_event_strategy()) {
             let result = decode_topology_event(&event);
