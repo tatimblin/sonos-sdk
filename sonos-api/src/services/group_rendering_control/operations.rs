@@ -213,28 +213,52 @@ mod tests {
     fn test_get_group_volume_builder() {
         let op = get_group_volume().build().unwrap();
         assert_eq!(op.metadata().action, "GetGroupVolume");
+        assert_eq!(op.request().instance_id, 0);
     }
 
     #[test]
     fn test_set_group_volume_builder() {
         let op = set_group_volume(75).build().unwrap();
         assert_eq!(op.request().desired_volume, 75);
+        assert_eq!(op.request().instance_id, 0);
         assert_eq!(op.metadata().action, "SetGroupVolume");
     }
 
     #[test]
-    fn test_set_group_volume_validation() {
-        let request = SetGroupVolumeOperationRequest {
-            instance_id: 0,
-            desired_volume: 150,
-        };
-        assert!(request.validate_basic().is_err());
+    fn test_set_relative_group_volume_builder() {
+        let op = set_relative_group_volume(10).build().unwrap();
+        assert_eq!(op.request().adjustment, 10);
+        assert_eq!(op.request().instance_id, 0);
+        assert_eq!(op.metadata().action, "SetRelativeGroupVolume");
+    }
 
-        let request = SetGroupVolumeOperationRequest {
-            instance_id: 0,
-            desired_volume: 50,
-        };
-        assert!(request.validate_basic().is_ok());
+    #[test]
+    fn test_get_group_mute_builder() {
+        let op = get_group_mute().build().unwrap();
+        assert_eq!(op.metadata().action, "GetGroupMute");
+        assert_eq!(op.request().instance_id, 0);
+    }
+
+    #[test]
+    fn test_set_group_mute_builder() {
+        let op = set_group_mute(true).build().unwrap();
+        assert!(op.request().desired_mute);
+        assert_eq!(op.request().instance_id, 0);
+        assert_eq!(op.metadata().action, "SetGroupMute");
+    }
+
+    #[test]
+    fn test_snapshot_group_volume_builder() {
+        let op = snapshot_group_volume().build().unwrap();
+        assert_eq!(op.metadata().action, "SnapshotGroupVolume");
+        assert_eq!(op.request().instance_id, 0);
+    }
+
+    #[test]
+    fn test_get_group_volume_payload() {
+        let request = GetGroupVolumeOperationRequest { instance_id: 0 };
+        let payload = GetGroupVolumeOperation::build_payload(&request).unwrap();
+        assert_eq!(payload, "<InstanceID>0</InstanceID>");
     }
 
     #[test]
@@ -249,71 +273,139 @@ mod tests {
     }
 
     #[test]
-    fn test_set_relative_group_volume_builder() {
-        let op = set_relative_group_volume(10).build().unwrap();
-        assert_eq!(op.request().adjustment, 10);
-        assert_eq!(op.metadata().action, "SetRelativeGroupVolume");
-    }
-
-    #[test]
-    fn test_set_relative_group_volume_validation() {
+    fn test_set_relative_group_volume_payload() {
         let request = SetRelativeGroupVolumeOperationRequest {
             instance_id: 0,
-            adjustment: 101,
+            adjustment: -25,
         };
-        assert!(request.validate_basic().is_err());
-
-        let request = SetRelativeGroupVolumeOperationRequest {
-            instance_id: 0,
-            adjustment: -101,
-        };
-        assert!(request.validate_basic().is_err());
-
-        let request = SetRelativeGroupVolumeOperationRequest {
-            instance_id: 0,
-            adjustment: 50,
-        };
-        assert!(request.validate_basic().is_ok());
+        let payload = SetRelativeGroupVolumeOperation::build_payload(&request).unwrap();
+        assert!(payload.contains("<InstanceID>0</InstanceID>"));
+        assert!(payload.contains("<Adjustment>-25</Adjustment>"));
     }
 
     #[test]
-    fn test_get_group_mute_builder() {
-        let op = get_group_mute().build().unwrap();
-        assert_eq!(op.metadata().action, "GetGroupMute");
+    fn test_get_group_mute_payload() {
+        let request = GetGroupMuteOperationRequest { instance_id: 0 };
+        let payload = GetGroupMuteOperation::build_payload(&request).unwrap();
+        assert_eq!(payload, "<InstanceID>0</InstanceID>");
     }
 
     #[test]
-    fn test_set_group_mute_builder() {
-        let op = set_group_mute(true).build().unwrap();
-        assert!(op.request().desired_mute);
-        assert_eq!(op.metadata().action, "SetGroupMute");
-    }
-
-    #[test]
-    fn test_set_group_mute_payload() {
+    fn test_set_group_mute_payload_true() {
         let request = SetGroupMuteOperationRequest {
             instance_id: 0,
             desired_mute: true,
         };
         let payload = SetGroupMuteOperation::build_payload(&request).unwrap();
+        assert!(payload.contains("<InstanceID>0</InstanceID>"));
         assert!(payload.contains("<DesiredMute>1</DesiredMute>"));
+    }
 
+    #[test]
+    fn test_set_group_mute_payload_false() {
         let request = SetGroupMuteOperationRequest {
             instance_id: 0,
             desired_mute: false,
         };
         let payload = SetGroupMuteOperation::build_payload(&request).unwrap();
+        assert!(payload.contains("<InstanceID>0</InstanceID>"));
         assert!(payload.contains("<DesiredMute>0</DesiredMute>"));
     }
 
     #[test]
-    fn test_snapshot_group_volume_builder() {
-        let op = snapshot_group_volume().build().unwrap();
-        assert_eq!(op.metadata().action, "SnapshotGroupVolume");
+    fn test_snapshot_group_volume_payload() {
+        let request = SnapshotGroupVolumeOperationRequest { instance_id: 0 };
+        let payload = SnapshotGroupVolumeOperation::build_payload(&request).unwrap();
+        assert_eq!(payload, "<InstanceID>0</InstanceID>");
+    }
+
+    #[test]
+    fn test_set_group_volume_rejects_over_100() {
+        let request = SetGroupVolumeOperationRequest {
+            instance_id: 0,
+            desired_volume: 101,
+        };
+        assert!(request.validate_basic().is_err());
+    }
+
+    #[test]
+    fn test_set_group_volume_accepts_boundary_values() {
+        // Test volume = 0
+        let request = SetGroupVolumeOperationRequest {
+            instance_id: 0,
+            desired_volume: 0,
+        };
+        assert!(request.validate_basic().is_ok());
+
+        // Test volume = 100
+        let request = SetGroupVolumeOperationRequest {
+            instance_id: 0,
+            desired_volume: 100,
+        };
+        assert!(request.validate_basic().is_ok());
+    }
+
+    #[test]
+    fn test_set_relative_group_volume_rejects_under_minus_100() {
+        let request = SetRelativeGroupVolumeOperationRequest {
+            instance_id: 0,
+            adjustment: -101,
+        };
+        assert!(request.validate_basic().is_err());
+    }
+
+    #[test]
+    fn test_set_relative_group_volume_rejects_over_100() {
+        let request = SetRelativeGroupVolumeOperationRequest {
+            instance_id: 0,
+            adjustment: 101,
+        };
+        assert!(request.validate_basic().is_err());
+    }
+
+    #[test]
+    fn test_set_relative_group_volume_accepts_boundary_values() {
+        // Test adjustment = -100
+        let request = SetRelativeGroupVolumeOperationRequest {
+            instance_id: 0,
+            adjustment: -100,
+        };
+        assert!(request.validate_basic().is_ok());
+
+        // Test adjustment = 0
+        let request = SetRelativeGroupVolumeOperationRequest {
+            instance_id: 0,
+            adjustment: 0,
+        };
+        assert!(request.validate_basic().is_ok());
+
+        // Test adjustment = 100
+        let request = SetRelativeGroupVolumeOperationRequest {
+            instance_id: 0,
+            adjustment: 100,
+        };
+        assert!(request.validate_basic().is_ok());
     }
 
     #[test]
     fn test_service_constant() {
         assert_eq!(SERVICE, crate::Service::GroupRenderingControl);
+    }
+
+    #[test]
+    fn test_subscribe_function_signature() {
+        let client = crate::SonosClient::new();
+        // Verify subscribe function has correct signature (compiles)
+        let _subscribe_fn = || subscribe(&client, "192.168.1.100", "http://callback.url");
+        assert!(true);
+    }
+
+    #[test]
+    fn test_subscribe_with_timeout_function_signature() {
+        let client = crate::SonosClient::new();
+        // Verify subscribe_with_timeout function has correct signature (compiles)
+        let _subscribe_fn =
+            || subscribe_with_timeout(&client, "192.168.1.100", "http://callback.url", 3600);
+        assert!(true);
     }
 }
