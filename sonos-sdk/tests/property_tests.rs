@@ -1,7 +1,6 @@
-//! Property-based tests for the DOM-like SDK
+//! Property-based tests for the Sonos SDK
 //!
-//! These tests validate the correctness properties defined in the design document.
-//! Each test is tagged with the property number and requirements it validates.
+//! These tests validate correctness properties using property-based testing.
 
 use proptest::prelude::*;
 use std::net::IpAddr;
@@ -72,12 +71,8 @@ fn create_test_context(
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(100))]
 
-    /// **Feature: dom-like-sdk, Property 3: Watch Registers Property**
-    ///
     /// *For any* speaker and any property type, after calling `property_handle.watch()`,
     /// the property SHALL be marked as watched (i.e., `property_handle.is_watched()` returns true).
-    ///
-    /// **Validates: Requirements 1.3**
     #[test]
     fn prop_watch_registers_property(
         speaker_id in speaker_id_strategy(),
@@ -104,13 +99,9 @@ proptest! {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(100))]
 
-    /// **Feature: dom-like-sdk, Property 4: Unwatch Unregisters Property**
-    ///
     /// *For any* speaker and any property type that is currently watched,
     /// after calling `property_handle.unwatch()`, the property SHALL no longer
     /// be marked as watched (i.e., `property_handle.is_watched()` returns false).
-    ///
-    /// **Validates: Requirements 1.4**
     #[test]
     fn prop_unwatch_unregisters_property(
         speaker_id in speaker_id_strategy(),
@@ -130,12 +121,8 @@ proptest! {
         prop_assert!(!handle.is_watched(), "Property should not be watched after unwatch()");
     }
 
-    /// **Feature: dom-like-sdk, Property 3+4: Watch/Unwatch Round-Trip**
-    ///
     /// *For any* speaker and property, multiple watch/unwatch cycles should
     /// correctly toggle the watched state.
-    ///
-    /// **Validates: Requirements 1.3, 1.4**
     #[test]
     fn prop_watch_unwatch_round_trip(
         speaker_id in speaker_id_strategy(),
@@ -175,8 +162,6 @@ proptest! {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(100))]
 
-    /// **Feature: dom-like-sdk, Property 2: Fetch Updates Cache**
-    ///
     /// *For any* speaker and any property type, after calling `property_handle.fetch()`
     /// successfully, a subsequent call to `property_handle.get()` SHALL return the
     /// same value that `fetch()` returned.
@@ -184,8 +169,6 @@ proptest! {
     /// This test validates the cache update mechanism that fetch() relies on.
     /// We test that set_property() (called by fetch() internally) correctly updates
     /// the cache so that get() returns the updated value.
-    ///
-    /// **Validates: Requirements 1.2**
     #[test]
     fn prop_fetch_updates_cache_mechanism(
         speaker_id in speaker_id_strategy(),
@@ -215,12 +198,8 @@ proptest! {
         );
     }
 
-    /// **Feature: dom-like-sdk, Property 2: Multiple Fetch Updates**
-    ///
     /// *For any* sequence of fetch operations, the cache should always reflect
     /// the most recent fetched value.
-    ///
-    /// **Validates: Requirements 1.2**
     #[test]
     fn prop_multiple_fetch_updates_cache(
         speaker_id in speaker_id_strategy(),
@@ -261,13 +240,9 @@ use sonos_state::{Bass, Loudness, Mute, PlaybackState, Treble};
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(100))]
 
-    /// **Feature: dom-like-sdk, Property 5: Speaker Clone Equivalence**
-    ///
     /// *For any* Speaker handle, cloning it SHALL produce a handle that provides
     /// access to the same property values - i.e., for any property P,
     /// `original.P.get() == clone.P.get()`.
-    ///
-    /// **Validates: Requirements 2.6**
     #[test]
     fn prop_speaker_clone_equivalence(
         speaker_id in speaker_id_strategy(),
@@ -343,12 +318,9 @@ proptest! {
         prop_assert_eq!(speaker.model_name, cloned.model_name, "Speaker model_name should be equal after clone");
     }
 
-    /// **Feature: dom-like-sdk, Property 5: Speaker Clone Shares State**
-    ///
+
     /// *For any* Speaker handle, after cloning, changes to the underlying state
     /// should be visible through both the original and cloned handles.
-    ///
-    /// **Validates: Requirements 2.6**
     #[test]
     fn prop_speaker_clone_shares_state(
         speaker_id in speaker_id_strategy(),
@@ -675,12 +647,8 @@ fn speaker_name_strategy() -> impl Strategy<Value = String> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(100))]
 
-    /// **Feature: dom-like-sdk, Property 6: Get Speaker By Name Round-Trip**
-    ///
     /// *For any* speaker added to the system, calling `system.get_speaker_by_name(speaker.name)`
     /// SHALL return a speaker with the same ID as the original.
-    ///
-    /// **Validates: Requirements 3.2**
     #[test]
     fn prop_get_speaker_by_name_round_trip(
         speaker_id in speaker_id_strategy(),
@@ -716,11 +684,8 @@ proptest! {
         );
     }
 
-    /// **Feature: dom-like-sdk, Property 6: Get Speaker By Name Returns None for Unknown**
-    ///
+
     /// *For any* name that was not added to the system, `get_speaker_by_name()` SHALL return None.
-    ///
-    /// **Validates: Requirements 3.2**
     #[test]
     fn prop_get_speaker_by_name_returns_none_for_unknown(
         speaker_id in speaker_id_strategy(),
@@ -760,12 +725,8 @@ proptest! {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(100))]
 
-    /// **Feature: dom-like-sdk, Property 7: Get Speaker By ID Round-Trip**
-    ///
     /// *For any* speaker added to the system, calling `system.get_speaker_by_id(&speaker.id)`
     /// SHALL return a speaker with the same name as the original.
-    ///
-    /// **Validates: Requirements 3.3**
     #[test]
     fn prop_get_speaker_by_id_round_trip(
         speaker_id in speaker_id_strategy(),
@@ -801,11 +762,8 @@ proptest! {
         );
     }
 
-    /// **Feature: dom-like-sdk, Property 7: Get Speaker By ID Returns None for Unknown**
-    ///
+
     /// *For any* ID that was not added to the system, `get_speaker_by_id()` SHALL return None.
-    ///
-    /// **Validates: Requirements 3.3**
     #[test]
     fn prop_get_speaker_by_id_returns_none_for_unknown(
         speaker_id in speaker_id_strategy(),
@@ -846,12 +804,8 @@ proptest! {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(100))]
 
-    /// **Feature: dom-like-sdk, Property 8: Speakers Count Consistency**
-    ///
     /// *For any* set of devices added to the system, `system.speakers().len()` SHALL equal
     /// the number of unique devices added.
-    ///
-    /// **Validates: Requirements 3.4**
     #[test]
     fn prop_speakers_count_consistency(
         device_count in 1usize..5,
@@ -880,11 +834,8 @@ proptest! {
         );
     }
 
-    /// **Feature: dom-like-sdk, Property 8: Empty System Has No Speakers**
-    ///
+
     /// *For any* empty device list, `system.speakers().len()` SHALL equal 0.
-    ///
-    /// **Validates: Requirements 3.4**
     #[test]
     fn prop_empty_system_has_no_speakers(_dummy in Just(())) {
         let devices: Vec<Device> = vec![];
@@ -899,12 +850,9 @@ proptest! {
         );
     }
 
-    /// **Feature: dom-like-sdk, Property 8: All Speakers Accessible**
-    ///
+
     /// *For any* set of devices added to the system, every device should be accessible
     /// via both `get_speaker_by_name()` and `get_speaker_by_id()`.
-    ///
-    /// **Validates: Requirements 3.2, 3.3, 3.4**
     #[test]
     fn prop_all_speakers_accessible(
         device_count in 1usize..5,
@@ -950,6 +898,857 @@ proptest! {
                 by_name.name,
                 by_id.name,
                 "Lookup by name and ID should return the same speaker"
+            );
+        }
+    }
+}
+
+
+// ============================================================================
+// Property 3 (speaker-groups): Group Access Consistency
+// ============================================================================
+
+use sonos_state::{GroupId, GroupInfo};
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
+
+    /// *For any* speaker in the system:
+    /// - get_group_for_speaker(speaker_id) returns a Group containing that speaker
+    /// - The returned Group's member_ids contains the speaker_id
+    /// - get_group_by_id(group.id) returns the same Group
+    #[test]
+    fn prop_group_access_consistency(
+        speaker_id in speaker_id_strategy(),
+        ip in ip_strategy(),
+    ) {
+        let state_manager = StateManager::new().unwrap();
+        let speaker_id_obj = SpeakerId::new(&speaker_id);
+        
+        // Add a device
+        let devices = vec![Device {
+            id: speaker_id.clone(),
+            name: format!("Test Speaker {}", speaker_id),
+            room_name: "Test Room".to_string(),
+            ip_address: ip.clone(),
+            port: 1400,
+            model_name: "Sonos One".to_string(),
+        }];
+        state_manager.add_devices(devices).unwrap();
+        
+        // Create a group containing this speaker
+        let group_id = GroupId::new(format!("{}:1", speaker_id));
+        let group_info = GroupInfo::new(
+            group_id.clone(),
+            speaker_id_obj.clone(),
+            vec![speaker_id_obj.clone()],
+        );
+        
+        // Add the group to the state manager via initialize
+        let topology = sonos_state::Topology::new(
+            state_manager.speaker_infos(),
+            vec![group_info.clone()],
+        );
+        state_manager.initialize(topology);
+        
+        // Test 1: get_group_for_speaker returns a group containing the speaker
+        let found_group = state_manager.get_group_for_speaker(&speaker_id_obj);
+        prop_assert!(
+            found_group.is_some(),
+            "get_group_for_speaker should return a group for speaker '{}'", speaker_id
+        );
+        
+        let found_group = found_group.unwrap();
+        
+        // Test 2: The returned group's member_ids contains the speaker_id
+        prop_assert!(
+            found_group.member_ids.contains(&speaker_id_obj),
+            "Group member_ids should contain the speaker_id"
+        );
+        
+        // Test 3: get_group_by_id returns the same group
+        let group_by_id = state_manager.get_group(&found_group.id);
+        prop_assert!(
+            group_by_id.is_some(),
+            "get_group should return a group for id '{}'", found_group.id
+        );
+        
+        let group_by_id = group_by_id.unwrap();
+        prop_assert_eq!(
+            found_group,
+            group_by_id,
+            "get_group_for_speaker and get_group should return the same group"
+        );
+    }
+
+
+    /// *For any* group with multiple speakers, all speakers should be able to look up
+    /// the same group via get_group_for_speaker.
+    #[test]
+    fn prop_group_access_consistency_multiple_speakers(
+        speaker_count in 2usize..5,
+    ) {
+        let state_manager = StateManager::new().unwrap();
+        
+        // Generate unique speakers
+        let speakers: Vec<(SpeakerId, String)> = (0..speaker_count)
+            .map(|i| {
+                let id = format!("RINCON_{:012}", i);
+                let ip = format!("192.168.1.{}", 100 + i);
+                (SpeakerId::new(&id), ip)
+            })
+            .collect();
+        
+        // Add devices
+        let devices: Vec<Device> = speakers.iter().enumerate()
+            .map(|(i, (id, ip))| Device {
+                id: id.as_str().to_string(),
+                name: format!("Speaker {}", i),
+                room_name: format!("Room {}", i),
+                ip_address: ip.clone(),
+                port: 1400,
+                model_name: "Sonos One".to_string(),
+            })
+            .collect();
+        state_manager.add_devices(devices).unwrap();
+        
+        // Create a group with all speakers (first speaker is coordinator)
+        let coordinator_id = speakers[0].0.clone();
+        let member_ids: Vec<SpeakerId> = speakers.iter().map(|(id, _)| id.clone()).collect();
+        let group_id = GroupId::new(format!("{}:1", coordinator_id.as_str()));
+        let group_info = GroupInfo::new(
+            group_id.clone(),
+            coordinator_id.clone(),
+            member_ids.clone(),
+        );
+        
+        // Initialize with the group
+        let topology = sonos_state::Topology::new(
+            state_manager.speaker_infos(),
+            vec![group_info.clone()],
+        );
+        state_manager.initialize(topology);
+        
+        // Verify all speakers can look up the same group
+        for (speaker_id, _) in &speakers {
+            let found_group = state_manager.get_group_for_speaker(speaker_id);
+            prop_assert!(
+                found_group.is_some(),
+                "get_group_for_speaker should return a group for speaker '{}'", speaker_id
+            );
+            
+            let found_group = found_group.unwrap();
+            prop_assert_eq!(
+                found_group.id,
+                group_id.clone(),
+                "All speakers should be in the same group"
+            );
+            
+            prop_assert!(
+                found_group.member_ids.contains(speaker_id),
+                "Group member_ids should contain speaker '{}'", speaker_id
+            );
+        }
+        
+        // Verify get_group returns the same group
+        let group_by_id = state_manager.get_group(&group_id.clone());
+        prop_assert!(group_by_id.is_some());
+        prop_assert_eq!(group_by_id.unwrap(), group_info);
+    }
+
+
+    /// *For any* set of groups in the system, groups() should return all groups
+    /// and each group should be accessible via get_group.
+    #[test]
+    fn prop_groups_list_consistency(
+        group_count in 1usize..4,
+    ) {
+        let state_manager = StateManager::new().unwrap();
+        
+        // Generate unique speakers and groups (one speaker per group for simplicity)
+        let mut all_groups = Vec::new();
+        let mut all_devices = Vec::new();
+        
+        for i in 0..group_count {
+            let speaker_id = SpeakerId::new(format!("RINCON_{:012}", i));
+            let ip = format!("192.168.1.{}", 100 + i);
+            let group_id = GroupId::new(format!("RINCON_{:012}:1", i));
+            
+            all_devices.push(Device {
+                id: speaker_id.as_str().to_string(),
+                name: format!("Speaker {}", i),
+                room_name: format!("Room {}", i),
+                ip_address: ip,
+                port: 1400,
+                model_name: "Sonos One".to_string(),
+            });
+            
+            all_groups.push(GroupInfo::new(
+                group_id,
+                speaker_id.clone(),
+                vec![speaker_id],
+            ));
+        }
+        
+        state_manager.add_devices(all_devices).unwrap();
+        
+        // Initialize with all groups
+        let topology = sonos_state::Topology::new(
+            state_manager.speaker_infos(),
+            all_groups.clone(),
+        );
+        state_manager.initialize(topology);
+        
+        // Verify groups() returns all groups
+        let returned_groups = state_manager.groups();
+        prop_assert_eq!(
+            returned_groups.len(),
+            group_count,
+            "groups() should return all {} groups", group_count
+        );
+        
+        // Verify each group is accessible via get_group
+        for group in &all_groups {
+            let found = state_manager.get_group(&group.id);
+            prop_assert!(
+                found.is_some(),
+                "get_group should find group '{}'", group.id
+            );
+            prop_assert_eq!(
+                found.unwrap(),
+                group.clone(),
+                "get_group should return the correct group"
+            );
+        }
+    }
+}
+
+
+// ============================================================================
+// Property 1 (speaker-groups): Group Invariants
+// ============================================================================
+
+// Note: Group invariants are tested using GroupInfo directly since Group::from_info
+// is pub(crate). The invariants are validated through the GroupInfo struct which
+// has the same fields and semantics as Group.
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
+
+    /// *For any* Group instance (via GroupInfo), the following invariants SHALL hold:
+    /// - The group has a non-empty GroupId
+    /// - The coordinator_id is contained in member_ids
+    /// - member_ids has at least one element (the coordinator)
+    /// - is_standalone() is true for single-speaker groups
+    #[test]
+    fn prop_group_invariants_single_speaker(
+        speaker_id in speaker_id_strategy(),
+    ) {
+        let speaker_id_obj = SpeakerId::new(&speaker_id);
+        
+        // Create a group with this speaker as coordinator
+        let group_id = GroupId::new(format!("{}:1", speaker_id));
+        let group_info = GroupInfo::new(
+            group_id.clone(),
+            speaker_id_obj.clone(),
+            vec![speaker_id_obj.clone()],
+        );
+        
+        // Invariant 1: Group has a non-empty GroupId
+        prop_assert!(
+            !group_info.id.as_str().is_empty(),
+            "Group should have a non-empty GroupId"
+        );
+        
+        // Invariant 2: coordinator_id is contained in member_ids
+        prop_assert!(
+            group_info.member_ids.contains(&group_info.coordinator_id),
+            "coordinator_id should be contained in member_ids"
+        );
+        
+        // Invariant 3: member_ids has at least one element
+        prop_assert!(
+            !group_info.member_ids.is_empty(),
+            "member_ids should have at least one element"
+        );
+        
+        // Invariant 4: is_standalone() is true for single-speaker groups
+        prop_assert!(
+            group_info.is_standalone(),
+            "Single-speaker group should be standalone"
+        );
+        
+        // Invariant 5: coordinator is correctly identified
+        prop_assert!(
+            group_info.coordinator_id == speaker_id_obj,
+            "Coordinator should be the speaker"
+        );
+    }
+
+
+    /// *For any* Group with multiple speakers, the invariants should hold
+    /// and coordinator should be correctly identified.
+    #[test]
+    fn prop_group_invariants_multi_speaker(
+        member_count in 2usize..5,
+    ) {
+        // Generate unique speakers
+        let speakers: Vec<SpeakerId> = (0..member_count)
+            .map(|i| SpeakerId::new(format!("RINCON_{:012}", i)))
+            .collect();
+        
+        // Create a group with first speaker as coordinator
+        let coordinator_id = speakers[0].clone();
+        let member_ids = speakers.clone();
+        let group_id = GroupId::new(format!("{}:1", coordinator_id.as_str()));
+        let group_info = GroupInfo::new(
+            group_id.clone(),
+            coordinator_id.clone(),
+            member_ids.clone(),
+        );
+        
+        // Invariant 1: Group has a non-empty GroupId
+        prop_assert!(
+            !group_info.id.as_str().is_empty(),
+            "Group should have a non-empty GroupId"
+        );
+        
+        // Invariant 2: coordinator_id is contained in member_ids
+        prop_assert!(
+            group_info.member_ids.contains(&group_info.coordinator_id),
+            "coordinator_id should be contained in member_ids"
+        );
+        
+        // Invariant 3: member_ids has at least one element
+        prop_assert!(
+            !group_info.member_ids.is_empty(),
+            "member_ids should have at least one element"
+        );
+        
+        // Invariant 4: member_ids.len() equals member_count
+        prop_assert_eq!(
+            group_info.member_ids.len(),
+            member_count,
+            "member_ids.len() should equal member_count"
+        );
+        
+        // Invariant 5: is_standalone() is false for multi-speaker groups
+        prop_assert!(
+            !group_info.is_standalone(),
+            "Multi-speaker group should not be standalone"
+        );
+        
+        // Invariant 6: All members are in member_ids
+        for speaker_id in &speakers {
+            prop_assert!(
+                group_info.member_ids.contains(speaker_id),
+                "member_ids should contain speaker '{}'", speaker_id
+            );
+        }
+    }
+}
+
+
+// ============================================================================
+// Property 4 (speaker-groups): GroupMembership Synchronization
+// ============================================================================
+
+use sonos_state::GroupMembership;
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
+
+    /// *For any* topology change:
+    /// - Every speaker affected by the change has its GroupMembership updated
+    /// - If the property is watched, a change event is emitted
+    /// - The GroupMembership.group_id is never None (always valid)
+    /// - After ungrouping, each speaker has its own single-speaker group
+    #[test]
+    fn prop_group_membership_synchronization(
+        speaker_count in 2usize..5,
+    ) {
+        let state_manager = StateManager::new().unwrap();
+        
+        // Generate unique speakers
+        let speakers: Vec<(SpeakerId, String)> = (0..speaker_count)
+            .map(|i| {
+                let id = format!("RINCON_{:012}", i);
+                let ip = format!("192.168.1.{}", 100 + i);
+                (SpeakerId::new(&id), ip)
+            })
+            .collect();
+        
+        // Add devices
+        let devices: Vec<Device> = speakers.iter().enumerate()
+            .map(|(i, (id, ip))| Device {
+                id: id.as_str().to_string(),
+                name: format!("Speaker {}", i),
+                room_name: format!("Room {}", i),
+                ip_address: ip.clone(),
+                port: 1400,
+                model_name: "Sonos One".to_string(),
+            })
+            .collect();
+        state_manager.add_devices(devices).unwrap();
+        
+        // Create a group with all speakers (first speaker is coordinator)
+        let coordinator_id = speakers[0].0.clone();
+        let member_ids: Vec<SpeakerId> = speakers.iter().map(|(id, _)| id.clone()).collect();
+        let group_id = GroupId::new(format!("{}:1", coordinator_id.as_str()));
+        let group_info = GroupInfo::new(
+            group_id.clone(),
+            coordinator_id.clone(),
+            member_ids.clone(),
+        );
+        
+        // Initialize with the group
+        let topology = sonos_state::Topology::new(
+            state_manager.speaker_infos(),
+            vec![group_info.clone()],
+        );
+        state_manager.initialize(topology);
+        
+        // Set GroupMembership for each speaker (simulating what event_worker does)
+        for (i, (speaker_id, _)) in speakers.iter().enumerate() {
+            let is_coordinator = i == 0;
+            state_manager.set_property(speaker_id, GroupMembership::new(group_id.clone(), is_coordinator));
+        }
+        
+        // Verify GroupMembership is set for all speakers
+        for (i, (speaker_id, _)) in speakers.iter().enumerate() {
+            let membership = state_manager.get_property::<GroupMembership>(speaker_id);
+            prop_assert!(
+                membership.is_some(),
+                "Speaker {} should have GroupMembership set", speaker_id
+            );
+            
+            let membership = membership.unwrap();
+            
+            // Property: GroupMembership.group_id is never empty (always valid)
+            prop_assert!(
+                !membership.group_id.as_str().is_empty(),
+                "GroupMembership.group_id should never be empty"
+            );
+            
+            // Property: GroupMembership.group_id matches the group
+            prop_assert_eq!(
+                membership.group_id,
+                group_id.clone(),
+                "GroupMembership.group_id should match the group ID"
+            );
+            
+            // Property: is_coordinator is true only for the coordinator
+            let expected_is_coordinator = i == 0;
+            prop_assert_eq!(
+                membership.is_coordinator,
+                expected_is_coordinator,
+                "is_coordinator should be {} for speaker {}", expected_is_coordinator, speaker_id
+            );
+        }
+    }
+
+
+    ///
+    /// *For any* set of speakers that were grouped and then ungrouped,
+    /// each speaker should have its own single-speaker group with valid GroupMembership.
+    #[test]
+    fn prop_group_membership_after_ungrouping(
+        speaker_count in 2usize..5,
+    ) {
+        let state_manager = StateManager::new().unwrap();
+        
+        // Generate unique speakers
+        let speakers: Vec<(SpeakerId, String)> = (0..speaker_count)
+            .map(|i| {
+                let id = format!("RINCON_{:012}", i);
+                let ip = format!("192.168.1.{}", 100 + i);
+                (SpeakerId::new(&id), ip)
+            })
+            .collect();
+        
+        // Add devices
+        let devices: Vec<Device> = speakers.iter().enumerate()
+            .map(|(i, (id, ip))| Device {
+                id: id.as_str().to_string(),
+                name: format!("Speaker {}", i),
+                room_name: format!("Room {}", i),
+                ip_address: ip.clone(),
+                port: 1400,
+                model_name: "Sonos One".to_string(),
+            })
+            .collect();
+        state_manager.add_devices(devices).unwrap();
+        
+        // Create individual groups for each speaker (simulating ungrouped state)
+        let groups: Vec<GroupInfo> = speakers.iter()
+            .map(|(speaker_id, _)| {
+                let group_id = GroupId::new(format!("{}:1", speaker_id.as_str()));
+                GroupInfo::new(
+                    group_id,
+                    speaker_id.clone(),
+                    vec![speaker_id.clone()],
+                )
+            })
+            .collect();
+        
+        // Initialize with individual groups
+        let topology = sonos_state::Topology::new(
+            state_manager.speaker_infos(),
+            groups.clone(),
+        );
+        state_manager.initialize(topology);
+        
+        // Set GroupMembership for each speaker (simulating what event_worker does)
+        for (speaker_id, _) in &speakers {
+            let group_id = GroupId::new(format!("{}:1", speaker_id.as_str()));
+            state_manager.set_property(speaker_id, GroupMembership::new(group_id, true));
+        }
+        
+        // Verify each speaker has its own group and is coordinator
+        for (speaker_id, _) in &speakers {
+            let membership = state_manager.get_property::<GroupMembership>(speaker_id);
+            prop_assert!(
+                membership.is_some(),
+                "Speaker {} should have GroupMembership", speaker_id
+            );
+            
+            let membership = membership.unwrap();
+            
+            // Property: GroupMembership.group_id is always valid
+            prop_assert!(
+                !membership.group_id.as_str().is_empty(),
+                "GroupMembership.group_id should never be empty"
+            );
+            
+            // Property: Each speaker is coordinator of its own group
+            prop_assert!(
+                membership.is_coordinator,
+                "Speaker {} should be coordinator of its own group", speaker_id
+            );
+            
+            // Property: Group is standalone (single speaker)
+            let group = state_manager.get_group(&membership.group_id);
+            prop_assert!(group.is_some());
+            prop_assert!(
+                group.unwrap().is_standalone(),
+                "Each speaker's group should be standalone after ungrouping"
+            );
+        }
+    }
+
+
+    /// *For any* speaker with watched GroupMembership, when the membership changes,
+    /// a change event should be emitted.
+    #[test]
+    fn prop_group_membership_watch_events(
+        speaker_id in speaker_id_strategy(),
+        ip in ip_strategy(),
+    ) {
+        let state_manager = StateManager::new().unwrap();
+        let speaker_id_obj = SpeakerId::new(&speaker_id);
+        
+        // Add device
+        let devices = vec![Device {
+            id: speaker_id.clone(),
+            name: format!("Test Speaker {}", speaker_id),
+            room_name: "Test Room".to_string(),
+            ip_address: ip.clone(),
+            port: 1400,
+            model_name: "Sonos One".to_string(),
+        }];
+        state_manager.add_devices(devices).unwrap();
+        
+        // Watch GroupMembership
+        state_manager.register_watch(&speaker_id_obj, GroupMembership::KEY);
+        
+        // Set initial GroupMembership
+        let group_id1 = GroupId::new(format!("{}:1", speaker_id));
+        state_manager.set_property(&speaker_id_obj, GroupMembership::new(group_id1.clone(), true));
+        
+        // Get iterator and consume the first event
+        let iter = state_manager.iter();
+        let event1 = iter.recv_timeout(std::time::Duration::from_millis(100));
+        prop_assert!(event1.is_some(), "First GroupMembership change should emit event");
+        
+        // Change GroupMembership (simulate joining a different group)
+        let group_id2 = GroupId::new(format!("OTHER_GROUP:1"));
+        state_manager.set_property(&speaker_id_obj, GroupMembership::new(group_id2.clone(), false));
+        
+        // Should receive another event
+        let event2 = iter.recv_timeout(std::time::Duration::from_millis(100));
+        prop_assert!(event2.is_some(), "GroupMembership change should emit event");
+        
+        let event2 = event2.unwrap();
+        prop_assert_eq!(event2.speaker_id, speaker_id_obj);
+        prop_assert_eq!(event2.property_key, GroupMembership::KEY);
+    }
+}
+
+
+// ============================================================================
+// Property 5 (speaker-groups): Topology Property Completeness
+// ============================================================================
+
+use sonos_state::Topology;
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
+
+    /// *For any* state after topology processing:
+    /// - The Topology property contains all groups from the store
+    /// - The Topology property contains all speakers from the store
+    /// - Each speaker in Topology has a corresponding GroupMembership
+    #[test]
+    fn prop_topology_completeness(
+        speaker_count in 1usize..5,
+        group_count in 1usize..3,
+    ) {
+        // Ensure we have at least as many speakers as groups
+        let actual_speaker_count = speaker_count.max(group_count);
+        
+        let state_manager = StateManager::new().unwrap();
+        
+        // Generate unique speakers
+        let speakers: Vec<(SpeakerId, String)> = (0..actual_speaker_count)
+            .map(|i| {
+                let id = format!("RINCON_{:012}", i);
+                let ip = format!("192.168.1.{}", 100 + i);
+                (SpeakerId::new(&id), ip)
+            })
+            .collect();
+        
+        // Add devices
+        let devices: Vec<Device> = speakers.iter().enumerate()
+            .map(|(i, (id, ip))| Device {
+                id: id.as_str().to_string(),
+                name: format!("Speaker {}", i),
+                room_name: format!("Room {}", i),
+                ip_address: ip.clone(),
+                port: 1400,
+                model_name: "Sonos One".to_string(),
+            })
+            .collect();
+        state_manager.add_devices(devices).unwrap();
+        
+        // Distribute speakers across groups
+        let speakers_per_group = actual_speaker_count / group_count;
+        let mut groups = Vec::new();
+        let mut speaker_idx = 0;
+        
+        for g in 0..group_count {
+            let group_size = if g == group_count - 1 {
+                // Last group gets remaining speakers
+                actual_speaker_count - speaker_idx
+            } else {
+                speakers_per_group
+            };
+            
+            if group_size == 0 {
+                continue;
+            }
+            
+            let coordinator_id = speakers[speaker_idx].0.clone();
+            let member_ids: Vec<SpeakerId> = (speaker_idx..speaker_idx + group_size)
+                .map(|i| speakers[i].0.clone())
+                .collect();
+            let group_id = GroupId::new(format!("{}:1", coordinator_id.as_str()));
+            
+            groups.push(GroupInfo::new(
+                group_id,
+                coordinator_id,
+                member_ids,
+            ));
+            
+            speaker_idx += group_size;
+        }
+        
+        // Initialize with topology
+        let speaker_infos = state_manager.speaker_infos();
+        let topology = Topology::new(speaker_infos.clone(), groups.clone());
+        state_manager.initialize(topology.clone());
+        
+        // Set GroupMembership for each speaker based on group membership
+        for group in &groups {
+            for (idx, member_id) in group.member_ids.iter().enumerate() {
+                let is_coordinator = idx == 0 && *member_id == group.coordinator_id;
+                state_manager.set_property(member_id, GroupMembership::new(group.id.clone(), is_coordinator));
+            }
+        }
+        
+        // Property: Topology contains all groups
+        let stored_groups = state_manager.groups();
+        prop_assert_eq!(
+            stored_groups.len(),
+            groups.len(),
+            "Topology should contain all {} groups", groups.len()
+        );
+        
+        // Property: Topology contains all speakers
+        let stored_speakers = state_manager.speaker_infos();
+        prop_assert_eq!(
+            stored_speakers.len(),
+            actual_speaker_count,
+            "Topology should contain all {} speakers", actual_speaker_count
+        );
+        
+        // Property: Each speaker has a corresponding GroupMembership
+        for (speaker_id, _) in &speakers {
+            let membership = state_manager.get_property::<GroupMembership>(speaker_id);
+            prop_assert!(
+                membership.is_some(),
+                "Speaker {} should have GroupMembership in topology", speaker_id
+            );
+            
+            // Verify the membership points to a valid group
+            let membership = membership.unwrap();
+            let group = state_manager.get_group(&membership.group_id);
+            prop_assert!(
+                group.is_some(),
+                "GroupMembership.group_id should point to a valid group"
+            );
+            
+            // Verify the speaker is in the group's member list
+            let group = group.unwrap();
+            prop_assert!(
+                group.member_ids.contains(speaker_id),
+                "Speaker should be in its group's member_ids"
+            );
+        }
+    }
+
+
+    /// *For any* topology, the groups in the Topology property should match
+    /// the groups accessible via get_group and groups().
+    #[test]
+    fn prop_topology_groups_match_store(
+        group_count in 1usize..4,
+    ) {
+        let state_manager = StateManager::new().unwrap();
+        
+        // Generate one speaker per group
+        let mut groups = Vec::new();
+        let mut devices = Vec::new();
+        
+        for i in 0..group_count {
+            let speaker_id = SpeakerId::new(format!("RINCON_{:012}", i));
+            let ip = format!("192.168.1.{}", 100 + i);
+            let group_id = GroupId::new(format!("RINCON_{:012}:1", i));
+            
+            devices.push(Device {
+                id: speaker_id.as_str().to_string(),
+                name: format!("Speaker {}", i),
+                room_name: format!("Room {}", i),
+                ip_address: ip,
+                port: 1400,
+                model_name: "Sonos One".to_string(),
+            });
+            
+            groups.push(GroupInfo::new(
+                group_id,
+                speaker_id.clone(),
+                vec![speaker_id],
+            ));
+        }
+        
+        state_manager.add_devices(devices).unwrap();
+        
+        // Initialize with topology
+        let topology = Topology::new(
+            state_manager.speaker_infos(),
+            groups.clone(),
+        );
+        state_manager.initialize(topology);
+        
+        // Property: groups() returns all groups from topology
+        let stored_groups = state_manager.groups();
+        prop_assert_eq!(
+            stored_groups.len(),
+            group_count,
+            "groups() should return all {} groups", group_count
+        );
+        
+        // Property: Each group is accessible via get_group
+        for group in &groups {
+            let found = state_manager.get_group(&group.id);
+            prop_assert!(
+                found.is_some(),
+                "get_group should find group '{}'", group.id
+            );
+            prop_assert_eq!(
+                found.unwrap(),
+                group.clone(),
+                "get_group should return the correct group"
+            );
+        }
+        
+        // Property: group_count() matches
+        prop_assert_eq!(
+            state_manager.group_count(),
+            group_count,
+            "group_count() should match"
+        );
+    }
+
+
+    /// *For any* speaker in the topology, get_group_for_speaker should return
+    /// a valid group containing that speaker.
+    #[test]
+    fn prop_topology_speakers_have_groups(
+        speaker_count in 1usize..5,
+    ) {
+        let state_manager = StateManager::new().unwrap();
+        
+        // Generate speakers with individual groups
+        let mut groups = Vec::new();
+        let mut devices = Vec::new();
+        let mut speaker_ids = Vec::new();
+        
+        for i in 0..speaker_count {
+            let speaker_id = SpeakerId::new(format!("RINCON_{:012}", i));
+            let ip = format!("192.168.1.{}", 100 + i);
+            let group_id = GroupId::new(format!("RINCON_{:012}:1", i));
+            
+            devices.push(Device {
+                id: speaker_id.as_str().to_string(),
+                name: format!("Speaker {}", i),
+                room_name: format!("Room {}", i),
+                ip_address: ip,
+                port: 1400,
+                model_name: "Sonos One".to_string(),
+            });
+            
+            groups.push(GroupInfo::new(
+                group_id,
+                speaker_id.clone(),
+                vec![speaker_id.clone()],
+            ));
+            
+            speaker_ids.push(speaker_id);
+        }
+        
+        state_manager.add_devices(devices).unwrap();
+        
+        // Initialize with topology
+        let topology = Topology::new(
+            state_manager.speaker_infos(),
+            groups.clone(),
+        );
+        state_manager.initialize(topology);
+        
+        // Property: Each speaker has a group via get_group_for_speaker
+        for speaker_id in &speaker_ids {
+            let group = state_manager.get_group_for_speaker(speaker_id);
+            prop_assert!(
+                group.is_some(),
+                "get_group_for_speaker should return a group for speaker '{}'", speaker_id
+            );
+            
+            let group = group.unwrap();
+            
+            // Property: The group contains the speaker
+            prop_assert!(
+                group.member_ids.contains(speaker_id),
+                "Group should contain speaker '{}'", speaker_id
             );
         }
     }

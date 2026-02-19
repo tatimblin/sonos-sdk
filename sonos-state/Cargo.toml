@@ -22,6 +22,7 @@ sonos-discovery = { path = "../sonos-discovery" }
 sonos-event-manager = { path = "../sonos-event-manager" }
 chrono = "0.4"
 ctrlc = "3.4"
+proptest = "1.4"
 # For ratatui example
 ratatui = "0.26"
 crossterm = "0.27"

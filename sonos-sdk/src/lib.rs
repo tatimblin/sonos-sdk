@@ -65,6 +65,7 @@
 
 // Main exports
 pub use error::SdkError;
+pub use group::Group;
 pub use speaker::Speaker;
 pub use system::SonosSystem;
 
@@ -72,10 +73,11 @@ pub use system::SonosSystem;
 pub use property::{PropertyHandle, SpeakerContext, WatchMode, WatchStatus};
 
 // Re-export commonly used types from sonos-state
-pub use sonos_state::{ChangeEvent, ChangeIterator, PlaybackState, SpeakerId, Volume};
+pub use sonos_state::{ChangeEvent, ChangeIterator, GroupId, PlaybackState, SpeakerId, Volume};
 
 // Internal modules
 mod error;
+mod group;
 pub mod property;
 mod speaker;
 mod system;
