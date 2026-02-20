@@ -99,6 +99,12 @@ impl EventProcessor {
                 let event = crate::services::zone_group_topology::ZoneGroupTopologyEvent::from_xml(event_xml)?;
                 Ok(Box::new(event))
             }
+            Service::GroupManagement => {
+                // GroupManagement events will be implemented in task 4
+                Err(crate::error::ApiError::ParseError(
+                    "GroupManagement event parsing not yet implemented".to_string()
+                ))
+            }
         }
     }
 

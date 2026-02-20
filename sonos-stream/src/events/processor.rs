@@ -291,6 +291,14 @@ impl EventProcessor {
 
                 Ok(EventData::ZoneGroupTopologyEvent(stream_event))
             }
+
+            sonos_api::Service::GroupManagement => {
+                // GroupManagement events are not yet supported in sonos-stream
+                // Return an error for now until event types are added
+                Err(EventProcessingError::Parsing(
+                    "GroupManagement events not yet supported in sonos-stream".to_string()
+                ))
+            }
         }
     }
 
@@ -495,7 +503,6 @@ pub async fn create_integrated_event_router(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::IpAddr;
 
     #[test]
     fn test_event_processor_creation() {

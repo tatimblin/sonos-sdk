@@ -15,6 +15,9 @@ pub enum Service {
 
     /// ZoneGroupTopology service - Manages speaker grouping and topology
     ZoneGroupTopology,
+
+    /// GroupManagement service - Manages speaker group membership operations
+    GroupManagement,
 }
 
 /// Contains the endpoint and service URI information for a UPnP service
@@ -52,6 +55,7 @@ impl Service {
             Service::RenderingControl => "RenderingControl",
             Service::GroupRenderingControl => "GroupRenderingControl",
             Service::ZoneGroupTopology => "ZoneGroupTopology",
+            Service::GroupManagement => "GroupManagement",
         }
     }
 
@@ -81,6 +85,11 @@ impl Service {
                 service_uri: "urn:schemas-upnp-org:service:ZoneGroupTopology:1",
                 event_endpoint: "ZoneGroupTopology/Event",
             },
+            Service::GroupManagement => ServiceInfo {
+                endpoint: "GroupManagement/Control",
+                service_uri: "urn:schemas-upnp-org:service:GroupManagement:1",
+                event_endpoint: "GroupManagement/Event",
+            },
         }
     }
 
@@ -95,6 +104,7 @@ impl Service {
             Service::RenderingControl => ServiceScope::PerSpeaker,
             Service::GroupRenderingControl => ServiceScope::PerCoordinator,
             Service::ZoneGroupTopology => ServiceScope::PerNetwork,
+            Service::GroupManagement => ServiceScope::PerCoordinator,
         }
     }
 
@@ -110,6 +120,7 @@ mod scope_tests {
         assert_eq!(Service::RenderingControl.scope(), ServiceScope::PerSpeaker);
         assert_eq!(Service::GroupRenderingControl.scope(), ServiceScope::PerCoordinator);
         assert_eq!(Service::ZoneGroupTopology.scope(), ServiceScope::PerNetwork);
+        assert_eq!(Service::GroupManagement.scope(), ServiceScope::PerCoordinator);
     }
 
     #[test]
@@ -120,6 +131,7 @@ mod scope_tests {
             Service::RenderingControl,
             Service::GroupRenderingControl,
             Service::ZoneGroupTopology,
+            Service::GroupManagement,
         ];
 
         for service in services {
