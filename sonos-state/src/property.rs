@@ -180,6 +180,33 @@ impl Loudness {
 }
 
 // ============================================================================
+// Group-scoped Properties (from GroupRenderingControl)
+// ============================================================================
+
+/// Group master volume level (0-100)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GroupVolume(pub u16);
+
+impl Property for GroupVolume {
+    const KEY: &'static str = "group_volume";
+}
+
+impl SonosProperty for GroupVolume {
+    const SCOPE: Scope = Scope::Group;
+    const SERVICE: Service = Service::GroupRenderingControl;
+}
+
+impl GroupVolume {
+    pub fn new(value: u16) -> Self {
+        Self(value.min(100))
+    }
+
+    pub fn value(&self) -> u16 {
+        self.0
+    }
+}
+
+// ============================================================================
 // Speaker-scoped Properties (from AVTransport)
 // ============================================================================
 
@@ -528,6 +555,21 @@ mod tests {
 
         assert_eq!(Topology::KEY, "topology");
         assert_eq!(<Topology as SonosProperty>::SCOPE, Scope::System);
+    }
+
+    #[test]
+    fn test_group_volume_clamping() {
+        assert_eq!(GroupVolume::new(50).value(), 50);
+        assert_eq!(GroupVolume::new(200).value(), 100);
+        assert_eq!(GroupVolume::new(0).value(), 0);
+        assert_eq!(GroupVolume::new(100).value(), 100);
+    }
+
+    #[test]
+    fn test_group_volume_property_metadata() {
+        assert_eq!(GroupVolume::KEY, "group_volume");
+        assert_eq!(<GroupVolume as SonosProperty>::SCOPE, Scope::Group);
+        assert_eq!(<GroupVolume as SonosProperty>::SERVICE, Service::GroupRenderingControl);
     }
 
     #[test]

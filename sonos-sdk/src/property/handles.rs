@@ -388,10 +388,12 @@ use sonos_api::services::{
         self, GetPositionInfoOperation, GetPositionInfoResponse, GetTransportInfoOperation,
         GetTransportInfoResponse,
     },
+    group_rendering_control::{self, GetGroupVolumeOperation, GetGroupVolumeResponse},
     rendering_control::{self, GetVolumeOperation, GetVolumeResponse},
 };
 use sonos_state::{
-    Bass, CurrentTrack, GroupMembership, Loudness, Mute, PlaybackState, Position, Treble, Volume,
+    Bass, CurrentTrack, GroupId, GroupMembership, GroupVolume, Loudness, Mute, PlaybackState,
+    Position, Treble, Volume,
 };
 
 // ============================================================================
@@ -507,6 +509,195 @@ pub type CurrentTrackHandle = PropertyHandle<CurrentTrack>;
 
 /// Handle for group membership information
 pub type GroupMembershipHandle = PropertyHandle<GroupMembership>;
+
+// ============================================================================
+// Group Property Handles
+// ============================================================================
+
+/// Shared context for all property handles on a group
+///
+/// Analogous to `SpeakerContext` but scoped to a group. Operations are
+/// executed against the group's coordinator speaker.
+#[derive(Clone)]
+pub struct GroupContext {
+    pub(crate) group_id: GroupId,
+    pub(crate) coordinator_id: SpeakerId,
+    pub(crate) coordinator_ip: IpAddr,
+    pub(crate) state_manager: Arc<StateManager>,
+    pub(crate) api_client: SonosClient,
+}
+
+impl GroupContext {
+    /// Create a new GroupContext
+    pub fn new(
+        group_id: GroupId,
+        coordinator_id: SpeakerId,
+        coordinator_ip: IpAddr,
+        state_manager: Arc<StateManager>,
+        api_client: SonosClient,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            group_id,
+            coordinator_id,
+            coordinator_ip,
+            state_manager,
+            api_client,
+        })
+    }
+}
+
+/// Generic property handle for group-scoped properties
+///
+/// Provides the same get/fetch/watch/unwatch pattern as `PropertyHandle`,
+/// but reads from the group property store and executes API calls against
+/// the group's coordinator.
+#[derive(Clone)]
+pub struct GroupPropertyHandle<P: SonosProperty> {
+    context: Arc<GroupContext>,
+    _phantom: PhantomData<P>,
+}
+
+impl<P: SonosProperty> GroupPropertyHandle<P> {
+    /// Create a new GroupPropertyHandle from a shared GroupContext
+    pub fn new(context: Arc<GroupContext>) -> Self {
+        Self {
+            context,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Get cached group property value (sync, instant, no network call)
+    #[must_use = "returns the cached property value"]
+    pub fn get(&self) -> Option<P> {
+        self.context
+            .state_manager
+            .get_group_property::<P>(&self.context.group_id)
+    }
+
+    /// Start watching this group property for changes (sync)
+    ///
+    /// Registers using the coordinator's speaker ID so the event worker
+    /// correctly routes events through to `system.iter()`.
+    #[must_use = "returns watch status including the delivery mode"]
+    pub fn watch(&self) -> Result<WatchStatus<P>, SdkError> {
+        // Register for changes using the coordinator's speaker ID and property key
+        self.context
+            .state_manager
+            .register_watch(&self.context.coordinator_id, P::KEY);
+
+        // Subscribe to the coordinator's UPnP service
+        let mode = if let Some(em) = self.context.state_manager.event_manager() {
+            match em.ensure_service_subscribed(self.context.coordinator_ip, P::SERVICE) {
+                Ok(()) => WatchMode::Events,
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to subscribe to {:?} for group {}: {} - falling back to polling",
+                        P::SERVICE,
+                        self.context.group_id.as_str(),
+                        e
+                    );
+                    WatchMode::Polling
+                }
+            }
+        } else {
+            WatchMode::CacheOnly
+        };
+
+        Ok(WatchStatus::new(self.get(), mode))
+    }
+
+    /// Stop watching this group property (sync)
+    pub fn unwatch(&self) {
+        self.context
+            .state_manager
+            .unregister_watch(&self.context.coordinator_id, P::KEY);
+
+        if let Some(em) = self.context.state_manager.event_manager() {
+            if let Err(e) =
+                em.release_service_subscription(self.context.coordinator_ip, P::SERVICE)
+            {
+                tracing::warn!(
+                    "Failed to release subscription for {:?} on group {}: {}",
+                    P::SERVICE,
+                    self.context.group_id.as_str(),
+                    e
+                );
+            }
+        }
+    }
+
+    /// Check if this group property is currently being watched
+    #[must_use = "returns whether the property is being watched"]
+    pub fn is_watched(&self) -> bool {
+        self.context
+            .state_manager
+            .is_watched(&self.context.coordinator_id, P::KEY)
+    }
+
+    /// Get the group ID this handle is associated with
+    pub fn group_id(&self) -> &GroupId {
+        &self.context.group_id
+    }
+}
+
+/// Trait for group properties that can be fetched from the coordinator
+pub trait GroupFetchable: SonosProperty {
+    /// The UPnP operation type used to fetch this property
+    type Operation: UPnPOperation;
+
+    /// Build the operation to fetch this property
+    fn build_operation() -> Result<ComposableOperation<Self::Operation>, SdkError>;
+
+    /// Convert the operation response to the property value
+    fn from_response(response: <Self::Operation as UPnPOperation>::Response) -> Self;
+}
+
+impl<P: GroupFetchable> GroupPropertyHandle<P> {
+    /// Fetch fresh value from coordinator + update group cache (sync)
+    #[must_use = "returns the fetched value from the device"]
+    pub fn fetch(&self) -> Result<P, SdkError> {
+        let operation = P::build_operation()?;
+
+        let response = self
+            .context
+            .api_client
+            .execute_enhanced(&self.context.coordinator_ip.to_string(), operation)
+            .map_err(SdkError::ApiError)?;
+
+        let property_value = P::from_response(response);
+
+        self.context
+            .state_manager
+            .set_group_property(&self.context.group_id, property_value.clone());
+
+        Ok(property_value)
+    }
+}
+
+// ============================================================================
+// GroupFetchable implementations
+// ============================================================================
+
+impl GroupFetchable for GroupVolume {
+    type Operation = GetGroupVolumeOperation;
+
+    fn build_operation() -> Result<ComposableOperation<Self::Operation>, SdkError> {
+        group_rendering_control::get_group_volume()
+            .build()
+            .map_err(|e| build_error("GetGroupVolume", e))
+    }
+
+    fn from_response(response: GetGroupVolumeResponse) -> Self {
+        GroupVolume::new(response.current_volume)
+    }
+}
+
+// ============================================================================
+// Group type aliases
+// ============================================================================
+
+/// Handle for group volume (0-100)
+pub type GroupVolumeHandle = GroupPropertyHandle<GroupVolume>;
 
 #[cfg(test)]
 mod tests {
@@ -627,5 +818,68 @@ mod tests {
 
         assert_eq!(handle.get(), cloned.get());
         assert_eq!(handle.get(), Some(Volume::new(60)));
+    }
+
+    // ========================================================================
+    // Group property handle tests
+    // ========================================================================
+
+    fn create_test_group_context(state_manager: Arc<StateManager>) -> Arc<GroupContext> {
+        GroupContext::new(
+            GroupId::new("RINCON_TEST123:1"),
+            SpeakerId::new("RINCON_TEST123"),
+            "192.168.1.100".parse().unwrap(),
+            state_manager,
+            SonosClient::new(),
+        )
+    }
+
+    #[test]
+    fn test_group_property_handle_get_returns_none_initially() {
+        let state_manager = create_test_state_manager();
+        let context = create_test_group_context(state_manager);
+
+        let handle: GroupVolumeHandle = GroupPropertyHandle::new(context);
+
+        assert!(handle.get().is_none());
+    }
+
+    #[test]
+    fn test_group_property_handle_get_returns_cached_value() {
+        let state_manager = create_test_state_manager();
+        let group_id = GroupId::new("RINCON_TEST123:1");
+
+        // Store a group property value
+        state_manager.set_group_property(&group_id, GroupVolume::new(65));
+
+        let context = create_test_group_context(Arc::clone(&state_manager));
+        let handle: GroupVolumeHandle = GroupPropertyHandle::new(context);
+
+        assert_eq!(handle.get(), Some(GroupVolume::new(65)));
+    }
+
+    #[test]
+    fn test_group_property_handle_watch_unwatch() {
+        let state_manager = create_test_state_manager();
+        let context = create_test_group_context(Arc::clone(&state_manager));
+
+        let handle: GroupVolumeHandle = GroupPropertyHandle::new(context);
+
+        assert!(!handle.is_watched());
+        handle.watch().unwrap();
+        assert!(handle.is_watched());
+
+        handle.unwatch();
+        assert!(!handle.is_watched());
+    }
+
+    #[test]
+    fn test_group_property_handle_group_id() {
+        let state_manager = create_test_state_manager();
+        let context = create_test_group_context(state_manager);
+
+        let handle: GroupVolumeHandle = GroupPropertyHandle::new(context);
+
+        assert_eq!(handle.group_id().as_str(), "RINCON_TEST123:1");
     }
 }

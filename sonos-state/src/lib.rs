@@ -84,8 +84,8 @@ pub use iter::ChangeIterator;
 
 // Properties
 pub use property::{
-    Bass, CurrentTrack, GroupInfo, GroupMembership, Loudness, Mute, PlaybackState, Position,
-    Property, Scope, Topology, Treble, Volume,
+    Bass, CurrentTrack, GroupInfo, GroupMembership, GroupVolume, Loudness, Mute, PlaybackState,
+    Position, Property, Scope, Topology, Treble, Volume,
 };
 
 // Model types
@@ -105,8 +105,8 @@ pub use error::{Result, StateError};
 pub mod prelude {
     // Properties
     pub use crate::property::{
-        Bass, CurrentTrack, GroupMembership, Loudness, Mute, PlaybackState, Position, Property,
-        Scope, Topology, Treble, Volume,
+        Bass, CurrentTrack, GroupMembership, GroupVolume, Loudness, Mute, PlaybackState, Position,
+        Property, Scope, Topology, Treble, Volume,
     };
 
     // Model types

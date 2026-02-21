@@ -5,13 +5,15 @@
 
 use sonos_api::Service;
 use sonos_stream::events::{
-    AVTransportEvent, EnrichedEvent, EventData, RenderingControlEvent, ZoneGroupTopologyEvent,
+    AVTransportEvent, EnrichedEvent, EventData, GroupRenderingControlEvent,
+    RenderingControlEvent, ZoneGroupTopologyEvent,
 };
 
 use crate::model::{GroupId, SpeakerId};
+use crate::state::StateStore;
 use crate::property::{
-    Bass, CurrentTrack, GroupInfo, GroupMembership, Loudness, Mute, PlaybackState, Position,
-    Treble, Volume,
+    Bass, CurrentTrack, GroupInfo, GroupMembership, GroupVolume, Loudness, Mute, PlaybackState,
+    Position, Treble, Volume,
 };
 
 /// Decoded changes from a single event
@@ -48,9 +50,39 @@ pub enum PropertyChange {
     Position(Position),
     CurrentTrack(CurrentTrack),
     GroupMembership(GroupMembership),
+    GroupVolume(GroupVolume),
 }
 
 impl PropertyChange {
+    /// Apply this change to the store using scope-based routing
+    ///
+    /// Speaker-scoped properties are stored in `speaker_props`,
+    /// group-scoped properties resolve speaker→group and store in `group_props`.
+    ///
+    /// Returns `true` if the value actually changed.
+    pub fn apply(&self, store: &mut StateStore, speaker_id: &SpeakerId) -> bool {
+        match self {
+            // Speaker-scoped properties
+            PropertyChange::Volume(v) => store.set(speaker_id, v.clone()),
+            PropertyChange::Mute(v) => store.set(speaker_id, v.clone()),
+            PropertyChange::Bass(v) => store.set(speaker_id, v.clone()),
+            PropertyChange::Treble(v) => store.set(speaker_id, v.clone()),
+            PropertyChange::Loudness(v) => store.set(speaker_id, v.clone()),
+            PropertyChange::PlaybackState(v) => store.set(speaker_id, v.clone()),
+            PropertyChange::Position(v) => store.set(speaker_id, v.clone()),
+            PropertyChange::CurrentTrack(v) => store.set(speaker_id, v.clone()),
+            PropertyChange::GroupMembership(v) => store.set(speaker_id, v.clone()),
+            // Group-scoped properties: resolve speaker→group, store in group_props
+            PropertyChange::GroupVolume(v) => {
+                if let Some(group_id) = store.speaker_to_group.get(speaker_id).cloned() {
+                    store.set_group(&group_id, v.clone())
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
     /// Get the property key for this change
     pub fn key(&self) -> &'static str {
         use crate::property::Property;
@@ -64,6 +96,7 @@ impl PropertyChange {
             PropertyChange::Position(_) => Position::KEY,
             PropertyChange::CurrentTrack(_) => CurrentTrack::KEY,
             PropertyChange::GroupMembership(_) => GroupMembership::KEY,
+            PropertyChange::GroupVolume(_) => GroupVolume::KEY,
         }
     }
 
@@ -80,6 +113,7 @@ impl PropertyChange {
             PropertyChange::Position(_) => Position::SERVICE,
             PropertyChange::CurrentTrack(_) => CurrentTrack::SERVICE,
             PropertyChange::GroupMembership(_) => GroupMembership::SERVICE,
+            PropertyChange::GroupVolume(_) => GroupVolume::SERVICE,
         }
     }
 }
@@ -92,7 +126,7 @@ pub fn decode_event(event: &EnrichedEvent, speaker_id: SpeakerId) -> DecodedChan
         EventData::ZoneGroupTopologyEvent(zgt) => decode_topology(zgt),
         EventData::DevicePropertiesEvent(_) => vec![],
         EventData::GroupManagementEvent(_) => vec![],
-        EventData::GroupRenderingControlEvent(_) => vec![],
+        EventData::GroupRenderingControlEvent(grc) => decode_group_rendering_control(grc),
     };
 
     DecodedChanges { speaker_id, changes }
@@ -192,6 +226,17 @@ fn decode_topology(_event: &ZoneGroupTopologyEvent) -> Vec<PropertyChange> {
     // Topology events are handled specially via decode_topology_event()
     // which returns TopologyChanges instead of PropertyChange
     vec![]
+}
+
+/// Decode GroupRenderingControl event data
+fn decode_group_rendering_control(event: &GroupRenderingControlEvent) -> Vec<PropertyChange> {
+    let mut changes = vec![];
+
+    if let Some(vol) = event.group_volume {
+        changes.push(PropertyChange::GroupVolume(GroupVolume(vol.min(100))));
+    }
+
+    changes
 }
 
 /// Decode a ZoneGroupTopology event into TopologyChanges
@@ -403,6 +448,56 @@ mod tests {
         } else {
             panic!("Expected PlaybackState change");
         }
+    }
+
+    #[test]
+    fn test_decode_group_rendering_control() {
+        let event = GroupRenderingControlEvent {
+            group_volume: Some(42),
+            group_mute: Some(false),
+            group_volume_changeable: Some(true),
+        };
+
+        let changes = decode_group_rendering_control(&event);
+
+        assert_eq!(changes.len(), 1);
+
+        if let PropertyChange::GroupVolume(v) = &changes[0] {
+            assert_eq!(v.0, 42);
+        } else {
+            panic!("Expected GroupVolume change");
+        }
+    }
+
+    #[test]
+    fn test_decode_group_rendering_control_clamps_volume() {
+        let event = GroupRenderingControlEvent {
+            group_volume: Some(150),
+            group_mute: None,
+            group_volume_changeable: None,
+        };
+
+        let changes = decode_group_rendering_control(&event);
+
+        assert_eq!(changes.len(), 1);
+
+        if let PropertyChange::GroupVolume(v) = &changes[0] {
+            assert_eq!(v.0, 100);
+        } else {
+            panic!("Expected GroupVolume change");
+        }
+    }
+
+    #[test]
+    fn test_decode_group_rendering_control_no_volume() {
+        let event = GroupRenderingControlEvent {
+            group_volume: None,
+            group_mute: Some(true),
+            group_volume_changeable: None,
+        };
+
+        let changes = decode_group_rendering_control(&event);
+        assert!(changes.is_empty());
     }
 
     #[test]

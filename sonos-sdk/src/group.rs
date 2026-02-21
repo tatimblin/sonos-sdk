@@ -8,6 +8,7 @@ use std::sync::Arc;
 use sonos_api::SonosClient;
 use sonos_state::{GroupId, GroupInfo, SpeakerId, StateManager};
 
+use crate::property::{GroupContext, GroupPropertyHandle, GroupVolumeHandle};
 use crate::Speaker;
 
 /// Group handle with access to coordinator and members
@@ -41,6 +42,12 @@ pub struct Group {
     /// All member speaker IDs (including coordinator)
     pub member_ids: Vec<SpeakerId>,
 
+    // ========================================================================
+    // GroupRenderingControl properties
+    // ========================================================================
+    /// Group volume (0-100)
+    pub volume: GroupVolumeHandle,
+
     // Internal references
     state_manager: Arc<StateManager>,
     api_client: SonosClient,
@@ -48,18 +55,32 @@ pub struct Group {
 
 impl Group {
     /// Create a new Group handle from GroupInfo
+    ///
+    /// Returns `None` if the coordinator's IP address cannot be resolved
+    /// (e.g., the coordinator speaker is not registered in state).
     pub(crate) fn from_info(
         info: GroupInfo,
         state_manager: Arc<StateManager>,
         api_client: SonosClient,
-    ) -> Self {
-        Self {
+    ) -> Option<Self> {
+        let coordinator_ip = state_manager.get_speaker_ip(&info.coordinator_id)?;
+
+        let group_context = GroupContext::new(
+            info.id.clone(),
+            info.coordinator_id.clone(),
+            coordinator_ip,
+            Arc::clone(&state_manager),
+            api_client.clone(),
+        );
+
+        Some(Self {
             id: info.id,
             coordinator_id: info.coordinator_id,
             member_ids: info.member_ids,
+            volume: GroupPropertyHandle::new(group_context),
             state_manager,
             api_client,
-        }
+        })
     }
 
     /// Get the coordinator speaker
@@ -194,11 +215,29 @@ mod tests {
             vec![SpeakerId::new("RINCON_111")],
         );
 
-        let group = Group::from_info(group_info, state_manager, api_client);
+        let group = Group::from_info(group_info, state_manager, api_client).unwrap();
 
         assert_eq!(group.id.as_str(), "RINCON_111:1");
         assert_eq!(group.coordinator_id.as_str(), "RINCON_111");
         assert_eq!(group.member_ids.len(), 1);
+    }
+
+    #[test]
+    fn test_group_from_info_returns_none_for_unknown_coordinator() {
+        let state_manager = create_test_state_manager_with_speakers(vec![
+            ("RINCON_111", "Living Room", "192.168.1.100"),
+        ]);
+        let api_client = SonosClient::new();
+
+        // Coordinator is not a registered speaker
+        let group_info = GroupInfo::new(
+            GroupId::new("RINCON_UNKNOWN:1"),
+            SpeakerId::new("RINCON_UNKNOWN"),
+            vec![SpeakerId::new("RINCON_UNKNOWN")],
+        );
+
+        let group = Group::from_info(group_info, state_manager, api_client);
+        assert!(group.is_none());
     }
 
     #[test]
@@ -215,7 +254,7 @@ mod tests {
             vec![SpeakerId::new("RINCON_111"), SpeakerId::new("RINCON_222")],
         );
 
-        let group = Group::from_info(group_info, state_manager, api_client);
+        let group = Group::from_info(group_info, state_manager, api_client).unwrap();
 
         let coordinator = group.coordinator();
         assert!(coordinator.is_some());
@@ -238,7 +277,7 @@ mod tests {
             vec![SpeakerId::new("RINCON_111"), SpeakerId::new("RINCON_222")],
         );
 
-        let group = Group::from_info(group_info, state_manager, api_client);
+        let group = Group::from_info(group_info, state_manager, api_client).unwrap();
 
         let members = group.members();
         assert_eq!(members.len(), 2);
@@ -262,7 +301,7 @@ mod tests {
             vec![SpeakerId::new("RINCON_111"), SpeakerId::new("RINCON_222")],
         );
 
-        let group = Group::from_info(group_info, state_manager, api_client);
+        let group = Group::from_info(group_info, state_manager, api_client).unwrap();
 
         assert!(group.is_coordinator(&SpeakerId::new("RINCON_111")));
         assert!(!group.is_coordinator(&SpeakerId::new("RINCON_222")));
@@ -285,7 +324,8 @@ mod tests {
             ),
             Arc::clone(&state_manager),
             api_client.clone(),
-        );
+        )
+        .unwrap();
         assert_eq!(single_group.member_count(), 1);
 
         // Multi-member group
@@ -297,7 +337,8 @@ mod tests {
             ),
             state_manager,
             api_client,
-        );
+        )
+        .unwrap();
         assert_eq!(multi_group.member_count(), 2);
     }
 
@@ -318,7 +359,8 @@ mod tests {
             ),
             Arc::clone(&state_manager),
             api_client.clone(),
-        );
+        )
+        .unwrap();
         assert!(standalone.is_standalone());
 
         // Non-standalone group
@@ -330,7 +372,28 @@ mod tests {
             ),
             state_manager,
             api_client,
-        );
+        )
+        .unwrap();
         assert!(!grouped.is_standalone());
+    }
+
+    #[test]
+    fn test_group_volume_handle_accessible() {
+        let state_manager = create_test_state_manager_with_speakers(vec![
+            ("RINCON_111", "Living Room", "192.168.1.100"),
+        ]);
+        let api_client = SonosClient::new();
+
+        let group_info = GroupInfo::new(
+            GroupId::new("RINCON_111:1"),
+            SpeakerId::new("RINCON_111"),
+            vec![SpeakerId::new("RINCON_111")],
+        );
+
+        let group = Group::from_info(group_info, state_manager, api_client).unwrap();
+
+        // Volume handle should exist and return None initially
+        assert!(group.volume.get().is_none());
+        assert_eq!(group.volume.group_id().as_str(), "RINCON_111:1");
     }
 }

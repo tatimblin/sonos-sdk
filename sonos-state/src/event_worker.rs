@@ -198,17 +198,7 @@ fn apply_property_change(
             }
         };
 
-        match change {
-            PropertyChange::Volume(v) => store.set(speaker_id, v),
-            PropertyChange::Mute(v) => store.set(speaker_id, v),
-            PropertyChange::Bass(v) => store.set(speaker_id, v),
-            PropertyChange::Treble(v) => store.set(speaker_id, v),
-            PropertyChange::Loudness(v) => store.set(speaker_id, v),
-            PropertyChange::PlaybackState(v) => store.set(speaker_id, v),
-            PropertyChange::Position(v) => store.set(speaker_id, v),
-            PropertyChange::CurrentTrack(v) => store.set(speaker_id, v),
-            PropertyChange::GroupMembership(v) => store.set(speaker_id, v),
-        }
+        change.apply(&mut store, speaker_id)
     };
 
     if changed {
@@ -336,6 +326,69 @@ mod tests {
             software_version: "1.0".to_string(),
             satellites: vec![],
         }
+    }
+
+    #[test]
+    fn test_apply_property_change_group_volume() {
+        let store = Arc::new(RwLock::new(StateStore::new()));
+        let watched = Arc::new(RwLock::new(HashSet::new()));
+        let (tx, _rx) = mpsc::channel();
+
+        let speaker_id = SpeakerId::new("RINCON_111");
+        let group_id = GroupId::new("RINCON_111:1");
+
+        // Add speaker and group to store
+        {
+            let mut s = store.write().unwrap();
+            s.add_speaker(make_speaker_info("RINCON_111", "Living Room", "192.168.1.101"));
+            s.add_group(GroupInfo::new(
+                group_id.clone(),
+                speaker_id.clone(),
+                vec![speaker_id.clone()],
+            ));
+        }
+
+        // Apply GroupVolume change via the coordinator speaker
+        apply_property_change(
+            &store,
+            &watched,
+            &tx,
+            &speaker_id,
+            PropertyChange::GroupVolume(crate::property::GroupVolume(75)),
+        );
+
+        // Verify value was stored in group_props
+        let s = store.read().unwrap();
+        let stored: Option<crate::property::GroupVolume> = s.get_group(&group_id);
+        assert_eq!(stored, Some(crate::property::GroupVolume(75)));
+    }
+
+    #[test]
+    fn test_apply_property_change_group_volume_no_group() {
+        let store = Arc::new(RwLock::new(StateStore::new()));
+        let watched = Arc::new(RwLock::new(HashSet::new()));
+        let (tx, _rx) = mpsc::channel();
+
+        let speaker_id = SpeakerId::new("RINCON_111");
+
+        // Add speaker but no group
+        {
+            let mut s = store.write().unwrap();
+            s.add_speaker(make_speaker_info("RINCON_111", "Living Room", "192.168.1.101"));
+        }
+
+        // Apply GroupVolume change - should be silently dropped
+        apply_property_change(
+            &store,
+            &watched,
+            &tx,
+            &speaker_id,
+            PropertyChange::GroupVolume(crate::property::GroupVolume(50)),
+        );
+
+        // No crash, no stored value
+        let s = store.read().unwrap();
+        assert!(s.group_props.is_empty());
     }
 
     #[test]

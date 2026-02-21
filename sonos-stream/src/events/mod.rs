@@ -13,5 +13,5 @@ pub use processor::EventProcessor;
 pub use types::{
     EnrichedEvent, EventData, EventSource,
     AVTransportEvent, RenderingControlEvent, DevicePropertiesEvent, ZoneGroupTopologyEvent,
-    GroupManagementEvent,
+    GroupManagementEvent, GroupRenderingControlEvent,
 };

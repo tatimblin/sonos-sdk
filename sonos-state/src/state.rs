@@ -157,6 +157,15 @@ impl StateStore {
         bag.set(value)
     }
 
+    pub(crate) fn get_group<P: Property>(&self, group_id: &GroupId) -> Option<P> {
+        self.group_props.get(group_id)?.get::<P>()
+    }
+
+    pub(crate) fn set_group<P: Property>(&mut self, group_id: &GroupId, value: P) -> bool {
+        let bag = self.group_props.entry(group_id.clone()).or_insert_with(PropertyBag::new);
+        bag.set(value)
+    }
+
     fn set_system<P: Property>(&mut self, value: P) -> bool {
         self.system_props.set(value)
     }
@@ -383,6 +392,12 @@ impl StateManager {
         store.get::<P>(speaker_id)
     }
 
+    /// Get current group property value (sync, no subscription)
+    pub fn get_group_property<P: Property>(&self, group_id: &GroupId) -> Option<P> {
+        let store = self.store.read().ok()?;
+        store.get_group::<P>(group_id)
+    }
+
     /// Set a property value
     ///
     /// Updates the property value in the store and emits a change event
@@ -398,6 +413,29 @@ impl StateManager {
 
         if changed {
             self.maybe_emit_change(speaker_id, P::KEY, P::SERVICE);
+        }
+    }
+
+    /// Set a group property value
+    ///
+    /// Updates the group property value in the store and emits a change event
+    /// if the property is being watched (keyed on the coordinator's speaker ID).
+    /// Used by the SDK layer to store group-scoped values fetched via API calls.
+    pub fn set_group_property<P: SonosProperty>(&self, group_id: &GroupId, value: P) {
+        let coordinator_id = {
+            let mut store = match self.store.write() {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            let changed = store.set_group::<P>(group_id, value);
+            if !changed {
+                return;
+            }
+            store.groups.get(group_id).map(|g| g.coordinator_id.clone())
+        };
+
+        if let Some(coordinator_id) = coordinator_id {
+            self.maybe_emit_change(&coordinator_id, P::KEY, P::SERVICE);
         }
     }
 
@@ -651,7 +689,8 @@ impl StateManagerBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::property::Volume;
+    use crate::property::{GroupVolume, Volume};
+    use sonos_api::Service;
 
     #[test]
     fn test_state_manager_creation() {
@@ -759,6 +798,82 @@ mod tests {
         let event = event.unwrap();
         assert_eq!(event.speaker_id.as_str(), "RINCON_123");
         assert_eq!(event.property_key, "volume");
+    }
+
+    #[test]
+    fn test_set_group_property_emits_change_event() {
+        let manager = StateManager::new().unwrap();
+
+        let devices = vec![Device {
+            id: "RINCON_123".to_string(),
+            name: "Living Room".to_string(),
+            room_name: "Living Room".to_string(),
+            ip_address: "192.168.1.100".to_string(),
+            port: 1400,
+            model_name: "Sonos One".to_string(),
+        }];
+        manager.add_devices(devices).unwrap();
+
+        let speaker_id = SpeakerId::new("RINCON_123");
+        let group_id = GroupId::new("RINCON_123:1");
+
+        // Add group so coordinator lookup works
+        if let Ok(mut store) = manager.store.write() {
+            store.add_group(GroupInfo::new(
+                group_id.clone(),
+                speaker_id.clone(),
+                vec![speaker_id.clone()],
+            ));
+        }
+
+        // Register watch on coordinator for group_volume
+        manager.register_watch(&speaker_id, "group_volume");
+
+        // Set group property (should emit event via coordinator)
+        manager.set_group_property(&group_id, GroupVolume::new(80));
+
+        // Verify event was emitted
+        let iter = manager.iter();
+        let event = iter.recv_timeout(std::time::Duration::from_millis(100));
+        assert!(event.is_some());
+
+        let event = event.unwrap();
+        assert_eq!(event.speaker_id.as_str(), "RINCON_123");
+        assert_eq!(event.property_key, "group_volume");
+        assert_eq!(event.service, Service::GroupRenderingControl);
+    }
+
+    #[test]
+    fn test_set_group_property_no_event_when_unwatched() {
+        let manager = StateManager::new().unwrap();
+
+        let devices = vec![Device {
+            id: "RINCON_123".to_string(),
+            name: "Living Room".to_string(),
+            room_name: "Living Room".to_string(),
+            ip_address: "192.168.1.100".to_string(),
+            port: 1400,
+            model_name: "Sonos One".to_string(),
+        }];
+        manager.add_devices(devices).unwrap();
+
+        let speaker_id = SpeakerId::new("RINCON_123");
+        let group_id = GroupId::new("RINCON_123:1");
+
+        if let Ok(mut store) = manager.store.write() {
+            store.add_group(GroupInfo::new(
+                group_id.clone(),
+                speaker_id.clone(),
+                vec![speaker_id.clone()],
+            ));
+        }
+
+        // Don't register any watch
+        manager.set_group_property(&group_id, GroupVolume::new(50));
+
+        let iter = manager.iter();
+        let event = iter.recv_timeout(std::time::Duration::from_millis(100));
+        assert!(event.is_none());
     }
 
     // ========================================================================

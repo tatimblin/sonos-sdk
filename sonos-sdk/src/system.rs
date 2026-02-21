@@ -199,7 +199,7 @@ impl SonosSystem {
         self.state_manager
             .groups()
             .into_iter()
-            .map(|info| {
+            .filter_map(|info| {
                 Group::from_info(info, Arc::clone(&self.state_manager), self._api_client.clone())
             })
             .collect()
@@ -218,11 +218,11 @@ impl SonosSystem {
     /// ```
     pub fn get_group_by_id(&self, group_id: &GroupId) -> Option<Group> {
         let info = self.state_manager.get_group(group_id)?;
-        Some(Group::from_info(
+        Group::from_info(
             info,
             Arc::clone(&self.state_manager),
             self._api_client.clone(),
-        ))
+        )
     }
 
     /// Get the group a speaker belongs to (sync)
@@ -243,11 +243,11 @@ impl SonosSystem {
     /// ```
     pub fn get_group_for_speaker(&self, speaker_id: &SpeakerId) -> Option<Group> {
         let info = self.state_manager.get_group_for_speaker(speaker_id)?;
-        Some(Group::from_info(
+        Group::from_info(
             info,
             Arc::clone(&self.state_manager),
             self._api_client.clone(),
-        ))
+        )
     }
 }
 
