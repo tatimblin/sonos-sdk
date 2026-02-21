@@ -82,12 +82,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let transport_reg = broker.register_speaker_service(device_ip, Service::AVTransport).await?;
     let volume_reg = broker.register_speaker_service(device_ip, Service::RenderingControl).await?;
     let group_mgmt_reg = broker.register_speaker_service(device_ip, Service::GroupManagement).await?;
+    let group_rc_reg = broker.register_speaker_service(device_ip, Service::GroupRenderingControl).await?;
 
     // Provide user feedback based on firewall detection results
     println!("\n🔍 Registration Results:");
     print_registration_feedback(&transport_reg.firewall_status, transport_reg.polling_reason.as_ref(), "AVTransport");
     print_registration_feedback(&volume_reg.firewall_status, volume_reg.polling_reason.as_ref(), "RenderingControl");
     print_registration_feedback(&group_mgmt_reg.firewall_status, group_mgmt_reg.polling_reason.as_ref(), "GroupManagement");
+    print_registration_feedback(&group_rc_reg.firewall_status, group_rc_reg.polling_reason.as_ref(), "GroupRenderingControl");
 
     println!("\n📊 STEP 1: Initialize local state through direct queries");
     println!("(This is how consumers should handle initial state population)");
@@ -223,6 +225,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 if let Some(reset_vol) = gm_event.reset_volume_after {
                     println!("   → Reset volume after ungroup: {}", reset_vol);
+                }
+            }
+
+            // GroupRenderingControl events
+            EventData::GroupRenderingControlEvent(grc_event) => {
+                println!("🔊 Group rendering control event received:");
+                if let Some(volume) = grc_event.group_volume {
+                    println!("   → Group volume: {}", volume);
+                }
+                if let Some(mute) = grc_event.group_mute {
+                    println!("   → Group mute: {}", mute);
+                }
+                if let Some(changeable) = grc_event.group_volume_changeable {
+                    println!("   → Group volume changeable: {}", changeable);
                 }
             }
         }

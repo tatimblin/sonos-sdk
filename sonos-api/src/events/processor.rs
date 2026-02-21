@@ -90,9 +90,12 @@ impl EventProcessor {
                 let event = crate::services::av_transport::AVTransportEvent::from_xml(event_xml)?;
                 Ok(Box::new(event))
             }
-            Service::RenderingControl | Service::GroupRenderingControl => {
-                // Both RenderingControl and GroupRenderingControl use the same event structure
+            Service::RenderingControl => {
                 let event = crate::services::rendering_control::RenderingControlEvent::from_xml(event_xml)?;
+                Ok(Box::new(event))
+            }
+            Service::GroupRenderingControl => {
+                let event = crate::services::group_rendering_control::GroupRenderingControlEvent::from_xml(event_xml)?;
                 Ok(Box::new(event))
             }
             Service::ZoneGroupTopology => {
@@ -266,6 +269,25 @@ mod tests {
         );
 
         assert!(result.is_ok());
+
+        // Test GroupRenderingControl parsing (direct properties, NOT LastChange)
+        let grc_xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><GroupVolume>14</GroupVolume></e:property><e:property><GroupMute>0</GroupMute></e:property><e:property><GroupVolumeChangeable>1</GroupVolumeChangeable></e:property></e:propertyset>"#;
+
+        let result = processor.process_upnp_event(
+            "192.168.1.100".parse().unwrap(),
+            Service::GroupRenderingControl,
+            "uuid:789".to_string(),
+            grc_xml
+        );
+
+        assert!(result.is_ok());
+        let enriched = result.unwrap();
+        let grc_event = enriched.event_data
+            .downcast::<crate::services::group_rendering_control::GroupRenderingControlEvent>()
+            .expect("Should downcast to GroupRenderingControlEvent");
+        assert_eq!(grc_event.group_volume(), Some(14));
+        assert_eq!(grc_event.group_mute(), Some(false));
+        assert_eq!(grc_event.group_volume_changeable(), Some(true));
     }
 
     #[test]

@@ -71,3 +71,4 @@ required-features = ["firewall-detection"]
 name = "filtering_and_batch"
 path = "examples/filtering_and_batch.rs"
 required-features = ["firewall-detection"]
+

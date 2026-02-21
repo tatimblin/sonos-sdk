@@ -80,6 +80,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     EventData::GroupManagementEvent(gm_event) => {
                         handle_group_management_async(event.speaker_ip, gm_event).await;
                     }
+                    EventData::GroupRenderingControlEvent(grc_event) => {
+                        println!("🔊 Group rendering control from {}: volume={:?}, mute={:?}",
+                                 event.speaker_ip, grc_event.group_volume, grc_event.group_mute);
+                    }
                 }
 
                 println!();

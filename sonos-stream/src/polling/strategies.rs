@@ -329,6 +329,29 @@ impl ServicePoller for GroupManagementPoller {
     }
 }
 
+/// Polling strategy for GroupRenderingControl service.
+///
+/// Stub — GroupRenderingControl events are received via UPnP subscriptions,
+/// but the poller is registered so the service is included in service enumeration.
+pub struct GroupRenderingControlPoller;
+
+#[async_trait]
+impl ServicePoller for GroupRenderingControlPoller {
+    async fn poll_state(&self, _client: &SonosClient, _pair: &SpeakerServicePair) -> PollingResult<String> {
+        Err(PollingError::UnsupportedService {
+            service: Service::GroupRenderingControl,
+        })
+    }
+
+    async fn parse_for_changes(&self, _old_state: &str, _new_state: &str) -> Vec<StateChange> {
+        vec![]
+    }
+
+    fn service_type(&self) -> Service {
+        Service::GroupRenderingControl
+    }
+}
+
 /// Main device state poller that coordinates different service strategies
 pub struct DeviceStatePoller {
     /// Service-specific polling strategies
@@ -358,6 +381,10 @@ impl DeviceStatePoller {
         service_pollers.insert(
             Service::GroupManagement,
             Box::new(GroupManagementPoller),
+        );
+        service_pollers.insert(
+            Service::GroupRenderingControl,
+            Box::new(GroupRenderingControlPoller),
         );
 
         Self {
@@ -443,11 +470,12 @@ mod tests {
         let poller = DeviceStatePoller::new();
         let stats = poller.stats();
 
-        assert_eq!(stats.total_pollers, 4); // AVTransport, RenderingControl, ZoneGroupTopology (stub), GroupManagement (stub)
+        assert_eq!(stats.total_pollers, 5); // AVTransport, RenderingControl, ZoneGroupTopology (stub), GroupManagement (stub), GroupRenderingControl (stub)
         assert!(poller.is_service_supported(&Service::AVTransport));
         assert!(poller.is_service_supported(&Service::RenderingControl));
         assert!(poller.is_service_supported(&Service::ZoneGroupTopology));
         assert!(poller.is_service_supported(&Service::GroupManagement));
+        assert!(poller.is_service_supported(&Service::GroupRenderingControl));
     }
 
     #[test]

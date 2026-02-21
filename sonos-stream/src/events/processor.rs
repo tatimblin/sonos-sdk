@@ -219,13 +219,11 @@ impl EventProcessor {
                 Ok(EventData::AVTransportEvent(stream_event))
             }
 
-            sonos_api::Service::RenderingControl | sonos_api::Service::GroupRenderingControl => {
-                // Both RenderingControl and GroupRenderingControl use the same event structure
+            sonos_api::Service::RenderingControl => {
                 let rc_event = api_event_data
                     .downcast::<sonos_api::services::rendering_control::RenderingControlEvent>()
                     .map_err(|_| EventProcessingError::Parsing("Failed to downcast RenderingControl event".to_string()))?;
 
-                // Convert from sonos-api RenderingControlEvent to sonos-stream RenderingControlEvent
                 let stream_event = crate::events::types::RenderingControlEvent {
                     master_volume: rc_event.master_volume(),
                     lf_volume: rc_event.lf_volume(),
@@ -241,6 +239,20 @@ impl EventProcessor {
                 };
 
                 Ok(EventData::RenderingControlEvent(stream_event))
+            }
+
+            sonos_api::Service::GroupRenderingControl => {
+                let grc_event = api_event_data
+                    .downcast::<sonos_api::services::group_rendering_control::GroupRenderingControlEvent>()
+                    .map_err(|_| EventProcessingError::Parsing("Failed to downcast GroupRenderingControl event".to_string()))?;
+
+                let stream_event = crate::events::types::GroupRenderingControlEvent {
+                    group_volume: grc_event.group_volume(),
+                    group_mute: grc_event.group_mute(),
+                    group_volume_changeable: grc_event.group_volume_changeable(),
+                };
+
+                Ok(EventData::GroupRenderingControlEvent(stream_event))
             }
 
             sonos_api::Service::ZoneGroupTopology => {

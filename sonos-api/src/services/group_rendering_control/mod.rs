@@ -20,7 +20,9 @@
 //! - Operations should only be sent to the group coordinator
 //! - Sending to non-coordinator speakers will result in error code 701
 
+pub mod events;
 pub mod operations;
 
-// Re-export operations for convenience
+// Re-export for convenience
+pub use events::*;
 pub use operations::*;

@@ -207,6 +207,10 @@ async fn demonstrate_batch_processing(broker: &mut EventBroker) -> Result<(), Bo
                     println!("   {}. 🔗 Group management event from {} ({})",
                              i + 1, event.speaker_ip, format_event_source(&event.event_source));
                 }
+                EventData::GroupRenderingControlEvent(_) => {
+                    println!("   {}. 🔊 Group rendering control event from {} ({})",
+                             i + 1, event.speaker_ip, format_event_source(&event.event_source));
+                }
             }
         }
 
@@ -415,6 +419,7 @@ fn format_event_data(data: &EventData) -> String {
         }
         EventData::DevicePropertiesEvent(_) => "Device Properties Event".to_string(),
         EventData::GroupManagementEvent(_) => "Group Management Event".to_string(),
+        EventData::GroupRenderingControlEvent(_) => "Group Rendering Control Event".to_string(),
     }
 }
 

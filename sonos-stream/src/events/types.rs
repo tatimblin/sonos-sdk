@@ -87,6 +87,9 @@ pub enum EventData {
 
     /// GroupManagement service event with group coordination data
     GroupManagementEvent(GroupManagementEvent),
+
+    /// GroupRenderingControl service event with group volume/mute data
+    GroupRenderingControlEvent(GroupRenderingControlEvent),
 }
 
 impl EventData {
@@ -108,6 +111,9 @@ impl EventData {
             }
             EventData::GroupManagementEvent(_) => {
                 sonos_api::Service::GroupManagement
+            }
+            EventData::GroupRenderingControlEvent(_) => {
+                sonos_api::Service::GroupRenderingControl
             }
         }
     }
@@ -340,6 +346,21 @@ pub struct GroupManagementEvent {
     pub volume_av_transport_uri: Option<String>,
 }
 
+// GroupRenderingControl event types
+
+/// Complete GroupRenderingControl event data containing group volume/mute information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupRenderingControlEvent {
+    /// Current group volume level (0-100)
+    pub group_volume: Option<u16>,
+
+    /// Whether the group is muted
+    pub group_mute: Option<bool>,
+
+    /// Whether the group volume is changeable
+    pub group_volume_changeable: Option<bool>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -420,5 +441,12 @@ mod tests {
             volume_av_transport_uri: None,
         });
         assert_eq!(gm_event.service_type(), sonos_api::Service::GroupManagement);
+
+        let grc_event = EventData::GroupRenderingControlEvent(GroupRenderingControlEvent {
+            group_volume: Some(14),
+            group_mute: Some(false),
+            group_volume_changeable: Some(true),
+        });
+        assert_eq!(grc_event.service_type(), sonos_api::Service::GroupRenderingControl);
     }
 }

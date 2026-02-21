@@ -92,6 +92,7 @@ pub fn decode_event(event: &EnrichedEvent, speaker_id: SpeakerId) -> DecodedChan
         EventData::ZoneGroupTopologyEvent(zgt) => decode_topology(zgt),
         EventData::DevicePropertiesEvent(_) => vec![],
         EventData::GroupManagementEvent(_) => vec![],
+        EventData::GroupRenderingControlEvent(_) => vec![],
     };
 
     DecodedChanges { speaker_id, changes }

@@ -228,6 +228,10 @@ async fn monitor_events(
                         println!("       🔗 Group management: coordinator_local={:?}, group_uuid={:?}",
                                  gm_event.group_coordinator_is_local, gm_event.local_group_uuid);
                     }
+                    EventData::GroupRenderingControlEvent(grc_event) => {
+                        println!("       🔊 Group rendering control: volume={:?}, mute={:?}",
+                                 grc_event.group_volume, grc_event.group_mute);
+                    }
                 }
             }
             Ok(None) => {
