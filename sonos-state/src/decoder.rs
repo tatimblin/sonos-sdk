@@ -91,6 +91,7 @@ pub fn decode_event(event: &EnrichedEvent, speaker_id: SpeakerId) -> DecodedChan
         EventData::AVTransportEvent(avt) => decode_av_transport(avt),
         EventData::ZoneGroupTopologyEvent(zgt) => decode_topology(zgt),
         EventData::DevicePropertiesEvent(_) => vec![],
+        EventData::GroupManagementEvent(_) => vec![],
     };
 
     DecodedChanges { speaker_id, changes }

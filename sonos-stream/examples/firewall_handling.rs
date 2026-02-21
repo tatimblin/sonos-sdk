@@ -224,6 +224,10 @@ async fn monitor_events(
                     EventData::DevicePropertiesEvent(_) => {
                         println!("       ⚙️ Device properties event received");
                     }
+                    EventData::GroupManagementEvent(gm_event) => {
+                        println!("       🔗 Group management: coordinator_local={:?}, group_uuid={:?}",
+                                 gm_event.group_coordinator_is_local, gm_event.local_group_uuid);
+                    }
                 }
             }
             Ok(None) => {

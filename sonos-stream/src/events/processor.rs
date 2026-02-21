@@ -293,11 +293,19 @@ impl EventProcessor {
             }
 
             sonos_api::Service::GroupManagement => {
-                // GroupManagement events are not yet supported in sonos-stream
-                // Return an error for now until event types are added
-                Err(EventProcessingError::Parsing(
-                    "GroupManagement events not yet supported in sonos-stream".to_string()
-                ))
+                let gm_event = api_event_data
+                    .downcast::<sonos_api::services::group_management::GroupManagementEvent>()
+                    .map_err(|_| EventProcessingError::Parsing("Failed to downcast GroupManagement event".to_string()))?;
+
+                let stream_event = crate::events::types::GroupManagementEvent {
+                    group_coordinator_is_local: gm_event.group_coordinator_is_local(),
+                    local_group_uuid: gm_event.local_group_uuid(),
+                    reset_volume_after: gm_event.reset_volume_after(),
+                    virtual_line_in_group_id: gm_event.virtual_line_in_group_id(),
+                    volume_av_transport_uri: gm_event.volume_av_transport_uri(),
+                };
+
+                Ok(EventData::GroupManagementEvent(stream_event))
             }
         }
     }
@@ -514,11 +522,12 @@ mod tests {
         let processor = EventProcessor::new(subscription_manager, event_sender, None);
 
         // Should have the supported services from sonos-api
-        assert_eq!(processor.supported_services().len(), 4); // AVTransport, RenderingControl, GroupRenderingControl, ZoneGroupTopology
+        assert_eq!(processor.supported_services().len(), 5); // AVTransport, RenderingControl, GroupRenderingControl, ZoneGroupTopology, GroupManagement
         assert!(processor.is_service_supported(&sonos_api::Service::AVTransport));
         assert!(processor.is_service_supported(&sonos_api::Service::RenderingControl));
         assert!(processor.is_service_supported(&sonos_api::Service::GroupRenderingControl));
         assert!(processor.is_service_supported(&sonos_api::Service::ZoneGroupTopology));
+        assert!(processor.is_service_supported(&sonos_api::Service::GroupManagement));
     }
 
     #[tokio::test]

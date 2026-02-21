@@ -81,11 +81,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Register services with enhanced firewall detection feedback
     let transport_reg = broker.register_speaker_service(device_ip, Service::AVTransport).await?;
     let volume_reg = broker.register_speaker_service(device_ip, Service::RenderingControl).await?;
+    let group_mgmt_reg = broker.register_speaker_service(device_ip, Service::GroupManagement).await?;
 
     // Provide user feedback based on firewall detection results
     println!("\n🔍 Registration Results:");
     print_registration_feedback(&transport_reg.firewall_status, transport_reg.polling_reason.as_ref(), "AVTransport");
     print_registration_feedback(&volume_reg.firewall_status, volume_reg.polling_reason.as_ref(), "RenderingControl");
+    print_registration_feedback(&group_mgmt_reg.firewall_status, group_mgmt_reg.polling_reason.as_ref(), "GroupManagement");
 
     println!("\n📊 STEP 1: Initialize local state through direct queries");
     println!("(This is how consumers should handle initial state population)");
@@ -207,6 +209,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 if let Some(ref version) = device_event.software_version {
                     println!("   → Software version: {}", version);
+                }
+            }
+
+            // GroupManagement events
+            EventData::GroupManagementEvent(gm_event) => {
+                println!("🔗 Group management event received:");
+                if let Some(is_local) = gm_event.group_coordinator_is_local {
+                    println!("   → Coordinator is local: {}", is_local);
+                }
+                if let Some(ref group_uuid) = gm_event.local_group_uuid {
+                    println!("   → Local group UUID: {}", group_uuid);
+                }
+                if let Some(reset_vol) = gm_event.reset_volume_after {
+                    println!("   → Reset volume after ungroup: {}", reset_vol);
                 }
             }
         }

@@ -203,6 +203,10 @@ async fn demonstrate_batch_processing(broker: &mut EventBroker) -> Result<(), Bo
                     println!("   {}. ⚙️  Device properties event from {} ({})",
                              i + 1, event.speaker_ip, format_event_source(&event.event_source));
                 }
+                EventData::GroupManagementEvent(_) => {
+                    println!("   {}. 🔗 Group management event from {} ({})",
+                             i + 1, event.speaker_ip, format_event_source(&event.event_source));
+                }
             }
         }
 
@@ -410,6 +414,7 @@ fn format_event_data(data: &EventData) -> String {
             format!("Topology Event ({} groups)", topology.zone_groups.len())
         }
         EventData::DevicePropertiesEvent(_) => "Device Properties Event".to_string(),
+        EventData::GroupManagementEvent(_) => "Group Management Event".to_string(),
     }
 }
 

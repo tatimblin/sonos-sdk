@@ -29,9 +29,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Register multiple services
     let transport_reg = broker.register_speaker_service(device_ip, Service::AVTransport).await?;
     let volume_reg = broker.register_speaker_service(device_ip, Service::RenderingControl).await?;
+    let group_mgmt_reg = broker.register_speaker_service(device_ip, Service::GroupManagement).await?;
 
-    println!("✅ Services registered with IDs: {} and {}",
-             transport_reg.registration_id, volume_reg.registration_id);
+    println!("✅ Services registered with IDs: {}, {}, and {}",
+             transport_reg.registration_id, volume_reg.registration_id, group_mgmt_reg.registration_id);
 
     // Print firewall status
     println!("🔍 Firewall Status: {:?}", transport_reg.firewall_status);
@@ -75,6 +76,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     EventData::DevicePropertiesEvent(device_event) => {
                         handle_device_properties_async(event.speaker_ip, device_event).await;
+                    }
+                    EventData::GroupManagementEvent(gm_event) => {
+                        handle_group_management_async(event.speaker_ip, gm_event).await;
                     }
                 }
 
@@ -269,6 +273,37 @@ async fn handle_device_properties_async(
 
     // Example: Update device registry
     simulate_device_update(device_ip, &device_event).await;
+}
+
+/// Handle group management events asynchronously
+async fn handle_group_management_async(
+    device_ip: IpAddr,
+    gm_event: sonos_stream::events::types::GroupManagementEvent
+) {
+    println!("🔗 Processing group management event asynchronously...");
+    println!("   Device: {}", device_ip);
+
+    if let Some(is_local) = gm_event.group_coordinator_is_local {
+        println!("   📍 Coordinator is local: {}", is_local);
+    }
+
+    if let Some(ref group_uuid) = gm_event.local_group_uuid {
+        println!("   🏷️  Local group UUID: {}", group_uuid);
+    }
+
+    if let Some(reset_vol) = gm_event.reset_volume_after {
+        println!("   🔊 Reset volume after ungroup: {}", reset_vol);
+    }
+
+    if let Some(ref vli_group_id) = gm_event.virtual_line_in_group_id {
+        println!("   🔌 Virtual line-in group ID: {}", vli_group_id);
+    }
+
+    if let Some(ref vol_uri) = gm_event.volume_av_transport_uri {
+        println!("   🎵 Volume AV transport URI: {}", vol_uri);
+    }
+
+    simulate_external_notification("group_management_update", device_ip).await;
 }
 
 /// Demonstrate additional async iterator features

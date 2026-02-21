@@ -38,7 +38,7 @@ Without this crate, developers must manually construct SOAP XML, manage HTTP con
 
 - [x] All UPnP operations compile with type-checked requests and responses
 - [x] Invalid operation parameters are rejected at build time with descriptive errors
-- [x] All UPnP services (AVTransport, RenderingControl, ZoneGroupTopology, GroupRenderingControl) have operation and event support
+- [x] All UPnP services (AVTransport, RenderingControl, ZoneGroupTopology, GroupRenderingControl, GroupManagement) have operation and event support
 - [x] Error types cover all failure modes with actionable information
 - [x] Operation execution requires no XML knowledge from consuming code
 

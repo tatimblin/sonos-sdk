@@ -439,7 +439,7 @@ pub trait ServicePoller: Send + Sync {
 }
 ```
 
-Implemented for: AVTransport, RenderingControl, ZoneGroupTopology (stub)
+Implemented for: AVTransport, RenderingControl, ZoneGroupTopology (stub), GroupManagement (stub)
 
 ---
 
@@ -486,6 +486,7 @@ pub enum EventData {
     RenderingControlEvent(RenderingControlEvent),
     DevicePropertiesEvent(DevicePropertiesEvent),
     ZoneGroupTopologyEvent(ZoneGroupTopologyEvent),
+    GroupManagementEvent(GroupManagementEvent),
 }
 ```
 

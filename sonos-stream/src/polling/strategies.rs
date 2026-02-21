@@ -305,6 +305,30 @@ impl ServicePoller for ZoneGroupTopologyPoller {
     }
 }
 
+/// Polling strategy for GroupManagement service.
+///
+/// Stub — GroupManagement doesn't currently emit events, but the poller is
+/// registered so the service is included in service enumeration and will work
+/// automatically if Sonos adds event support in a future firmware update.
+pub struct GroupManagementPoller;
+
+#[async_trait]
+impl ServicePoller for GroupManagementPoller {
+    async fn poll_state(&self, _client: &SonosClient, _pair: &SpeakerServicePair) -> PollingResult<String> {
+        Err(PollingError::UnsupportedService {
+            service: Service::GroupManagement,
+        })
+    }
+
+    async fn parse_for_changes(&self, _old_state: &str, _new_state: &str) -> Vec<StateChange> {
+        vec![]
+    }
+
+    fn service_type(&self) -> Service {
+        Service::GroupManagement
+    }
+}
+
 /// Main device state poller that coordinates different service strategies
 pub struct DeviceStatePoller {
     /// Service-specific polling strategies
@@ -330,6 +354,10 @@ impl DeviceStatePoller {
         service_pollers.insert(
             Service::ZoneGroupTopology,
             Box::new(ZoneGroupTopologyPoller),
+        );
+        service_pollers.insert(
+            Service::GroupManagement,
+            Box::new(GroupManagementPoller),
         );
 
         Self {
@@ -415,10 +443,11 @@ mod tests {
         let poller = DeviceStatePoller::new();
         let stats = poller.stats();
 
-        assert_eq!(stats.total_pollers, 3); // AVTransport, RenderingControl, and ZoneGroupTopology (stub)
+        assert_eq!(stats.total_pollers, 4); // AVTransport, RenderingControl, ZoneGroupTopology (stub), GroupManagement (stub)
         assert!(poller.is_service_supported(&Service::AVTransport));
         assert!(poller.is_service_supported(&Service::RenderingControl));
         assert!(poller.is_service_supported(&Service::ZoneGroupTopology));
+        assert!(poller.is_service_supported(&Service::GroupManagement));
     }
 
     #[test]
@@ -501,10 +530,12 @@ mod tests {
         let av_poller = AVTransportPoller;
         let rc_poller = RenderingControlPoller;
         let zgt_poller = ZoneGroupTopologyPoller;
+        let gm_poller = GroupManagementPoller;
 
         assert_eq!(av_poller.service_type(), Service::AVTransport);
         assert_eq!(rc_poller.service_type(), Service::RenderingControl);
         assert_eq!(zgt_poller.service_type(), Service::ZoneGroupTopology);
+        assert_eq!(gm_poller.service_type(), Service::GroupManagement);
     }
 
     #[tokio::test]
@@ -527,6 +558,28 @@ mod tests {
         }
 
         // Test that change parsing returns empty vec (no-op for stub)
+        let changes = poller.parse_for_changes("old_state", "new_state").await;
+        assert!(changes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_group_management_poller_stub() {
+        let poller = GroupManagementPoller;
+        let pair = SpeakerServicePair {
+            speaker_ip: "192.168.1.100".parse().unwrap(),
+            service: Service::GroupManagement,
+        };
+
+        let result = poller.poll_state(&SonosClient::new(), &pair).await;
+        assert!(result.is_err());
+
+        match result.unwrap_err() {
+            PollingError::UnsupportedService { service } => {
+                assert_eq!(service, Service::GroupManagement);
+            }
+            _ => panic!("Expected UnsupportedService error for stubbed GroupManagement poller"),
+        }
+
         let changes = poller.parse_for_changes("old_state", "new_state").await;
         assert!(changes.is_empty());
     }

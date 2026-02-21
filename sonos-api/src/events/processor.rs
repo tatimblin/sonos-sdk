@@ -100,10 +100,8 @@ impl EventProcessor {
                 Ok(Box::new(event))
             }
             Service::GroupManagement => {
-                // GroupManagement events will be implemented in task 4
-                Err(crate::error::ApiError::ParseError(
-                    "GroupManagement event parsing not yet implemented".to_string()
-                ))
+                let event = crate::services::group_management::GroupManagementEvent::from_xml(event_xml)?;
+                Ok(Box::new(event))
             }
         }
     }
@@ -116,6 +114,7 @@ impl EventProcessor {
                 | Service::RenderingControl
                 | Service::GroupRenderingControl
                 | Service::ZoneGroupTopology
+                | Service::GroupManagement
         )
     }
 
@@ -126,6 +125,7 @@ impl EventProcessor {
             Service::RenderingControl,
             Service::GroupRenderingControl,
             Service::ZoneGroupTopology,
+            Service::GroupManagement,
         ]
     }
 }
@@ -194,7 +194,7 @@ mod tests {
         let processor = EventProcessor::new();
 
         // Should support all implemented services
-        assert_eq!(processor.supported_services().len(), 4); // AVTransport, RenderingControl, GroupRenderingControl, ZoneGroupTopology
+        assert_eq!(processor.supported_services().len(), 5); // AVTransport, RenderingControl, GroupRenderingControl, ZoneGroupTopology, GroupManagement
     }
 
     #[test]
@@ -203,11 +203,12 @@ mod tests {
 
         // Should be created without error
         // Should have parsers for all available services
-        assert_eq!(processor.supported_services().len(), 4); // AVTransport, RenderingControl, GroupRenderingControl, ZoneGroupTopology
+        assert_eq!(processor.supported_services().len(), 5); // AVTransport, RenderingControl, GroupRenderingControl, ZoneGroupTopology, GroupManagement
         assert!(processor.supports_service(&Service::AVTransport));
         assert!(processor.supports_service(&Service::RenderingControl));
         assert!(processor.supports_service(&Service::GroupRenderingControl));
         assert!(processor.supports_service(&Service::ZoneGroupTopology));
+        assert!(processor.supports_service(&Service::GroupManagement));
     }
 
     #[test]
@@ -219,6 +220,7 @@ mod tests {
         assert!(processor.supports_service(&Service::RenderingControl));
         assert!(processor.supports_service(&Service::GroupRenderingControl));
         assert!(processor.supports_service(&Service::ZoneGroupTopology));
+        assert!(processor.supports_service(&Service::GroupManagement));
     }
 
     #[test]

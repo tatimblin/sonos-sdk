@@ -84,6 +84,9 @@ pub enum EventData {
 
     /// ZoneGroupTopology service event with complete topology data
     ZoneGroupTopologyEvent(ZoneGroupTopologyEvent),
+
+    /// GroupManagement service event with group coordination data
+    GroupManagementEvent(GroupManagementEvent),
 }
 
 impl EventData {
@@ -102,6 +105,9 @@ impl EventData {
             }
             EventData::ZoneGroupTopologyEvent(_) => {
                 sonos_api::Service::ZoneGroupTopology
+            }
+            EventData::GroupManagementEvent(_) => {
+                sonos_api::Service::GroupManagement
             }
         }
     }
@@ -313,7 +319,26 @@ pub struct SatelliteInfo {
     pub invisible: String,
 }
 
+// GroupManagement event types
 
+/// Complete GroupManagement event data containing group coordination information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupManagementEvent {
+    /// Whether the group coordinator is local to this device
+    pub group_coordinator_is_local: Option<bool>,
+
+    /// UUID of the local group
+    pub local_group_uuid: Option<String>,
+
+    /// Whether volume should be reset after ungrouping
+    pub reset_volume_after: Option<bool>,
+
+    /// Virtual line-in group identifier
+    pub virtual_line_in_group_id: Option<String>,
+
+    /// Volume AV transport URI for the group
+    pub volume_av_transport_uri: Option<String>,
+}
 
 #[cfg(test)]
 mod tests {
@@ -386,6 +411,14 @@ mod tests {
             other_channels: std::collections::HashMap::new(),
         });
         assert_eq!(rc_event.service_type(), sonos_api::Service::RenderingControl);
-    }
 
+        let gm_event = EventData::GroupManagementEvent(GroupManagementEvent {
+            group_coordinator_is_local: Some(true),
+            local_group_uuid: None,
+            reset_volume_after: None,
+            virtual_line_in_group_id: None,
+            volume_av_transport_uri: None,
+        });
+        assert_eq!(gm_event.service_type(), sonos_api::Service::GroupManagement);
+    }
 }
