@@ -48,18 +48,6 @@ pub struct BrokerConfig {
     /// Default: true
     pub enable_proactive_firewall_detection: bool,
 
-    /// Timeout for firewall detection operations
-    /// Default: 10 seconds
-    pub firewall_detection_timeout: Duration,
-
-    /// Number of retries for firewall detection
-    /// Default: 2
-    pub firewall_detection_retries: u32,
-
-    /// Enable fallback to basic firewall detection if UPnP detection fails
-    /// Default: true
-    pub firewall_detection_fallback: bool,
-
     /// Timeout for waiting for first event to determine firewall status
     /// Default: 15 seconds
     pub firewall_event_wait_timeout: Duration,
@@ -84,6 +72,11 @@ pub struct BrokerConfig {
     /// Threshold for subscription renewal (time before expiration)
     /// Default: 5 minutes
     pub renewal_threshold: Duration,
+
+    /// Force polling mode — skip UPnP subscriptions and go straight to polling
+    /// Simulates a firewall that blocks all callback traffic. Useful for testing.
+    /// Default: false
+    pub force_polling_mode: bool,
 }
 
 impl Default for BrokerConfig {
@@ -98,15 +91,13 @@ impl Default for BrokerConfig {
             event_buffer_size: 1000,
             max_concurrent_polls: 50,
             enable_proactive_firewall_detection: true,
-            firewall_detection_timeout: Duration::from_secs(10),
-            firewall_detection_retries: 2,
-            firewall_detection_fallback: true,
             firewall_event_wait_timeout: Duration::from_secs(15),
             enable_firewall_caching: true,
             max_cached_device_states: 100,
             max_registrations: 1000,
             adaptive_polling: true,
             renewal_threshold: Duration::from_secs(300), // 5 minutes
+            force_polling_mode: false,
         }
     }
 }
@@ -124,7 +115,6 @@ impl BrokerConfig {
             max_polling_interval: Duration::from_secs(10),
             polling_activation_delay: Duration::from_secs(1),
             event_timeout: Duration::from_secs(15),
-            firewall_detection_timeout: Duration::from_secs(5),
             firewall_event_wait_timeout: Duration::from_secs(5), // Faster detection
             ..Default::default()
         }
@@ -147,7 +137,17 @@ impl BrokerConfig {
     pub fn no_firewall_detection() -> Self {
         Self {
             enable_proactive_firewall_detection: false,
-            firewall_detection_fallback: false,
+            ..Default::default()
+        }
+    }
+
+    /// Create a BrokerConfig that simulates a firewall by forcing polling mode
+    /// Useful for testing firewall fallback behavior without a real firewall
+    pub fn firewall_simulation() -> Self {
+        Self {
+            force_polling_mode: true,
+            base_polling_interval: Duration::from_secs(2),
+            max_polling_interval: Duration::from_secs(10),
             ..Default::default()
         }
     }
@@ -226,6 +226,11 @@ impl BrokerConfig {
         self.enable_proactive_firewall_detection = enabled;
         self
     }
+
+    pub fn with_force_polling(mut self, enabled: bool) -> Self {
+        self.force_polling_mode = enabled;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -238,6 +243,7 @@ mod tests {
         assert_eq!(config.callback_port_range, (3400, 3500));
         assert_eq!(config.event_timeout, Duration::from_secs(30));
         assert!(config.enable_proactive_firewall_detection);
+        assert!(!config.force_polling_mode);
         assert!(config.validate().is_ok());
     }
 
@@ -255,6 +261,7 @@ mod tests {
             ..Default::default()
         };
         assert!(invalid_polling.validate().is_err());
+
     }
 
     #[test]
@@ -270,6 +277,11 @@ mod tests {
         let no_fw = BrokerConfig::no_firewall_detection();
         assert!(!no_fw.enable_proactive_firewall_detection);
         assert!(no_fw.validate().is_ok());
+
+        let fw_sim = BrokerConfig::firewall_simulation();
+        assert!(fw_sim.force_polling_mode);
+        assert_eq!(fw_sim.base_polling_interval, Duration::from_secs(2));
+        assert!(fw_sim.validate().is_ok());
     }
 
     #[test]
