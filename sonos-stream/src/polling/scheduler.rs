@@ -142,33 +142,23 @@ impl PollingTask {
                         *errors = 0;
                     }
 
-                    // Check for state changes
-                    let state_changed = {
-                        let previous_state = last_state.clone();
-
-                        if let Some(ref previous) = previous_state {
-                            if previous != &current_state {
-                                last_state = Some(current_state.clone());
-                                true
-                            } else {
-                                false
-                            }
-                        } else {
-                            // First poll - store initial state
-                            last_state = Some(current_state.clone());
-                            true // Treat as change for initial state
-                        }
+                    // Save old state before comparing/updating
+                    let previous_state = last_state.clone();
+                    let state_changed = match &previous_state {
+                        Some(previous) => previous != &current_state,
+                        None => true, // First poll
                     };
 
                     if state_changed {
+                        // Update last_state AFTER saving old state for comparison
+                        last_state = Some(current_state.clone());
+
                         eprintln!(
                             "📊 State change detected for {} {:?}",
                             pair.speaker_ip, pair.service
                         );
 
-                        // Generate change events from the state difference
-                        let previous_state = last_state.clone();
-
+                        // Generate change events using the saved previous state
                         if let Some(changes) = device_poller
                             .parse_state_changes(&pair.service, previous_state.as_deref(), &current_state)
                             .await
@@ -309,33 +299,69 @@ impl PollingTask {
                     },
                     lf_mute: None,
                     rf_mute: None,
-                    bass: None,
-                    treble: None,
-                    loudness: None,
+                    bass: match &change {
+                        StateChange::GenericChange { field, new_value, .. } if field == "bass" => Some(new_value.clone()),
+                        _ => None,
+                    },
+                    treble: match &change {
+                        StateChange::GenericChange { field, new_value, .. } if field == "treble" => Some(new_value.clone()),
+                        _ => None,
+                    },
+                    loudness: match &change {
+                        StateChange::GenericChange { field, new_value, .. } if field == "loudness" => Some(new_value.clone()),
+                        _ => None,
+                    },
                     balance: None,
                     other_channels: std::collections::HashMap::new(),
                 };
                 EventData::RenderingControlEvent(volume_event)
             }
+            sonos_api::Service::GroupRenderingControl => {
+                match change {
+                    StateChange::GroupRenderingControlChanged { event } => {
+                        EventData::GroupRenderingControlEvent(event)
+                    }
+                    _ => EventData::GroupRenderingControlEvent(crate::events::types::GroupRenderingControlEvent {
+                        group_volume: None,
+                        group_mute: None,
+                        group_volume_changeable: None,
+                    }),
+                }
+            }
+            sonos_api::Service::ZoneGroupTopology => {
+                match change {
+                    StateChange::TopologyChanged { event } => {
+                        EventData::ZoneGroupTopologyEvent(event)
+                    }
+                    _ => EventData::ZoneGroupTopologyEvent(crate::events::types::ZoneGroupTopologyEvent {
+                        zone_groups: vec![],
+                        vanished_devices: vec![],
+                    }),
+                }
+            }
+            sonos_api::Service::GroupManagement => {
+                EventData::GroupManagementEvent(crate::events::types::GroupManagementEvent {
+                    group_coordinator_is_local: None,
+                    local_group_uuid: None,
+                    reset_volume_after: None,
+                    virtual_line_in_group_id: None,
+                    volume_av_transport_uri: None,
+                })
+            }
+            #[allow(unreachable_patterns)]
             _ => {
-                // Default to empty transport event for unknown services
-                let transport_event = crate::events::types::AVTransportEvent {
-                    transport_state: None,
-                    transport_status: None,
-                    speed: None,
-                    current_track_uri: None,
-                    track_duration: None,
-                    rel_time: None,
-                    abs_time: None,
-                    rel_count: None,
-                    abs_count: None,
-                    play_mode: None,
-                    track_metadata: None,
-                    next_track_uri: None,
-                    next_track_metadata: None,
-                    queue_length: None,
-                };
-                EventData::AVTransportEvent(transport_event)
+                // Future services — fallback to empty DeviceProperties event
+                EventData::DevicePropertiesEvent(crate::events::types::DevicePropertiesEvent {
+                    zone_name: None,
+                    zone_icon: None,
+                    configuration: None,
+                    capabilities: None,
+                    software_version: None,
+                    model_name: None,
+                    display_version: None,
+                    hardware_version: None,
+                    additional_properties: std::collections::HashMap::new(),
+                })
             }
         }
     }

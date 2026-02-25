@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use sonos_api::{SonosClient, Service};
 
 use crate::error::{PollingError, PollingResult};
+use crate::events::types::{GroupRenderingControlEvent, ZoneGroupTopologyEvent};
 use crate::registry::SpeakerServicePair;
 
 /// Represents a state change detected by polling
@@ -38,11 +39,19 @@ pub enum StateChange {
         old_position: String,
         new_position: String,
     },
-    /// Generic state change (fallback)
+    /// Generic state change (fallback for bass, treble, loudness, etc.)
     GenericChange {
         field: String,
         old_value: String,
         new_value: String,
+    },
+    /// Complete topology change (carries full parsed topology event)
+    TopologyChanged {
+        event: ZoneGroupTopologyEvent,
+    },
+    /// Complete group rendering control change (carries full event)
+    GroupRenderingControlChanged {
+        event: GroupRenderingControlEvent,
     },
 }
 
