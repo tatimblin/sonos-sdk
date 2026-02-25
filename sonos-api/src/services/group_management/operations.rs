@@ -10,6 +10,7 @@
 //! - `set_source_area_ids` - Set source area identifiers
 
 use crate::{define_upnp_operation, Validate};
+use crate::operation::parse_sonos_bool;
 use paste::paste;
 use serde::{Deserialize, Serialize};
 
@@ -80,12 +81,7 @@ impl crate::operation::UPnPOperation for AddMemberOperation {
             .map(|s| s.to_string())
             .unwrap_or_default();
 
-        // Parse "1" as true, "0" as false for ResetVolumeAfter
-        let reset_volume_after = xml
-            .get_child("ResetVolumeAfter")
-            .and_then(|e| e.get_text())
-            .map(|s| s.as_ref() == "1")
-            .unwrap_or(false);
+        let reset_volume_after = parse_sonos_bool(xml, "ResetVolumeAfter");
 
         let volume_av_transport_uri = xml
             .get_child("VolumeAVTransportURI")

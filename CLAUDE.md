@@ -85,7 +85,7 @@ cargo check
 **sonos-api** - High-level type-safe API layer (228 KB)
 - Implements the `SonosOperation` trait for all UPnP operations
 - Provides `SonosClient` for simplified operation execution
-- Supports AVTransport, RenderingControl, DeviceProperties, ZoneGroupTopology, GroupRenderingControl, Events services
+- Supports AVTransport (30 ops), RenderingControl (11 ops: Get/Set Volume, Mute, Bass, Treble, Loudness + SetRelativeVolume), GroupRenderingControl (6 ops), GroupManagement (4 ops), ZoneGroupTopology, DeviceProperties, Events services
 - Stateless design - no connection or state management
 
 **sonos-discovery** - Network device discovery (40 KB)

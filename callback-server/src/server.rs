@@ -106,7 +106,9 @@ impl CallbackServer {
             "Failed to detect local IP address".to_string()
         })?;
 
+        eprintln!("Detected local IP address: {}", local_ip);
         let base_url = format!("http://{local_ip}:{port}");
+        eprintln!("Callback server base URL: {}", base_url);
 
         // Create event router
         let event_router = Arc::new(EventRouter::new(event_sender));

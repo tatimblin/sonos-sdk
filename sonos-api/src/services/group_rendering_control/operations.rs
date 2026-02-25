@@ -12,6 +12,7 @@
 //! - `snapshot_group_volume` - Snapshot volume ratios for proportional changes
 
 use crate::{define_operation_with_response, define_upnp_operation, Validate};
+use crate::operation::parse_sonos_bool;
 use paste::paste;
 
 // =============================================================================
@@ -111,17 +112,42 @@ pub use set_relative_group_volume_operation as set_relative_group_volume;
 // GET GROUP MUTE
 // =============================================================================
 
-define_operation_with_response! {
-    operation: GetGroupMuteOperation,
-    action: "GetGroupMute",
-    service: GroupRenderingControl,
-    request: {},
-    response: GetGroupMuteResponse {
-        current_mute: bool,
-    },
-    xml_mapping: {
-        current_mute: "CurrentMute",
-    },
+// Manual implementation because Sonos returns "0"/"1" for bools, not "true"/"false",
+// and the define_operation_with_response! macro's .parse::<bool>() only handles "true"/"false".
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+pub struct GetGroupMuteOperationRequest {
+    pub instance_id: u32,
+}
+
+#[derive(serde::Deserialize, Debug, Clone, PartialEq)]
+pub struct GetGroupMuteResponse {
+    pub current_mute: bool,
+}
+
+pub struct GetGroupMuteOperation;
+
+impl crate::operation::UPnPOperation for GetGroupMuteOperation {
+    type Request = GetGroupMuteOperationRequest;
+    type Response = GetGroupMuteResponse;
+
+    const SERVICE: crate::service::Service = crate::service::Service::GroupRenderingControl;
+    const ACTION: &'static str = "GetGroupMute";
+
+    fn build_payload(request: &Self::Request) -> Result<String, crate::operation::ValidationError> {
+        request.validate(crate::operation::ValidationLevel::Basic)?;
+        Ok(format!("<InstanceID>{}</InstanceID>", request.instance_id))
+    }
+
+    fn parse_response(xml: &xmltree::Element) -> Result<Self::Response, crate::error::ApiError> {
+        Ok(GetGroupMuteResponse {
+            current_mute: parse_sonos_bool(xml, "CurrentMute"),
+        })
+    }
+}
+
+pub fn get_group_mute_operation() -> crate::operation::OperationBuilder<GetGroupMuteOperation> {
+    let request = GetGroupMuteOperationRequest { instance_id: 0 };
+    crate::operation::OperationBuilder::new(request)
 }
 
 impl Validate for GetGroupMuteOperationRequest {}
@@ -288,6 +314,22 @@ mod tests {
         let request = GetGroupMuteOperationRequest { instance_id: 0 };
         let payload = GetGroupMuteOperation::build_payload(&request).unwrap();
         assert_eq!(payload, "<InstanceID>0</InstanceID>");
+    }
+
+    #[test]
+    fn test_get_group_mute_parse_response_true() {
+        let xml_str = r#"<GetGroupMuteResponse><CurrentMute>1</CurrentMute></GetGroupMuteResponse>"#;
+        let xml = xmltree::Element::parse(xml_str.as_bytes()).unwrap();
+        let response = GetGroupMuteOperation::parse_response(&xml).unwrap();
+        assert!(response.current_mute);
+    }
+
+    #[test]
+    fn test_get_group_mute_parse_response_false() {
+        let xml_str = r#"<GetGroupMuteResponse><CurrentMute>0</CurrentMute></GetGroupMuteResponse>"#;
+        let xml = xmltree::Element::parse(xml_str.as_bytes()).unwrap();
+        let response = GetGroupMuteOperation::parse_response(&xml).unwrap();
+        assert!(!response.current_mute);
     }
 
     #[test]

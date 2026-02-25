@@ -15,7 +15,7 @@ Tracks each Sonos UPnP service across the 4-layer SDK architecture (6 checkpoint
 | Service | API | Stream Events | Stream Polling | State Decoder | SDK Handles | SDK Fetch |
 |---|---|---|---|---|---|---|
 | AVTransport | Done | Done | Partial [1] | Done | Done | Partial [2] |
-| RenderingControl | Partial [3] | Done | Partial [4] | Done | Done | Partial [5] |
+| RenderingControl | Done | Done | Partial [4] | Done | Done | Partial [5] |
 | GroupRenderingControl | Done | Done | Stub | Partial [6] | Partial [7] | Done |
 | ZoneGroupTopology | Done | Done | Stub | Done | Partial [8] | None [9] |
 | GroupManagement | Done | Done | Stub | None | None | — |
@@ -25,9 +25,9 @@ Tracks each Sonos UPnP service across the 4-layer SDK architecture (6 checkpoint
 
 1. Polling only calls `GetTransportInfo`; position and track data are TODOs with empty strings
 2. `CurrentTrack` has no `fetch()` — only Volume, PlaybackState, and Position do
-3. Only `GetVolume`, `SetVolume`, `SetRelativeVolume` — missing `GetMute`, `GetBass`, `GetTreble`, `GetLoudness` operations
+3. ~~Only `GetVolume`, `SetVolume`, `SetRelativeVolume`~~ — All 11 operations now implemented (Get/Set for Volume, Mute, Bass, Treble, Loudness + SetRelativeVolume)
 4. Polling only queries volume; mute is hardcoded to `false`
-5. Only `Volume` has `fetch()` — Mute, Bass, Treble, Loudness require Get operations to be added first (see [3])
+5. Only `Volume` has `fetch()` — Mute, Bass, Treble, Loudness Get operations now exist, `Fetchable` impls needed
 6. Only `GroupVolume` decoded; `GroupMute` and `GroupVolumeChangeable` not decoded despite being present in event data
 7. `GroupVolume` handle exists on Group; no `GroupMute` handle
 8. `GroupMembership` on Speaker; `Topology` is system-level with no SDK handle

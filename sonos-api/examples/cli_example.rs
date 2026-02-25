@@ -38,6 +38,11 @@
 //! ### RenderingControl Service
 //! - **GetVolume**: Get current volume level for a channel
 //! - **SetVolume**: Set volume to a specific level (0-100)
+//! - **SetRelativeVolume**: Adjust volume relatively
+//! - **GetMute/SetMute**: Get or set mute state
+//! - **GetBass/SetBass**: Get or set bass level (-10 to +10)
+//! - **GetTreble/SetTreble**: Get or set treble level (-10 to +10)
+//! - **GetLoudness/SetLoudness**: Get or set loudness compensation
 //! - **SetRelativeVolume**: Adjust volume by a relative amount (-128 to +127)
 //!
 //! ## Requirements
@@ -72,6 +77,14 @@ use sonos_api::services::rendering_control::{
     GetVolumeOperation, GetVolumeOperationRequest,
     SetVolumeOperation, SetVolumeOperationRequest,
     SetRelativeVolumeOperation, SetRelativeVolumeOperationRequest,
+    GetMuteOperation, GetMuteOperationRequest,
+    SetMuteOperation, SetMuteOperationRequest,
+    GetBassOperation, GetBassOperationRequest,
+    SetBassOperation, SetBassOperationRequest,
+    GetTrebleOperation, GetTrebleOperationRequest,
+    SetTrebleOperation, SetTrebleOperationRequest,
+    GetLoudnessOperation, GetLoudnessOperationRequest,
+    SetLoudnessOperation, SetLoudnessOperationRequest,
 };
 use sonos_api::operation::{OperationBuilder, ValidationError};
 use sonos_discovery::{Device, get_with_timeout, DiscoveryError};
@@ -183,6 +196,22 @@ impl OperationRegistry {
                     .with_optional_param("channel", "String", "Master"),
                 OperationInfo::new("SetRelativeVolume", "RenderingControl", "Adjust volume relatively")
                     .with_required_param("adjustment", "i8")
+                    .with_optional_param("channel", "String", "Master"),
+                OperationInfo::new("GetMute", "RenderingControl", "Get mute state")
+                    .with_optional_param("channel", "String", "Master"),
+                OperationInfo::new("SetMute", "RenderingControl", "Set mute state")
+                    .with_required_param("mute", "bool")
+                    .with_optional_param("channel", "String", "Master"),
+                OperationInfo::new("GetBass", "RenderingControl", "Get bass level (-10 to +10)"),
+                OperationInfo::new("SetBass", "RenderingControl", "Set bass level (-10 to +10)")
+                    .with_required_param("bass", "i8"),
+                OperationInfo::new("GetTreble", "RenderingControl", "Get treble level (-10 to +10)"),
+                OperationInfo::new("SetTreble", "RenderingControl", "Set treble level (-10 to +10)")
+                    .with_required_param("treble", "i8"),
+                OperationInfo::new("GetLoudness", "RenderingControl", "Get loudness compensation state")
+                    .with_optional_param("channel", "String", "Master"),
+                OperationInfo::new("SetLoudness", "RenderingControl", "Set loudness compensation")
+                    .with_required_param("loudness", "bool")
                     .with_optional_param("channel", "String", "Master"),
             ],
         }
@@ -842,7 +871,131 @@ pub fn execute_operation(
             Ok(format!("✓ Volume {} by {} on {} ({})\n  New volume: {}",
                       direction, adjustment.abs(), device.name, channel, response.new_volume))
         }
-        
+
+        ("RenderingControl", "GetMute") => {
+            let channel = params.get("channel").unwrap_or(&"Master".to_string()).clone();
+            let request = GetMuteOperationRequest {
+                instance_id: 0,
+                channel: channel.clone(),
+            };
+
+            let operation = OperationBuilder::<GetMuteOperation>::new(request).build()?;
+            let response = client.execute_enhanced(device_ip, operation)?;
+            Ok(format!("✓ Mute state on {} ({}): {}",
+                      device.name, channel, if response.current_mute { "MUTED" } else { "unmuted" }))
+        }
+
+        ("RenderingControl", "SetMute") => {
+            let mute_str = params.get("mute")
+                .ok_or_else(|| CliError::MissingParameter("mute".to_string()))?;
+            let mute: bool = match mute_str.to_lowercase().as_str() {
+                "true" | "1" | "yes" => true,
+                "false" | "0" | "no" => false,
+                _ => return Err(CliError::InvalidParameter(
+                    format!("Mute must be true/false, got '{}'", mute_str)
+                )),
+            };
+
+            let channel = params.get("channel").unwrap_or(&"Master".to_string()).clone();
+            let request = SetMuteOperationRequest {
+                instance_id: 0,
+                channel: channel.clone(),
+                desired_mute: mute,
+            };
+
+            let operation = OperationBuilder::<SetMuteOperation>::new(request).build()?;
+            client.execute_enhanced(device_ip, operation)?;
+            Ok(format!("✓ {} on {} ({})",
+                      if mute { "Muted" } else { "Unmuted" }, device.name, channel))
+        }
+
+        ("RenderingControl", "GetBass") => {
+            let request = GetBassOperationRequest { instance_id: 0 };
+            let operation = OperationBuilder::<GetBassOperation>::new(request).build()?;
+            let response = client.execute_enhanced(device_ip, operation)?;
+            Ok(format!("✓ Bass on {}: {} (range: -10 to +10)", device.name, response.current_bass))
+        }
+
+        ("RenderingControl", "SetBass") => {
+            let bass_str = params.get("bass")
+                .ok_or_else(|| CliError::MissingParameter("bass".to_string()))?;
+            let bass: i8 = bass_str.parse()
+                .map_err(|_| CliError::InvalidParameter(
+                    format!("Bass must be a number between -10 and 10, got '{}'", bass_str)
+                ))?;
+
+            let request = SetBassOperationRequest {
+                instance_id: 0,
+                desired_bass: bass,
+            };
+
+            let operation = OperationBuilder::<SetBassOperation>::new(request).build()?;
+            client.execute_enhanced(device_ip, operation)?;
+            Ok(format!("✓ Bass set to {} on {}", bass, device.name))
+        }
+
+        ("RenderingControl", "GetTreble") => {
+            let request = GetTrebleOperationRequest { instance_id: 0 };
+            let operation = OperationBuilder::<GetTrebleOperation>::new(request).build()?;
+            let response = client.execute_enhanced(device_ip, operation)?;
+            Ok(format!("✓ Treble on {}: {} (range: -10 to +10)", device.name, response.current_treble))
+        }
+
+        ("RenderingControl", "SetTreble") => {
+            let treble_str = params.get("treble")
+                .ok_or_else(|| CliError::MissingParameter("treble".to_string()))?;
+            let treble: i8 = treble_str.parse()
+                .map_err(|_| CliError::InvalidParameter(
+                    format!("Treble must be a number between -10 and 10, got '{}'", treble_str)
+                ))?;
+
+            let request = SetTrebleOperationRequest {
+                instance_id: 0,
+                desired_treble: treble,
+            };
+
+            let operation = OperationBuilder::<SetTrebleOperation>::new(request).build()?;
+            client.execute_enhanced(device_ip, operation)?;
+            Ok(format!("✓ Treble set to {} on {}", treble, device.name))
+        }
+
+        ("RenderingControl", "GetLoudness") => {
+            let channel = params.get("channel").unwrap_or(&"Master".to_string()).clone();
+            let request = GetLoudnessOperationRequest {
+                instance_id: 0,
+                channel: channel.clone(),
+            };
+
+            let operation = OperationBuilder::<GetLoudnessOperation>::new(request).build()?;
+            let response = client.execute_enhanced(device_ip, operation)?;
+            Ok(format!("✓ Loudness on {} ({}): {}",
+                      device.name, channel, if response.current_loudness { "ON" } else { "off" }))
+        }
+
+        ("RenderingControl", "SetLoudness") => {
+            let loudness_str = params.get("loudness")
+                .ok_or_else(|| CliError::MissingParameter("loudness".to_string()))?;
+            let loudness: bool = match loudness_str.to_lowercase().as_str() {
+                "true" | "1" | "yes" => true,
+                "false" | "0" | "no" => false,
+                _ => return Err(CliError::InvalidParameter(
+                    format!("Loudness must be true/false, got '{}'", loudness_str)
+                )),
+            };
+
+            let channel = params.get("channel").unwrap_or(&"Master".to_string()).clone();
+            let request = SetLoudnessOperationRequest {
+                instance_id: 0,
+                channel: channel.clone(),
+                desired_loudness: loudness,
+            };
+
+            let operation = OperationBuilder::<SetLoudnessOperation>::new(request).build()?;
+            client.execute_enhanced(device_ip, operation)?;
+            Ok(format!("✓ Loudness {} on {} ({})",
+                      if loudness { "enabled" } else { "disabled" }, device.name, channel))
+        }
+
         _ => Err(CliError::UnsupportedOperation(
             format!("Operation {}.{} is not supported", operation.service, operation.name)
         ))

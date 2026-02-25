@@ -234,6 +234,32 @@ pub struct OperationMetadata {
     pub dependencies: &'static [&'static str],
 }
 
+/// Parse a Sonos UPnP boolean value from an XML response element.
+///
+/// Sonos devices return "0"/"1" for booleans, but Rust's `bool::parse()` only
+/// handles "true"/"false". This helper correctly parses "0", "1", "true", "false",
+/// and handles whitespace-padded variants.
+///
+/// Returns `false` if the child element is missing or empty.
+pub fn parse_sonos_bool(xml: &Element, child_name: &str) -> bool {
+    xml.get_child(child_name)
+        .and_then(|e| e.get_text())
+        .map(|s| s.trim() == "1" || s.trim().eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Validate a RenderingControl channel parameter.
+///
+/// Sonos speakers accept "Master", "LF" (left front), and "RF" (right front) channels.
+pub fn validate_channel(channel: &str) -> Result<(), ValidationError> {
+    match channel {
+        "Master" | "LF" | "RF" => Ok(()),
+        other => Err(ValidationError::Custom {
+            parameter: "channel".to_string(),
+            message: format!("Invalid channel '{}'. Must be 'Master', 'LF', or 'RF'", other),
+        }),
+    }
+}
 
 #[cfg(test)]
 mod tests {
