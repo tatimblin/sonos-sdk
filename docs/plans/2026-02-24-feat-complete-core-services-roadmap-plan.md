@@ -70,36 +70,36 @@ Phase 7 → docs (rustdoc + examples + guide)
 
 **Tasks:**
 
-- [ ] Add `GetMuteOperation` using `define_operation_with_response!` macro
+- [x] Add `GetMuteOperation` using `define_operation_with_response!` macro
   - Request: `{ channel: String }` (auto-adds instance_id)
   - Response: `GetMuteResponse { current_mute: bool }`
   - XML mapping: `{ current_mute: "CurrentMute" }`
   - Note: bool fields may need manual parse (see `AddMemberOperation` for bool pattern — Sonos returns "0"/"1")
-- [ ] Add `SetMuteOperation` using `define_upnp_operation!` macro
+- [x] Add `SetMuteOperation` using `define_upnp_operation!` macro
   - Request: `{ channel: String, desired_mute: bool }`
   - Payload: format with `<DesiredMute>{}</DesiredMute>` using "0"/"1" for bool
   - Validation: channel must be "Master", "LF", or "RF"
-- [ ] Add `GetBassOperation` using `define_operation_with_response!`
+- [x] Add `GetBassOperation` using `define_operation_with_response!`
   - Response: `GetBassResponse { current_bass: i8 }`
   - XML mapping: `{ current_bass: "CurrentBass" }`
-- [ ] Add `SetBassOperation` using `define_upnp_operation!`
+- [x] Add `SetBassOperation` using `define_upnp_operation!`
   - Request: `{ desired_bass: i8 }`
   - Validation: range -10 to +10
-- [ ] Add `GetTrebleOperation` using `define_operation_with_response!`
+- [x] Add `GetTrebleOperation` using `define_operation_with_response!`
   - Response: `GetTrebleResponse { current_treble: i8 }`
   - XML mapping: `{ current_treble: "CurrentTreble" }`
-- [ ] Add `SetTrebleOperation` using `define_upnp_operation!`
+- [x] Add `SetTrebleOperation` using `define_upnp_operation!`
   - Request: `{ desired_treble: i8 }`
   - Validation: range -10 to +10
-- [ ] Add `GetLoudnessOperation` using `define_operation_with_response!`
+- [x] Add `GetLoudnessOperation` using `define_operation_with_response!`
   - Request: `{ channel: String }`
   - Response: `GetLoudnessResponse { current_loudness: bool }`
   - Note: bool parse — Sonos returns "0"/"1"
-- [ ] Add `SetLoudnessOperation` using `define_upnp_operation!`
+- [x] Add `SetLoudnessOperation` using `define_upnp_operation!`
   - Request: `{ channel: String, desired_loudness: bool }`
   - Validation: channel must be "Master", "LF", or "RF"
-- [ ] Add unit tests for all 8 new operations (payload construction + response parsing)
-- [ ] Update `pub use` exports and convenience function aliases
+- [x] Add unit tests for all 8 new operations (payload construction + response parsing)
+- [x] Update `pub use` exports and convenience function aliases
 
 **Pattern reference:** `GetVolumeOperation` at `sonos-api/src/services/rendering_control/operations.rs` for Get pattern. `SetVolumeOperation` for Set pattern. `AddMemberOperation` at `sonos-api/src/services/group_management/operations.rs` for manual bool handling.
 
