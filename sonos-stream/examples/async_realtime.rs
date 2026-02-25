@@ -65,22 +65,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 // Process different event types with async operations
                 match event.event_data {
-                    EventData::AVTransportEvent(transport_event) => {
+                    EventData::AVTransport(transport_event) => {
                         handle_transport_event_async(event.speaker_ip, transport_event).await;
                     }
-                    EventData::RenderingControlEvent(volume_event) => {
+                    EventData::RenderingControl(volume_event) => {
                         handle_volume_event_async(event.speaker_ip, volume_event).await;
                     }
-                    EventData::ZoneGroupTopologyEvent(topology) => {
+                    EventData::ZoneGroupTopology(topology) => {
                         handle_topology_change_async(event.speaker_ip, topology).await;
                     }
-                    EventData::DevicePropertiesEvent(device_event) => {
+                    EventData::DeviceProperties(device_event) => {
                         handle_device_properties_async(event.speaker_ip, device_event).await;
                     }
-                    EventData::GroupManagementEvent(gm_event) => {
+                    EventData::GroupManagement(gm_event) => {
                         handle_group_management_async(event.speaker_ip, gm_event).await;
                     }
-                    EventData::GroupRenderingControlEvent(grc_event) => {
+                    EventData::GroupRenderingControl(grc_event) => {
                         println!("🔊 Group rendering control from {}: volume={:?}, mute={:?}",
                                  event.speaker_ip, grc_event.group_volume, grc_event.group_mute);
                     }
@@ -120,7 +120,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Handle transport events asynchronously
-async fn handle_transport_event_async(device_ip: IpAddr, transport_event: sonos_stream::events::types::AVTransportEvent) {
+async fn handle_transport_event_async(device_ip: IpAddr, transport_event: sonos_stream::events::types::AVTransportState) {
     println!("🎵 Processing transport event asynchronously...");
 
     if let Some(ref state) = transport_event.transport_state {
@@ -160,7 +160,7 @@ async fn handle_transport_event_async(device_ip: IpAddr, transport_event: sonos_
 }
 
 /// Handle volume events asynchronously
-async fn handle_volume_event_async(device_ip: IpAddr, volume_event: sonos_stream::events::types::RenderingControlEvent) {
+async fn handle_volume_event_async(device_ip: IpAddr, volume_event: sonos_stream::events::types::RenderingControlState) {
     println!("🔊 Processing volume event asynchronously...");
 
     if let Some(ref volume_str) = volume_event.master_volume {
@@ -196,7 +196,7 @@ async fn handle_volume_event_async(device_ip: IpAddr, volume_event: sonos_stream
 /// Handle topology changes asynchronously
 async fn handle_topology_change_async(
     device_ip: IpAddr,
-    topology: sonos_stream::events::types::ZoneGroupTopologyEvent
+    topology: sonos_stream::events::types::ZoneGroupTopologyState
 ) {
     println!("🏠 Processing topology change asynchronously...");
     println!("   📡 Received from: {}", device_ip);
@@ -282,7 +282,7 @@ async fn handle_device_properties_async(
 /// Handle group management events asynchronously
 async fn handle_group_management_async(
     device_ip: IpAddr,
-    gm_event: sonos_stream::events::types::GroupManagementEvent
+    gm_event: sonos_stream::events::types::GroupManagementState
 ) {
     println!("🔗 Processing group management event asynchronously...");
     println!("   Device: {}", device_ip);
@@ -368,7 +368,7 @@ async fn simulate_track_update(device_ip: IpAddr, track_uri: &str) {
 /// Simulate topology database update
 async fn simulate_topology_update(
     device_ip: IpAddr,
-    topology: &sonos_stream::events::types::ZoneGroupTopologyEvent
+    topology: &sonos_stream::events::types::ZoneGroupTopologyState
 ) {
     // Simulate async database update
     tokio::time::sleep(Duration::from_millis(120)).await;

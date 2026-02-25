@@ -9,5 +9,5 @@ pub mod strategies;
 
 pub use scheduler::{PollingScheduler, PollingTask};
 pub use strategies::{
-    AVTransportPoller, DeviceStatePoller, RenderingControlPoller, ServicePoller, StateChange,
+    AVTransportPoller, DeviceStatePoller, RenderingControlPoller, ServicePoller,
 };

@@ -43,7 +43,7 @@ pub(crate) fn spawn_state_event_worker(
             );
 
             // Handle ZoneGroupTopology events specially - they affect all speakers
-            if let EventData::ZoneGroupTopologyEvent(ref zgt_event) = event.event_data {
+            if let EventData::ZoneGroupTopology(ref zgt_event) = event.event_data {
                 tracing::debug!("Processing ZoneGroupTopology event");
                 let topology_changes = decode_topology_event(zgt_event);
                 apply_topology_changes(&store, &watched, &event_tx, topology_changes);

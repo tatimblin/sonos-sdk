@@ -1,13 +1,26 @@
 //! Event types for the sonos-stream crate
 //!
-//! This module defines all event types used in the streaming system,
-//! including events from both UPnP notifications and polling.
+//! This module defines the event envelope types (EnrichedEvent, EventSource, EventData)
+//! and re-exports canonical state types from sonos-api. The actual per-service state
+//! structs live in sonos-api; sonos-stream wraps them in EventData for transport.
 
 use std::net::IpAddr;
 use std::time::{Duration, SystemTime};
 use serde::{Deserialize, Serialize};
 
 use crate::registry::RegistrationId;
+
+// Re-export sonos-api state types for convenience
+pub use sonos_api::services::av_transport::state::AVTransportState;
+pub use sonos_api::services::rendering_control::state::RenderingControlState;
+pub use sonos_api::services::group_rendering_control::state::GroupRenderingControlState;
+pub use sonos_api::services::zone_group_topology::state::ZoneGroupTopologyState;
+pub use sonos_api::services::group_management::state::GroupManagementState;
+
+// Re-export topology sub-types used by consumers (e.g. sonos-state decoder tests)
+pub use sonos_api::services::zone_group_topology::events::{
+    ZoneGroupInfo, ZoneGroupMemberInfo, NetworkInfo, SatelliteInfo,
+};
 
 /// An enriched event that includes context and source information
 #[derive(Debug, Clone)]
@@ -49,7 +62,6 @@ impl EnrichedEvent {
             event_data,
         }
     }
-
 }
 
 /// Source of an event - indicates whether it came from UPnP events or polling
@@ -66,147 +78,52 @@ pub enum EventSource {
         /// Current polling interval
         poll_interval: Duration
     },
-
 }
 
-
-/// Event data - complete event information for each service
+/// Event data - complete event information for each service.
+///
+/// Variants reference canonical State types from sonos-api.
+/// Both UPnP events (via `into_state()`) and polling (via `poll()`)
+/// produce the same State types, ensuring parity.
 #[derive(Debug, Clone)]
 pub enum EventData {
-    /// AVTransport service event with complete transport state
-    AVTransportEvent(AVTransportEvent),
+    /// AVTransport service state
+    AVTransport(AVTransportState),
 
-    /// RenderingControl service event with complete rendering state
-    RenderingControlEvent(RenderingControlEvent),
+    /// RenderingControl service state
+    RenderingControl(RenderingControlState),
 
-    /// DeviceProperties service event with complete device properties
-    DevicePropertiesEvent(DevicePropertiesEvent),
+    /// DeviceProperties service event (no sonos-api State type yet)
+    DeviceProperties(DevicePropertiesEvent),
 
-    /// ZoneGroupTopology service event with complete topology data
-    ZoneGroupTopologyEvent(ZoneGroupTopologyEvent),
+    /// ZoneGroupTopology service state
+    ZoneGroupTopology(ZoneGroupTopologyState),
 
-    /// GroupManagement service event with group coordination data
-    GroupManagementEvent(GroupManagementEvent),
+    /// GroupManagement service state
+    GroupManagement(GroupManagementState),
 
-    /// GroupRenderingControl service event with group volume/mute data
-    GroupRenderingControlEvent(GroupRenderingControlEvent),
+    /// GroupRenderingControl service state
+    GroupRenderingControl(GroupRenderingControlState),
 }
 
 impl EventData {
     /// Get the service type for this event data
     pub fn service_type(&self) -> sonos_api::Service {
         match self {
-            EventData::AVTransportEvent(_) => {
-                sonos_api::Service::AVTransport
-            }
-            EventData::RenderingControlEvent(_) => {
-                sonos_api::Service::RenderingControl
-            }
-            EventData::DevicePropertiesEvent(_) => {
+            EventData::AVTransport(_) => sonos_api::Service::AVTransport,
+            EventData::RenderingControl(_) => sonos_api::Service::RenderingControl,
+            EventData::DeviceProperties(_) => {
                 // DeviceProperties service doesn't exist in sonos-api, using ZoneGroupTopology as fallback
                 sonos_api::Service::ZoneGroupTopology
             }
-            EventData::ZoneGroupTopologyEvent(_) => {
-                sonos_api::Service::ZoneGroupTopology
-            }
-            EventData::GroupManagementEvent(_) => {
-                sonos_api::Service::GroupManagement
-            }
-            EventData::GroupRenderingControlEvent(_) => {
-                sonos_api::Service::GroupRenderingControl
-            }
+            EventData::ZoneGroupTopology(_) => sonos_api::Service::ZoneGroupTopology,
+            EventData::GroupManagement(_) => sonos_api::Service::GroupManagement,
+            EventData::GroupRenderingControl(_) => sonos_api::Service::GroupRenderingControl,
         }
     }
 }
 
-// AVTransport event types
-
-/// Complete AVTransport event data containing all transport state information
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AVTransportEvent {
-    /// Current transport state (PLAYING, PAUSED_PLAYBACK, STOPPED, etc.)
-    pub transport_state: Option<String>,
-
-    /// Current transport status (OK, ERROR_OCCURRED, etc.)
-    pub transport_status: Option<String>,
-
-    /// Current playback speed
-    pub speed: Option<String>,
-
-    /// Current track URI
-    pub current_track_uri: Option<String>,
-
-    /// Track duration
-    pub track_duration: Option<String>,
-
-    /// Relative time position in current track
-    pub rel_time: Option<String>,
-
-    /// Absolute time position
-    pub abs_time: Option<String>,
-
-    /// Relative track number in queue
-    pub rel_count: Option<u32>,
-
-    /// Absolute track number
-    pub abs_count: Option<u32>,
-
-    /// Current play mode (NORMAL, REPEAT_ALL, REPEAT_ONE, SHUFFLE, etc.)
-    pub play_mode: Option<String>,
-
-    /// Current track metadata (DIDL-Lite XML)
-    pub track_metadata: Option<String>,
-
-    /// Next track URI
-    pub next_track_uri: Option<String>,
-
-    /// Next track metadata
-    pub next_track_metadata: Option<String>,
-
-    /// Queue size/length
-    pub queue_length: Option<u32>,
-}
-
-// RenderingControl event types
-
-/// Complete RenderingControl event data containing all rendering state information
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RenderingControlEvent {
-    /// Current volume level (0-100) for Master channel
-    pub master_volume: Option<String>,
-
-    /// Current volume level (0-100) for Left Front channel
-    pub lf_volume: Option<String>,
-
-    /// Current volume level (0-100) for Right Front channel
-    pub rf_volume: Option<String>,
-
-    /// Current mute state for Master channel
-    pub master_mute: Option<String>,
-
-    /// Current mute state for Left Front channel
-    pub lf_mute: Option<String>,
-
-    /// Current mute state for Right Front channel
-    pub rf_mute: Option<String>,
-
-    /// Current bass level
-    pub bass: Option<String>,
-
-    /// Current treble level
-    pub treble: Option<String>,
-
-    /// Current loudness setting
-    pub loudness: Option<String>,
-
-    /// Balance setting (-100 to +100)
-    pub balance: Option<String>,
-
-    /// Additional channel configurations (can be extended)
-    pub other_channels: std::collections::HashMap<String, String>,
-}
-
-// DeviceProperties event types
+// DeviceProperties event types — kept here since there's no sonos-api State type yet
 
 /// Complete DeviceProperties event data containing all device property information
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -239,128 +156,6 @@ pub struct DevicePropertiesEvent {
     pub additional_properties: std::collections::HashMap<String, String>,
 }
 
-// ZoneGroupTopology event types
-
-/// Event data for ZoneGroupTopology service containing complete topology information.
-/// This passes through the entire parsed topology state without any delta processing.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ZoneGroupTopologyEvent {
-    /// Complete zone group topology data
-    pub zone_groups: Vec<ZoneGroupInfo>,
-
-    /// Devices that have vanished from the network
-    pub vanished_devices: Vec<String>, // Can be expanded later if needed
-}
-
-/// Information about a single zone group.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ZoneGroupInfo {
-    /// The coordinator (master) speaker UUID for this group
-    pub coordinator: String,
-
-    /// Unique identifier for this zone group
-    pub id: String,
-
-    /// All speakers that are members of this zone group
-    pub members: Vec<ZoneGroupMemberInfo>,
-}
-
-/// Information about a speaker in a zone group.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ZoneGroupMemberInfo {
-    /// Unique identifier for this speaker (RINCON_...)
-    pub uuid: String,
-
-    /// Network location URL of the speaker
-    pub location: String,
-
-    /// Human-readable name of the room/zone
-    pub zone_name: String,
-
-    /// Software version running on the speaker
-    pub software_version: String,
-
-    /// Network configuration (WiFi, ethernet, etc.)
-    pub network_info: NetworkInfo,
-
-    /// Satellite speakers for home theater configurations
-    pub satellites: Vec<SatelliteInfo>,
-}
-
-/// Network configuration information for a speaker.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NetworkInfo {
-    /// Wireless mode (0=wired, 1=2.4GHz, 2=5GHz)
-    pub wireless_mode: String,
-
-    /// Whether WiFi is enabled
-    pub wifi_enabled: String,
-
-    /// Ethernet link status
-    pub eth_link: String,
-
-    /// WiFi channel frequency
-    pub channel_freq: String,
-
-    /// Whether behind a WiFi extender
-    pub behind_wifi_extender: String,
-}
-
-/// Information about a satellite speaker.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SatelliteInfo {
-    /// Unique identifier for this satellite speaker
-    pub uuid: String,
-
-    /// Network location of the satellite
-    pub location: String,
-
-    /// Zone name (usually same as main speaker)
-    pub zone_name: String,
-
-    /// Home theater satellite channel mapping
-    pub ht_sat_chan_map_set: String,
-
-    /// Whether this satellite is invisible in UI
-    pub invisible: String,
-}
-
-// GroupManagement event types
-
-/// Complete GroupManagement event data containing group coordination information
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GroupManagementEvent {
-    /// Whether the group coordinator is local to this device
-    pub group_coordinator_is_local: Option<bool>,
-
-    /// UUID of the local group
-    pub local_group_uuid: Option<String>,
-
-    /// Whether volume should be reset after ungrouping
-    pub reset_volume_after: Option<bool>,
-
-    /// Virtual line-in group identifier
-    pub virtual_line_in_group_id: Option<String>,
-
-    /// Volume AV transport URI for the group
-    pub volume_av_transport_uri: Option<String>,
-}
-
-// GroupRenderingControl event types
-
-/// Complete GroupRenderingControl event data containing group volume/mute information
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GroupRenderingControlEvent {
-    /// Current group volume level (0-100)
-    pub group_volume: Option<u16>,
-
-    /// Whether the group is muted
-    pub group_mute: Option<bool>,
-
-    /// Whether the group volume is changeable
-    pub group_volume_changeable: Option<bool>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -373,18 +168,18 @@ mod tests {
         let source = EventSource::UPnPNotification {
             subscription_id: "uuid:123".to_string(),
         };
-        let data = EventData::AVTransportEvent(AVTransportEvent {
+        let data = EventData::AVTransport(AVTransportState {
             transport_state: Some("PLAYING".to_string()),
             transport_status: None,
             speed: None,
             current_track_uri: None,
             track_duration: None,
+            track_metadata: None,
             rel_time: None,
             abs_time: None,
             rel_count: None,
             abs_count: None,
             play_mode: None,
-            track_metadata: None,
             next_track_uri: None,
             next_track_metadata: None,
             queue_length: None,
@@ -397,32 +192,31 @@ mod tests {
         assert_eq!(event.service, service);
     }
 
-
     #[test]
     fn test_event_data_service_type() {
-        let av_event = EventData::AVTransportEvent(AVTransportEvent {
+        let av_event = EventData::AVTransport(AVTransportState {
             transport_state: Some("PLAYING".to_string()),
             transport_status: None,
             speed: None,
             current_track_uri: None,
             track_duration: None,
+            track_metadata: None,
             rel_time: None,
             abs_time: None,
             rel_count: None,
             abs_count: None,
             play_mode: None,
-            track_metadata: None,
             next_track_uri: None,
             next_track_metadata: None,
             queue_length: None,
         });
         assert_eq!(av_event.service_type(), sonos_api::Service::AVTransport);
 
-        let rc_event = EventData::RenderingControlEvent(RenderingControlEvent {
+        let rc_event = EventData::RenderingControl(RenderingControlState {
             master_volume: Some("50".to_string()),
+            master_mute: Some("false".to_string()),
             lf_volume: None,
             rf_volume: None,
-            master_mute: Some("false".to_string()),
             lf_mute: None,
             rf_mute: None,
             bass: None,
@@ -433,7 +227,7 @@ mod tests {
         });
         assert_eq!(rc_event.service_type(), sonos_api::Service::RenderingControl);
 
-        let gm_event = EventData::GroupManagementEvent(GroupManagementEvent {
+        let gm_event = EventData::GroupManagement(GroupManagementState {
             group_coordinator_is_local: Some(true),
             local_group_uuid: None,
             reset_volume_after: None,
@@ -442,7 +236,7 @@ mod tests {
         });
         assert_eq!(gm_event.service_type(), sonos_api::Service::GroupManagement);
 
-        let grc_event = EventData::GroupRenderingControlEvent(GroupRenderingControlEvent {
+        let grc_event = EventData::GroupRenderingControl(GroupRenderingControlState {
             group_volume: Some(14),
             group_mute: Some(false),
             group_volume_changeable: Some(true),

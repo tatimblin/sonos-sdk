@@ -11,8 +11,8 @@ use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 
 use crate::error::{PollingError, PollingResult};
-use crate::events::types::{EnrichedEvent, EventData, EventSource};
-use crate::polling::strategies::{DeviceStatePoller, StateChange};
+use crate::events::types::{EnrichedEvent, EventSource};
+use crate::polling::strategies::DeviceStatePoller;
 use crate::registry::{RegistrationId, SpeakerServicePair};
 
 /// A single polling task with state management
@@ -166,16 +166,9 @@ impl PollingTask {
                             pair.speaker_ip, pair.service
                         );
 
-                        // Generate change events from the state difference
-                        let previous_state = last_state.clone();
-
-                        if let Some(changes) = device_poller
-                            .parse_state_changes(&pair.service, previous_state.as_deref(), &current_state)
-                            .await
-                        {
-                            for change in changes {
-                                let event_data = Self::change_to_event_data(change, &pair.service);
-
+                        // Convert JSON snapshot to EventData and emit full-state event
+                        match device_poller.state_to_event_data(&pair.service, &current_state) {
+                            Ok(event_data) => {
                                 let enriched_event = EnrichedEvent::new(
                                     registration_id,
                                     pair.speaker_ip,
@@ -186,15 +179,19 @@ impl PollingTask {
                                     event_data,
                                 );
 
-                                // Send the event
-                                if let Err(_) = event_sender.send(enriched_event) {
+                                if event_sender.send(enriched_event).is_err() {
                                     eprintln!(
                                         "❌ Failed to send polling event for {} {:?}",
                                         pair.speaker_ip, pair.service
                                     );
-                                    // Channel closed - stop polling
                                     return;
                                 }
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "⚠️ Failed to convert state to event data for {} {:?}: {}",
+                                    pair.speaker_ip, pair.service, e
+                                );
                             }
                         }
 
@@ -262,81 +259,6 @@ impl PollingTask {
             (current_interval * 2).min(max_interval)
         } else {
             current_interval
-        }
-    }
-
-    /// Convert state change to EventData
-    fn change_to_event_data(change: StateChange, service: &sonos_api::Service) -> EventData {
-        // TODO: Update polling to use new complete event structures
-        // For now, create minimal events based on detected changes
-        match service {
-            sonos_api::Service::AVTransport => {
-                let transport_event = crate::events::types::AVTransportEvent {
-                    transport_state: match &change {
-                        StateChange::TransportState { new_state, .. } => Some(new_state.clone()),
-                        _ => None,
-                    },
-                    transport_status: None,
-                    speed: None,
-                    current_track_uri: match &change {
-                        StateChange::TrackChanged { new_uri, .. } => Some(new_uri.clone()),
-                        _ => None,
-                    },
-                    track_duration: None,
-                    rel_time: None,
-                    abs_time: None,
-                    rel_count: None,
-                    abs_count: None,
-                    play_mode: None,
-                    track_metadata: None,
-                    next_track_uri: None,
-                    next_track_metadata: None,
-                    queue_length: None,
-                };
-                EventData::AVTransportEvent(transport_event)
-            }
-            sonos_api::Service::RenderingControl => {
-                let volume_event = crate::events::types::RenderingControlEvent {
-                    master_volume: match &change {
-                        StateChange::VolumeChanged { new_volume, .. } => Some(new_volume.clone()),
-                        _ => None,
-                    },
-                    lf_volume: None,
-                    rf_volume: None,
-                    master_mute: match &change {
-                        StateChange::MuteChanged { new_mute, .. } => Some(new_mute.to_string()),
-                        _ => None,
-                    },
-                    lf_mute: None,
-                    rf_mute: None,
-                    bass: None,
-                    treble: None,
-                    loudness: None,
-                    balance: None,
-                    other_channels: std::collections::HashMap::new(),
-                };
-                EventData::RenderingControlEvent(volume_event)
-            }
-            _ => {
-                // Default to empty transport event for unknown services
-                let transport_event = crate::events::types::AVTransportEvent {
-                    transport_state: None,
-                    transport_status: None,
-                    speed: None,
-                    current_track_uri: None,
-                    track_duration: None,
-                    rel_time: None,
-                    abs_time: None,
-                    rel_count: None,
-                    abs_count: None,
-                    play_mode: None,
-                    track_metadata: None,
-                    next_track_uri: None,
-                    next_track_metadata: None,
-                    queue_length: None,
-                };
-                EventData::AVTransportEvent(transport_event)
-            }
         }
     }
 

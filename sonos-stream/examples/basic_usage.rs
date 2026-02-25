@@ -124,7 +124,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         match event.event_data {
             // Complete event data - all services now provide full state
-            EventData::AVTransportEvent(transport_event) => {
+            EventData::AVTransport(transport_event) => {
                 println!("🎵 Transport event received:");
                 if let Some(ref state) = transport_event.transport_state {
                     println!("   → Transport state: {}", state);
@@ -150,7 +150,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                          local_transport_state.rel_time);
             }
 
-            EventData::RenderingControlEvent(volume_event) => {
+            EventData::RenderingControl(volume_event) => {
                 println!("🔊 Volume event received:");
                 if let Some(ref volume) = volume_event.master_volume {
                     if let Ok(vol_num) = volume.parse::<u16>() {
@@ -170,7 +170,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // ZoneGroupTopology events - complete speaker topology information
-            EventData::ZoneGroupTopologyEvent(topology) => {
+            EventData::ZoneGroupTopology(topology) => {
                 println!("🏠 Speaker topology event received:");
                 println!("   → {} zone group(s) found", topology.zone_groups.len());
 
@@ -201,7 +201,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // Device properties events
-            EventData::DevicePropertiesEvent(device_event) => {
+            EventData::DeviceProperties(device_event) => {
                 println!("⚙️  Device properties event received:");
                 if let Some(ref zone_name) = device_event.zone_name {
                     println!("   → Zone name: {}", zone_name);
@@ -215,7 +215,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // GroupManagement events
-            EventData::GroupManagementEvent(gm_event) => {
+            EventData::GroupManagement(gm_event) => {
                 println!("🔗 Group management event received:");
                 if let Some(is_local) = gm_event.group_coordinator_is_local {
                     println!("   → Coordinator is local: {}", is_local);
@@ -229,7 +229,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // GroupRenderingControl events
-            EventData::GroupRenderingControlEvent(grc_event) => {
+            EventData::GroupRenderingControl(grc_event) => {
                 println!("🔊 Group rendering control event received:");
                 if let Some(volume) = grc_event.group_volume {
                     println!("   → Group volume: {}", volume);
