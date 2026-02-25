@@ -48,18 +48,6 @@ pub struct BrokerConfig {
     /// Default: true
     pub enable_proactive_firewall_detection: bool,
 
-    /// Timeout for firewall detection operations
-    /// Default: 10 seconds
-    pub firewall_detection_timeout: Duration,
-
-    /// Number of retries for firewall detection
-    /// Default: 2
-    pub firewall_detection_retries: u32,
-
-    /// Enable fallback to basic firewall detection if UPnP detection fails
-    /// Default: true
-    pub firewall_detection_fallback: bool,
-
     /// Timeout for waiting for first event to determine firewall status
     /// Default: 15 seconds
     pub firewall_event_wait_timeout: Duration,
@@ -98,9 +86,6 @@ impl Default for BrokerConfig {
             event_buffer_size: 1000,
             max_concurrent_polls: 50,
             enable_proactive_firewall_detection: true,
-            firewall_detection_timeout: Duration::from_secs(10),
-            firewall_detection_retries: 2,
-            firewall_detection_fallback: true,
             firewall_event_wait_timeout: Duration::from_secs(15),
             enable_firewall_caching: true,
             max_cached_device_states: 100,
@@ -124,7 +109,6 @@ impl BrokerConfig {
             max_polling_interval: Duration::from_secs(10),
             polling_activation_delay: Duration::from_secs(1),
             event_timeout: Duration::from_secs(15),
-            firewall_detection_timeout: Duration::from_secs(5),
             firewall_event_wait_timeout: Duration::from_secs(5), // Faster detection
             ..Default::default()
         }
@@ -147,7 +131,6 @@ impl BrokerConfig {
     pub fn no_firewall_detection() -> Self {
         Self {
             enable_proactive_firewall_detection: false,
-            firewall_detection_fallback: false,
             ..Default::default()
         }
     }

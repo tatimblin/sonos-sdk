@@ -111,6 +111,9 @@ pub struct EventBroker {
 
     /// Event router for registering subscription IDs
     event_router: Option<Arc<callback_server::router::EventRouter>>,
+
+    /// Polling request channel receiver (taken during background processing startup)
+    polling_request_receiver: Option<mpsc::UnboundedReceiver<PollingRequest>>,
 }
 
 /// Get the local IP address that can be reached by devices on the network
@@ -199,12 +202,19 @@ impl EventBroker {
             config.max_concurrent_polls,
         ));
 
-        // Initialize event detector
-        let event_detector = Arc::new(EventDetector::new(
+        // Create polling request channel (sender kept alive for EventDetector)
+        let (polling_request_sender, polling_request_receiver) = mpsc::unbounded_channel();
+
+        // Initialize event detector and connect to firewall coordinator + polling channel
+        let mut event_detector = EventDetector::new(
             config.event_timeout,
             config.polling_activation_delay,
-        ));
-
+        );
+        if let Some(ref coordinator) = firewall_coordinator {
+            event_detector.set_firewall_coordinator(Arc::clone(coordinator));
+        }
+        event_detector.set_polling_request_sender(polling_request_sender);
+        let event_detector = Arc::new(event_detector);
 
         let mut broker = Self {
             registry,
@@ -221,6 +231,7 @@ impl EventBroker {
             background_tasks: Vec::new(),
             upnp_receiver: Some(upnp_receiver),
             event_router: Some(event_router),
+            polling_request_receiver: Some(polling_request_receiver),
         };
 
         // Start background processing
@@ -273,9 +284,10 @@ impl EventBroker {
             self.background_tasks.push(upnp_task);
         }
 
-        // Start polling request processing
-        let (_polling_request_sender, polling_request_receiver) = mpsc::unbounded_channel();
-        self.start_polling_request_processing(polling_request_receiver).await;
+        // Start polling request processing using pre-created channel
+        if let Some(polling_request_receiver) = self.polling_request_receiver.take() {
+            self.start_polling_request_processing(polling_request_receiver).await;
+        }
 
         // Start event activity monitoring
         self.event_detector.start_monitoring().await;
@@ -473,8 +485,9 @@ impl EventBroker {
                     );
                 }
 
-                // Register with event detector
+                // Register with event detector (both subscription monitoring and pair mapping)
                 self.event_detector.register_subscription(registration_id).await;
+                self.event_detector.register_pair(registration_id, pair.clone()).await;
 
                 // Evaluate firewall status for immediate polling decision
                 if let Some(request) = self

@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::sync::{mpsc, RwLock};
 
+use tracing::{debug, warn};
 use callback_server::{FirewallDetectionCoordinator, FirewallStatus};
 
 use crate::broker::PollingReason;
@@ -18,6 +19,12 @@ use crate::registry::{RegistrationId, SpeakerServicePair};
 pub struct EventDetector {
     /// Track last event time per registration for timeout detection
     last_event_times: Arc<RwLock<HashMap<RegistrationId, SystemTime>>>,
+
+    /// Map registration IDs to speaker/service pairs for timeout-based polling requests
+    registration_pairs: Arc<RwLock<HashMap<RegistrationId, SpeakerServicePair>>>,
+
+    /// Track which registrations already have polling activated (avoid duplicate requests)
+    polling_activated: Arc<RwLock<HashMap<RegistrationId, bool>>>,
 
     /// Event timeout threshold - if no events received within this time, consider switching to polling
     event_timeout: Duration,
@@ -30,7 +37,6 @@ pub struct EventDetector {
 
     /// Sender for requesting polling activation
     polling_request_sender: Option<mpsc::UnboundedSender<PollingRequest>>,
-
 }
 
 /// Request to activate or deactivate polling for a registration
@@ -53,6 +59,8 @@ impl EventDetector {
     pub fn new(event_timeout: Duration, polling_activation_delay: Duration) -> Self {
         Self {
             last_event_times: Arc::new(RwLock::new(HashMap::new())),
+            registration_pairs: Arc::new(RwLock::new(HashMap::new())),
+            polling_activated: Arc::new(RwLock::new(HashMap::new())),
             event_timeout,
             polling_activation_delay,
             firewall_coordinator: None,
@@ -152,6 +160,8 @@ impl EventDetector {
     /// Start monitoring event activity for all registered subscriptions
     pub async fn start_monitoring(&self) {
         let last_event_times = Arc::clone(&self.last_event_times);
+        let registration_pairs = Arc::clone(&self.registration_pairs);
+        let polling_activated = Arc::clone(&self.polling_activated);
         let event_timeout = self.event_timeout;
         let polling_request_sender = self.polling_request_sender.clone();
 
@@ -168,6 +178,14 @@ impl EventDetector {
                 };
 
                 for registration_id in registrations {
+                    // Check if already activated — avoid duplicate requests
+                    {
+                        let activated = polling_activated.read().await;
+                        if activated.get(&registration_id) == Some(&true) {
+                            continue;
+                        }
+                    }
+
                     let should_poll = {
                         let times = last_event_times.read().await;
                         if let Some(last_event_time) = times.get(&registration_id) {
@@ -179,12 +197,37 @@ impl EventDetector {
                     };
 
                     if should_poll {
-                        if let Some(_sender) = &polling_request_sender {
-                            // We need the speaker/service pair to make the request
-                            // In a real implementation, this would be looked up from the registry
-                            // For now, we'll emit a placeholder request
-                            eprintln!("⏰ Event timeout detected for registration {}", registration_id);
-                            // TODO: Look up speaker/service pair and send actual request
+                        if let Some(sender) = &polling_request_sender {
+                            // Look up the speaker/service pair for this registration
+                            let pair = {
+                                let pairs = registration_pairs.read().await;
+                                pairs.get(&registration_id).cloned()
+                            };
+
+                            if let Some(pair) = pair {
+                                let request = PollingRequest {
+                                    registration_id,
+                                    speaker_service_pair: pair,
+                                    action: PollingAction::Start,
+                                    reason: PollingReason::EventTimeout,
+                                };
+
+                                if sender.send(request).is_ok() {
+                                    // Mark as activated to avoid duplicate requests
+                                    let mut activated = polling_activated.write().await;
+                                    activated.insert(registration_id, true);
+
+                                    debug!(
+                                        registration_id = %registration_id,
+                                        "Event timeout detected, sent polling request"
+                                    );
+                                }
+                            } else {
+                                warn!(
+                                    registration_id = %registration_id,
+                                    "Event timeout detected but no speaker/service pair registered"
+                                );
+                            }
                         }
                     }
                 }
@@ -198,10 +241,24 @@ impl EventDetector {
         last_event_times.insert(registration_id, SystemTime::now());
     }
 
+    /// Register the speaker/service pair for a registration (needed for timeout-based polling)
+    pub async fn register_pair(&self, registration_id: RegistrationId, pair: SpeakerServicePair) {
+        let mut pairs = self.registration_pairs.write().await;
+        pairs.insert(registration_id, pair);
+    }
+
     /// Unregister a subscription from monitoring
     pub async fn unregister_subscription(&self, registration_id: RegistrationId) {
         let mut last_event_times = self.last_event_times.write().await;
         last_event_times.remove(&registration_id);
+        drop(last_event_times);
+
+        let mut pairs = self.registration_pairs.write().await;
+        pairs.remove(&registration_id);
+        drop(pairs);
+
+        let mut activated = self.polling_activated.write().await;
+        activated.remove(&registration_id);
     }
 
     /// Get monitoring statistics
@@ -314,4 +371,77 @@ mod tests {
         assert_eq!(stats.total_monitored, 0);
     }
 
+    #[tokio::test]
+    async fn test_register_pair_and_unregister() {
+        let detector = EventDetector::new(
+            Duration::from_secs(30),
+            Duration::from_secs(5),
+        );
+
+        let registration_id = RegistrationId::new(1);
+        let pair = SpeakerServicePair::new(
+            "192.168.1.100".parse().unwrap(),
+            sonos_api::Service::AVTransport,
+        );
+
+        // Register pair
+        detector.register_pair(registration_id, pair.clone()).await;
+
+        // Verify it's stored
+        let pairs = detector.registration_pairs.read().await;
+        assert!(pairs.contains_key(&registration_id));
+        assert_eq!(pairs[&registration_id].speaker_ip, pair.speaker_ip);
+        drop(pairs);
+
+        // Unregister cleans up pair too
+        detector.register_subscription(registration_id).await;
+        detector.unregister_subscription(registration_id).await;
+
+        let pairs = detector.registration_pairs.read().await;
+        assert!(!pairs.contains_key(&registration_id));
+    }
+
+    #[tokio::test]
+    async fn test_event_timeout_sends_polling_request() {
+        use tokio::sync::mpsc;
+
+        // Very short timeout so we can trigger it quickly
+        let mut detector = EventDetector::new(
+            Duration::from_millis(50),
+            Duration::from_secs(5),
+        );
+
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        detector.set_polling_request_sender(sender);
+        let detector = Arc::new(detector);
+
+        let registration_id = RegistrationId::new(42);
+        let pair = SpeakerServicePair::new(
+            "192.168.1.100".parse().unwrap(),
+            sonos_api::Service::RenderingControl,
+        );
+
+        // Register subscription and pair
+        detector.register_subscription(registration_id).await;
+        detector.register_pair(registration_id, pair.clone()).await;
+
+        // Backdate the last event time to simulate a timeout
+        {
+            let mut times = detector.last_event_times.write().await;
+            times.insert(registration_id, SystemTime::now() - Duration::from_secs(60));
+        }
+
+        // Start monitoring (spawns background task)
+        detector.start_monitoring().await;
+
+        // Wait for the monitoring loop to run (interval is 10s, but the first tick is immediate)
+        let request = tokio::time::timeout(Duration::from_secs(15), receiver.recv()).await;
+
+        assert!(request.is_ok(), "Should receive a polling request within timeout");
+        let request = request.unwrap().expect("Channel should have a message");
+        assert_eq!(request.registration_id, registration_id);
+        assert_eq!(request.speaker_service_pair.speaker_ip, pair.speaker_ip);
+        assert!(matches!(request.action, PollingAction::Start));
+        assert_eq!(request.reason, PollingReason::EventTimeout);
+    }
 }
