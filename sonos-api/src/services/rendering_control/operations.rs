@@ -1,4 +1,18 @@
+//! RenderingControl service operations
+//!
+//! This module provides operations for controlling audio rendering settings on individual
+//! Sonos speakers. All operations use the `UPnPOperation` trait pattern.
+//!
+//! # Operations
+//! - `get_volume` / `set_volume` - Get/set volume level (0-100)
+//! - `set_relative_volume` - Adjust volume relatively (-100 to +100)
+//! - `get_mute` / `set_mute` - Get/set mute state
+//! - `get_bass` / `set_bass` - Get/set bass level (-10 to +10)
+//! - `get_treble` / `set_treble` - Get/set treble level (-10 to +10)
+//! - `get_loudness` / `set_loudness` - Get/set loudness compensation
+
 use crate::{define_upnp_operation, define_operation_with_response, Validate};
+use crate::operation::{validate_channel, parse_sonos_bool};
 use paste::paste;
 
 // Operation with complex response parsing and channel validation
@@ -20,14 +34,7 @@ define_operation_with_response! {
 // Custom validation implementation for GetVolumeOperation (channel validation)
 impl Validate for GetVolumeOperationRequest {
     fn validate_basic(&self) -> Result<(), crate::operation::ValidationError> {
-        // Validate channel names
-        match self.channel.as_str() {
-            "Master" | "LF" | "RF" => Ok(()),
-            other => Err(crate::operation::ValidationError::Custom {
-                parameter: "channel".to_string(),
-                message: format!("Invalid channel '{}'. Must be 'Master', 'LF', or 'RF'", other),
-            })
-        }
+        validate_channel(&self.channel)
     }
 }
 
@@ -56,15 +63,7 @@ impl Validate for SetVolumeOperationRequest {
         if self.desired_volume > 100 {
             return Err(crate::operation::ValidationError::range_error("desired_volume", 0, 100, self.desired_volume));
         }
-
-        // Validate channel names
-        match self.channel.as_str() {
-            "Master" | "LF" | "RF" => Ok(()),
-            other => Err(crate::operation::ValidationError::Custom {
-                parameter: "channel".to_string(),
-                message: format!("Invalid channel '{}'. Must be 'Master', 'LF', or 'RF'", other),
-            })
-        }
+        validate_channel(&self.channel)
     }
 }
 
@@ -92,15 +91,7 @@ impl Validate for SetRelativeVolumeOperationRequest {
         if self.adjustment < -100 || self.adjustment > 100 {
             return Err(crate::operation::ValidationError::range_error("adjustment", -100, 100, self.adjustment));
         }
-
-        // Validate channel names
-        match self.channel.as_str() {
-            "Master" | "LF" | "RF" => Ok(()),
-            other => Err(crate::operation::ValidationError::Custom {
-                parameter: "channel".to_string(),
-                message: format!("Invalid channel '{}'. Must be 'Master', 'LF', or 'RF'", other),
-            })
-        }
+        validate_channel(&self.channel)
     }
 }
 
@@ -139,12 +130,9 @@ impl crate::operation::UPnPOperation for GetMuteOperation {
     }
 
     fn parse_response(xml: &xmltree::Element) -> Result<Self::Response, crate::error::ApiError> {
-        let current_mute = xml
-            .get_child("CurrentMute")
-            .and_then(|e| e.get_text())
-            .map(|s| s.trim() == "1" || s.trim().eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        Ok(GetMuteResponse { current_mute })
+        Ok(GetMuteResponse {
+            current_mute: parse_sonos_bool(xml, "CurrentMute"),
+        })
     }
 }
 
@@ -158,13 +146,7 @@ pub fn get_mute_operation(channel: String) -> crate::operation::OperationBuilder
 
 impl Validate for GetMuteOperationRequest {
     fn validate_basic(&self) -> Result<(), crate::operation::ValidationError> {
-        match self.channel.as_str() {
-            "Master" | "LF" | "RF" => Ok(()),
-            other => Err(crate::operation::ValidationError::Custom {
-                parameter: "channel".to_string(),
-                message: format!("Invalid channel '{}'. Must be 'Master', 'LF', or 'RF'", other),
-            })
-        }
+        validate_channel(&self.channel)
     }
 }
 
@@ -194,13 +176,7 @@ define_upnp_operation! {
 
 impl Validate for SetMuteOperationRequest {
     fn validate_basic(&self) -> Result<(), crate::operation::ValidationError> {
-        match self.channel.as_str() {
-            "Master" | "LF" | "RF" => Ok(()),
-            other => Err(crate::operation::ValidationError::Custom {
-                parameter: "channel".to_string(),
-                message: format!("Invalid channel '{}'. Must be 'Master', 'LF', or 'RF'", other),
-            })
-        }
+        validate_channel(&self.channel)
     }
 }
 
@@ -350,12 +326,9 @@ impl crate::operation::UPnPOperation for GetLoudnessOperation {
     }
 
     fn parse_response(xml: &xmltree::Element) -> Result<Self::Response, crate::error::ApiError> {
-        let current_loudness = xml
-            .get_child("CurrentLoudness")
-            .and_then(|e| e.get_text())
-            .map(|s| s.trim() == "1" || s.trim().eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        Ok(GetLoudnessResponse { current_loudness })
+        Ok(GetLoudnessResponse {
+            current_loudness: parse_sonos_bool(xml, "CurrentLoudness"),
+        })
     }
 }
 
@@ -369,13 +342,7 @@ pub fn get_loudness_operation(channel: String) -> crate::operation::OperationBui
 
 impl Validate for GetLoudnessOperationRequest {
     fn validate_basic(&self) -> Result<(), crate::operation::ValidationError> {
-        match self.channel.as_str() {
-            "Master" | "LF" | "RF" => Ok(()),
-            other => Err(crate::operation::ValidationError::Custom {
-                parameter: "channel".to_string(),
-                message: format!("Invalid channel '{}'. Must be 'Master', 'LF', or 'RF'", other),
-            })
-        }
+        validate_channel(&self.channel)
     }
 }
 
@@ -405,13 +372,7 @@ define_upnp_operation! {
 
 impl Validate for SetLoudnessOperationRequest {
     fn validate_basic(&self) -> Result<(), crate::operation::ValidationError> {
-        match self.channel.as_str() {
-            "Master" | "LF" | "RF" => Ok(()),
-            other => Err(crate::operation::ValidationError::Custom {
-                parameter: "channel".to_string(),
-                message: format!("Invalid channel '{}'. Must be 'Master', 'LF', or 'RF'", other),
-            })
-        }
+        validate_channel(&self.channel)
     }
 }
 
@@ -848,5 +809,4 @@ mod tests {
         };
         assert!(request.validate_basic().is_err());
     }
-
 }

@@ -1,14 +1,35 @@
 //! RenderingControl service for audio rendering operations and events
 //!
-//! This service handles audio rendering operations (volume, mute, bass, treble) and
-//! related events (volume changes, mute state changes, etc.).
+//! This service handles audio rendering operations on individual Sonos speakers
+//! and related events (volume changes, mute state changes, etc.).
 //!
-//! # Control Operations
+//! # Operations
+//!
+//! | Operation | Description |
+//! |-----------|-------------|
+//! | `get_volume` / `set_volume` | Get/set volume level (0-100) |
+//! | `set_relative_volume` | Adjust volume relatively (-100 to +100) |
+//! | `get_mute` / `set_mute` | Get/set mute state |
+//! | `get_bass` / `set_bass` | Get/set bass level (-10 to +10) |
+//! | `get_treble` / `set_treble` | Get/set treble level (-10 to +10) |
+//! | `get_loudness` / `set_loudness` | Get/set loudness compensation |
+//!
+//! # Examples
 //! ```rust,ignore
 //! use sonos_api::services::rendering_control;
 //!
-//! let vol_op = rendering_control::set_volume("Master".to_string(), 75).build()?;
-//! client.execute("192.168.1.100", vol_op)?;
+//! // Volume
+//! let op = rendering_control::set_volume("Master".to_string(), 75).build()?;
+//! client.execute("192.168.1.100", op)?;
+//!
+//! // Mute
+//! let op = rendering_control::get_mute("Master".to_string()).build()?;
+//! let response = client.execute_enhanced("192.168.1.100", op)?;
+//! println!("Muted: {}", response.current_mute);
+//!
+//! // Bass / Treble
+//! let op = rendering_control::set_bass(5).build()?;
+//! client.execute("192.168.1.100", op)?;
 //! ```
 //!
 //! # Event Subscriptions
