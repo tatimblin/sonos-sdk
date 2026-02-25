@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, RwLock};
 
 use tracing::{debug, warn};
@@ -18,7 +18,7 @@ use crate::registry::{RegistrationId, SpeakerServicePair};
 /// Monitors event activity and detects when polling fallback is needed
 pub struct EventDetector {
     /// Track last event time per registration for timeout detection
-    last_event_times: Arc<RwLock<HashMap<RegistrationId, SystemTime>>>,
+    last_event_times: Arc<RwLock<HashMap<RegistrationId, Instant>>>,
 
     /// Map registration IDs to speaker/service pairs for timeout-based polling requests
     registration_pairs: Arc<RwLock<HashMap<RegistrationId, SpeakerServicePair>>>,
@@ -82,7 +82,7 @@ impl EventDetector {
     /// Record that an event was received for a registration
     pub async fn record_event(&self, registration_id: RegistrationId) {
         let mut last_event_times = self.last_event_times.write().await;
-        last_event_times.insert(registration_id, SystemTime::now());
+        last_event_times.insert(registration_id, Instant::now());
     }
 
     /// Check if a registration should start polling based on event timeout
@@ -90,9 +90,7 @@ impl EventDetector {
         let last_event_times = self.last_event_times.read().await;
 
         if let Some(last_event_time) = last_event_times.get(&registration_id) {
-            let elapsed = SystemTime::now()
-                .duration_since(*last_event_time)
-                .unwrap_or(Duration::ZERO);
+            let elapsed = last_event_time.elapsed();
             elapsed > self.event_timeout
         } else {
             // No events recorded yet - give some time for initial events
@@ -105,9 +103,7 @@ impl EventDetector {
         let last_event_times = self.last_event_times.read().await;
 
         if let Some(last_event_time) = last_event_times.get(&registration_id) {
-            let elapsed = SystemTime::now()
-                .duration_since(*last_event_time)
-                .unwrap_or(Duration::ZERO);
+            let elapsed = last_event_time.elapsed();
             elapsed <= self.polling_activation_delay
         } else {
             false
@@ -157,21 +153,24 @@ impl EventDetector {
         }
     }
 
-    /// Start monitoring event activity for all registered subscriptions
-    pub async fn start_monitoring(&self) {
+    /// Start monitoring event activity for all registered subscriptions.
+    /// Returns the JoinHandle for the spawned monitoring task.
+    pub async fn start_monitoring(&self) -> tokio::task::JoinHandle<()> {
         let last_event_times = Arc::clone(&self.last_event_times);
         let registration_pairs = Arc::clone(&self.registration_pairs);
         let polling_activated = Arc::clone(&self.polling_activated);
         let event_timeout = self.event_timeout;
         let polling_request_sender = self.polling_request_sender.clone();
 
+        let check_interval = (event_timeout / 3).max(Duration::from_secs(1));
+
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(10));
+            let mut interval = tokio::time::interval(check_interval);
 
             loop {
                 interval.tick().await;
 
-                let now = SystemTime::now();
+                let now = Instant::now();
                 let registrations: Vec<RegistrationId> = {
                     let times = last_event_times.read().await;
                     times.keys().cloned().collect()
@@ -189,7 +188,7 @@ impl EventDetector {
                     let should_poll = {
                         let times = last_event_times.read().await;
                         if let Some(last_event_time) = times.get(&registration_id) {
-                            let elapsed = now.duration_since(*last_event_time).unwrap_or(Duration::ZERO);
+                            let elapsed = now.duration_since(*last_event_time);
                             elapsed > event_timeout
                         } else {
                             false
@@ -232,13 +231,13 @@ impl EventDetector {
                     }
                 }
             }
-        });
+        })
     }
 
     /// Register a new subscription for monitoring
     pub async fn register_subscription(&self, registration_id: RegistrationId) {
         let mut last_event_times = self.last_event_times.write().await;
-        last_event_times.insert(registration_id, SystemTime::now());
+        last_event_times.insert(registration_id, Instant::now());
     }
 
     /// Register the speaker/service pair for a registration (needed for timeout-based polling)
@@ -266,12 +265,12 @@ impl EventDetector {
         let last_event_times = self.last_event_times.read().await;
         let total_monitored = last_event_times.len();
 
-        let now = SystemTime::now();
+        let now = Instant::now();
         let mut timeout_count = 0;
         let mut recent_events_count = 0;
 
         for last_event_time in last_event_times.values() {
-            let elapsed = now.duration_since(*last_event_time).unwrap_or(Duration::ZERO);
+            let elapsed = now.duration_since(*last_event_time);
             if elapsed > self.event_timeout {
                 timeout_count += 1;
             } else if elapsed <= Duration::from_secs(60) {
@@ -428,14 +427,14 @@ mod tests {
         // Backdate the last event time to simulate a timeout
         {
             let mut times = detector.last_event_times.write().await;
-            times.insert(registration_id, SystemTime::now() - Duration::from_secs(60));
+            times.insert(registration_id, Instant::now() - Duration::from_secs(60));
         }
 
         // Start monitoring (spawns background task)
         detector.start_monitoring().await;
 
-        // Wait for the monitoring loop to run (interval is 10s, but the first tick is immediate)
-        let request = tokio::time::timeout(Duration::from_secs(15), receiver.recv()).await;
+        // Wait for the monitoring loop to run (first tick is immediate)
+        let request = tokio::time::timeout(Duration::from_secs(2), receiver.recv()).await;
 
         assert!(request.is_ok(), "Should receive a polling request within timeout");
         let request = request.unwrap().expect("Channel should have a message");

@@ -146,6 +146,10 @@ fn analyze_registration_result(
                         println!("    🔄 Mode: Polling (network issues detected)");
                         println!("    💡 Explanation: Network connectivity problems detected");
                     }
+                    PollingReason::ForcedPolling => {
+                        println!("    🔄 Mode: Polling (forced by configuration)");
+                        println!("    💡 Explanation: force_polling_mode is enabled, UPnP skipped entirely");
+                    }
                 }
             } else {
                 println!("    📡 Mode: UPnP Events - Real-time event delivery active");
@@ -287,6 +291,7 @@ fn format_polling_reason(reason: &PollingReason) -> String {
         PollingReason::EventTimeout => "event timeout".to_string(),
         PollingReason::SubscriptionFailed => "subscription failed".to_string(),
         PollingReason::NetworkIssues => "network issues".to_string(),
+        PollingReason::ForcedPolling => "forced polling".to_string(),
     }
 }
 

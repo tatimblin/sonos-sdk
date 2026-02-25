@@ -196,12 +196,6 @@ impl BrokerConfig {
             ));
         }
 
-        if self.force_polling_mode && !self.enable_proactive_firewall_detection {
-            return Err(crate::BrokerError::Configuration(
-                "force_polling_mode requires enable_proactive_firewall_detection to be true".to_string(),
-            ));
-        }
-
         Ok(())
     }
 
@@ -268,12 +262,6 @@ mod tests {
         };
         assert!(invalid_polling.validate().is_err());
 
-        let invalid_force_polling = BrokerConfig {
-            force_polling_mode: true,
-            enable_proactive_firewall_detection: false, // Invalid: force_polling requires firewall detection
-            ..Default::default()
-        };
-        assert!(invalid_force_polling.validate().is_err());
     }
 
     #[test]

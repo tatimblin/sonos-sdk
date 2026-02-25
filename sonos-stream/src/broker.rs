@@ -54,6 +54,8 @@ pub enum PollingReason {
     SubscriptionFailed,
     /// Network connectivity problems
     NetworkIssues,
+    /// Forced polling mode (config-driven, e.g. firewall simulation)
+    ForcedPolling,
 }
 
 impl std::fmt::Display for PollingReason {
@@ -63,6 +65,7 @@ impl std::fmt::Display for PollingReason {
             PollingReason::EventTimeout => write!(f, "event timeout"),
             PollingReason::SubscriptionFailed => write!(f, "subscription failed"),
             PollingReason::NetworkIssues => write!(f, "network issues"),
+            PollingReason::ForcedPolling => write!(f, "forced polling"),
         }
     }
 }
@@ -290,7 +293,8 @@ impl EventBroker {
         }
 
         // Start event activity monitoring
-        self.event_detector.start_monitoring().await;
+        let monitoring_handle = self.event_detector.start_monitoring().await;
+        self.background_tasks.push(monitoring_handle);
 
         // Start subscription renewal monitoring
         self.start_subscription_renewal_monitoring().await;
@@ -454,7 +458,7 @@ impl EventBroker {
             );
 
             firewall_status = FirewallStatus::Blocked;
-            polling_reason = Some(PollingReason::FirewallBlocked);
+            polling_reason = Some(PollingReason::ForcedPolling);
 
             // Register with event detector for monitoring
             self.event_detector.register_subscription(registration_id).await;
@@ -805,5 +809,6 @@ mod tests {
         assert_eq!(PollingReason::EventTimeout.to_string(), "event timeout");
         assert_eq!(PollingReason::SubscriptionFailed.to_string(), "subscription failed");
         assert_eq!(PollingReason::NetworkIssues.to_string(), "network issues");
+        assert_eq!(PollingReason::ForcedPolling.to_string(), "forced polling");
     }
 }
