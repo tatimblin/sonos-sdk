@@ -8,6 +8,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a Rust-based modular SDK for interacting with Sonos devices via their UPnP/SOAP interface. The project is structured as a Cargo workspace with multiple interdependent crates, each handling a specific aspect of Sonos device communication.
 
+> **Project Status**: See [docs/STATUS.md](docs/STATUS.md) for the service completion matrix and development roadmap.
+
 ## Development Commands
 
 ### Building

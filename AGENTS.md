@@ -9,6 +9,8 @@
 3. Do not create additional markdown files in the repository unless you are explicitly instructed to do so.
 4. When writing unit tests, make concise and easy to read unit tests.
 5. When writing unit tests, understand there can be too many unit tests. Strike a balance in test coverage and comprehension.
+6. Before working on any service, check [docs/STATUS.md](/docs/STATUS.md) for the current implementation status across all layers.
+7. After completing work on a service, update the status matrix in STATUS.md to reflect your changes.
 
 ## Project Overview
 
