@@ -14,25 +14,26 @@ Tracks each Sonos UPnP service across the 4-layer SDK architecture (6 checkpoint
 
 | Service | API | Stream Events | Stream Polling | State Decoder | SDK Handles | SDK Fetch |
 |---|---|---|---|---|---|---|
-| AVTransport | Done | Done | Partial [1] | Done | Done | Partial [2] |
-| RenderingControl | Done | Done | Partial [4] | Done | Done | Partial [5] |
-| GroupRenderingControl | Done | Done | Stub | Partial [6] | Partial [7] | Done |
-| ZoneGroupTopology | Done | Done | Stub | Done | Partial [8] | None [9] |
-| GroupManagement | Done | Done | Stub | None | None | — |
+| AVTransport | Done | Done | Done | Done | Done | Partial [2] |
+| RenderingControl | Done | Done | Done | Done | Done | Partial [5] |
+| GroupRenderingControl | Done | Done | Done | Partial [6] | Partial [7] | Done |
+| ZoneGroupTopology | Done | Done | Done | Done | Partial [8] | None [9] |
+| GroupManagement | Done | Done | Done [11] | None | None | — |
 | DeviceProperties | None | Partial [10] | None | None | None | — |
 
 **Footnotes:**
 
-1. Polling only calls `GetTransportInfo`; position and track data are TODOs with empty strings
+1. ~~Polling only calls `GetTransportInfo`~~ — Now calls `GetTransportInfo` + `GetPositionInfo` for complete state
 2. `CurrentTrack` has no `fetch()` — only Volume, PlaybackState, and Position do
 3. ~~Only `GetVolume`, `SetVolume`, `SetRelativeVolume`~~ — All 11 operations now implemented (Get/Set for Volume, Mute, Bass, Treble, Loudness + SetRelativeVolume)
-4. Polling only queries volume; mute is hardcoded to `false`
+4. ~~Polling only queries volume; mute is hardcoded to `false`~~ — Now queries volume, mute, bass, treble, loudness
 5. Only `Volume` has `fetch()` — Mute, Bass, Treble, Loudness Get operations now exist, `Fetchable` impls needed
 6. Only `GroupVolume` decoded; `GroupMute` and `GroupVolumeChangeable` not decoded despite being present in event data
 7. `GroupVolume` handle exists on Group; no `GroupMute` handle
 8. `GroupMembership` on Speaker; `Topology` is system-level with no SDK handle
 9. `GroupMembership` has no `fetch()`; could use `GetZoneGroupState`
 10. `DevicePropertiesEvent` type exists in stream but no `Service` enum variant; uses `ZoneGroupTopology` as fallback in `service_type()`
+11. No-op poller — GroupManagement has no Get operations (action-only service); group state reflected via ZoneGroupTopology events
 
 ### Unstarted Services
 
@@ -69,7 +70,7 @@ Prioritized by user-facing impact, not by service or layer.
 
 Missing `fetch()` on SDK properties means users must wait for an event before reading a value. This is the most impactful gap.
 
-- [ ] Add `GetMute`, `GetBass`, `GetTreble`, `GetLoudness` operations to `sonos-api` RenderingControl service
+- [x] Add `GetMute`, `GetBass`, `GetTreble`, `GetLoudness` operations to `sonos-api` RenderingControl service
 - [ ] Add `fetch()` to Mute, Bass, Treble, Loudness SDK handles (requires operations above)
 - [ ] Add `fetch()` to CurrentTrack handle (can use existing `GetPositionInfo`)
 - [ ] Add `fetch()` to GroupMembership handle (can use existing `GetZoneGroupState`)
@@ -80,16 +81,16 @@ Services that are started but have gaps across layers.
 
 - [ ] GroupRenderingControl decoder: extract `GroupMute` and `GroupVolumeChangeable` from events
 - [ ] GroupManagement: add state decoder and SDK handles (API and stream layers are done)
-- [ ] RenderingControl polling: query mute instead of hardcoding `false`
-- [ ] AVTransport polling: add `GetPositionInfo` call for position/track data
+- [x] RenderingControl polling: query mute, bass, treble, loudness (not just volume)
+- [x] AVTransport polling: add `GetPositionInfo` call for position/track data
 
 ### Tier 3: Reliability Under Firewall
 
 Polling fallbacks that matter when UPnP events are blocked by firewalls.
 
-- [ ] ZoneGroupTopology polling strategy (currently returns `UnsupportedService`)
-- [ ] GroupRenderingControl polling strategy (currently returns `UnsupportedService`)
-- [ ] GroupManagement polling strategy (currently returns `UnsupportedService`)
+- [x] ZoneGroupTopology polling strategy — queries and parses zone group state
+- [x] GroupRenderingControl polling strategy — queries group volume and mute
+- [x] GroupManagement polling strategy — stable no-op (no Get operations available)
 
 ### Tier 4: New Service Expansion
 

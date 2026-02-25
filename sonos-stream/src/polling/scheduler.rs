@@ -670,6 +670,75 @@ mod tests {
     }
 
     #[test]
+    fn test_change_to_event_data_all_services() {
+        use crate::events::types::EventData;
+        use crate::polling::strategies::StateChange;
+
+        // AVTransport — TransportState change
+        let change = StateChange::TransportState {
+            old_state: "STOPPED".to_string(),
+            new_state: "PLAYING".to_string(),
+        };
+        let event = PollingTask::change_to_event_data(change, &sonos_api::Service::AVTransport);
+        assert!(matches!(event, EventData::AVTransportEvent(_)));
+
+        // RenderingControl — VolumeChanged
+        let change = StateChange::VolumeChanged {
+            old_volume: "50".to_string(),
+            new_volume: "75".to_string(),
+        };
+        let event = PollingTask::change_to_event_data(change, &sonos_api::Service::RenderingControl);
+        assert!(matches!(event, EventData::RenderingControlEvent(_)));
+
+        // RenderingControl — GenericChange for bass
+        let change = StateChange::GenericChange {
+            field: "bass".to_string(),
+            old_value: "0".to_string(),
+            new_value: "5".to_string(),
+        };
+        let event = PollingTask::change_to_event_data(change, &sonos_api::Service::RenderingControl);
+        if let EventData::RenderingControlEvent(rc) = event {
+            assert_eq!(rc.bass, Some("5".to_string()));
+        } else {
+            panic!("Expected RenderingControlEvent");
+        }
+
+        // GroupRenderingControl — GroupRenderingControlChanged
+        let change = StateChange::GroupRenderingControlChanged {
+            event: crate::events::types::GroupRenderingControlEvent {
+                group_volume: Some(60),
+                group_mute: Some(false),
+                group_volume_changeable: None,
+            },
+        };
+        let event = PollingTask::change_to_event_data(change, &sonos_api::Service::GroupRenderingControl);
+        if let EventData::GroupRenderingControlEvent(grc) = event {
+            assert_eq!(grc.group_volume, Some(60));
+        } else {
+            panic!("Expected GroupRenderingControlEvent");
+        }
+
+        // ZoneGroupTopology — TopologyChanged
+        let change = StateChange::TopologyChanged {
+            event: crate::events::types::ZoneGroupTopologyEvent {
+                zone_groups: vec![],
+                vanished_devices: vec![],
+            },
+        };
+        let event = PollingTask::change_to_event_data(change, &sonos_api::Service::ZoneGroupTopology);
+        assert!(matches!(event, EventData::ZoneGroupTopologyEvent(_)));
+
+        // GroupManagement — any change produces empty event
+        let change = StateChange::GenericChange {
+            field: "test".to_string(),
+            old_value: "a".to_string(),
+            new_value: "b".to_string(),
+        };
+        let event = PollingTask::change_to_event_data(change, &sonos_api::Service::GroupManagement);
+        assert!(matches!(event, EventData::GroupManagementEvent(_)));
+    }
+
+    #[test]
     fn test_adaptive_interval_calculation() {
         let current = Duration::from_secs(5);
         let max = Duration::from_secs(30);

@@ -338,30 +338,60 @@ struct RenderingControlState {
     pub loudness: bool,
 }
 
-/// Polling strategy for ZoneGroupTopology service (STUB - not yet implemented)
+/// Polling strategy for ZoneGroupTopology service.
+///
+/// Calls GetZoneGroupState and compares the raw XML string for fast change
+/// detection. Only parses the XML into structured data when a change is
+/// detected, using the existing parser infrastructure from sonos-api.
 pub struct ZoneGroupTopologyPoller;
 
 #[async_trait]
 impl ServicePoller for ZoneGroupTopologyPoller {
-    async fn poll_state(&self, _client: &SonosClient, _pair: &SpeakerServicePair) -> PollingResult<String> {
-        // TODO: Implement ZoneGroupTopology polling
-        // This would require:
-        // 1. Adding ZoneGroupTopology operations to sonos-api crate
-        // 2. Querying GetZoneGroupState operation
-        // 3. Serializing the topology state for comparison
-        Err(PollingError::UnsupportedService {
-            service: Service::ZoneGroupTopology,
-        })
+    async fn poll_state(&self, client: &SonosClient, pair: &SpeakerServicePair) -> PollingResult<String> {
+        use sonos_api::services::zone_group_topology;
+
+        let op = zone_group_topology::get_zone_group_state_operation()
+            .build()
+            .map_err(|e| PollingError::StateParsing(format!("Failed to build operation: {}", e)))?;
+        let response = client.execute_enhanced(&pair.speaker_ip.to_string(), op)
+            .map_err(|e| PollingError::Network(e.to_string()))?;
+
+        let state = ZoneGroupTopologyState {
+            zone_group_state_xml: response.zone_group_state,
+        };
+
+        serde_json::to_string(&state)
+            .map_err(|e| PollingError::StateParsing(format!("Failed to serialize state: {}", e)))
     }
 
-    async fn parse_for_changes(&self, _old_state: &str, _new_state: &str) -> Vec<StateChange> {
-        // TODO: Implement topology change detection
-        // This would detect:
-        // - Speakers joining/leaving groups
-        // - Coordinator changes
-        // - Network configuration changes
-        // - New/vanished devices
-        vec![]
+    async fn parse_for_changes(&self, old_state: &str, new_state: &str) -> Vec<StateChange> {
+        let old: ZoneGroupTopologyState = match serde_json::from_str(old_state) {
+            Ok(state) => state,
+            Err(_) => return vec![],
+        };
+
+        let new: ZoneGroupTopologyState = match serde_json::from_str(new_state) {
+            Ok(state) => state,
+            Err(_) => return vec![],
+        };
+
+        // Fast path: raw string comparison
+        if old.zone_group_state_xml == new.zone_group_state_xml {
+            return vec![];
+        }
+
+        // XML changed — parse into structured topology event
+        match Self::parse_topology_xml(&new.zone_group_state_xml) {
+            Some(event) => vec![StateChange::TopologyChanged { event }],
+            None => {
+                // Parse failure — emit as generic change so it's not silently lost
+                vec![StateChange::GenericChange {
+                    field: "zone_group_state".to_string(),
+                    old_value: old.zone_group_state_xml,
+                    new_value: new.zone_group_state_xml,
+                }]
+            }
+        }
     }
 
     fn service_type(&self) -> Service {
@@ -369,19 +399,96 @@ impl ServicePoller for ZoneGroupTopologyPoller {
     }
 }
 
+impl ZoneGroupTopologyPoller {
+    /// Parse raw zone group state XML into a ZoneGroupTopologyEvent.
+    ///
+    /// Wraps the raw XML in a UPnP propertyset envelope and delegates to the
+    /// existing parser in sonos-api, then converts to sonos-stream types using
+    /// the same pattern as the event processor (processor.rs:264-297).
+    fn parse_topology_xml(raw_xml: &str) -> Option<ZoneGroupTopologyEvent> {
+        // The raw XML from GetZoneGroupState is entity-decoded by xmltree:
+        //   <ZoneGroups><ZoneGroup ...>...</ZoneGroup></ZoneGroups>
+        // The from_xml() parser expects the propertyset envelope with entity-encoded content.
+        // We need to: wrap in <ZoneGroupState>, entity-encode, then wrap in propertyset.
+        let with_wrapper = if raw_xml.trim_start().starts_with("<ZoneGroupState>") {
+            raw_xml.to_string()
+        } else {
+            format!("<ZoneGroupState>{}</ZoneGroupState>", raw_xml)
+        };
+
+        let encoded = with_wrapper
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;");
+
+        let envelope = format!(
+            r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><ZoneGroupState>{}</ZoneGroupState></e:property></e:propertyset>"#,
+            encoded
+        );
+
+        let api_event = sonos_api::services::zone_group_topology::ZoneGroupTopologyEvent::from_xml(&envelope).ok()?;
+
+        // Convert from sonos-api types to sonos-stream types
+        let zone_groups = api_event.zone_groups().into_iter().map(|group| {
+            let members = group.members.into_iter().map(|member| {
+                let satellites = member.satellites.into_iter().map(|sat| {
+                    crate::events::types::SatelliteInfo {
+                        uuid: sat.uuid,
+                        location: sat.location,
+                        zone_name: sat.zone_name,
+                        ht_sat_chan_map_set: sat.ht_sat_chan_map_set,
+                        invisible: sat.invisible,
+                    }
+                }).collect();
+
+                crate::events::types::ZoneGroupMemberInfo {
+                    uuid: member.uuid,
+                    location: member.location,
+                    zone_name: member.zone_name,
+                    software_version: member.software_version,
+                    network_info: crate::events::types::NetworkInfo {
+                        wireless_mode: member.network_info.wireless_mode,
+                        wifi_enabled: member.network_info.wifi_enabled,
+                        eth_link: member.network_info.eth_link,
+                        channel_freq: member.network_info.channel_freq,
+                        behind_wifi_extender: member.network_info.behind_wifi_extender,
+                    },
+                    satellites,
+                }
+            }).collect();
+
+            crate::events::types::ZoneGroupInfo {
+                coordinator: group.coordinator,
+                id: group.id,
+                members,
+            }
+        }).collect();
+
+        Some(ZoneGroupTopologyEvent {
+            zone_groups,
+            vanished_devices: vec![],
+        })
+    }
+}
+
+/// Serializable state for ZoneGroupTopology service
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct ZoneGroupTopologyState {
+    pub zone_group_state_xml: String,
+}
+
 /// Polling strategy for GroupManagement service.
 ///
-/// Stub — GroupManagement doesn't currently emit events, but the poller is
-/// registered so the service is included in service enumeration and will work
-/// automatically if Sonos adds event support in a future firmware update.
+/// Intentional no-op: GroupManagement has no Get operations — it's action-only
+/// (AddMember, RemoveMember). Group state changes are reflected via ZoneGroupTopology
+/// events. Returns stable empty state to avoid triggering error escalation in the scheduler.
 pub struct GroupManagementPoller;
 
 #[async_trait]
 impl ServicePoller for GroupManagementPoller {
     async fn poll_state(&self, _client: &SonosClient, _pair: &SpeakerServicePair) -> PollingResult<String> {
-        Err(PollingError::UnsupportedService {
-            service: Service::GroupManagement,
-        })
+        Ok("{}".to_string())
     }
 
     async fn parse_for_changes(&self, _old_state: &str, _new_state: &str) -> Vec<StateChange> {
@@ -395,25 +502,73 @@ impl ServicePoller for GroupManagementPoller {
 
 /// Polling strategy for GroupRenderingControl service.
 ///
-/// Stub — GroupRenderingControl events are received via UPnP subscriptions,
-/// but the poller is registered so the service is included in service enumeration.
+/// Polls group volume and mute from the group coordinator. Operations must be
+/// sent to the group coordinator — the registration layer is responsible for
+/// ensuring the correct speaker is targeted.
 pub struct GroupRenderingControlPoller;
 
 #[async_trait]
 impl ServicePoller for GroupRenderingControlPoller {
-    async fn poll_state(&self, _client: &SonosClient, _pair: &SpeakerServicePair) -> PollingResult<String> {
-        Err(PollingError::UnsupportedService {
-            service: Service::GroupRenderingControl,
-        })
+    async fn poll_state(&self, client: &SonosClient, pair: &SpeakerServicePair) -> PollingResult<String> {
+        use sonos_api::services::group_rendering_control;
+        let ip = pair.speaker_ip.to_string();
+
+        let volume_op = group_rendering_control::get_group_volume_operation()
+            .build()
+            .map_err(|e| PollingError::StateParsing(format!("Failed to build operation: {}", e)))?;
+        let volume_response = client.execute_enhanced(&ip, volume_op)
+            .map_err(|e| PollingError::Network(e.to_string()))?;
+
+        let mute_op = group_rendering_control::get_group_mute_operation()
+            .build()
+            .map_err(|e| PollingError::StateParsing(format!("Failed to build operation: {}", e)))?;
+        let mute_response = client.execute_enhanced(&ip, mute_op)
+            .map_err(|e| PollingError::Network(e.to_string()))?;
+
+        let state = GroupRenderingControlState {
+            group_volume: volume_response.current_volume,
+            group_mute: mute_response.current_mute,
+        };
+
+        serde_json::to_string(&state)
+            .map_err(|e| PollingError::StateParsing(format!("Failed to serialize state: {}", e)))
     }
 
-    async fn parse_for_changes(&self, _old_state: &str, _new_state: &str) -> Vec<StateChange> {
-        vec![]
+    async fn parse_for_changes(&self, old_state: &str, new_state: &str) -> Vec<StateChange> {
+        let old: GroupRenderingControlState = match serde_json::from_str(old_state) {
+            Ok(state) => state,
+            Err(_) => return vec![],
+        };
+
+        let new: GroupRenderingControlState = match serde_json::from_str(new_state) {
+            Ok(state) => state,
+            Err(_) => return vec![],
+        };
+
+        if old.group_volume == new.group_volume && old.group_mute == new.group_mute {
+            return vec![];
+        }
+
+        // Emit a complete GroupRenderingControlEvent for the downstream consumer
+        vec![StateChange::GroupRenderingControlChanged {
+            event: GroupRenderingControlEvent {
+                group_volume: Some(new.group_volume),
+                group_mute: Some(new.group_mute),
+                group_volume_changeable: None,
+            },
+        }]
     }
 
     fn service_type(&self) -> Service {
         Service::GroupRenderingControl
     }
+}
+
+/// Serializable state for GroupRenderingControl service
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct GroupRenderingControlState {
+    pub group_volume: u16,
+    pub group_mute: bool,
 }
 
 /// Main device state poller that coordinates different service strategies
@@ -534,7 +689,7 @@ mod tests {
         let poller = DeviceStatePoller::new();
         let stats = poller.stats();
 
-        assert_eq!(stats.total_pollers, 5); // AVTransport, RenderingControl, ZoneGroupTopology (stub), GroupManagement (stub), GroupRenderingControl (stub)
+        assert_eq!(stats.total_pollers, 5); // AVTransport, RenderingControl, ZoneGroupTopology, GroupManagement (no-op), GroupRenderingControl
         assert!(poller.is_service_supported(&Service::AVTransport));
         assert!(poller.is_service_supported(&Service::RenderingControl));
         assert!(poller.is_service_supported(&Service::ZoneGroupTopology));
@@ -639,61 +794,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_group_rendering_control_change_detection() {
+        let poller = GroupRenderingControlPoller;
+
+        let old_state = serde_json::to_string(&GroupRenderingControlState {
+            group_volume: 40,
+            group_mute: false,
+        }).unwrap();
+
+        let new_state = serde_json::to_string(&GroupRenderingControlState {
+            group_volume: 60,
+            group_mute: true,
+        }).unwrap();
+
+        let changes = poller.parse_for_changes(&old_state, &new_state).await;
+        assert_eq!(changes.len(), 1);
+        assert!(matches!(&changes[0], StateChange::GroupRenderingControlChanged { event }
+            if event.group_volume == Some(60) && event.group_mute == Some(true)));
+    }
+
+    #[tokio::test]
     async fn test_service_poller_types() {
         let av_poller = AVTransportPoller;
         let rc_poller = RenderingControlPoller;
         let zgt_poller = ZoneGroupTopologyPoller;
         let gm_poller = GroupManagementPoller;
+        let grc_poller = GroupRenderingControlPoller;
 
         assert_eq!(av_poller.service_type(), Service::AVTransport);
         assert_eq!(rc_poller.service_type(), Service::RenderingControl);
         assert_eq!(zgt_poller.service_type(), Service::ZoneGroupTopology);
         assert_eq!(gm_poller.service_type(), Service::GroupManagement);
+        assert_eq!(grc_poller.service_type(), Service::GroupRenderingControl);
     }
 
     #[tokio::test]
-    async fn test_zone_group_topology_poller_stub() {
+    async fn test_zone_group_topology_change_detection() {
         let poller = ZoneGroupTopologyPoller;
-        let pair = SpeakerServicePair {
-            speaker_ip: "192.168.1.100".parse().unwrap(),
-            service: Service::ZoneGroupTopology,
-        };
 
-        // Test that polling returns an unsupported service error (stubbed behavior)
-        let result = poller.poll_state(&SonosClient::new(), &pair).await;
-        assert!(result.is_err());
+        let old_state = serde_json::to_string(&ZoneGroupTopologyState {
+            zone_group_state_xml: "<ZoneGroups><ZoneGroup Coordinator=\"RINCON_A\" ID=\"group1\"><ZoneGroupMember UUID=\"RINCON_A\"/></ZoneGroup></ZoneGroups>".to_string(),
+        }).unwrap();
 
-        match result.unwrap_err() {
-            PollingError::UnsupportedService { service } => {
-                assert_eq!(service, Service::ZoneGroupTopology);
-            }
-            _ => panic!("Expected UnsupportedService error for stubbed ZoneGroupTopology poller"),
-        }
+        let new_state = serde_json::to_string(&ZoneGroupTopologyState {
+            zone_group_state_xml: "<ZoneGroups><ZoneGroup Coordinator=\"RINCON_B\" ID=\"group2\"><ZoneGroupMember UUID=\"RINCON_B\"/></ZoneGroup></ZoneGroups>".to_string(),
+        }).unwrap();
 
-        // Test that change parsing returns empty vec (no-op for stub)
-        let changes = poller.parse_for_changes("old_state", "new_state").await;
-        assert!(changes.is_empty());
+        // Same state = no changes
+        let changes = poller.parse_for_changes(&old_state, &old_state).await;
+        assert!(changes.is_empty(), "Same state should produce no changes");
+
+        // Different state = change detected (falls back to GenericChange since minimal XML won't fully parse)
+        let changes = poller.parse_for_changes(&old_state, &new_state).await;
+        assert_eq!(changes.len(), 1, "Different state should produce one change");
+    }
+
+    #[test]
+    fn test_zone_group_topology_parse_xml() {
+        // Raw XML as returned by GetZoneGroupState after entity decoding by xmltree
+        let raw_xml = r#"<ZoneGroups><ZoneGroup Coordinator="RINCON_000E58C3892C01400" ID="RINCON_000E58C3892C01400:3716085098"><ZoneGroupMember UUID="RINCON_000E58C3892C01400" Location="http://192.168.1.42:1400/xml/device_description.xml" ZoneName="Living Room" SoftwareVersion="79.1-53080" WirelessMode="0" WifiEnabled="1" EthLink="0" ChannelFreq="2437" BehindWifiExtender="0"/></ZoneGroup></ZoneGroups>"#;
+
+        let result = ZoneGroupTopologyPoller::parse_topology_xml(raw_xml);
+        assert!(result.is_some(), "Should parse valid topology XML");
+
+        let event = result.unwrap();
+        assert_eq!(event.zone_groups.len(), 1);
+        assert_eq!(event.zone_groups[0].coordinator, "RINCON_000E58C3892C01400");
+        assert_eq!(event.zone_groups[0].members.len(), 1);
+        assert_eq!(event.zone_groups[0].members[0].zone_name, "Living Room");
     }
 
     #[tokio::test]
-    async fn test_group_management_poller_stub() {
+    async fn test_group_management_poller_noop() {
         let poller = GroupManagementPoller;
         let pair = SpeakerServicePair {
             speaker_ip: "192.168.1.100".parse().unwrap(),
             service: Service::GroupManagement,
         };
 
+        // No-op poller returns Ok with stable empty state
         let result = poller.poll_state(&SonosClient::new(), &pair).await;
-        assert!(result.is_err());
+        assert!(result.is_ok(), "GroupManagement poller should return Ok");
+        assert_eq!(result.unwrap(), "{}");
 
-        match result.unwrap_err() {
-            PollingError::UnsupportedService { service } => {
-                assert_eq!(service, Service::GroupManagement);
-            }
-            _ => panic!("Expected UnsupportedService error for stubbed GroupManagement poller"),
-        }
-
-        let changes = poller.parse_for_changes("old_state", "new_state").await;
+        // Identical state = no changes
+        let changes = poller.parse_for_changes("{}", "{}").await;
         assert!(changes.is_empty());
     }
 }
