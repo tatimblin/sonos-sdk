@@ -56,6 +56,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "No firewall detection - relies on event timeout fallback"
     ).await?;
 
+    // Test 4: Force polling mode (firewall simulation for testing)
+    println!("\n📋 TEST 4: Force Polling Mode (Firewall Simulation)");
+    println!("   💡 This mode skips UPnP subscriptions entirely and goes straight to polling.");
+    println!("   💡 Useful for testing firewall fallback behavior without a real firewall.");
+    test_firewall_scenario(
+        BrokerConfig::firewall_simulation(),
+        device_ip,
+        "Firewall simulation - force polling mode, no UPnP subscriptions"
+    ).await?;
+
     println!("\n✅ All firewall handling scenarios tested successfully!");
 
     Ok(())
@@ -69,6 +79,7 @@ async fn test_firewall_scenario(
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("🔧 Configuration: {}", description);
     println!("   Firewall Detection: {}", config.enable_proactive_firewall_detection);
+    println!("   Force Polling Mode: {}", config.force_polling_mode);
     println!("   Event Timeout: {:?}", config.event_timeout);
     println!("   Base Polling Interval: {:?}", config.base_polling_interval);
 

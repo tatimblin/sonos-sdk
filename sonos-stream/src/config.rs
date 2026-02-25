@@ -72,6 +72,11 @@ pub struct BrokerConfig {
     /// Threshold for subscription renewal (time before expiration)
     /// Default: 5 minutes
     pub renewal_threshold: Duration,
+
+    /// Force polling mode — skip UPnP subscriptions and go straight to polling
+    /// Simulates a firewall that blocks all callback traffic. Useful for testing.
+    /// Default: false
+    pub force_polling_mode: bool,
 }
 
 impl Default for BrokerConfig {
@@ -92,6 +97,7 @@ impl Default for BrokerConfig {
             max_registrations: 1000,
             adaptive_polling: true,
             renewal_threshold: Duration::from_secs(300), // 5 minutes
+            force_polling_mode: false,
         }
     }
 }
@@ -131,6 +137,17 @@ impl BrokerConfig {
     pub fn no_firewall_detection() -> Self {
         Self {
             enable_proactive_firewall_detection: false,
+            ..Default::default()
+        }
+    }
+
+    /// Create a BrokerConfig that simulates a firewall by forcing polling mode
+    /// Useful for testing firewall fallback behavior without a real firewall
+    pub fn firewall_simulation() -> Self {
+        Self {
+            force_polling_mode: true,
+            base_polling_interval: Duration::from_secs(2),
+            max_polling_interval: Duration::from_secs(10),
             ..Default::default()
         }
     }
@@ -179,6 +196,12 @@ impl BrokerConfig {
             ));
         }
 
+        if self.force_polling_mode && !self.enable_proactive_firewall_detection {
+            return Err(crate::BrokerError::Configuration(
+                "force_polling_mode requires enable_proactive_firewall_detection to be true".to_string(),
+            ));
+        }
+
         Ok(())
     }
 
@@ -209,6 +232,11 @@ impl BrokerConfig {
         self.enable_proactive_firewall_detection = enabled;
         self
     }
+
+    pub fn with_force_polling(mut self, enabled: bool) -> Self {
+        self.force_polling_mode = enabled;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -221,6 +249,7 @@ mod tests {
         assert_eq!(config.callback_port_range, (3400, 3500));
         assert_eq!(config.event_timeout, Duration::from_secs(30));
         assert!(config.enable_proactive_firewall_detection);
+        assert!(!config.force_polling_mode);
         assert!(config.validate().is_ok());
     }
 
@@ -238,6 +267,13 @@ mod tests {
             ..Default::default()
         };
         assert!(invalid_polling.validate().is_err());
+
+        let invalid_force_polling = BrokerConfig {
+            force_polling_mode: true,
+            enable_proactive_firewall_detection: false, // Invalid: force_polling requires firewall detection
+            ..Default::default()
+        };
+        assert!(invalid_force_polling.validate().is_err());
     }
 
     #[test]
@@ -253,6 +289,11 @@ mod tests {
         let no_fw = BrokerConfig::no_firewall_detection();
         assert!(!no_fw.enable_proactive_firewall_detection);
         assert!(no_fw.validate().is_ok());
+
+        let fw_sim = BrokerConfig::firewall_simulation();
+        assert!(fw_sim.force_polling_mode);
+        assert_eq!(fw_sim.base_polling_interval, Duration::from_secs(2));
+        assert!(fw_sim.validate().is_ok());
     }
 
     #[test]
