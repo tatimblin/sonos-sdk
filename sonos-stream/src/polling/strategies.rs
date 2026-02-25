@@ -75,28 +75,31 @@ pub struct AVTransportPoller;
 impl ServicePoller for AVTransportPoller {
     async fn poll_state(&self, client: &SonosClient, pair: &SpeakerServicePair) -> PollingResult<String> {
         use sonos_api::services::av_transport;
+        let ip = pair.speaker_ip.to_string();
 
-        // Get transport info (current state, speed, etc.)
         let transport_op = av_transport::get_transport_info_operation()
             .build()
             .map_err(|e| PollingError::StateParsing(format!("Failed to build operation: {}", e)))?;
-
-        let transport_info = client
-            .execute_enhanced(&pair.speaker_ip.to_string(), transport_op)
+        let transport_info = client.execute_enhanced(&ip, transport_op)
             .map_err(|e| PollingError::Network(e.to_string()))?;
 
-        // Create a comparable state representation
+        let position_op = av_transport::get_position_info_operation()
+            .build()
+            .map_err(|e| PollingError::StateParsing(format!("Failed to build operation: {}", e)))?;
+        let position_info = client.execute_enhanced(&ip, position_op)
+            .map_err(|e| PollingError::Network(e.to_string()))?;
+
         let state = AVTransportState {
             transport_state: transport_info.current_transport_state,
             current_transport_status: transport_info.current_transport_status,
             current_speed: transport_info.current_speed,
-            current_track_uri: "".to_string(), // TODO: Get from get_position_info_operation
-            track_duration: "".to_string(),     // TODO: Get from get_position_info_operation
-            track_metadata: "".to_string(),     // TODO: Get from get_position_info_operation
-            rel_time: "".to_string(),           // TODO: Get from get_position_info_operation
-            abs_time: "".to_string(),           // TODO: Get from get_position_info_operation
-            rel_count: 0,                       // TODO: Get from get_position_info_operation
-            abs_count: 0,                       // TODO: Get from get_position_info_operation
+            current_track_uri: position_info.track_uri,
+            track_duration: position_info.track_duration,
+            track_metadata: position_info.track_meta_data,
+            rel_time: position_info.rel_time,
+            abs_time: position_info.abs_time,
+            rel_count: position_info.rel_count as u32,
+            abs_count: position_info.abs_count as u32,
         };
 
         serde_json::to_string(&state)
@@ -219,20 +222,44 @@ pub struct RenderingControlPoller;
 impl ServicePoller for RenderingControlPoller {
     async fn poll_state(&self, client: &SonosClient, pair: &SpeakerServicePair) -> PollingResult<String> {
         use sonos_api::services::rendering_control;
+        let ip = pair.speaker_ip.to_string();
 
-        // Get volume level
         let volume_op = rendering_control::get_volume_operation("Master".to_string())
             .build()
             .map_err(|e| PollingError::StateParsing(format!("Failed to build operation: {}", e)))?;
-
-        let volume_response = client
-            .execute_enhanced(&pair.speaker_ip.to_string(), volume_op)
+        let volume_response = client.execute_enhanced(&ip, volume_op)
             .map_err(|e| PollingError::Network(e.to_string()))?;
 
-        // Create comparable state representation
+        let mute_op = rendering_control::get_mute_operation("Master".to_string())
+            .build()
+            .map_err(|e| PollingError::StateParsing(format!("Failed to build operation: {}", e)))?;
+        let mute_response = client.execute_enhanced(&ip, mute_op)
+            .map_err(|e| PollingError::Network(e.to_string()))?;
+
+        let bass_op = rendering_control::get_bass_operation()
+            .build()
+            .map_err(|e| PollingError::StateParsing(format!("Failed to build operation: {}", e)))?;
+        let bass_response = client.execute_enhanced(&ip, bass_op)
+            .map_err(|e| PollingError::Network(e.to_string()))?;
+
+        let treble_op = rendering_control::get_treble_operation()
+            .build()
+            .map_err(|e| PollingError::StateParsing(format!("Failed to build operation: {}", e)))?;
+        let treble_response = client.execute_enhanced(&ip, treble_op)
+            .map_err(|e| PollingError::Network(e.to_string()))?;
+
+        let loudness_op = rendering_control::get_loudness_operation("Master".to_string())
+            .build()
+            .map_err(|e| PollingError::StateParsing(format!("Failed to build operation: {}", e)))?;
+        let loudness_response = client.execute_enhanced(&ip, loudness_op)
+            .map_err(|e| PollingError::Network(e.to_string()))?;
+
         let state = RenderingControlState {
             volume: volume_response.current_volume as u16,
-            mute: false, // TODO: Get from get_mute_operation
+            mute: mute_response.current_mute,
+            bass: bass_response.current_bass,
+            treble: treble_response.current_treble,
+            loudness: loudness_response.current_loudness,
         };
 
         serde_json::to_string(&state)
@@ -252,7 +279,6 @@ impl ServicePoller for RenderingControlPoller {
 
         let mut changes = Vec::new();
 
-        // Check volume changes
         if old.volume != new.volume {
             changes.push(StateChange::VolumeChanged {
                 old_volume: old.volume.to_string(),
@@ -260,11 +286,34 @@ impl ServicePoller for RenderingControlPoller {
             });
         }
 
-        // Check mute changes
         if old.mute != new.mute {
             changes.push(StateChange::MuteChanged {
                 old_mute: old.mute,
                 new_mute: new.mute,
+            });
+        }
+
+        if old.bass != new.bass {
+            changes.push(StateChange::GenericChange {
+                field: "bass".to_string(),
+                old_value: old.bass.to_string(),
+                new_value: new.bass.to_string(),
+            });
+        }
+
+        if old.treble != new.treble {
+            changes.push(StateChange::GenericChange {
+                field: "treble".to_string(),
+                old_value: old.treble.to_string(),
+                new_value: new.treble.to_string(),
+            });
+        }
+
+        if old.loudness != new.loudness {
+            changes.push(StateChange::GenericChange {
+                field: "loudness".to_string(),
+                old_value: old.loudness.to_string(),
+                new_value: new.loudness.to_string(),
             });
         }
 
@@ -281,6 +330,12 @@ impl ServicePoller for RenderingControlPoller {
 struct RenderingControlState {
     pub volume: u16,
     pub mute: bool,
+    #[serde(default)]
+    pub bass: i8,
+    #[serde(default)]
+    pub treble: i8,
+    #[serde(default)]
+    pub loudness: bool,
 }
 
 /// Polling strategy for ZoneGroupTopology service (STUB - not yet implemented)
@@ -544,22 +599,43 @@ mod tests {
         let old_state = serde_json::to_string(&RenderingControlState {
             volume: 50,
             mute: false,
+            bass: 0,
+            treble: 0,
+            loudness: true,
         }).unwrap();
 
         let new_state = serde_json::to_string(&RenderingControlState {
             volume: 75,
             mute: true,
+            bass: 5,
+            treble: -3,
+            loudness: false,
         }).unwrap();
 
         let changes = poller.parse_for_changes(&old_state, &new_state).await;
-        assert_eq!(changes.len(), 2);
+        assert_eq!(changes.len(), 5);
 
-        // Check that we got both volume and mute changes
-        let has_volume_change = changes.iter().any(|c| matches!(c, StateChange::VolumeChanged { .. }));
-        let has_mute_change = changes.iter().any(|c| matches!(c, StateChange::MuteChanged { .. }));
+        assert!(changes.iter().any(|c| matches!(c, StateChange::VolumeChanged { .. })));
+        assert!(changes.iter().any(|c| matches!(c, StateChange::MuteChanged { .. })));
+        assert!(changes.iter().any(|c| matches!(c, StateChange::GenericChange { field, .. } if field == "bass")));
+        assert!(changes.iter().any(|c| matches!(c, StateChange::GenericChange { field, .. } if field == "treble")));
+        assert!(changes.iter().any(|c| matches!(c, StateChange::GenericChange { field, .. } if field == "loudness")));
+    }
 
-        assert!(has_volume_change);
-        assert!(has_mute_change);
+    #[tokio::test]
+    async fn test_rendering_control_no_change() {
+        let poller = RenderingControlPoller;
+
+        let state = serde_json::to_string(&RenderingControlState {
+            volume: 50,
+            mute: false,
+            bass: 0,
+            treble: 0,
+            loudness: true,
+        }).unwrap();
+
+        let changes = poller.parse_for_changes(&state, &state).await;
+        assert!(changes.is_empty());
     }
 
     #[tokio::test]
