@@ -469,6 +469,9 @@ pub struct BrokerConfig {
     pub firewall_event_wait_timeout: Duration,
     /// Maximum registrations (default: 1000)
     pub max_registrations: usize,
+    /// Force polling mode — skip UPnP subscriptions entirely (default: false)
+    /// Useful for testing firewall fallback behavior without a real firewall
+    pub force_polling_mode: bool,
     // ... additional fields
 }
 ```
@@ -828,6 +831,10 @@ BrokerConfig::resource_efficient()
 
 // No firewall detection: For controlled environments
 BrokerConfig::no_firewall_detection()
+
+// Firewall simulation: Force polling mode for testing fallback behavior
+// Skips UPnP subscriptions entirely and polls at 2s base / 10s max intervals
+BrokerConfig::firewall_simulation()
 ```
 
 ---

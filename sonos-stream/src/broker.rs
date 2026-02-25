@@ -460,9 +460,8 @@ impl EventBroker {
             firewall_status = FirewallStatus::Blocked;
             polling_reason = Some(PollingReason::ForcedPolling);
 
-            // Register with event detector for monitoring
-            self.event_detector.register_subscription(registration_id).await;
-            self.event_detector.register_pair(registration_id, pair.clone()).await;
+            // Skip EventDetector registration — no UPnP events will arrive,
+            // so monitoring would just detect a false timeout.
 
             // Start polling immediately
             if let Err(e) = self.polling_scheduler
@@ -520,9 +519,8 @@ impl EventBroker {
                         );
                     }
 
-                    // Register with event detector (both subscription monitoring and pair mapping)
-                    self.event_detector.register_subscription(registration_id).await;
-                    self.event_detector.register_pair(registration_id, pair.clone()).await;
+                    // Register with event detector for timeout monitoring
+                    self.event_detector.register_subscription(registration_id, pair.clone()).await;
 
                     // Evaluate firewall status for immediate polling decision
                     if let Some(request) = self
