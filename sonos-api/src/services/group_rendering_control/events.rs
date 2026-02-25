@@ -62,6 +62,15 @@ impl GroupRenderingControlEvent {
             .map(|s| s == "1" || s.to_lowercase() == "true")
     }
 
+    /// Convert parsed UPnP event to canonical state representation.
+    pub fn into_state(&self) -> super::state::GroupRenderingControlState {
+        super::state::GroupRenderingControlState {
+            group_volume: self.group_volume(),
+            group_mute: self.group_mute(),
+            group_volume_changeable: self.group_volume_changeable(),
+        }
+    }
+
     /// Parse from UPnP event XML using serde
     pub fn from_xml(xml: &str) -> Result<Self> {
         let clean_xml = xml_utils::strip_namespaces(xml);

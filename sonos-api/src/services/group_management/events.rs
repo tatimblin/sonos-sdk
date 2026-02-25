@@ -78,6 +78,17 @@ impl GroupManagementEvent {
             .find_map(|p| p.volume_av_transport_uri.clone())
     }
 
+    /// Convert parsed UPnP event to canonical state representation.
+    pub fn into_state(&self) -> super::state::GroupManagementState {
+        super::state::GroupManagementState {
+            group_coordinator_is_local: self.group_coordinator_is_local(),
+            local_group_uuid: self.local_group_uuid(),
+            reset_volume_after: self.reset_volume_after(),
+            virtual_line_in_group_id: self.virtual_line_in_group_id(),
+            volume_av_transport_uri: self.volume_av_transport_uri(),
+        }
+    }
+
     /// Parse from UPnP event XML using serde
     pub fn from_xml(xml: &str) -> Result<Self> {
         let clean_xml = xml_utils::strip_namespaces(xml);

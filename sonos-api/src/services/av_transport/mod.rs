@@ -28,9 +28,11 @@
 
 pub mod operations;
 pub mod events;
+pub mod state;
 
 // Re-export operations for convenience
 pub use operations::*;
 
 // Re-export event types and parsers
 pub use events::{AVTransportEvent, AVTransportEventParser, create_enriched_event, create_enriched_event_with_registration_id};
+pub use state::AVTransportState;

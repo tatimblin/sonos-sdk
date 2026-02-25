@@ -150,6 +150,23 @@ impl RenderingControlEvent {
             .map(|m| m.val.clone())
     }
 
+    /// Convert parsed UPnP event to canonical state representation.
+    pub fn into_state(&self) -> super::state::RenderingControlState {
+        super::state::RenderingControlState {
+            master_volume: self.master_volume(),
+            master_mute: self.master_mute(),
+            lf_volume: self.lf_volume(),
+            rf_volume: self.rf_volume(),
+            lf_mute: self.lf_mute(),
+            rf_mute: self.rf_mute(),
+            bass: self.bass(),
+            treble: self.treble(),
+            loudness: self.loudness(),
+            balance: self.balance(),
+            other_channels: self.other_channels(),
+        }
+    }
+
     /// Parse from UPnP event XML using serde
     pub fn from_xml(xml: &str) -> Result<Self> {
         let clean_xml = xml_utils::strip_namespaces(xml);

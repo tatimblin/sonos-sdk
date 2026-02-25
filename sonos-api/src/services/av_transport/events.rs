@@ -143,6 +143,26 @@ impl AVTransportEvent {
         self.property.last_change.instance.queue_length.as_ref().and_then(|v| v.val.parse().ok())
     }
 
+    /// Convert parsed UPnP event to canonical state representation.
+    pub fn into_state(&self) -> super::state::AVTransportState {
+        super::state::AVTransportState {
+            transport_state: self.transport_state(),
+            transport_status: self.transport_status(),
+            speed: self.speed(),
+            current_track_uri: self.current_track_uri(),
+            track_duration: self.track_duration(),
+            track_metadata: self.track_metadata(),
+            rel_time: self.rel_time(),
+            abs_time: self.abs_time(),
+            rel_count: self.rel_count(),
+            abs_count: self.abs_count(),
+            play_mode: self.play_mode(),
+            next_track_uri: self.next_track_uri(),
+            next_track_metadata: self.next_track_metadata(),
+            queue_length: self.queue_length(),
+        }
+    }
+
     /// Parse from UPnP event XML using serde
     pub fn from_xml(xml: &str) -> Result<Self> {
         let clean_xml = xml_utils::strip_namespaces(xml);
