@@ -340,4 +340,65 @@ mod tests {
         assert_eq!(event.rel_count(), Some(1));
         assert_eq!(event.queue_length(), Some(5));
     }
+
+    #[test]
+    fn test_into_state_maps_all_fields() {
+        let event = AVTransportEvent {
+            property: AVTransportProperty {
+                last_change: AVTransportEventData {
+                    instance: AVTransportInstance {
+                        transport_state: Some(xml_utils::ValueAttribute { val: "PLAYING".to_string() }),
+                        transport_status: Some(xml_utils::ValueAttribute { val: "OK".to_string() }),
+                        speed: Some(xml_utils::ValueAttribute { val: "1".to_string() }),
+                        current_track_uri: Some(xml_utils::ValueAttribute { val: "x-sonos-spotify:track123".to_string() }),
+                        track_duration: Some(xml_utils::ValueAttribute { val: "0:03:45".to_string() }),
+                        rel_time: Some(xml_utils::ValueAttribute { val: "0:01:30".to_string() }),
+                        abs_time: None,
+                        rel_count: Some(xml_utils::ValueAttribute { val: "1".to_string() }),
+                        play_mode: Some(xml_utils::ValueAttribute { val: "NORMAL".to_string() }),
+                        track_metadata: None,
+                        next_track_uri: None,
+                        next_track_metadata: None,
+                        queue_length: Some(xml_utils::ValueAttribute { val: "5".to_string() }),
+                    }
+                }
+            }
+        };
+
+        let state = event.into_state();
+
+        assert_eq!(state.transport_state, Some("PLAYING".to_string()));
+        assert_eq!(state.transport_status, Some("OK".to_string()));
+        assert_eq!(state.speed, Some("1".to_string()));
+        assert_eq!(state.current_track_uri, Some("x-sonos-spotify:track123".to_string()));
+        assert_eq!(state.track_duration, Some("0:03:45".to_string()));
+        assert_eq!(state.rel_time, Some("0:01:30".to_string()));
+        assert_eq!(state.abs_time, None);
+        assert_eq!(state.rel_count, Some(1));
+        assert_eq!(state.play_mode, Some("NORMAL".to_string()));
+        assert_eq!(state.queue_length, Some(5));
+    }
+
+    #[test]
+    fn test_into_state_from_xml_round_trip() {
+        let xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0">
+            <e:property>
+                <LastChange>&lt;Event xmlns="urn:schemas-upnp-org:metadata-1-0/AVT/"&gt;
+                    &lt;InstanceID val="0"&gt;
+                        &lt;TransportState val="PLAYING"/&gt;
+                        &lt;TransportStatus val="OK"/&gt;
+                        &lt;CurrentTrack val="1"/&gt;
+                        &lt;NumberOfTracks val="5"/&gt;
+                    &lt;/InstanceID&gt;
+                &lt;/Event&gt;</LastChange>
+            </e:property>
+        </e:propertyset>"#;
+
+        let state = AVTransportEvent::from_xml(xml).unwrap().into_state();
+
+        assert_eq!(state.transport_state, Some("PLAYING".to_string()));
+        assert_eq!(state.transport_status, Some("OK".to_string()));
+        assert_eq!(state.rel_count, Some(1));
+        assert_eq!(state.queue_length, Some(5));
+    }
 }

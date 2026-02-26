@@ -284,8 +284,44 @@ mod tests {
     }
 
     #[test]
-    fn test_state_to_event_data_round_trip() {
+    fn test_state_to_event_data_round_trip_all_services() {
         let poller = DeviceStatePoller::new();
+
+        // AVTransport round-trip
+        let avt_state = sonos_api::services::av_transport::state::AVTransportState {
+            transport_state: Some("PLAYING".to_string()),
+            transport_status: Some("OK".to_string()),
+            speed: None, current_track_uri: None, track_duration: None,
+            track_metadata: None, rel_time: None, abs_time: None,
+            rel_count: None, abs_count: None, play_mode: None,
+            next_track_uri: None, next_track_metadata: None, queue_length: None,
+        };
+        let json = serde_json::to_string(&avt_state).unwrap();
+        let event_data = poller.state_to_event_data(&Service::AVTransport, &json).unwrap();
+        match event_data {
+            EventData::AVTransport(state) => {
+                assert_eq!(state.transport_state, Some("PLAYING".to_string()));
+                assert_eq!(state.transport_status, Some("OK".to_string()));
+            }
+            _ => panic!("Expected AVTransport EventData"),
+        }
+
+        // RenderingControl round-trip
+        let rc_state = sonos_api::services::rendering_control::state::RenderingControlState {
+            master_volume: Some("75".to_string()),
+            master_mute: Some("0".to_string()),
+            bass: None, treble: None, loudness: None, balance: None,
+            lf_volume: None, rf_volume: None, lf_mute: None, rf_mute: None,
+            other_channels: std::collections::HashMap::new(),
+        };
+        let json = serde_json::to_string(&rc_state).unwrap();
+        let event_data = poller.state_to_event_data(&Service::RenderingControl, &json).unwrap();
+        match event_data {
+            EventData::RenderingControl(state) => {
+                assert_eq!(state.master_volume, Some("75".to_string()));
+            }
+            _ => panic!("Expected RenderingControl EventData"),
+        }
 
         // GroupRenderingControl round-trip
         let grc_state = sonos_api::services::group_rendering_control::state::GroupRenderingControlState {
@@ -301,6 +337,35 @@ mod tests {
                 assert_eq!(state.group_mute, Some(false));
             }
             _ => panic!("Expected GroupRenderingControl EventData"),
+        }
+
+        // ZoneGroupTopology round-trip
+        let zgt_state = sonos_api::services::zone_group_topology::state::ZoneGroupTopologyState {
+            zone_groups: vec![],
+            vanished_devices: vec![],
+        };
+        let json = serde_json::to_string(&zgt_state).unwrap();
+        let event_data = poller.state_to_event_data(&Service::ZoneGroupTopology, &json).unwrap();
+        match event_data {
+            EventData::ZoneGroupTopology(state) => {
+                assert!(state.zone_groups.is_empty());
+            }
+            _ => panic!("Expected ZoneGroupTopology EventData"),
+        }
+
+        // GroupManagement round-trip
+        let gm_state = sonos_api::services::group_management::state::GroupManagementState {
+            group_coordinator_is_local: Some(true),
+            local_group_uuid: None, reset_volume_after: None,
+            virtual_line_in_group_id: None, volume_av_transport_uri: None,
+        };
+        let json = serde_json::to_string(&gm_state).unwrap();
+        let event_data = poller.state_to_event_data(&Service::GroupManagement, &json).unwrap();
+        match event_data {
+            EventData::GroupManagement(state) => {
+                assert_eq!(state.group_coordinator_is_local, Some(true));
+            }
+            _ => panic!("Expected GroupManagement EventData"),
         }
     }
 }

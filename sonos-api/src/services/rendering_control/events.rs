@@ -356,4 +356,39 @@ mod tests {
 
         assert_eq!(enriched.registration_id, Some(42));
     }
+
+    #[test]
+    fn test_into_state_maps_all_fields() {
+        let event = RenderingControlEvent {
+            property: RenderingControlProperty {
+                last_change: RenderingControlEventData {
+                    instance: RenderingControlInstance {
+                        volumes: vec![
+                            ChannelValueAttribute { val: "50".to_string(), channel: "Master".to_string() },
+                            ChannelValueAttribute { val: "45".to_string(), channel: "LF".to_string() },
+                            ChannelValueAttribute { val: "55".to_string(), channel: "RF".to_string() },
+                        ],
+                        mutes: vec![
+                            ChannelValueAttribute { val: "0".to_string(), channel: "Master".to_string() },
+                        ],
+                        bass: Some(xml_utils::ValueAttribute { val: "5".to_string() }),
+                        treble: Some(xml_utils::ValueAttribute { val: "-3".to_string() }),
+                        loudness: Some(xml_utils::ValueAttribute { val: "1".to_string() }),
+                        balance: None,
+                    }
+                }
+            }
+        };
+
+        let state = event.into_state();
+
+        assert_eq!(state.master_volume, Some("50".to_string()));
+        assert_eq!(state.master_mute, Some("0".to_string()));
+        assert_eq!(state.lf_volume, Some("45".to_string()));
+        assert_eq!(state.rf_volume, Some("55".to_string()));
+        assert_eq!(state.bass, Some("5".to_string()));
+        assert_eq!(state.treble, Some("-3".to_string()));
+        assert_eq!(state.loudness, Some("1".to_string()));
+
+    }
 }

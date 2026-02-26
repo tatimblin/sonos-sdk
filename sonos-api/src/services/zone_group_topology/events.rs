@@ -471,4 +471,41 @@ mod xml_parsing_tests {
         assert_eq!(zone_groups[0].members[0].satellites.len(), 1);
         assert_eq!(zone_groups[0].members[0].satellites[0].uuid, "RINCON_456");
     }
+
+    #[test]
+    fn test_into_state_maps_zone_groups() {
+        let xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0">
+<e:property>
+<ZoneGroupState>&lt;ZoneGroupState&gt;&lt;ZoneGroups&gt;&lt;ZoneGroup Coordinator=&quot;RINCON_123&quot; ID=&quot;RINCON_123:0&quot;&gt;&lt;ZoneGroupMember UUID=&quot;RINCON_123&quot; Location=&quot;http://192.168.1.100:1400/xml/device_description.xml&quot; ZoneName=&quot;Living Room&quot;/&gt;&lt;/ZoneGroup&gt;&lt;/ZoneGroups&gt;&lt;/ZoneGroupState&gt;</ZoneGroupState>
+</e:property>
+</e:propertyset>"#;
+
+        let event = ZoneGroupTopologyEvent::from_xml(xml).unwrap();
+        let state = event.into_state();
+
+        assert_eq!(state.zone_groups.len(), 1);
+        assert_eq!(state.zone_groups[0].coordinator, "RINCON_123");
+        assert_eq!(state.zone_groups[0].members.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_zone_group_state_xml_standalone() {
+        let zone_group_state_xml = r#"<ZoneGroupState>
+            <ZoneGroups>
+                <ZoneGroup Coordinator="RINCON_111" ID="RINCON_111:0">
+                    <ZoneGroupMember UUID="RINCON_111" Location="http://192.168.1.100:1400/xml/device_description.xml" ZoneName="Living Room"/>
+                    <ZoneGroupMember UUID="RINCON_222" Location="http://192.168.1.101:1400/xml/device_description.xml" ZoneName="Kitchen"/>
+                </ZoneGroup>
+            </ZoneGroups>
+        </ZoneGroupState>"#;
+
+        let groups = parse_zone_group_state_xml(zone_group_state_xml).unwrap();
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].coordinator, "RINCON_111");
+        assert_eq!(groups[0].id, "RINCON_111:0");
+        assert_eq!(groups[0].members.len(), 2);
+        assert_eq!(groups[0].members[0].zone_name, "Living Room");
+        assert_eq!(groups[0].members[1].zone_name, "Kitchen");
+    }
 }

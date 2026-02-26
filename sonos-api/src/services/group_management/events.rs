@@ -451,4 +451,26 @@ mod property_tests {
             );
         }
     }
+
+    #[test]
+    fn test_into_state_maps_all_fields() {
+        let event = GroupManagementEvent {
+            properties: vec![GroupManagementProperty {
+                group_coordinator_is_local: Some("true".to_string()),
+                local_group_uuid: Some("RINCON_111:1".to_string()),
+                reset_volume_after: Some("1".to_string()),
+                virtual_line_in_group_id: Some("vline123".to_string()),
+                volume_av_transport_uri: Some("x-rincon:RINCON_111".to_string()),
+            }],
+        };
+
+        let state = event.into_state();
+
+        assert_eq!(state.group_coordinator_is_local, Some(true));
+        assert_eq!(state.local_group_uuid, Some("RINCON_111:1".to_string()));
+        assert_eq!(state.reset_volume_after, Some(true));
+        assert_eq!(state.virtual_line_in_group_id, Some("vline123".to_string()));
+        assert_eq!(state.volume_av_transport_uri, Some("x-rincon:RINCON_111".to_string()));
+
+    }
 }
