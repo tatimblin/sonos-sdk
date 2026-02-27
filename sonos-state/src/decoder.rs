@@ -340,7 +340,7 @@ fn parse_duration_ms(duration: Option<&str>) -> Option<u64> {
 }
 
 /// Parse DIDL-Lite track metadata XML
-fn parse_track_metadata(
+pub fn parse_track_metadata(
     metadata: Option<&str>,
 ) -> (Option<String>, Option<String>, Option<String>, Option<String>) {
     let xml = match metadata {
@@ -359,7 +359,7 @@ fn parse_track_metadata(
 }
 
 /// Extract content from an XML element (simple regex-free implementation)
-fn extract_xml_element(xml: &str, element: &str) -> Option<String> {
+pub fn extract_xml_element(xml: &str, element: &str) -> Option<String> {
     let start_tag = format!("<{}>", element);
     let end_tag = format!("</{}>", element);
 

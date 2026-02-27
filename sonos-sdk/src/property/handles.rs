@@ -154,6 +154,24 @@ pub trait Fetchable: SonosProperty {
     fn from_response(response: <Self::Operation as UPnPOperation>::Response) -> Self;
 }
 
+/// Trait for properties that require context (e.g., speaker_id) to interpret the response
+///
+/// Unlike `Fetchable`, the response contains data for multiple entities and
+/// the correct one must be extracted using context.
+pub trait FetchableWithContext: SonosProperty {
+    /// The UPnP operation type used to fetch this property
+    type Operation: UPnPOperation;
+
+    /// Build the operation to fetch this property
+    fn build_operation() -> Result<ComposableOperation<Self::Operation>, SdkError>;
+
+    /// Convert the operation response to the property value using speaker context
+    fn from_response_with_context(
+        response: <Self::Operation as UPnPOperation>::Response,
+        speaker_id: &SpeakerId,
+    ) -> Option<Self>;
+}
+
 /// Generic property handle providing get/fetch/watch/unwatch pattern
 ///
 /// This is the core abstraction for the DOM-like API. Each property on a Speaker
@@ -380,6 +398,48 @@ impl<P: Fetchable> PropertyHandle<P> {
 }
 
 // ============================================================================
+// Concrete fetch for FetchableWithContext properties
+// ============================================================================
+//
+// Rust does not allow two generic impl blocks (Fetchable + FetchableWithContext)
+// defining the same `fetch()` method, so context-dependent properties get a
+// concrete impl instead.
+
+impl PropertyHandle<GroupMembership> {
+    /// Fetch fresh value from device using speaker context + update cache (sync)
+    ///
+    /// The response is interpreted using the speaker_id to extract the relevant
+    /// property value from the full topology response.
+    #[must_use = "returns the fetched value from the device"]
+    pub fn fetch(&self) -> Result<GroupMembership, SdkError> {
+        let operation = <GroupMembership as FetchableWithContext>::build_operation()?;
+
+        let response = self
+            .context
+            .api_client
+            .execute_enhanced(&self.context.speaker_ip.to_string(), operation)
+            .map_err(SdkError::ApiError)?;
+
+        let property_value = GroupMembership::from_response_with_context(
+            response,
+            &self.context.speaker_id,
+        )
+        .ok_or_else(|| {
+            SdkError::FetchFailed(format!(
+                "Speaker {} not found in topology response",
+                self.context.speaker_id.as_str()
+            ))
+        })?;
+
+        self.context
+            .state_manager
+            .set_property(&self.context.speaker_id, property_value.clone());
+
+        Ok(property_value)
+    }
+}
+
+// ============================================================================
 // Type aliases for common property handles
 // ============================================================================
 
@@ -388,12 +448,22 @@ use sonos_api::services::{
         self, GetPositionInfoOperation, GetPositionInfoResponse, GetTransportInfoOperation,
         GetTransportInfoResponse,
     },
-    group_rendering_control::{self, GetGroupVolumeOperation, GetGroupVolumeResponse},
-    rendering_control::{self, GetVolumeOperation, GetVolumeResponse},
+    group_rendering_control::{
+        self, GetGroupMuteOperation, GetGroupMuteResponse, GetGroupVolumeOperation,
+        GetGroupVolumeResponse,
+    },
+    rendering_control::{
+        self, GetBassOperation, GetBassResponse, GetLoudnessOperation, GetLoudnessResponse,
+        GetMuteOperation, GetMuteResponse, GetTrebleOperation, GetTrebleResponse,
+        GetVolumeOperation, GetVolumeResponse,
+    },
+    zone_group_topology::{
+        self, GetZoneGroupStateOperation, GetZoneGroupStateResponse,
+    },
 };
 use sonos_state::{
-    Bass, CurrentTrack, GroupId, GroupMembership, GroupVolume, Loudness, Mute, PlaybackState,
-    Position, Treble, Volume,
+    Bass, CurrentTrack, GroupId, GroupMembership, GroupMute, GroupVolume, GroupVolumeChangeable,
+    Loudness, Mute, PlaybackState, Position, Treble, Volume,
 };
 
 // ============================================================================
@@ -458,26 +528,141 @@ impl Fetchable for Position {
     }
 }
 
+impl Fetchable for Mute {
+    type Operation = GetMuteOperation;
+
+    fn build_operation() -> Result<ComposableOperation<Self::Operation>, SdkError> {
+        rendering_control::get_mute_operation("Master".to_string())
+            .build()
+            .map_err(|e| build_error("GetMute", e))
+    }
+
+    fn from_response(response: GetMuteResponse) -> Self {
+        Mute::new(response.current_mute)
+    }
+}
+
+impl Fetchable for Bass {
+    type Operation = GetBassOperation;
+
+    fn build_operation() -> Result<ComposableOperation<Self::Operation>, SdkError> {
+        rendering_control::get_bass_operation()
+            .build()
+            .map_err(|e| build_error("GetBass", e))
+    }
+
+    fn from_response(response: GetBassResponse) -> Self {
+        Bass::new(response.current_bass)
+    }
+}
+
+impl Fetchable for Treble {
+    type Operation = GetTrebleOperation;
+
+    fn build_operation() -> Result<ComposableOperation<Self::Operation>, SdkError> {
+        rendering_control::get_treble_operation()
+            .build()
+            .map_err(|e| build_error("GetTreble", e))
+    }
+
+    fn from_response(response: GetTrebleResponse) -> Self {
+        Treble::new(response.current_treble)
+    }
+}
+
+impl Fetchable for Loudness {
+    type Operation = GetLoudnessOperation;
+
+    fn build_operation() -> Result<ComposableOperation<Self::Operation>, SdkError> {
+        rendering_control::get_loudness_operation("Master".to_string())
+            .build()
+            .map_err(|e| build_error("GetLoudness", e))
+    }
+
+    fn from_response(response: GetLoudnessResponse) -> Self {
+        Loudness::new(response.current_loudness)
+    }
+}
+
+impl Fetchable for CurrentTrack {
+    type Operation = GetPositionInfoOperation;
+
+    fn build_operation() -> Result<ComposableOperation<Self::Operation>, SdkError> {
+        av_transport::get_position_info_operation()
+            .build()
+            .map_err(|e| build_error("GetPositionInfo", e))
+    }
+
+    fn from_response(response: GetPositionInfoResponse) -> Self {
+        let metadata = if response.track_meta_data.is_empty()
+            || response.track_meta_data == "NOT_IMPLEMENTED"
+        {
+            None
+        } else {
+            Some(response.track_meta_data.as_str())
+        };
+        let (title, artist, album, album_art_uri) =
+            sonos_state::parse_track_metadata(metadata);
+        CurrentTrack {
+            title,
+            artist,
+            album,
+            album_art_uri,
+            uri: Some(response.track_uri).filter(|s| !s.is_empty()),
+        }
+    }
+}
+
 // ============================================================================
-// Placeholder implementations for properties without dedicated API operations
+// FetchableWithContext implementations
+// ============================================================================
+
+impl FetchableWithContext for GroupMembership {
+    type Operation = GetZoneGroupStateOperation;
+
+    fn build_operation() -> Result<ComposableOperation<Self::Operation>, SdkError> {
+        zone_group_topology::get_zone_group_state_operation()
+            .build()
+            .map_err(|e| build_error("GetZoneGroupState", e))
+    }
+
+    fn from_response_with_context(
+        response: GetZoneGroupStateResponse,
+        speaker_id: &SpeakerId,
+    ) -> Option<Self> {
+        let zone_groups = zone_group_topology::parse_zone_group_state_xml(
+            &response.zone_group_state,
+        )
+        .ok()?;
+
+        for group in &zone_groups {
+            let is_member = group
+                .members
+                .iter()
+                .any(|m| m.uuid == speaker_id.as_str());
+            if is_member {
+                let is_coordinator = group.coordinator == speaker_id.as_str();
+                return Some(GroupMembership::new(
+                    GroupId::new(&group.id),
+                    is_coordinator,
+                ));
+            }
+        }
+
+        None
+    }
+}
+
+// ============================================================================
+// Event-only properties (no dedicated UPnP Get operation)
 // ============================================================================
 //
-// Note: The following properties don't have dedicated GetXxx operations in the
-// Sonos UPnP API. Their values are typically obtained through:
-// 1. UPnP event subscriptions (RenderingControl LastChange events)
-// 2. Parsing the LastChange XML from events
+// GroupVolumeChangeable is the only remaining event-only property — there is
+// no GetGroupVolumeChangeable operation in the Sonos UPnP API. Its value
+// is obtained exclusively from GroupRenderingControl events.
 //
-// For now, these properties can only be read from cache (via get()) after
-// being populated by the event system. The fetch() method is not available
-// for these property types.
-//
-// Properties without fetch():
-// - Mute: Obtained from RenderingControl events
-// - Bass: Obtained from RenderingControl events
-// - Treble: Obtained from RenderingControl events
-// - Loudness: Obtained from RenderingControl events
-// - CurrentTrack: Obtained from AVTransport events (track metadata)
-// - GroupMembership: Obtained from ZoneGroupTopology events
+// All other properties now have fetch() via Fetchable, FetchableWithContext,
+// or GroupFetchable trait implementations.
 
 // ============================================================================
 // Type aliases
@@ -692,12 +877,32 @@ impl GroupFetchable for GroupVolume {
     }
 }
 
+impl GroupFetchable for GroupMute {
+    type Operation = GetGroupMuteOperation;
+
+    fn build_operation() -> Result<ComposableOperation<Self::Operation>, SdkError> {
+        group_rendering_control::get_group_mute()
+            .build()
+            .map_err(|e| build_error("GetGroupMute", e))
+    }
+
+    fn from_response(response: GetGroupMuteResponse) -> Self {
+        GroupMute::new(response.current_mute)
+    }
+}
+
 // ============================================================================
 // Group type aliases
 // ============================================================================
 
 /// Handle for group volume (0-100)
 pub type GroupVolumeHandle = GroupPropertyHandle<GroupVolume>;
+
+/// Handle for group mute state
+pub type GroupMuteHandle = GroupPropertyHandle<GroupMute>;
+
+/// Handle for group volume changeable flag (event-only, no fetch)
+pub type GroupVolumeChangeableHandle = GroupPropertyHandle<GroupVolumeChangeable>;
 
 #[cfg(test)]
 mod tests {
@@ -881,5 +1086,57 @@ mod tests {
         let handle: GroupVolumeHandle = GroupPropertyHandle::new(context);
 
         assert_eq!(handle.group_id().as_str(), "RINCON_TEST123:1");
+    }
+
+    #[test]
+    fn test_group_mute_handle_accessible() {
+        let state_manager = create_test_state_manager();
+        let context = create_test_group_context(state_manager);
+
+        let handle: GroupMuteHandle = GroupPropertyHandle::new(context);
+
+        assert!(handle.get().is_none());
+        assert_eq!(handle.group_id().as_str(), "RINCON_TEST123:1");
+    }
+
+    #[test]
+    fn test_group_volume_changeable_handle_accessible() {
+        let state_manager = create_test_state_manager();
+        let context = create_test_group_context(state_manager);
+
+        let handle: GroupVolumeChangeableHandle = GroupPropertyHandle::new(context);
+
+        assert!(handle.get().is_none());
+        assert_eq!(handle.group_id().as_str(), "RINCON_TEST123:1");
+    }
+
+    // ========================================================================
+    // Trait implementation assertions
+    // ========================================================================
+
+    #[test]
+    fn test_fetchable_impls_exist() {
+        fn assert_fetchable<T: Fetchable>() {}
+        assert_fetchable::<Volume>();
+        assert_fetchable::<PlaybackState>();
+        assert_fetchable::<Position>();
+        assert_fetchable::<Mute>();
+        assert_fetchable::<Bass>();
+        assert_fetchable::<Treble>();
+        assert_fetchable::<Loudness>();
+        assert_fetchable::<CurrentTrack>();
+    }
+
+    #[test]
+    fn test_fetchable_with_context_impls_exist() {
+        fn assert_fetchable_with_context<T: FetchableWithContext>() {}
+        assert_fetchable_with_context::<GroupMembership>();
+    }
+
+    #[test]
+    fn test_group_fetchable_impls_exist() {
+        fn assert_group_fetchable<T: GroupFetchable>() {}
+        assert_group_fetchable::<GroupVolume>();
+        assert_group_fetchable::<GroupMute>();
     }
 }

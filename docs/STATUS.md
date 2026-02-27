@@ -2,7 +2,7 @@
 
 Service completion matrix and development roadmap for the Sonos SDK.
 
-**Last updated:** 2026-02-25
+**Last updated:** 2026-02-26
 
 ## Service Completion Matrix
 
@@ -14,21 +14,17 @@ Tracks each Sonos UPnP service across the 4-layer SDK architecture (6 checkpoint
 
 | Service | API | Stream Events | Stream Polling | State Decoder | SDK Handles | SDK Fetch |
 |---|---|---|---|---|---|---|
-| AVTransport | Done | Done | Done | Done | Done | Partial [2] |
-| RenderingControl | Done | Done | Done | Done | Done | Partial [5] |
-| GroupRenderingControl | Done | Done | Done | Done | Partial [7] | Done |
-| ZoneGroupTopology | Done | Done | Done | Done | Partial [8] | None [9] |
+| AVTransport | Done | Done | Done | Done | Done | Done |
+| RenderingControl | Done | Done | Done | Done | Done | Done |
+| GroupRenderingControl | Done | Done | Done | Done | Done | Done |
+| ZoneGroupTopology | Done | Done | Done | Done | Partial [8] | Done |
 | GroupManagement | Done | Done | Done [11] | None | None | — |
 | DeviceProperties | None | Partial [10] | None | None | None | — |
 
 **Footnotes:**
 
-2. `CurrentTrack` has no `fetch()` — only Volume, PlaybackState, and Position do
 3. ~~Only `GetVolume`, `SetVolume`, `SetRelativeVolume`~~ — All 11 operations now implemented (Get/Set for Volume, Mute, Bass, Treble, Loudness + SetRelativeVolume)
-5. Only `Volume` has `fetch()` — Mute, Bass, Treble, Loudness Get operations now exist, `Fetchable` impls needed
-7. `GroupVolume` handle exists on Group; no `GroupMute` or `GroupVolumeChangeable` handles
 8. `GroupMembership` on Speaker; `Topology` is system-level with no SDK handle
-9. `GroupMembership` has no `fetch()`; could use `GetZoneGroupState`
 10. `DevicePropertiesEvent` type exists in stream but no `Service` enum variant; uses `ZoneGroupTopology` as fallback in `service_type()`
 11. GroupManagement is action-only (no Get operations); poller returns stable empty state so scheduler never emits spurious change events
 
@@ -67,10 +63,10 @@ Prioritized by user-facing impact, not by service or layer.
 
 Missing `fetch()` on SDK properties means users must wait for an event before reading a value. This is the most impactful gap.
 
-- [ ] Add `GetMute`, `GetBass`, `GetTreble`, `GetLoudness` operations to `sonos-api` RenderingControl service
-- [ ] Add `fetch()` to Mute, Bass, Treble, Loudness SDK handles (requires operations above)
-- [ ] Add `fetch()` to CurrentTrack handle (can use existing `GetPositionInfo`)
-- [ ] Add `fetch()` to GroupMembership handle (can use existing `GetZoneGroupState`)
+- [x] Add `GetMute`, `GetBass`, `GetTreble`, `GetLoudness` operations to `sonos-api` RenderingControl service
+- [x] Add `fetch()` to Mute, Bass, Treble, Loudness SDK handles
+- [x] Add `fetch()` to CurrentTrack handle (uses `GetPositionInfo`)
+- [x] Add `fetch()` to GroupMembership handle (uses `GetZoneGroupState` via `FetchableWithContext`)
 
 ### Tier 2: Incomplete Existing Services
 
