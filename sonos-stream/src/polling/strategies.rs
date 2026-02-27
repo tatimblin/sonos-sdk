@@ -3,6 +3,9 @@
 //! Each poller delegates to sonos-api's `poll()` function, producing the canonical
 //! State type as JSON. The scheduler compares JSON snapshots for change detection
 //! and emits full-state events (same type as UPnP event streaming).
+//!
+//! Blocking I/O: sonos-api uses `ureq` (blocking HTTP). All real pollers wrap
+//! `poll()` calls in `tokio::task::spawn_blocking` to avoid starving the async runtime.
 
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -35,8 +38,15 @@ pub struct AVTransportPoller;
 #[async_trait]
 impl ServicePoller for AVTransportPoller {
     async fn poll_state(&self, client: &SonosClient, pair: &SpeakerServicePair) -> PollingResult<String> {
-        let state = sonos_api::services::av_transport::state::poll(client, &pair.speaker_ip.to_string())
-            .map_err(|e| PollingError::Network(e.to_string()))?;
+        let client = client.clone();
+        let ip = pair.speaker_ip.to_string();
+
+        let state = tokio::task::spawn_blocking(move || {
+            sonos_api::services::av_transport::state::poll(&client, &ip)
+        })
+        .await
+        .map_err(|e| PollingError::Network(format!("Polling task panicked: {}", e)))?
+        .map_err(|e| PollingError::Network(e.to_string()))?;
 
         serde_json::to_string(&state)
             .map_err(|e| PollingError::StateParsing(format!("Failed to serialize state: {}", e)))
@@ -62,8 +72,15 @@ pub struct RenderingControlPoller;
 #[async_trait]
 impl ServicePoller for RenderingControlPoller {
     async fn poll_state(&self, client: &SonosClient, pair: &SpeakerServicePair) -> PollingResult<String> {
-        let state = sonos_api::services::rendering_control::state::poll(client, &pair.speaker_ip.to_string())
-            .map_err(|e| PollingError::Network(e.to_string()))?;
+        let client = client.clone();
+        let ip = pair.speaker_ip.to_string();
+
+        let state = tokio::task::spawn_blocking(move || {
+            sonos_api::services::rendering_control::state::poll(&client, &ip)
+        })
+        .await
+        .map_err(|e| PollingError::Network(format!("Polling task panicked: {}", e)))?
+        .map_err(|e| PollingError::Network(e.to_string()))?;
 
         serde_json::to_string(&state)
             .map_err(|e| PollingError::StateParsing(format!("Failed to serialize state: {}", e)))
@@ -89,8 +106,15 @@ pub struct ZoneGroupTopologyPoller;
 #[async_trait]
 impl ServicePoller for ZoneGroupTopologyPoller {
     async fn poll_state(&self, client: &SonosClient, pair: &SpeakerServicePair) -> PollingResult<String> {
-        let state = sonos_api::services::zone_group_topology::state::poll(client, &pair.speaker_ip.to_string())
-            .map_err(|e| PollingError::Network(e.to_string()))?;
+        let client = client.clone();
+        let ip = pair.speaker_ip.to_string();
+
+        let state = tokio::task::spawn_blocking(move || {
+            sonos_api::services::zone_group_topology::state::poll(&client, &ip)
+        })
+        .await
+        .map_err(|e| PollingError::Network(format!("Polling task panicked: {}", e)))?
+        .map_err(|e| PollingError::Network(e.to_string()))?;
 
         serde_json::to_string(&state)
             .map_err(|e| PollingError::StateParsing(format!("Failed to serialize state: {}", e)))
@@ -111,7 +135,13 @@ impl ServicePoller for ZoneGroupTopologyPoller {
 /// Polling strategy for GroupManagement service.
 ///
 /// GroupManagement is an action-only service with no Get operations.
-/// Returns a stable empty JSON state so the scheduler never detects changes.
+/// Returns a stable empty JSON state (`"{}"`), so the scheduler never detects
+/// changes after the initial poll.
+///
+/// **Startup behavior:** The first poll emits a single `GroupManagement` event
+/// with all fields set to `None` (since `"{}"` deserializes to an all-`None`
+/// `GroupManagementState`). This is benign — the sonos-state decoder ignores
+/// `GroupManagement` events (returns an empty change set).
 pub struct GroupManagementPoller;
 
 #[async_trait]
@@ -141,8 +171,15 @@ pub struct GroupRenderingControlPoller;
 #[async_trait]
 impl ServicePoller for GroupRenderingControlPoller {
     async fn poll_state(&self, client: &SonosClient, pair: &SpeakerServicePair) -> PollingResult<String> {
-        let state = sonos_api::services::group_rendering_control::state::poll(client, &pair.speaker_ip.to_string())
-            .map_err(|e| PollingError::Network(e.to_string()))?;
+        let client = client.clone();
+        let ip = pair.speaker_ip.to_string();
+
+        let state = tokio::task::spawn_blocking(move || {
+            sonos_api::services::group_rendering_control::state::poll(&client, &ip)
+        })
+        .await
+        .map_err(|e| PollingError::Network(format!("Polling task panicked: {}", e)))?
+        .map_err(|e| PollingError::Network(e.to_string()))?;
 
         serde_json::to_string(&state)
             .map_err(|e| PollingError::StateParsing(format!("Failed to serialize state: {}", e)))

@@ -113,7 +113,9 @@ impl EventData {
             EventData::AVTransport(_) => sonos_api::Service::AVTransport,
             EventData::RenderingControl(_) => sonos_api::Service::RenderingControl,
             EventData::DeviceProperties(_) => {
-                // DeviceProperties service doesn't exist in sonos-api, using ZoneGroupTopology as fallback
+                // FIXME: DeviceProperties needs its own Service variant in sonos-api.
+                // Using ZoneGroupTopology as fallback could cause misrouted events
+                // if DeviceProperties polling is ever added to the scheduler.
                 sonos_api::Service::ZoneGroupTopology
             }
             EventData::ZoneGroupTopology(_) => sonos_api::Service::ZoneGroupTopology,

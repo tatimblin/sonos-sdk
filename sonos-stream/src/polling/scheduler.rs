@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
+use tracing::{debug, error, info, warn};
 
 use crate::error::{PollingError, PollingResult};
 use crate::events::types::{EnrichedEvent, EventSource};
@@ -106,9 +107,11 @@ impl PollingTask {
         error_count: Arc<RwLock<u32>>,
         poll_count: Arc<RwLock<u64>>,
     ) {
-        eprintln!(
-            "🔄 Starting polling task for {} {:?} (interval: {:?})",
-            pair.speaker_ip, pair.service, current_interval
+        info!(
+            speaker_ip = %pair.speaker_ip,
+            service = ?pair.service,
+            ?current_interval,
+            "Starting polling task"
         );
 
         // Track last state locally within the loop
@@ -117,9 +120,10 @@ impl PollingTask {
         loop {
             // Check for shutdown signal
             if shutdown_signal.load(Ordering::Relaxed) {
-                eprintln!(
-                    "🛑 Polling task shutting down for {} {:?}",
-                    pair.speaker_ip, pair.service
+                info!(
+                    speaker_ip = %pair.speaker_ip,
+                    service = ?pair.service,
+                    "Polling task shutting down"
                 );
                 break;
             }
@@ -142,28 +146,18 @@ impl PollingTask {
                         *errors = 0;
                     }
 
-                    // Check for state changes
-                    let state_changed = {
-                        let previous_state = last_state.clone();
-
-                        if let Some(ref previous) = previous_state {
-                            if previous != &current_state {
-                                last_state = Some(current_state.clone());
-                                true
-                            } else {
-                                false
-                            }
-                        } else {
-                            // First poll - store initial state
-                            last_state = Some(current_state.clone());
-                            true // Treat as change for initial state
-                        }
-                    };
+                    // Check for state changes (compare without cloning)
+                    let state_changed = last_state.as_deref() != Some(current_state.as_str());
 
                     if state_changed {
-                        eprintln!(
-                            "📊 State change detected for {} {:?}",
-                            pair.speaker_ip, pair.service
+                        last_state = Some(current_state.clone());
+                    }
+
+                    if state_changed {
+                        debug!(
+                            speaker_ip = %pair.speaker_ip,
+                            service = ?pair.service,
+                            "State change detected"
                         );
 
                         // Convert JSON snapshot to EventData and emit full-state event
@@ -180,17 +174,20 @@ impl PollingTask {
                                 );
 
                                 if event_sender.send(enriched_event).is_err() {
-                                    eprintln!(
-                                        "❌ Failed to send polling event for {} {:?}",
-                                        pair.speaker_ip, pair.service
+                                    error!(
+                                        speaker_ip = %pair.speaker_ip,
+                                        service = ?pair.service,
+                                        "Failed to send polling event — channel closed"
                                     );
                                     return;
                                 }
                             }
                             Err(e) => {
-                                eprintln!(
-                                    "⚠️ Failed to convert state to event data for {} {:?}: {}",
-                                    pair.speaker_ip, pair.service, e
+                                warn!(
+                                    speaker_ip = %pair.speaker_ip,
+                                    service = ?pair.service,
+                                    error = %e,
+                                    "Failed to convert state to event data"
                                 );
                             }
                         }
@@ -213,16 +210,20 @@ impl PollingTask {
                         *errors
                     };
 
-                    eprintln!(
-                        "❌ Polling error for {} {:?} (attempt {}): {}",
-                        pair.speaker_ip, pair.service, error_count_value, e
+                    warn!(
+                        speaker_ip = %pair.speaker_ip,
+                        service = ?pair.service,
+                        attempt = error_count_value,
+                        error = %e,
+                        "Polling error"
                     );
 
                     // Use exponential backoff for errors
                     if error_count_value >= 5 {
-                        eprintln!(
-                            "💥 Too many consecutive errors for {} {:?}, stopping polling",
-                            pair.speaker_ip, pair.service
+                        error!(
+                            speaker_ip = %pair.speaker_ip,
+                            service = ?pair.service,
+                            "Too many consecutive errors, stopping polling"
                         );
                         break;
                     }
@@ -235,9 +236,10 @@ impl PollingTask {
             }
         }
 
-        eprintln!(
-            "🏁 Polling task ended for {} {:?}",
-            pair.speaker_ip, pair.service
+        info!(
+            speaker_ip = %pair.speaker_ip,
+            service = ?pair.service,
+            "Polling task ended"
         );
     }
 
@@ -403,9 +405,10 @@ impl PollingScheduler {
 
         tasks.insert(registration_id, task);
 
-        eprintln!(
-            "✅ Started polling for {} {:?}",
-            pair.speaker_ip, pair.service
+        info!(
+            speaker_ip = %pair.speaker_ip,
+            service = ?pair.service,
+            "Started polling"
         );
 
         Ok(())
@@ -420,9 +423,10 @@ impl PollingScheduler {
             // Shutdown happens when task is dropped, but we can explicitly shut it down
             task.shutdown().await?;
 
-            eprintln!(
-                "🛑 Stopped polling for {} {:?}",
-                pair.speaker_ip, pair.service
+            info!(
+                speaker_ip = %pair.speaker_ip,
+                service = ?pair.service,
+                "Stopped polling"
             );
         }
 
@@ -462,10 +466,10 @@ impl PollingScheduler {
         for (registration_id, task) in tasks.drain() {
             match task.shutdown().await {
                 Ok(()) => {
-                    eprintln!("✅ Shutdown polling task {}", registration_id);
+                    debug!(%registration_id, "Shutdown polling task");
                 }
                 Err(e) => {
-                    eprintln!("❌ Failed to shutdown polling task {}: {}", registration_id, e);
+                    error!(%registration_id, error = %e, "Failed to shutdown polling task");
                 }
             }
         }
