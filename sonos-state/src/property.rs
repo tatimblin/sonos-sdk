@@ -206,6 +206,52 @@ impl GroupVolume {
     }
 }
 
+/// Group master mute state
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GroupMute(pub bool);
+
+impl Property for GroupMute {
+    const KEY: &'static str = "group_mute";
+}
+
+impl SonosProperty for GroupMute {
+    const SCOPE: Scope = Scope::Group;
+    const SERVICE: Service = Service::GroupRenderingControl;
+}
+
+impl GroupMute {
+    pub fn new(muted: bool) -> Self {
+        Self(muted)
+    }
+
+    pub fn is_muted(&self) -> bool {
+        self.0
+    }
+}
+
+/// Whether the group volume can be changed
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GroupVolumeChangeable(pub bool);
+
+impl Property for GroupVolumeChangeable {
+    const KEY: &'static str = "group_volume_changeable";
+}
+
+impl SonosProperty for GroupVolumeChangeable {
+    const SCOPE: Scope = Scope::Group;
+    const SERVICE: Service = Service::GroupRenderingControl;
+}
+
+impl GroupVolumeChangeable {
+    pub fn new(changeable: bool) -> Self {
+        Self(changeable)
+    }
+
+    pub fn is_changeable(&self) -> bool {
+        self.0
+    }
+}
+
 // ============================================================================
 // Speaker-scoped Properties (from AVTransport)
 // ============================================================================
@@ -620,5 +666,19 @@ mod tests {
         assert_eq!(GroupMembership::KEY, "group_membership");
         assert_eq!(<GroupMembership as SonosProperty>::SCOPE, Scope::Speaker);
         assert_eq!(<GroupMembership as SonosProperty>::SERVICE, Service::ZoneGroupTopology);
+    }
+
+    #[test]
+    fn test_group_mute_property_metadata() {
+        assert_eq!(GroupMute::KEY, "group_mute");
+        assert_eq!(<GroupMute as SonosProperty>::SCOPE, Scope::Group);
+        assert_eq!(<GroupMute as SonosProperty>::SERVICE, Service::GroupRenderingControl);
+    }
+
+    #[test]
+    fn test_group_volume_changeable_property_metadata() {
+        assert_eq!(GroupVolumeChangeable::KEY, "group_volume_changeable");
+        assert_eq!(<GroupVolumeChangeable as SonosProperty>::SCOPE, Scope::Group);
+        assert_eq!(<GroupVolumeChangeable as SonosProperty>::SERVICE, Service::GroupRenderingControl);
     }
 }

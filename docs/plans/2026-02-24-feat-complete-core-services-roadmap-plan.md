@@ -116,13 +116,13 @@ Phase 7 → docs (rustdoc + examples + guide)
 
 **Tasks:**
 
-- [ ] **AVTransport poller** — add `GetPositionInfo` call
+- [x] **AVTransport poller** — add `GetPositionInfo` call
   - Current: only calls `get_transport_info_operation()`, position/track data are TODOs (empty strings)
   - Add: call `get_position_info_operation()` and populate `current_track_uri`, `track_duration`, `track_metadata`, `rel_time` in `AVTransportState`
   - Update `parse_for_changes()` to detect track/position changes from the new data
   - Pattern: follow existing `get_transport_info_operation()` call pattern at `strategies.rs:73-100`
 
-- [ ] **RenderingControl poller** — add mute, bass, treble, loudness queries
+- [x] **RenderingControl poller** — add mute, bass, treble, loudness queries
   - Current: only calls `get_volume_operation("Master")`, mute hardcoded `false`
   - Add: call `get_mute_operation("Master")` (from Phase 1)
   - Add: call `get_bass_operation()`, `get_treble_operation()`, `get_loudness_operation("Master")` (from Phase 1)
@@ -130,25 +130,25 @@ Phase 7 → docs (rustdoc + examples + guide)
   - Update `parse_for_changes()` to detect changes for all fields
   - Pattern: follow existing volume call at `strategies.rs:213-236`
 
-- [ ] **GroupRenderingControl poller** — replace stub with real implementation
+- [x] **GroupRenderingControl poller** — replace stub with real implementation
   - Replace `UnsupportedService` error at `strategies.rs:340`
   - Call `get_group_volume()` and `get_group_mute()` operations
   - Define `GroupRenderingControlState { group_volume: u16, group_mute: bool }`
   - Implement `parse_for_changes()` to detect volume and mute changes
 
-- [ ] **ZoneGroupTopology poller** — replace stub with real implementation
+- [x] **ZoneGroupTopology poller** — replace stub with real implementation
   - Replace `UnsupportedService` error at `strategies.rs:286`
   - Call `get_zone_group_state_operation()` (exists in sonos-api)
   - Define `ZoneGroupTopologyState` with serialized group state
   - Implement `parse_for_changes()` to detect topology changes
   - Note: `GetZoneGroupState` response is XML-heavy; need to serialize/compare zone groups
 
-- [ ] **GroupManagement poller** — determine strategy
+- [x] **GroupManagement poller** — determine strategy
   - Current stub comment says "GroupManagement doesn't currently emit events"
   - GroupManagement has no Get operations that return current state — it's action-only (AddMember, RemoveMember, etc.)
   - Decision: implement as a minimal poller that returns a stable state (no polling needed since group changes are reflected via ZoneGroupTopology events). Replace error with a no-op poller that returns unchanged state.
 
-- [ ] Add/update tests for all modified pollers
+- [x] Add/update tests for all modified pollers
 
 **Success criteria:** `cargo test -p sonos-stream` passes. No `UnsupportedService` stubs remain (all pollers either poll real state or return stable no-op state).
 
@@ -164,35 +164,35 @@ Phase 7 → docs (rustdoc + examples + guide)
 
 **Tasks:**
 
-- [ ] **Define `GroupMute` property** in `property.rs`
+- [x] **Define `GroupMute` property** in `property.rs`
   - Struct: `GroupMute(pub bool)`
   - `Property::KEY = "group_mute"`
   - `SonosProperty::SCOPE = Scope::Group`
   - `SonosProperty::SERVICE = Service::GroupRenderingControl`
   - Pattern: follow `GroupVolume` at `property.rs:186-207`
 
-- [ ] **Define `GroupVolumeChangeable` property** in `property.rs`
+- [x] **Define `GroupVolumeChangeable` property** in `property.rs`
   - Struct: `GroupVolumeChangeable(pub bool)`
   - `Property::KEY = "group_volume_changeable"`
   - `SonosProperty::SCOPE = Scope::Group`
   - `SonosProperty::SERVICE = Service::GroupRenderingControl`
 
-- [ ] **Add `PropertyChange` variants** in `decoder.rs`
+- [x] **Add `PropertyChange` variants** in `decoder.rs`
   - Add `GroupMute(GroupMute)` and `GroupVolumeChangeable(GroupVolumeChangeable)` to enum at `decoder.rs:42-54`
 
-- [ ] **Update `decode_group_rendering_control()`** in `decoder.rs`
+- [x] **Update `decode_group_rendering_control()`** in `decoder.rs`
   - Current: only extracts `group_volume` at `decoder.rs:232-240`
   - Add: extract `group_mute` from `event.group_mute`
   - Add: extract `group_volume_changeable` from `event.group_volume_changeable`
 
-- [ ] **GroupManagement state** — assess what properties are meaningful
+- [x] **GroupManagement state** — assess what properties are meaningful
   - GroupManagementEvent has fields like `group_coordinates_uri`, `local_group_uuid`, `reset_volume_after`, `volume_av_transport_uri`
   - These are operational metadata, not user-facing properties
   - Decision: GroupManagement changes are reflected via ZoneGroupTopology (topology events). No user-facing properties needed for GroupManagement.
   - Update decoder to remain as empty vec but add a comment explaining the intentional decision
 
-- [ ] Export new property types from `sonos-state/src/lib.rs`
-- [ ] Add tests for updated decoders
+- [x] Export new property types from `sonos-state/src/lib.rs`
+- [x] Add tests for updated decoders
 
 **Success criteria:** `cargo test -p sonos-state` passes. GroupRenderingControl decoder extracts all 3 fields.
 

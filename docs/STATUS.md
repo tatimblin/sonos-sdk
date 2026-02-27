@@ -16,7 +16,7 @@ Tracks each Sonos UPnP service across the 4-layer SDK architecture (6 checkpoint
 |---|---|---|---|---|---|---|
 | AVTransport | Done | Done | Done | Done | Done | Partial [2] |
 | RenderingControl | Done | Done | Done | Done | Done | Partial [5] |
-| GroupRenderingControl | Done | Done | Done | Partial [6] | Partial [7] | Done |
+| GroupRenderingControl | Done | Done | Done | Done | Partial [7] | Done |
 | ZoneGroupTopology | Done | Done | Done | Done | Partial [8] | None [9] |
 | GroupManagement | Done | Done | Done [11] | None | None | — |
 | DeviceProperties | None | Partial [10] | None | None | None | — |
@@ -26,8 +26,7 @@ Tracks each Sonos UPnP service across the 4-layer SDK architecture (6 checkpoint
 2. `CurrentTrack` has no `fetch()` — only Volume, PlaybackState, and Position do
 3. ~~Only `GetVolume`, `SetVolume`, `SetRelativeVolume`~~ — All 11 operations now implemented (Get/Set for Volume, Mute, Bass, Treble, Loudness + SetRelativeVolume)
 5. Only `Volume` has `fetch()` — Mute, Bass, Treble, Loudness Get operations now exist, `Fetchable` impls needed
-6. Only `GroupVolume` decoded; `GroupMute` and `GroupVolumeChangeable` not decoded despite being present in event data
-7. `GroupVolume` handle exists on Group; no `GroupMute` handle
+7. `GroupVolume` handle exists on Group; no `GroupMute` or `GroupVolumeChangeable` handles
 8. `GroupMembership` on Speaker; `Topology` is system-level with no SDK handle
 9. `GroupMembership` has no `fetch()`; could use `GetZoneGroupState`
 10. `DevicePropertiesEvent` type exists in stream but no `Service` enum variant; uses `ZoneGroupTopology` as fallback in `service_type()`
@@ -77,7 +76,7 @@ Missing `fetch()` on SDK properties means users must wait for an event before re
 
 Services that are started but have gaps across layers.
 
-- [ ] GroupRenderingControl decoder: extract `GroupMute` and `GroupVolumeChangeable` from events
+- [x] GroupRenderingControl decoder: extract `GroupMute` and `GroupVolumeChangeable` from events
 - [ ] GroupManagement: add state decoder and SDK handles (API and stream layers are done)
 - [x] RenderingControl polling: query mute instead of hardcoding `false`
 - [x] AVTransport polling: add `GetPositionInfo` call for position/track data
