@@ -2,7 +2,7 @@
 
 Service completion matrix and development roadmap for the Sonos SDK.
 
-**Last updated:** 2026-02-24
+**Last updated:** 2026-02-25
 
 ## Service Completion Matrix
 
@@ -14,25 +14,24 @@ Tracks each Sonos UPnP service across the 4-layer SDK architecture (6 checkpoint
 
 | Service | API | Stream Events | Stream Polling | State Decoder | SDK Handles | SDK Fetch |
 |---|---|---|---|---|---|---|
-| AVTransport | Done | Done | Partial [1] | Done | Done | Partial [2] |
-| RenderingControl | Done | Done | Partial [4] | Done | Done | Partial [5] |
-| GroupRenderingControl | Done | Done | Stub | Partial [6] | Partial [7] | Done |
-| ZoneGroupTopology | Done | Done | Stub | Done | Partial [8] | None [9] |
-| GroupManagement | Done | Done | Stub | None | None | — |
+| AVTransport | Done | Done | Done | Done | Done | Partial [2] |
+| RenderingControl | Done | Done | Done | Done | Done | Partial [5] |
+| GroupRenderingControl | Done | Done | Done | Partial [6] | Partial [7] | Done |
+| ZoneGroupTopology | Done | Done | Done | Done | Partial [8] | None [9] |
+| GroupManagement | Done | Done | Done [11] | None | None | — |
 | DeviceProperties | None | Partial [10] | None | None | None | — |
 
 **Footnotes:**
 
-1. Polling only calls `GetTransportInfo`; position and track data are TODOs with empty strings
 2. `CurrentTrack` has no `fetch()` — only Volume, PlaybackState, and Position do
 3. ~~Only `GetVolume`, `SetVolume`, `SetRelativeVolume`~~ — All 11 operations now implemented (Get/Set for Volume, Mute, Bass, Treble, Loudness + SetRelativeVolume)
-4. Polling only queries volume; mute is hardcoded to `false`
 5. Only `Volume` has `fetch()` — Mute, Bass, Treble, Loudness Get operations now exist, `Fetchable` impls needed
 6. Only `GroupVolume` decoded; `GroupMute` and `GroupVolumeChangeable` not decoded despite being present in event data
 7. `GroupVolume` handle exists on Group; no `GroupMute` handle
 8. `GroupMembership` on Speaker; `Topology` is system-level with no SDK handle
 9. `GroupMembership` has no `fetch()`; could use `GetZoneGroupState`
 10. `DevicePropertiesEvent` type exists in stream but no `Service` enum variant; uses `ZoneGroupTopology` as fallback in `service_type()`
+11. GroupManagement is action-only (no Get operations); poller returns stable empty state so scheduler never emits spurious change events
 
 ### Unstarted Services
 
@@ -80,16 +79,16 @@ Services that are started but have gaps across layers.
 
 - [ ] GroupRenderingControl decoder: extract `GroupMute` and `GroupVolumeChangeable` from events
 - [ ] GroupManagement: add state decoder and SDK handles (API and stream layers are done)
-- [ ] RenderingControl polling: query mute instead of hardcoding `false`
-- [ ] AVTransport polling: add `GetPositionInfo` call for position/track data
+- [x] RenderingControl polling: query mute instead of hardcoding `false`
+- [x] AVTransport polling: add `GetPositionInfo` call for position/track data
 
 ### Tier 3: Reliability Under Firewall
 
 Polling fallbacks that matter when UPnP events are blocked by firewalls.
 
-- [ ] ZoneGroupTopology polling strategy (currently returns `UnsupportedService`)
-- [ ] GroupRenderingControl polling strategy (currently returns `UnsupportedService`)
-- [ ] GroupManagement polling strategy (currently returns `UnsupportedService`)
+- [x] ZoneGroupTopology polling strategy (now delegates to sonos-api `poll()`)
+- [x] GroupRenderingControl polling strategy (now delegates to sonos-api `poll()`)
+- [x] GroupManagement polling strategy (action-only; returns stable empty state)
 
 ### Tier 4: New Service Expansion
 

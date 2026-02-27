@@ -1,7 +1,7 @@
 ---
 title: "feat: Complete stream polling for all 5 core services"
 type: feat
-status: active
+status: completed
 date: 2026-02-25
 origin: docs/plans/2026-02-24-feat-complete-core-services-roadmap-plan.md
 ---
@@ -599,18 +599,18 @@ The `decode_*` functions take the new state types. Field access like `state.tran
 
 ## Acceptance Criteria
 
-- [ ] Each service in sonos-api has `state.rs` with canonical State type
-- [ ] Each service has `poll()` function (except GroupManagement)
-- [ ] Each event type has `into_state()` method
-- [ ] `EventData` variants reference sonos-api state types directly
-- [ ] Duplicate structs removed from sonos-stream/events/types.rs
-- [ ] processor.rs uses `into_state()` (no manual field mapping)
-- [ ] strategies.rs pollers are thin adapters (~8 lines each)
-- [ ] sonos-state decoder uses sonos-api state types
-- [ ] No `UnsupportedService` stubs remain
-- [ ] `cargo test` passes across entire workspace
-- [ ] `cargo clippy` passes across entire workspace
-- [ ] STATUS.md updated
+- [x] Each service in sonos-api has `state.rs` with canonical State type
+- [x] Each service has `poll()` function (except GroupManagement)
+- [x] Each event type has `into_state()` method
+- [x] `EventData` variants reference sonos-api state types directly
+- [x] Duplicate structs removed from sonos-stream/events/types.rs
+- [x] processor.rs uses `into_state()` (no manual field mapping)
+- [x] strategies.rs pollers are thin adapters (~8 lines each)
+- [x] sonos-state decoder uses sonos-api state types
+- [x] No `UnsupportedService` stubs remain
+- [x] `cargo test` passes across entire workspace
+- [x] `cargo clippy` passes across entire workspace
+- [x] STATUS.md updated
 
 ## Dependencies & Prerequisites
 
