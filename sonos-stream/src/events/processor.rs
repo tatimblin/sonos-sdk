@@ -186,7 +186,10 @@ impl EventProcessor {
         Ok(())
     }
 
-    /// Convert from sonos-api event data to sonos-stream compatible EventData
+    /// Convert from sonos-api event data to sonos-stream compatible EventData.
+    ///
+    /// Each match arm downcasts the type-erased event and calls `into_state()`
+    /// to produce the canonical State type used by EventData.
     fn convert_api_event_data(
         &self,
         service: &sonos_api::Service,
@@ -194,130 +197,34 @@ impl EventProcessor {
     ) -> EventProcessingResult<EventData> {
         match service {
             sonos_api::Service::AVTransport => {
-                let av_event = api_event_data
+                let event = api_event_data
                     .downcast::<sonos_api::services::av_transport::AVTransportEvent>()
                     .map_err(|_| EventProcessingError::Parsing("Failed to downcast AVTransport event".to_string()))?;
-
-                // Convert from sonos-api AVTransportEvent to sonos-stream AVTransportEvent
-                let stream_event = crate::events::types::AVTransportEvent {
-                    transport_state: av_event.transport_state(),
-                    transport_status: av_event.transport_status(),
-                    speed: av_event.speed(),
-                    current_track_uri: av_event.current_track_uri(),
-                    track_duration: av_event.track_duration(),
-                    rel_time: av_event.rel_time(),
-                    abs_time: av_event.abs_time(),
-                    rel_count: av_event.rel_count(),
-                    abs_count: av_event.abs_count(),
-                    play_mode: av_event.play_mode(),
-                    track_metadata: av_event.track_metadata(),
-                    next_track_uri: av_event.next_track_uri(),
-                    next_track_metadata: av_event.next_track_metadata(),
-                    queue_length: av_event.queue_length(),
-                };
-
-                Ok(EventData::AVTransportEvent(stream_event))
+                Ok(EventData::AVTransport(event.into_state()))
             }
-
             sonos_api::Service::RenderingControl => {
-                let rc_event = api_event_data
+                let event = api_event_data
                     .downcast::<sonos_api::services::rendering_control::RenderingControlEvent>()
                     .map_err(|_| EventProcessingError::Parsing("Failed to downcast RenderingControl event".to_string()))?;
-
-                let stream_event = crate::events::types::RenderingControlEvent {
-                    master_volume: rc_event.master_volume(),
-                    lf_volume: rc_event.lf_volume(),
-                    rf_volume: rc_event.rf_volume(),
-                    master_mute: rc_event.master_mute(),
-                    lf_mute: rc_event.lf_mute(),
-                    rf_mute: rc_event.rf_mute(),
-                    bass: rc_event.bass(),
-                    treble: rc_event.treble(),
-                    loudness: rc_event.loudness(),
-                    balance: rc_event.balance(),
-                    other_channels: rc_event.other_channels(),
-                };
-
-                Ok(EventData::RenderingControlEvent(stream_event))
+                Ok(EventData::RenderingControl(event.into_state()))
             }
-
             sonos_api::Service::GroupRenderingControl => {
-                let grc_event = api_event_data
+                let event = api_event_data
                     .downcast::<sonos_api::services::group_rendering_control::GroupRenderingControlEvent>()
                     .map_err(|_| EventProcessingError::Parsing("Failed to downcast GroupRenderingControl event".to_string()))?;
-
-                let stream_event = crate::events::types::GroupRenderingControlEvent {
-                    group_volume: grc_event.group_volume(),
-                    group_mute: grc_event.group_mute(),
-                    group_volume_changeable: grc_event.group_volume_changeable(),
-                };
-
-                Ok(EventData::GroupRenderingControlEvent(stream_event))
+                Ok(EventData::GroupRenderingControl(event.into_state()))
             }
-
             sonos_api::Service::ZoneGroupTopology => {
-                let zgt_event = api_event_data
+                let event = api_event_data
                     .downcast::<sonos_api::services::zone_group_topology::ZoneGroupTopologyEvent>()
                     .map_err(|_| EventProcessingError::Parsing("Failed to downcast ZoneGroupTopology event".to_string()))?;
-
-                // Convert from sonos-api to sonos-stream types
-                let stream_zone_groups = zgt_event.zone_groups().into_iter().map(|group| {
-                    let stream_members = group.members.into_iter().map(|member| {
-                        let stream_satellites = member.satellites.into_iter().map(|sat| {
-                            crate::events::types::SatelliteInfo {
-                                uuid: sat.uuid,
-                                location: sat.location,
-                                zone_name: sat.zone_name,
-                                ht_sat_chan_map_set: sat.ht_sat_chan_map_set,
-                                invisible: sat.invisible,
-                            }
-                        }).collect();
-
-                        crate::events::types::ZoneGroupMemberInfo {
-                            uuid: member.uuid,
-                            location: member.location,
-                            zone_name: member.zone_name,
-                            software_version: member.software_version,
-                            network_info: crate::events::types::NetworkInfo {
-                                wireless_mode: member.network_info.wireless_mode,
-                                wifi_enabled: member.network_info.wifi_enabled,
-                                eth_link: member.network_info.eth_link,
-                                channel_freq: member.network_info.channel_freq,
-                                behind_wifi_extender: member.network_info.behind_wifi_extender,
-                            },
-                            satellites: stream_satellites,
-                        }
-                    }).collect();
-
-                    crate::events::types::ZoneGroupInfo {
-                        coordinator: group.coordinator,
-                        id: group.id,
-                        members: stream_members,
-                    }
-                }).collect();
-
-                let stream_event = crate::events::types::ZoneGroupTopologyEvent {
-                    zone_groups: stream_zone_groups,
-                    vanished_devices: zgt_event.vanished_devices(),
-                };
-
-                Ok(EventData::ZoneGroupTopologyEvent(stream_event))
+                Ok(EventData::ZoneGroupTopology(event.into_state()))
             }
-
             sonos_api::Service::GroupManagement => {
-                let gm_event = api_event_data
+                let event = api_event_data
                     .downcast::<sonos_api::services::group_management::GroupManagementEvent>()
                     .map_err(|_| EventProcessingError::Parsing("Failed to downcast GroupManagement event".to_string()))?;
-
-                let stream_event = crate::events::types::GroupManagementEvent {
-                    group_coordinator_is_local: gm_event.group_coordinator_is_local(),
-                    local_group_uuid: gm_event.local_group_uuid(),
-                    reset_volume_after: gm_event.reset_volume_after(),
-                    virtual_line_in_group_id: gm_event.virtual_line_in_group_id(),
-                    volume_av_transport_uri: gm_event.volume_av_transport_uri(),
-                };
-
-                Ok(EventData::GroupManagementEvent(stream_event))
+                Ok(EventData::GroupManagement(event.into_state()))
             }
         }
     }

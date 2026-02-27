@@ -5,8 +5,8 @@
 
 use sonos_api::Service;
 use sonos_stream::events::{
-    AVTransportEvent, EnrichedEvent, EventData, GroupRenderingControlEvent,
-    RenderingControlEvent, ZoneGroupTopologyEvent,
+    AVTransportState, EnrichedEvent, EventData, GroupRenderingControlState,
+    RenderingControlState, ZoneGroupTopologyState,
 };
 
 use crate::model::{GroupId, SpeakerId};
@@ -121,19 +121,19 @@ impl PropertyChange {
 /// Decode an enriched event into typed property changes
 pub fn decode_event(event: &EnrichedEvent, speaker_id: SpeakerId) -> DecodedChanges {
     let changes = match &event.event_data {
-        EventData::RenderingControlEvent(rc) => decode_rendering_control(rc),
-        EventData::AVTransportEvent(avt) => decode_av_transport(avt),
-        EventData::ZoneGroupTopologyEvent(zgt) => decode_topology(zgt),
-        EventData::DevicePropertiesEvent(_) => vec![],
-        EventData::GroupManagementEvent(_) => vec![],
-        EventData::GroupRenderingControlEvent(grc) => decode_group_rendering_control(grc),
+        EventData::RenderingControl(rc) => decode_rendering_control(rc),
+        EventData::AVTransport(avt) => decode_av_transport(avt),
+        EventData::ZoneGroupTopology(zgt) => decode_topology(zgt),
+        EventData::DeviceProperties(_) => vec![],
+        EventData::GroupManagement(_) => vec![],
+        EventData::GroupRenderingControl(grc) => decode_group_rendering_control(grc),
     };
 
     DecodedChanges { speaker_id, changes }
 }
 
 /// Decode RenderingControl event data
-fn decode_rendering_control(event: &RenderingControlEvent) -> Vec<PropertyChange> {
+fn decode_rendering_control(event: &RenderingControlState) -> Vec<PropertyChange> {
     let mut changes = vec![];
 
     // Volume
@@ -173,7 +173,7 @@ fn decode_rendering_control(event: &RenderingControlEvent) -> Vec<PropertyChange
 }
 
 /// Decode AVTransport event data
-fn decode_av_transport(event: &AVTransportEvent) -> Vec<PropertyChange> {
+fn decode_av_transport(event: &AVTransportState) -> Vec<PropertyChange> {
     let mut changes = vec![];
 
     // Playback state
@@ -222,14 +222,14 @@ fn decode_av_transport(event: &AVTransportEvent) -> Vec<PropertyChange> {
 ///
 /// Note: This returns an empty Vec because topology changes are handled
 /// specially via `decode_topology_event()` which returns `TopologyChanges`.
-fn decode_topology(_event: &ZoneGroupTopologyEvent) -> Vec<PropertyChange> {
+fn decode_topology(_event: &ZoneGroupTopologyState) -> Vec<PropertyChange> {
     // Topology events are handled specially via decode_topology_event()
     // which returns TopologyChanges instead of PropertyChange
     vec![]
 }
 
 /// Decode GroupRenderingControl event data
-fn decode_group_rendering_control(event: &GroupRenderingControlEvent) -> Vec<PropertyChange> {
+fn decode_group_rendering_control(event: &GroupRenderingControlState) -> Vec<PropertyChange> {
     let mut changes = vec![];
 
     if let Some(vol) = event.group_volume {
@@ -249,7 +249,7 @@ fn decode_group_rendering_control(event: &GroupRenderingControlEvent) -> Vec<Pro
 ///
 /// # Returns
 /// TopologyChanges containing all groups and speaker memberships
-pub fn decode_topology_event(event: &ZoneGroupTopologyEvent) -> TopologyChanges {
+pub fn decode_topology_event(event: &ZoneGroupTopologyState) -> TopologyChanges {
     let mut groups = Vec::new();
     let mut memberships = Vec::new();
 
@@ -386,7 +386,7 @@ mod tests {
 
     #[test]
     fn test_decode_rendering_control() {
-        let event = RenderingControlEvent {
+        let event = RenderingControlState {
             master_volume: Some("50".to_string()),
             master_mute: Some("0".to_string()),
             bass: Some("5".to_string()),
@@ -421,7 +421,7 @@ mod tests {
 
     #[test]
     fn test_decode_av_transport() {
-        let event = AVTransportEvent {
+        let event = AVTransportState {
             transport_state: Some("PLAYING".to_string()),
             transport_status: None,
             speed: None,
@@ -452,7 +452,7 @@ mod tests {
 
     #[test]
     fn test_decode_group_rendering_control() {
-        let event = GroupRenderingControlEvent {
+        let event = GroupRenderingControlState {
             group_volume: Some(42),
             group_mute: Some(false),
             group_volume_changeable: Some(true),
@@ -471,7 +471,7 @@ mod tests {
 
     #[test]
     fn test_decode_group_rendering_control_clamps_volume() {
-        let event = GroupRenderingControlEvent {
+        let event = GroupRenderingControlState {
             group_volume: Some(150),
             group_mute: None,
             group_volume_changeable: None,
@@ -490,7 +490,7 @@ mod tests {
 
     #[test]
     fn test_decode_group_rendering_control_no_volume() {
-        let event = GroupRenderingControlEvent {
+        let event = GroupRenderingControlState {
             group_volume: None,
             group_mute: Some(true),
             group_volume_changeable: None,
@@ -557,7 +557,7 @@ mod tests {
     #[test]
     fn test_decode_topology_single_group_one_speaker() {
         // Single speaker in a standalone group
-        let event = ZoneGroupTopologyEvent {
+        let event = ZoneGroupTopologyState {
             zone_groups: vec![ZoneGroupInfo {
                 coordinator: "RINCON_111111111111".to_string(),
                 id: "RINCON_111111111111:0".to_string(),
@@ -587,7 +587,7 @@ mod tests {
     #[test]
     fn test_decode_topology_single_group_multiple_speakers() {
         // Group with 3 speakers: coordinator + 2 members
-        let event = ZoneGroupTopologyEvent {
+        let event = ZoneGroupTopologyState {
             zone_groups: vec![ZoneGroupInfo {
                 coordinator: "RINCON_111111111111".to_string(),
                 id: "RINCON_111111111111:0".to_string(),
@@ -635,7 +635,7 @@ mod tests {
     #[test]
     fn test_decode_topology_multiple_groups() {
         // Two separate groups
-        let event = ZoneGroupTopologyEvent {
+        let event = ZoneGroupTopologyState {
             zone_groups: vec![
                 ZoneGroupInfo {
                     coordinator: "RINCON_111111111111".to_string(),
@@ -696,7 +696,7 @@ mod tests {
     #[test]
     fn test_decode_topology_empty_event() {
         // Empty topology (no groups)
-        let event = ZoneGroupTopologyEvent {
+        let event = ZoneGroupTopologyState {
             zone_groups: vec![],
             vanished_devices: vec![],
         };
@@ -762,10 +762,10 @@ mod property_tests {
     }
 
     /// Strategy for generating a topology event with 1-3 groups
-    fn topology_event_strategy() -> impl Strategy<Value = ZoneGroupTopologyEvent> {
+    fn topology_event_strategy() -> impl Strategy<Value = ZoneGroupTopologyState> {
         proptest::collection::vec(zone_group_strategy(), 1..=3)
             .prop_map(|zone_groups| {
-                ZoneGroupTopologyEvent {
+                ZoneGroupTopologyState {
                     zone_groups,
                     vanished_devices: vec![],
                 }

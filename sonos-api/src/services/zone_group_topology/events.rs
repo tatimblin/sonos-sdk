@@ -138,7 +138,7 @@ struct Satellite {
 }
 
 /// Information about a single zone group (public interface for sonos-stream)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ZoneGroupInfo {
     pub coordinator: String,
     pub id: String,
@@ -146,7 +146,7 @@ pub struct ZoneGroupInfo {
 }
 
 /// Information about a speaker in a zone group (public interface for sonos-stream)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ZoneGroupMemberInfo {
     pub uuid: String,
     pub location: String,
@@ -157,7 +157,7 @@ pub struct ZoneGroupMemberInfo {
 }
 
 /// Network configuration information for a speaker
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NetworkInfo {
     pub wireless_mode: String,
     pub wifi_enabled: String,
@@ -179,7 +179,7 @@ impl Default for NetworkInfo {
 }
 
 /// Information about a satellite speaker
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SatelliteInfo {
     pub uuid: String,
     pub location: String,
@@ -188,46 +188,69 @@ pub struct SatelliteInfo {
     pub invisible: String,
 }
 
-impl ZoneGroupTopologyEvent {
-    /// Get zone groups from the topology event
-    pub fn zone_groups(&self) -> Vec<ZoneGroupInfo> {
-        // Find the first property with zone_group_state
-        let zone_group_state = self.properties.iter()
-            .find_map(|p| p.zone_group_state.as_ref());
+/// Parse raw ZoneGroupState XML into ZoneGroupInfo structs.
+///
+/// Shared by UPnP event processing and polling for parity.
+/// The XML should be the inner `<ZoneGroupState>` content, e.g. from `GetZoneGroupState` response.
+pub fn parse_zone_group_state_xml(raw_xml: &str) -> Result<Vec<ZoneGroupInfo>> {
+    let clean_xml = xml_utils::strip_namespaces(raw_xml);
+    let state: ZoneGroupState = quick_xml::de::from_str(&clean_xml)
+        .map_err(|e| ApiError::ParseError(format!("ZoneGroupState parse error: {}", e)))?;
+    Ok(convert_zone_groups(&state))
+}
 
-        if let Some(zone_group_state) = zone_group_state {
-            zone_group_state.zone_groups.zone_groups.iter().map(|group| {
-                ZoneGroupInfo {
-                    coordinator: group.coordinator.clone(),
-                    id: group.id.clone(),
-                    members: group.members.iter().map(|member| {
-                        ZoneGroupMemberInfo {
-                            uuid: member.uuid.clone(),
-                            location: member.location.clone(),
-                            zone_name: member.zone_name.clone(),
-                            software_version: member.software_version.clone().unwrap_or_default(),
-                            network_info: NetworkInfo {
-                                wireless_mode: member.wireless_mode.clone().unwrap_or_default(),
-                                wifi_enabled: member.wifi_enabled.clone().unwrap_or_default(),
-                                eth_link: member.eth_link.clone().unwrap_or_default(),
-                                channel_freq: member.channel_freq.clone().unwrap_or_default(),
-                                behind_wifi_extender: member.behind_wifi_extender.clone().unwrap_or_default(),
-                            },
-                            satellites: member.satellites.iter().map(|sat| {
-                                SatelliteInfo {
-                                    uuid: sat.uuid.clone(),
-                                    location: sat.location.clone().unwrap_or_default(),
-                                    zone_name: sat.zone_name.clone().unwrap_or_default(),
-                                    ht_sat_chan_map_set: sat.ht_sat_chan_map_set.clone().unwrap_or_default(),
-                                    invisible: sat.invisible.clone().unwrap_or_default(),
-                                }
-                            }).collect(),
+/// Convert parsed private ZoneGroupState to public ZoneGroupInfo types.
+fn convert_zone_groups(zone_group_state: &ZoneGroupState) -> Vec<ZoneGroupInfo> {
+    zone_group_state.zone_groups.zone_groups.iter().map(|group| {
+        ZoneGroupInfo {
+            coordinator: group.coordinator.clone(),
+            id: group.id.clone(),
+            members: group.members.iter().map(|member| {
+                ZoneGroupMemberInfo {
+                    uuid: member.uuid.clone(),
+                    location: member.location.clone(),
+                    zone_name: member.zone_name.clone(),
+                    software_version: member.software_version.clone().unwrap_or_default(),
+                    network_info: NetworkInfo {
+                        wireless_mode: member.wireless_mode.clone().unwrap_or_default(),
+                        wifi_enabled: member.wifi_enabled.clone().unwrap_or_default(),
+                        eth_link: member.eth_link.clone().unwrap_or_default(),
+                        channel_freq: member.channel_freq.clone().unwrap_or_default(),
+                        behind_wifi_extender: member.behind_wifi_extender.clone().unwrap_or_default(),
+                    },
+                    satellites: member.satellites.iter().map(|sat| {
+                        SatelliteInfo {
+                            uuid: sat.uuid.clone(),
+                            location: sat.location.clone().unwrap_or_default(),
+                            zone_name: sat.zone_name.clone().unwrap_or_default(),
+                            ht_sat_chan_map_set: sat.ht_sat_chan_map_set.clone().unwrap_or_default(),
+                            invisible: sat.invisible.clone().unwrap_or_default(),
                         }
                     }).collect(),
                 }
-            }).collect()
+            }).collect(),
+        }
+    }).collect()
+}
+
+impl ZoneGroupTopologyEvent {
+    /// Get zone groups from the topology event
+    pub fn zone_groups(&self) -> Vec<ZoneGroupInfo> {
+        let zone_group_state = self.properties.iter()
+            .find_map(|p| p.zone_group_state.as_ref());
+
+        if let Some(state) = zone_group_state {
+            convert_zone_groups(state)
         } else {
             Vec::new()
+        }
+    }
+
+    /// Convert parsed UPnP event to canonical state representation.
+    pub fn into_state(&self) -> super::state::ZoneGroupTopologyState {
+        super::state::ZoneGroupTopologyState {
+            zone_groups: self.zone_groups(),
+            vanished_devices: self.vanished_devices(),
         }
     }
 
@@ -447,5 +470,42 @@ mod xml_parsing_tests {
         assert_eq!(zone_groups[0].members.len(), 1);
         assert_eq!(zone_groups[0].members[0].satellites.len(), 1);
         assert_eq!(zone_groups[0].members[0].satellites[0].uuid, "RINCON_456");
+    }
+
+    #[test]
+    fn test_into_state_maps_zone_groups() {
+        let xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0">
+<e:property>
+<ZoneGroupState>&lt;ZoneGroupState&gt;&lt;ZoneGroups&gt;&lt;ZoneGroup Coordinator=&quot;RINCON_123&quot; ID=&quot;RINCON_123:0&quot;&gt;&lt;ZoneGroupMember UUID=&quot;RINCON_123&quot; Location=&quot;http://192.168.1.100:1400/xml/device_description.xml&quot; ZoneName=&quot;Living Room&quot;/&gt;&lt;/ZoneGroup&gt;&lt;/ZoneGroups&gt;&lt;/ZoneGroupState&gt;</ZoneGroupState>
+</e:property>
+</e:propertyset>"#;
+
+        let event = ZoneGroupTopologyEvent::from_xml(xml).unwrap();
+        let state = event.into_state();
+
+        assert_eq!(state.zone_groups.len(), 1);
+        assert_eq!(state.zone_groups[0].coordinator, "RINCON_123");
+        assert_eq!(state.zone_groups[0].members.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_zone_group_state_xml_standalone() {
+        let zone_group_state_xml = r#"<ZoneGroupState>
+            <ZoneGroups>
+                <ZoneGroup Coordinator="RINCON_111" ID="RINCON_111:0">
+                    <ZoneGroupMember UUID="RINCON_111" Location="http://192.168.1.100:1400/xml/device_description.xml" ZoneName="Living Room"/>
+                    <ZoneGroupMember UUID="RINCON_222" Location="http://192.168.1.101:1400/xml/device_description.xml" ZoneName="Kitchen"/>
+                </ZoneGroup>
+            </ZoneGroups>
+        </ZoneGroupState>"#;
+
+        let groups = parse_zone_group_state_xml(zone_group_state_xml).unwrap();
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].coordinator, "RINCON_111");
+        assert_eq!(groups[0].id, "RINCON_111:0");
+        assert_eq!(groups[0].members.len(), 2);
+        assert_eq!(groups[0].members[0].zone_name, "Living Room");
+        assert_eq!(groups[0].members[1].zone_name, "Kitchen");
     }
 }

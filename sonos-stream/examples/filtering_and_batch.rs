@@ -182,32 +182,32 @@ async fn demonstrate_batch_processing(broker: &mut EventBroker) -> Result<(), Bo
             devices_affected.insert(event.speaker_ip);
 
             match &event.event_data {
-                EventData::AVTransportEvent(_) => {
+                EventData::AVTransport(_) => {
                     transport_changes += 1;
                     println!("   {}. 🎵 Transport event from {} ({})",
                              i + 1, event.speaker_ip, format_event_source(&event.event_source));
                 }
-                EventData::RenderingControlEvent(_) => {
+                EventData::RenderingControl(_) => {
                     volume_changes += 1;
                     println!("   {}. 🔊 Volume event from {} ({})",
                              i + 1, event.speaker_ip, format_event_source(&event.event_source));
                 }
-                EventData::ZoneGroupTopologyEvent(topology) => {
+                EventData::ZoneGroupTopology(topology) => {
                     println!("   {}. 🏠 Topology event from {} ({} groups, {})",
                              i + 1,
                              event.speaker_ip,
                              topology.zone_groups.len(),
                              format_event_source(&event.event_source));
                 }
-                EventData::DevicePropertiesEvent(_) => {
+                EventData::DeviceProperties(_) => {
                     println!("   {}. ⚙️  Device properties event from {} ({})",
                              i + 1, event.speaker_ip, format_event_source(&event.event_source));
                 }
-                EventData::GroupManagementEvent(_) => {
+                EventData::GroupManagement(_) => {
                     println!("   {}. 🔗 Group management event from {} ({})",
                              i + 1, event.speaker_ip, format_event_source(&event.event_source));
                 }
-                EventData::GroupRenderingControlEvent(_) => {
+                EventData::GroupRenderingControl(_) => {
                     println!("   {}. 🔊 Group rendering control event from {} ({})",
                              i + 1, event.speaker_ip, format_event_source(&event.event_source));
                 }
@@ -314,7 +314,7 @@ async fn demonstrate_multi_device_coordination(
 
                 // Track device state changes
                 match &event.event_data {
-                    EventData::AVTransportEvent(transport_event) => {
+                    EventData::AVTransport(transport_event) => {
                         if let Some(ref state) = transport_event.transport_state {
                             device_states.insert(event.speaker_ip, Some(state.clone()));
 
@@ -412,14 +412,14 @@ fn analyze_collected_events(events: &[sonos_stream::events::types::EnrichedEvent
 /// Format event data for display
 fn format_event_data(data: &EventData) -> String {
     match data {
-        EventData::AVTransportEvent(_) => "AVTransport Event".to_string(),
-        EventData::RenderingControlEvent(_) => "Volume Event".to_string(),
-        EventData::ZoneGroupTopologyEvent(topology) => {
+        EventData::AVTransport(_) => "AVTransport Event".to_string(),
+        EventData::RenderingControl(_) => "Volume Event".to_string(),
+        EventData::ZoneGroupTopology(topology) => {
             format!("Topology Event ({} groups)", topology.zone_groups.len())
         }
-        EventData::DevicePropertiesEvent(_) => "Device Properties Event".to_string(),
-        EventData::GroupManagementEvent(_) => "Group Management Event".to_string(),
-        EventData::GroupRenderingControlEvent(_) => "Group Rendering Control Event".to_string(),
+        EventData::DeviceProperties(_) => "Device Properties Event".to_string(),
+        EventData::GroupManagement(_) => "Group Management Event".to_string(),
+        EventData::GroupRenderingControl(_) => "Group Rendering Control Event".to_string(),
     }
 }
 

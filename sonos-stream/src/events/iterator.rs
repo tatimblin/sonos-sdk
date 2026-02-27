@@ -393,7 +393,7 @@ mod tests {
     use super::*;
     use std::net::IpAddr;
     use std::time::SystemTime;
-    use crate::events::types::{EventData, AVTransportEvent, EventSource};
+    use crate::events::types::{EventData, AVTransportState, EventSource};
 
     fn create_test_event(registration_id: RegistrationId) -> EnrichedEvent {
         EnrichedEvent {
@@ -404,18 +404,18 @@ mod tests {
                 subscription_id: "test-sid".to_string(),
             },
             timestamp: SystemTime::now(),
-            event_data: EventData::AVTransportEvent(AVTransportEvent {
+            event_data: EventData::AVTransport(AVTransportState {
                 transport_state: Some("PLAYING".to_string()),
                 transport_status: None,
                 speed: None,
                 current_track_uri: None,
                 track_duration: None,
+                track_metadata: None,
                 rel_time: None,
                 abs_time: None,
                 rel_count: None,
                 abs_count: None,
                 play_mode: None,
-                track_metadata: None,
                 next_track_uri: None,
                 next_track_metadata: None,
                 queue_length: None,

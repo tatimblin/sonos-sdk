@@ -217,33 +217,33 @@ async fn monitor_events(
 
                 // Show event content
                 match &event.event_data {
-                    EventData::AVTransportEvent(transport_event) => {
+                    EventData::AVTransport(transport_event) => {
                         if transport_event.transport_state.is_some() || transport_event.current_track_uri.is_some() {
                             println!("       🎵 Transport event: state={:?}, track={:?}",
                                      transport_event.transport_state, transport_event.current_track_uri);
                         }
                     }
-                    EventData::RenderingControlEvent(volume_event) => {
+                    EventData::RenderingControl(volume_event) => {
                         if volume_event.master_volume.is_some() || volume_event.master_mute.is_some() {
                             println!("       🔊 Volume event: level={:?}, mute={:?}",
                                      volume_event.master_volume, volume_event.master_mute);
                         }
                     }
-                    EventData::ZoneGroupTopologyEvent(topology) => {
+                    EventData::ZoneGroupTopology(topology) => {
                         println!("       🏠 Topology event: {} groups, {} total speakers",
                                  topology.zone_groups.len(),
                                  topology.zone_groups.iter()
                                      .map(|g| g.members.len() + g.members.iter().map(|m| m.satellites.len()).sum::<usize>())
                                      .sum::<usize>());
                     }
-                    EventData::DevicePropertiesEvent(_) => {
+                    EventData::DeviceProperties(_) => {
                         println!("       ⚙️ Device properties event received");
                     }
-                    EventData::GroupManagementEvent(gm_event) => {
+                    EventData::GroupManagement(gm_event) => {
                         println!("       🔗 Group management: coordinator_local={:?}, group_uuid={:?}",
                                  gm_event.group_coordinator_is_local, gm_event.local_group_uuid);
                     }
-                    EventData::GroupRenderingControlEvent(grc_event) => {
+                    EventData::GroupRenderingControl(grc_event) => {
                         println!("       🔊 Group rendering control: volume={:?}, mute={:?}",
                                  grc_event.group_volume, grc_event.group_mute);
                     }

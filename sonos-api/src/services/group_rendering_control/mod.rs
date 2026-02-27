@@ -22,7 +22,9 @@
 
 pub mod events;
 pub mod operations;
+pub mod state;
 
 // Re-export for convenience
 pub use events::*;
 pub use operations::*;
+pub use state::GroupRenderingControlState;

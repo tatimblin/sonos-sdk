@@ -9,10 +9,11 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
+use tracing::{debug, error, info, warn};
 
 use crate::error::{PollingError, PollingResult};
-use crate::events::types::{EnrichedEvent, EventData, EventSource};
-use crate::polling::strategies::{DeviceStatePoller, StateChange};
+use crate::events::types::{EnrichedEvent, EventSource};
+use crate::polling::strategies::DeviceStatePoller;
 use crate::registry::{RegistrationId, SpeakerServicePair};
 
 /// A single polling task with state management
@@ -106,9 +107,11 @@ impl PollingTask {
         error_count: Arc<RwLock<u32>>,
         poll_count: Arc<RwLock<u64>>,
     ) {
-        eprintln!(
-            "🔄 Starting polling task for {} {:?} (interval: {:?})",
-            pair.speaker_ip, pair.service, current_interval
+        info!(
+            speaker_ip = %pair.speaker_ip,
+            service = ?pair.service,
+            ?current_interval,
+            "Starting polling task"
         );
 
         // Track last state locally within the loop
@@ -117,9 +120,10 @@ impl PollingTask {
         loop {
             // Check for shutdown signal
             if shutdown_signal.load(Ordering::Relaxed) {
-                eprintln!(
-                    "🛑 Polling task shutting down for {} {:?}",
-                    pair.speaker_ip, pair.service
+                info!(
+                    speaker_ip = %pair.speaker_ip,
+                    service = ?pair.service,
+                    "Polling task shutting down"
                 );
                 break;
             }
@@ -142,40 +146,23 @@ impl PollingTask {
                         *errors = 0;
                     }
 
-                    // Check for state changes
-                    let state_changed = {
-                        let previous_state = last_state.clone();
-
-                        if let Some(ref previous) = previous_state {
-                            if previous != &current_state {
-                                last_state = Some(current_state.clone());
-                                true
-                            } else {
-                                false
-                            }
-                        } else {
-                            // First poll - store initial state
-                            last_state = Some(current_state.clone());
-                            true // Treat as change for initial state
-                        }
-                    };
+                    // Check for state changes (compare without cloning)
+                    let state_changed = last_state.as_deref() != Some(current_state.as_str());
 
                     if state_changed {
-                        eprintln!(
-                            "📊 State change detected for {} {:?}",
-                            pair.speaker_ip, pair.service
+                        last_state = Some(current_state.clone());
+                    }
+
+                    if state_changed {
+                        debug!(
+                            speaker_ip = %pair.speaker_ip,
+                            service = ?pair.service,
+                            "State change detected"
                         );
 
-                        // Generate change events from the state difference
-                        let previous_state = last_state.clone();
-
-                        if let Some(changes) = device_poller
-                            .parse_state_changes(&pair.service, previous_state.as_deref(), &current_state)
-                            .await
-                        {
-                            for change in changes {
-                                let event_data = Self::change_to_event_data(change, &pair.service);
-
+                        // Convert JSON snapshot to EventData and emit full-state event
+                        match device_poller.state_to_event_data(&pair.service, &current_state) {
+                            Ok(event_data) => {
                                 let enriched_event = EnrichedEvent::new(
                                     registration_id,
                                     pair.speaker_ip,
@@ -186,15 +173,22 @@ impl PollingTask {
                                     event_data,
                                 );
 
-                                // Send the event
-                                if let Err(_) = event_sender.send(enriched_event) {
-                                    eprintln!(
-                                        "❌ Failed to send polling event for {} {:?}",
-                                        pair.speaker_ip, pair.service
+                                if event_sender.send(enriched_event).is_err() {
+                                    error!(
+                                        speaker_ip = %pair.speaker_ip,
+                                        service = ?pair.service,
+                                        "Failed to send polling event — channel closed"
                                     );
-                                    // Channel closed - stop polling
                                     return;
                                 }
+                            }
+                            Err(e) => {
+                                warn!(
+                                    speaker_ip = %pair.speaker_ip,
+                                    service = ?pair.service,
+                                    error = %e,
+                                    "Failed to convert state to event data"
+                                );
                             }
                         }
 
@@ -216,16 +210,20 @@ impl PollingTask {
                         *errors
                     };
 
-                    eprintln!(
-                        "❌ Polling error for {} {:?} (attempt {}): {}",
-                        pair.speaker_ip, pair.service, error_count_value, e
+                    warn!(
+                        speaker_ip = %pair.speaker_ip,
+                        service = ?pair.service,
+                        attempt = error_count_value,
+                        error = %e,
+                        "Polling error"
                     );
 
                     // Use exponential backoff for errors
                     if error_count_value >= 5 {
-                        eprintln!(
-                            "💥 Too many consecutive errors for {} {:?}, stopping polling",
-                            pair.speaker_ip, pair.service
+                        error!(
+                            speaker_ip = %pair.speaker_ip,
+                            service = ?pair.service,
+                            "Too many consecutive errors, stopping polling"
                         );
                         break;
                     }
@@ -238,9 +236,10 @@ impl PollingTask {
             }
         }
 
-        eprintln!(
-            "🏁 Polling task ended for {} {:?}",
-            pair.speaker_ip, pair.service
+        info!(
+            speaker_ip = %pair.speaker_ip,
+            service = ?pair.service,
+            "Polling task ended"
         );
     }
 
@@ -262,81 +261,6 @@ impl PollingTask {
             (current_interval * 2).min(max_interval)
         } else {
             current_interval
-        }
-    }
-
-    /// Convert state change to EventData
-    fn change_to_event_data(change: StateChange, service: &sonos_api::Service) -> EventData {
-        // TODO: Update polling to use new complete event structures
-        // For now, create minimal events based on detected changes
-        match service {
-            sonos_api::Service::AVTransport => {
-                let transport_event = crate::events::types::AVTransportEvent {
-                    transport_state: match &change {
-                        StateChange::TransportState { new_state, .. } => Some(new_state.clone()),
-                        _ => None,
-                    },
-                    transport_status: None,
-                    speed: None,
-                    current_track_uri: match &change {
-                        StateChange::TrackChanged { new_uri, .. } => Some(new_uri.clone()),
-                        _ => None,
-                    },
-                    track_duration: None,
-                    rel_time: None,
-                    abs_time: None,
-                    rel_count: None,
-                    abs_count: None,
-                    play_mode: None,
-                    track_metadata: None,
-                    next_track_uri: None,
-                    next_track_metadata: None,
-                    queue_length: None,
-                };
-                EventData::AVTransportEvent(transport_event)
-            }
-            sonos_api::Service::RenderingControl => {
-                let volume_event = crate::events::types::RenderingControlEvent {
-                    master_volume: match &change {
-                        StateChange::VolumeChanged { new_volume, .. } => Some(new_volume.clone()),
-                        _ => None,
-                    },
-                    lf_volume: None,
-                    rf_volume: None,
-                    master_mute: match &change {
-                        StateChange::MuteChanged { new_mute, .. } => Some(new_mute.to_string()),
-                        _ => None,
-                    },
-                    lf_mute: None,
-                    rf_mute: None,
-                    bass: None,
-                    treble: None,
-                    loudness: None,
-                    balance: None,
-                    other_channels: std::collections::HashMap::new(),
-                };
-                EventData::RenderingControlEvent(volume_event)
-            }
-            _ => {
-                // Default to empty transport event for unknown services
-                let transport_event = crate::events::types::AVTransportEvent {
-                    transport_state: None,
-                    transport_status: None,
-                    speed: None,
-                    current_track_uri: None,
-                    track_duration: None,
-                    rel_time: None,
-                    abs_time: None,
-                    rel_count: None,
-                    abs_count: None,
-                    play_mode: None,
-                    track_metadata: None,
-                    next_track_uri: None,
-                    next_track_metadata: None,
-                    queue_length: None,
-                };
-                EventData::AVTransportEvent(transport_event)
-            }
         }
     }
 
@@ -481,9 +405,10 @@ impl PollingScheduler {
 
         tasks.insert(registration_id, task);
 
-        eprintln!(
-            "✅ Started polling for {} {:?}",
-            pair.speaker_ip, pair.service
+        info!(
+            speaker_ip = %pair.speaker_ip,
+            service = ?pair.service,
+            "Started polling"
         );
 
         Ok(())
@@ -498,9 +423,10 @@ impl PollingScheduler {
             // Shutdown happens when task is dropped, but we can explicitly shut it down
             task.shutdown().await?;
 
-            eprintln!(
-                "🛑 Stopped polling for {} {:?}",
-                pair.speaker_ip, pair.service
+            info!(
+                speaker_ip = %pair.speaker_ip,
+                service = ?pair.service,
+                "Stopped polling"
             );
         }
 
@@ -540,10 +466,10 @@ impl PollingScheduler {
         for (registration_id, task) in tasks.drain() {
             match task.shutdown().await {
                 Ok(()) => {
-                    eprintln!("✅ Shutdown polling task {}", registration_id);
+                    debug!(%registration_id, "Shutdown polling task");
                 }
                 Err(e) => {
-                    eprintln!("❌ Failed to shutdown polling task {}: {}", registration_id, e);
+                    error!(%registration_id, error = %e, "Failed to shutdown polling task");
                 }
             }
         }

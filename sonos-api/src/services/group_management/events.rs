@@ -78,6 +78,17 @@ impl GroupManagementEvent {
             .find_map(|p| p.volume_av_transport_uri.clone())
     }
 
+    /// Convert parsed UPnP event to canonical state representation.
+    pub fn into_state(&self) -> super::state::GroupManagementState {
+        super::state::GroupManagementState {
+            group_coordinator_is_local: self.group_coordinator_is_local(),
+            local_group_uuid: self.local_group_uuid(),
+            reset_volume_after: self.reset_volume_after(),
+            virtual_line_in_group_id: self.virtual_line_in_group_id(),
+            volume_av_transport_uri: self.volume_av_transport_uri(),
+        }
+    }
+
     /// Parse from UPnP event XML using serde
     pub fn from_xml(xml: &str) -> Result<Self> {
         let clean_xml = xml_utils::strip_namespaces(xml);
@@ -439,5 +450,27 @@ mod property_tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn test_into_state_maps_all_fields() {
+        let event = GroupManagementEvent {
+            properties: vec![GroupManagementProperty {
+                group_coordinator_is_local: Some("true".to_string()),
+                local_group_uuid: Some("RINCON_111:1".to_string()),
+                reset_volume_after: Some("1".to_string()),
+                virtual_line_in_group_id: Some("vline123".to_string()),
+                volume_av_transport_uri: Some("x-rincon:RINCON_111".to_string()),
+            }],
+        };
+
+        let state = event.into_state();
+
+        assert_eq!(state.group_coordinator_is_local, Some(true));
+        assert_eq!(state.local_group_uuid, Some("RINCON_111:1".to_string()));
+        assert_eq!(state.reset_volume_after, Some(true));
+        assert_eq!(state.virtual_line_in_group_id, Some("vline123".to_string()));
+        assert_eq!(state.volume_av_transport_uri, Some("x-rincon:RINCON_111".to_string()));
+
     }
 }

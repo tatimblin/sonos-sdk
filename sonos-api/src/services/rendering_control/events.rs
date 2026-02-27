@@ -150,6 +150,23 @@ impl RenderingControlEvent {
             .map(|m| m.val.clone())
     }
 
+    /// Convert parsed UPnP event to canonical state representation.
+    pub fn into_state(&self) -> super::state::RenderingControlState {
+        super::state::RenderingControlState {
+            master_volume: self.master_volume(),
+            master_mute: self.master_mute(),
+            lf_volume: self.lf_volume(),
+            rf_volume: self.rf_volume(),
+            lf_mute: self.lf_mute(),
+            rf_mute: self.rf_mute(),
+            bass: self.bass(),
+            treble: self.treble(),
+            loudness: self.loudness(),
+            balance: self.balance(),
+            other_channels: self.other_channels(),
+        }
+    }
+
     /// Parse from UPnP event XML using serde
     pub fn from_xml(xml: &str) -> Result<Self> {
         let clean_xml = xml_utils::strip_namespaces(xml);
@@ -338,5 +355,40 @@ mod tests {
         let enriched = create_enriched_event_with_registration_id(42, ip, source, event_data);
 
         assert_eq!(enriched.registration_id, Some(42));
+    }
+
+    #[test]
+    fn test_into_state_maps_all_fields() {
+        let event = RenderingControlEvent {
+            property: RenderingControlProperty {
+                last_change: RenderingControlEventData {
+                    instance: RenderingControlInstance {
+                        volumes: vec![
+                            ChannelValueAttribute { val: "50".to_string(), channel: "Master".to_string() },
+                            ChannelValueAttribute { val: "45".to_string(), channel: "LF".to_string() },
+                            ChannelValueAttribute { val: "55".to_string(), channel: "RF".to_string() },
+                        ],
+                        mutes: vec![
+                            ChannelValueAttribute { val: "0".to_string(), channel: "Master".to_string() },
+                        ],
+                        bass: Some(xml_utils::ValueAttribute { val: "5".to_string() }),
+                        treble: Some(xml_utils::ValueAttribute { val: "-3".to_string() }),
+                        loudness: Some(xml_utils::ValueAttribute { val: "1".to_string() }),
+                        balance: None,
+                    }
+                }
+            }
+        };
+
+        let state = event.into_state();
+
+        assert_eq!(state.master_volume, Some("50".to_string()));
+        assert_eq!(state.master_mute, Some("0".to_string()));
+        assert_eq!(state.lf_volume, Some("45".to_string()));
+        assert_eq!(state.rf_volume, Some("55".to_string()));
+        assert_eq!(state.bass, Some("5".to_string()));
+        assert_eq!(state.treble, Some("-3".to_string()));
+        assert_eq!(state.loudness, Some("1".to_string()));
+
     }
 }

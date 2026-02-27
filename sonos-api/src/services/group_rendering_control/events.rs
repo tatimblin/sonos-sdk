@@ -62,6 +62,15 @@ impl GroupRenderingControlEvent {
             .map(|s| s == "1" || s.to_lowercase() == "true")
     }
 
+    /// Convert parsed UPnP event to canonical state representation.
+    pub fn into_state(&self) -> super::state::GroupRenderingControlState {
+        super::state::GroupRenderingControlState {
+            group_volume: self.group_volume(),
+            group_mute: self.group_mute(),
+            group_volume_changeable: self.group_volume_changeable(),
+        }
+    }
+
     /// Parse from UPnP event XML using serde
     pub fn from_xml(xml: &str) -> Result<Self> {
         let clean_xml = xml_utils::strip_namespaces(xml);
@@ -156,5 +165,23 @@ mod tests {
         };
         assert_eq!(event.group_mute(), Some(false));
         assert_eq!(event.group_volume_changeable(), Some(false));
+    }
+
+    #[test]
+    fn test_into_state_maps_all_fields() {
+        let event = GroupRenderingControlEvent {
+            properties: vec![GroupRenderingControlProperty {
+                group_volume: Some("42".to_string()),
+                group_mute: Some("0".to_string()),
+                group_volume_changeable: Some("true".to_string()),
+            }],
+        };
+
+        let state = event.into_state();
+
+        assert_eq!(state.group_volume, Some(42));
+        assert_eq!(state.group_mute, Some(false));
+        assert_eq!(state.group_volume_changeable, Some(true));
+
     }
 }
