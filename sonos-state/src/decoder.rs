@@ -12,8 +12,8 @@ use sonos_stream::events::{
 use crate::model::{GroupId, SpeakerId};
 use crate::state::StateStore;
 use crate::property::{
-    Bass, CurrentTrack, GroupInfo, GroupMembership, GroupVolume, Loudness, Mute, PlaybackState,
-    Position, Treble, Volume,
+    Bass, CurrentTrack, GroupInfo, GroupMembership, GroupMute, GroupVolume, GroupVolumeChangeable,
+    Loudness, Mute, PlaybackState, Position, Treble, Volume,
 };
 
 /// Decoded changes from a single event
@@ -51,6 +51,8 @@ pub enum PropertyChange {
     CurrentTrack(CurrentTrack),
     GroupMembership(GroupMembership),
     GroupVolume(GroupVolume),
+    GroupMute(GroupMute),
+    GroupVolumeChangeable(GroupVolumeChangeable),
 }
 
 impl PropertyChange {
@@ -80,6 +82,20 @@ impl PropertyChange {
                     false
                 }
             }
+            PropertyChange::GroupMute(v) => {
+                if let Some(group_id) = store.speaker_to_group.get(speaker_id).cloned() {
+                    store.set_group(&group_id, v.clone())
+                } else {
+                    false
+                }
+            }
+            PropertyChange::GroupVolumeChangeable(v) => {
+                if let Some(group_id) = store.speaker_to_group.get(speaker_id).cloned() {
+                    store.set_group(&group_id, v.clone())
+                } else {
+                    false
+                }
+            }
         }
     }
 
@@ -97,6 +113,8 @@ impl PropertyChange {
             PropertyChange::CurrentTrack(_) => CurrentTrack::KEY,
             PropertyChange::GroupMembership(_) => GroupMembership::KEY,
             PropertyChange::GroupVolume(_) => GroupVolume::KEY,
+            PropertyChange::GroupMute(_) => GroupMute::KEY,
+            PropertyChange::GroupVolumeChangeable(_) => GroupVolumeChangeable::KEY,
         }
     }
 
@@ -114,6 +132,8 @@ impl PropertyChange {
             PropertyChange::CurrentTrack(_) => CurrentTrack::SERVICE,
             PropertyChange::GroupMembership(_) => GroupMembership::SERVICE,
             PropertyChange::GroupVolume(_) => GroupVolume::SERVICE,
+            PropertyChange::GroupMute(_) => GroupMute::SERVICE,
+            PropertyChange::GroupVolumeChangeable(_) => GroupVolumeChangeable::SERVICE,
         }
     }
 }
@@ -125,6 +145,8 @@ pub fn decode_event(event: &EnrichedEvent, speaker_id: SpeakerId) -> DecodedChan
         EventData::AVTransport(avt) => decode_av_transport(avt),
         EventData::ZoneGroupTopology(zgt) => decode_topology(zgt),
         EventData::DeviceProperties(_) => vec![],
+        // GroupManagement is action-only; group changes surface via ZoneGroupTopology events.
+        // No user-facing properties to decode.
         EventData::GroupManagement(_) => vec![],
         EventData::GroupRenderingControl(grc) => decode_group_rendering_control(grc),
     };
@@ -234,6 +256,14 @@ fn decode_group_rendering_control(event: &GroupRenderingControlState) -> Vec<Pro
 
     if let Some(vol) = event.group_volume {
         changes.push(PropertyChange::GroupVolume(GroupVolume(vol.min(100))));
+    }
+
+    if let Some(muted) = event.group_mute {
+        changes.push(PropertyChange::GroupMute(GroupMute(muted)));
+    }
+
+    if let Some(changeable) = event.group_volume_changeable {
+        changes.push(PropertyChange::GroupVolumeChangeable(GroupVolumeChangeable(changeable)));
     }
 
     changes
@@ -460,12 +490,24 @@ mod tests {
 
         let changes = decode_group_rendering_control(&event);
 
-        assert_eq!(changes.len(), 1);
+        assert_eq!(changes.len(), 3);
 
         if let PropertyChange::GroupVolume(v) = &changes[0] {
             assert_eq!(v.0, 42);
         } else {
             panic!("Expected GroupVolume change");
+        }
+
+        if let PropertyChange::GroupMute(m) = &changes[1] {
+            assert!(!m.0);
+        } else {
+            panic!("Expected GroupMute change");
+        }
+
+        if let PropertyChange::GroupVolumeChangeable(c) = &changes[2] {
+            assert!(c.0);
+        } else {
+            panic!("Expected GroupVolumeChangeable change");
         }
     }
 
@@ -497,7 +539,13 @@ mod tests {
         };
 
         let changes = decode_group_rendering_control(&event);
-        assert!(changes.is_empty());
+        assert_eq!(changes.len(), 1);
+
+        if let PropertyChange::GroupMute(m) = &changes[0] {
+            assert!(m.0);
+        } else {
+            panic!("Expected GroupMute change");
+        }
     }
 
     #[test]
