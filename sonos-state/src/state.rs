@@ -374,16 +374,6 @@ impl StateManager {
         store.speaker(speaker_id).map(|s| s.boot_seq)
     }
 
-    /// Update boot_seq for a speaker from topology events
-    #[allow(dead_code)] // Event worker writes directly to store; kept for API symmetry with get_boot_seq
-    pub(crate) fn set_boot_seq(&self, speaker_id: &SpeakerId, boot_seq: u32) {
-        if let Ok(mut store) = self.store.write() {
-            if let Some(speaker) = store.speakers.get_mut(speaker_id) {
-                speaker.boot_seq = boot_seq;
-            }
-        }
-    }
-
     /// Create a blocking iterator over change events
     ///
     /// Only emits events for properties that have been watched.
@@ -1276,31 +1266,6 @@ mod tests {
         let manager = StateManager::new().unwrap();
         let unknown = SpeakerId::new("RINCON_UNKNOWN");
         assert!(manager.get_boot_seq(&unknown).is_none());
-    }
-
-    #[test]
-    fn test_set_boot_seq_and_get_boot_seq_round_trip() {
-        let manager = StateManager::new().unwrap();
-
-        let devices = vec![Device {
-            id: "RINCON_123".to_string(),
-            name: "Living Room".to_string(),
-            room_name: "Living Room".to_string(),
-            ip_address: "192.168.1.100".to_string(),
-            port: 1400,
-            model_name: "Sonos One".to_string(),
-        }];
-        manager.add_devices(devices).unwrap();
-
-        let speaker_id = SpeakerId::new("RINCON_123");
-
-        // Set boot_seq
-        manager.set_boot_seq(&speaker_id, 42);
-        assert_eq!(manager.get_boot_seq(&speaker_id), Some(42));
-
-        // Update boot_seq
-        manager.set_boot_seq(&speaker_id, 99);
-        assert_eq!(manager.get_boot_seq(&speaker_id), Some(99));
     }
 
     #[test]
