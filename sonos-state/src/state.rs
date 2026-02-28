@@ -375,6 +375,7 @@ impl StateManager {
     }
 
     /// Update boot_seq for a speaker from topology events
+    #[allow(dead_code)] // Event worker writes directly to store; kept for API symmetry with get_boot_seq
     pub(crate) fn set_boot_seq(&self, speaker_id: &SpeakerId, boot_seq: u32) {
         if let Ok(mut store) = self.store.write() {
             if let Some(speaker) = store.speakers.get_mut(speaker_id) {
