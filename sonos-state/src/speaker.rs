@@ -17,6 +17,7 @@ mod tests {
             port: 1400,
             model_name: "Sonos One".to_string(),
             software_version: "1.0".to_string(),
+            boot_seq: 0,
             satellites: vec![],
         }
     }

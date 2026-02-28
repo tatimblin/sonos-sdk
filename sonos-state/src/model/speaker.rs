@@ -21,6 +21,8 @@ pub struct Speaker {
     pub model_name: String,
     /// Software/firmware version
     pub software_version: String,
+    /// Boot sequence number from topology events (used by GroupManagement AddMember)
+    pub boot_seq: u32,
     /// Satellite speaker IDs (for home theater setups)
     pub satellites: Vec<SpeakerId>,
 }
@@ -50,6 +52,7 @@ mod tests {
             port: 1400,
             model_name: "Sonos One".to_string(),
             software_version: "56.0-76060".to_string(),
+            boot_seq: 0,
             satellites: vec![],
         }
     }

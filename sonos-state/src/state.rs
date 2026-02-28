@@ -306,6 +306,7 @@ impl StateManager {
                 port: device.port,
                 model_name: device.model_name.clone(),
                 software_version: "unknown".to_string(),
+                boot_seq: 0,
                 satellites: vec![],
             };
 
@@ -365,6 +366,21 @@ impl StateManager {
     pub fn get_speaker_ip(&self, speaker_id: &SpeakerId) -> Option<IpAddr> {
         let store = self.store.read().ok()?;
         store.speaker(speaker_id).map(|s| s.ip_address)
+    }
+
+    /// Get boot_seq for a speaker (used by GroupManagement AddMember)
+    pub fn get_boot_seq(&self, speaker_id: &SpeakerId) -> Option<u32> {
+        let store = self.store.read().ok()?;
+        store.speaker(speaker_id).map(|s| s.boot_seq)
+    }
+
+    /// Update boot_seq for a speaker from topology events
+    pub(crate) fn set_boot_seq(&self, speaker_id: &SpeakerId, boot_seq: u32) {
+        if let Ok(mut store) = self.store.write() {
+            if let Some(speaker) = store.speakers.get_mut(speaker_id) {
+                speaker.boot_seq = boot_seq;
+            }
+        }
     }
 
     /// Create a blocking iterator over change events
