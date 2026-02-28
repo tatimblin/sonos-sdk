@@ -209,49 +209,50 @@ Phase 7 → docs (rustdoc + examples + guide)
 
 **Tasks:**
 
-- [ ] **Add `Fetchable` impl for `Mute`**
+- [x] **Add `Fetchable` impl for `Mute`**
   - Operation: `GetMuteOperation` (from Phase 1)
   - `build_operation()`: call `rendering_control::get_mute_operation("Master")`
   - `from_response()`: `Mute(response.current_mute)`
-  - Pattern: follow Volume Fetchable at `handles.rs:412-424`
 
-- [ ] **Add `Fetchable` impl for `Bass`**
+- [x] **Add `Fetchable` impl for `Bass`**
   - Operation: `GetBassOperation` (from Phase 1)
   - `from_response()`: `Bass(response.current_bass)`
 
-- [ ] **Add `Fetchable` impl for `Treble`**
+- [x] **Add `Fetchable` impl for `Treble`**
   - Operation: `GetTrebleOperation` (from Phase 1)
   - `from_response()`: `Treble(response.current_treble)`
 
-- [ ] **Add `Fetchable` impl for `Loudness`**
+- [x] **Add `Fetchable` impl for `Loudness`**
   - Operation: `GetLoudnessOperation` (from Phase 1)
   - `build_operation()`: call `rendering_control::get_loudness_operation("Master")`
   - `from_response()`: `Loudness(response.current_loudness)`
 
-- [ ] **Add `Fetchable` impl for `CurrentTrack`**
+- [x] **Add `Fetchable` impl for `CurrentTrack`**
   - Operation: `GetPositionInfoOperation` (exists)
   - `from_response()`: extract title, artist, album, album_art_uri, uri from response
-  - Note: GetPositionInfo returns `track_uri`, `track_metadata` (DIDL-Lite XML) — needs metadata parsing like the decoder does at `decoder.rs:200-219`
+  - Uses `parse_track_metadata()` (made public in sonos-state) for DIDL-Lite XML parsing
 
-- [ ] **Add `Fetchable` impl for `GroupMembership`**
+- [x] **Add `FetchableWithContext` trait + `GroupMembership` impl**
+  - New trait for properties needing speaker context to interpret multi-entity responses
   - Operation: `GetZoneGroupStateOperation` (exists)
-  - `from_response()`: parse zone groups to find the speaker's group and coordinator status
-  - Note: this is more complex — response contains full topology, need to extract the relevant speaker's membership
+  - Concrete `impl PropertyHandle<GroupMembership>` fetch() (avoids Rust generic impl conflict)
+  - Extracts speaker's group and coordinator status from full topology response
 
-- [ ] **Add `GroupMuteHandle` to Group struct**
+- [x] **Add `GroupMuteHandle` to Group struct**
   - Define `GroupMuteHandle = GroupPropertyHandle<GroupMute>` type alias in `handles.rs`
-  - Add `pub mute: GroupMuteHandle` field to `Group` struct at `group.rs:36-54`
-  - Initialize in `Group::from_info()` at `group.rs:61-84`
+  - Add `pub mute: GroupMuteHandle` field to `Group` struct
+  - Initialize in `Group::from_info()` using `Arc::clone` for shared `GroupContext`
 
-- [ ] **Add `GroupFetchable` impl for `GroupMute`**
+- [x] **Add `GroupFetchable` impl for `GroupMute`**
   - Operation: `GetGroupMuteOperation` (exists in sonos-api)
   - `from_response()`: `GroupMute(response.current_mute)`
 
-- [ ] **Add `GroupVolumeChangeableHandle` to Group struct** (optional — consider if users need this)
-  - If yes: same pattern as GroupMuteHandle
+- [x] **Add `GroupVolumeChangeableHandle` to Group struct**
+  - Event-only handle (no UPnP Get operation exists) — no `GroupFetchable` impl
 
-- [ ] Remove event-only comments for properties that now have `fetch()` at `handles.rs:461-481`
-- [ ] Add tests for all new Fetchable/GroupFetchable implementations
+- [x] Remove event-only comments for properties that now have `fetch()`
+- [x] Add tests for all new Fetchable/GroupFetchable/FetchableWithContext implementations
+- [x] Live validated against Sonos Roam 2 — all 11 fetch() calls succeed (PR #39)
 
 **Success criteria:** `cargo test -p sonos-sdk` passes. Every property handle supports `get()`, `watch()`, and `fetch()`.
 
