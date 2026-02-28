@@ -1,6 +1,14 @@
 //! Speaker handle with property accessors
 //!
 //! Provides a DOM-like interface for accessing speaker properties.
+//!
+//! ## Write Operations and State Cache
+//!
+//! Write methods (e.g., `play()`, `set_volume()`) update the state cache
+//! optimistically after the SOAP call succeeds. This means `speaker.volume.get()`
+//! reflects the written value immediately. However, if the speaker rejects the
+//! command silently, the cache may be stale until the next UPnP event corrects it.
+//! Use `speaker.volume.watch()` for authoritative real-time state.
 
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -23,23 +31,36 @@ use sonos_api::services::{
 
 use crate::SdkError;
 
-/// Seek unit for the `seek()` method
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SeekUnit {
-    /// Seek by track number (target: `"3"`)
-    TrackNr,
-    /// Seek by relative time (target: `"0:02:30"`)
-    RelTime,
-    /// Seek by time delta (target: `"+0:00:30"`)
-    TimeDelta,
+/// Seek target for the `seek()` method
+///
+/// Combines the seek unit and target value into a single type-safe enum,
+/// preventing mismatched unit/target combinations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SeekTarget {
+    /// Seek to a track number (1-based)
+    Track(u32),
+    /// Seek to an absolute time position (e.g., `"0:02:30"`)
+    Time(String),
+    /// Seek by a time delta (e.g., `"+0:00:30"` or `"-0:00:10"`)
+    Delta(String),
 }
 
-impl std::fmt::Display for SeekUnit {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl SeekTarget {
+    /// Returns the UPnP seek unit string
+    fn unit(&self) -> &str {
         match self {
-            SeekUnit::TrackNr => write!(f, "TRACK_NR"),
-            SeekUnit::RelTime => write!(f, "REL_TIME"),
-            SeekUnit::TimeDelta => write!(f, "TIME_DELTA"),
+            SeekTarget::Track(_) => "TRACK_NR",
+            SeekTarget::Time(_) => "REL_TIME",
+            SeekTarget::Delta(_) => "TIME_DELTA",
+        }
+    }
+
+    /// Returns the UPnP seek target string
+    fn target(&self) -> String {
+        match self {
+            SeekTarget::Track(n) => n.to_string(),
+            SeekTarget::Time(t) => t.clone(),
+            SeekTarget::Delta(d) => d.clone(),
         }
     }
 }
@@ -237,6 +258,8 @@ impl Speaker {
     // ========================================================================
 
     /// Start or resume playback
+    ///
+    /// Updates the state cache to `PlaybackState::Playing` on success.
     pub fn play(&self) -> Result<(), SdkError> {
         self.exec(av_transport::play("1".to_string()).build())?;
         self.context.state_manager.set_property(&self.context.speaker_id, PlaybackState::Playing);
@@ -244,6 +267,8 @@ impl Speaker {
     }
 
     /// Pause playback
+    ///
+    /// Updates the state cache to `PlaybackState::Paused` on success.
     pub fn pause(&self) -> Result<(), SdkError> {
         self.exec(av_transport::pause().build())?;
         self.context.state_manager.set_property(&self.context.speaker_id, PlaybackState::Paused);
@@ -251,6 +276,8 @@ impl Speaker {
     }
 
     /// Stop playback
+    ///
+    /// Updates the state cache to `PlaybackState::Stopped` on success.
     pub fn stop(&self) -> Result<(), SdkError> {
         self.exec(av_transport::stop().build())?;
         self.context.state_manager.set_property(&self.context.speaker_id, PlaybackState::Stopped);
@@ -278,11 +305,12 @@ impl Speaker {
     /// # Example
     ///
     /// ```rust,ignore
-    /// speaker.seek(SeekUnit::RelTime, "0:02:30")?;  // Seek to 2:30
-    /// speaker.seek(SeekUnit::TrackNr, "3")?;         // Seek to track 3
+    /// speaker.seek(SeekTarget::Time("0:02:30".into()))?;  // Seek to 2:30
+    /// speaker.seek(SeekTarget::Track(3))?;                 // Seek to track 3
+    /// speaker.seek(SeekTarget::Delta("+0:00:30".into()))?; // Skip forward 30s
     /// ```
-    pub fn seek(&self, unit: SeekUnit, target: &str) -> Result<(), SdkError> {
-        self.exec(av_transport::seek(unit.to_string(), target.to_string()).build())?;
+    pub fn seek(&self, target: SeekTarget) -> Result<(), SdkError> {
+        self.exec(av_transport::seek(target.unit().to_string(), target.target()).build())?;
         Ok(())
     }
 
@@ -363,6 +391,11 @@ impl Speaker {
     pub fn configure_sleep_timer(&self, duration: &str) -> Result<(), SdkError> {
         self.exec(av_transport::configure_sleep_timer(duration.to_string()).build())?;
         Ok(())
+    }
+
+    /// Cancel an active sleep timer
+    pub fn cancel_sleep_timer(&self) -> Result<(), SdkError> {
+        self.configure_sleep_timer("")
     }
 
     /// Get remaining sleep timer duration
@@ -516,6 +549,8 @@ impl Speaker {
     // ========================================================================
 
     /// Set speaker volume (0-100)
+    ///
+    /// Updates the state cache to the new `Volume` on success.
     pub fn set_volume(&self, volume: u8) -> Result<(), SdkError> {
         self.exec(rendering_control::set_volume("Master".to_string(), volume).build())?;
         self.context.state_manager.set_property(&self.context.speaker_id, Volume(volume));
@@ -532,6 +567,8 @@ impl Speaker {
     }
 
     /// Set mute state
+    ///
+    /// Updates the state cache to the new `Mute` value on success.
     pub fn set_mute(&self, muted: bool) -> Result<(), SdkError> {
         self.exec(rendering_control::set_mute("Master".to_string(), muted).build())?;
         self.context.state_manager.set_property(&self.context.speaker_id, Mute(muted));
@@ -624,7 +661,7 @@ mod tests {
         assert_void(speaker.stop());
         assert_void(speaker.next());
         assert_void(speaker.previous());
-        assert_void(speaker.seek(SeekUnit::RelTime, "0:00:00"));
+        assert_void(speaker.seek(SeekTarget::Time("0:00:00".into())));
         assert_void(speaker.set_av_transport_uri("", ""));
         assert_void(speaker.set_next_av_transport_uri("", ""));
         assert_response::<GetMediaInfoResponse>(speaker.get_media_info());
@@ -636,6 +673,7 @@ mod tests {
         assert_response::<GetCrossfadeModeResponse>(speaker.get_crossfade_mode());
         assert_void(speaker.set_crossfade_mode(true));
         assert_void(speaker.configure_sleep_timer(""));
+        assert_void(speaker.cancel_sleep_timer());
         assert_response::<GetRemainingSleepTimerDurationResponse>(
             speaker.get_remaining_sleep_timer(),
         );

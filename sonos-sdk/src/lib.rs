@@ -66,7 +66,7 @@
 // Main exports
 pub use error::SdkError;
 pub use group::Group;
-pub use speaker::{PlayMode, SeekUnit, Speaker};
+pub use speaker::{PlayMode, SeekTarget, Speaker};
 pub use system::SonosSystem;
 
 // Re-export the generic PropertyHandle, SpeakerContext, and watch types

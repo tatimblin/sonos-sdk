@@ -2,6 +2,13 @@
 //!
 //! Provides access to group information and member speakers.
 //! All speakers are always in a group - a single speaker forms a group of one.
+//!
+//! ## Write Operations and State Cache
+//!
+//! Write methods (e.g., `set_volume()`, `set_mute()`) update the state cache
+//! optimistically after the SOAP call succeeds. The cached value may be stale
+//! if the coordinator rejects the command silently, until the next UPnP event
+//! corrects it.
 
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -211,6 +218,8 @@ impl Group {
     // ========================================================================
 
     /// Set group volume (0-100)
+    ///
+    /// Updates the state cache to the new `GroupVolume` on success.
     pub fn set_volume(&self, volume: u16) -> Result<(), SdkError> {
         self.exec(group_rendering_control::set_group_volume(volume).build())?;
         self.state_manager.set_group_property(&self.id, GroupVolume(volume));
@@ -230,6 +239,8 @@ impl Group {
     }
 
     /// Set group mute state
+    ///
+    /// Updates the state cache to the new `GroupMute` value on success.
     pub fn set_mute(&self, muted: bool) -> Result<(), SdkError> {
         self.exec(group_rendering_control::set_group_mute(muted).build())?;
         self.state_manager.set_group_property(&self.id, GroupMute(muted));
