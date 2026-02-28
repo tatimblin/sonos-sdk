@@ -2,7 +2,7 @@
 
 Service completion matrix and development roadmap for the Sonos SDK.
 
-**Last updated:** 2026-02-26
+**Last updated:** 2026-02-28
 
 ## Service Completion Matrix
 
@@ -12,14 +12,14 @@ Tracks each Sonos UPnP service across the 4-layer SDK architecture (6 checkpoint
 
 ### Active Services
 
-| Service | API | Stream Events | Stream Polling | State Decoder | SDK Handles | SDK Fetch |
-|---|---|---|---|---|---|---|
-| AVTransport | Done | Done | Done | Done | Done | Done |
-| RenderingControl | Done | Done | Done | Done | Done | Done |
-| GroupRenderingControl | Done | Done | Done | Done | Done | Done |
-| ZoneGroupTopology | Done | Done | Done | Done | Partial [8] | Done |
-| GroupManagement | Done | Done | Done [11] | None | None | — |
-| DeviceProperties | None | Partial [10] | None | None | None | — |
+| Service | API | Stream Events | Stream Polling | State Decoder | SDK Handles | SDK Fetch | SDK Actions |
+|---|---|---|---|---|---|---|---|
+| AVTransport | Done | Done | Done | Done | Done | Done | Done |
+| RenderingControl | Done | Done | Done | Done | Done | Done | Done |
+| GroupRenderingControl | Done | Done | Done | Done | Done | Done | Done |
+| ZoneGroupTopology | Done | Done | Done | Done | Partial [8] | Done | — |
+| GroupManagement | Done | Done | Done [11] | None | None | — | Deferred [12] |
+| DeviceProperties | None | Partial [10] | None | None | None | — | — |
 
 **Footnotes:**
 
@@ -27,22 +27,23 @@ Tracks each Sonos UPnP service across the 4-layer SDK architecture (6 checkpoint
 8. `GroupMembership` on Speaker; `Topology` is system-level with no SDK handle
 10. `DevicePropertiesEvent` type exists in stream but no `Service` enum variant; uses `ZoneGroupTopology` as fallback in `service_type()`
 11. GroupManagement is action-only (no Get operations); poller returns stable empty state so scheduler never emits spurious change events
+12. GroupManagement SDK actions deferred to Phase 6 where ergonomic `group.add_speaker(&speaker)` replacements are planned
 
 ### Unstarted Services
 
 These services are known from Sonos device descriptions but have no implementation yet. Documentation links are available in [docs/adding-services.md](adding-services.md).
 
-| Service | API | Stream Events | Stream Polling | State Decoder | SDK Handles | SDK Fetch |
-|---|---|---|---|---|---|---|
-| AlarmClock | None | None | None | None | None | — |
-| AudioIn | None | None | None | None | None | — |
-| ConnectionManager | None | None | None | None | None | — |
-| ContentDirectory | None | None | None | None | None | — |
-| HTControl | None | None | None | None | None | — |
-| MusicServices | None | None | None | None | None | — |
-| Queue | None | None | None | None | None | — |
-| SystemProperties | None | None | None | None | None | — |
-| VirtualLineIn | None | None | None | None | None | — |
+| Service | API | Stream Events | Stream Polling | State Decoder | SDK Handles | SDK Fetch | SDK Actions |
+|---|---|---|---|---|---|---|---|
+| AlarmClock | None | None | None | None | None | — | — |
+| AudioIn | None | None | None | None | None | — | — |
+| ConnectionManager | None | None | None | None | None | — | — |
+| ContentDirectory | None | None | None | None | None | — | — |
+| HTControl | None | None | None | None | None | — | — |
+| MusicServices | None | None | None | None | None | — | — |
+| Queue | None | None | None | None | None | — | — |
+| SystemProperties | None | None | None | None | None | — | — |
+| VirtualLineIn | None | None | None | None | None | — | — |
 
 ### Column Reference
 
@@ -54,6 +55,7 @@ These services are known from Sonos device descriptions but have no implementati
 | State Decoder | Layer 3 | `sonos-state` | Property structs, decoder functions, `PropertyChange` variants |
 | SDK Handles | Layer 4 | `sonos-sdk` | Property handles on `Speaker`/`Group` structs |
 | SDK Fetch | Layer 4 | `sonos-sdk` | `Fetchable`/`GroupFetchable` trait impl for on-demand reads |
+| SDK Actions | Layer 4 | `sonos-sdk` | Write operation methods on `Speaker`/`Group` (play, set_volume, etc.) |
 
 ## Development Roadmap
 
@@ -84,6 +86,16 @@ Polling fallbacks that matter when UPnP events are blocked by firewalls.
 - [x] ZoneGroupTopology polling strategy (now delegates to sonos-api `poll()`)
 - [x] GroupRenderingControl polling strategy (now delegates to sonos-api `poll()`)
 - [x] GroupManagement polling strategy (action-only; returns stable empty state)
+
+### Tier 3.5: SDK Operation Methods (Phase 5)
+
+Write operations exposed as ergonomic methods on Speaker and Group.
+
+- [x] Speaker: 23 AVTransport methods (play, pause, stop, seek, queue ops, etc.)
+- [x] Speaker: 6 RenderingControl methods (set_volume, set_mute, set_bass, set_treble, set_loudness, set_relative_volume)
+- [x] Group: 4 GroupRenderingControl methods (set_volume, set_relative_volume, set_mute, snapshot_volume)
+- [x] Response type re-exports at crate root
+- [ ] GroupManagement actions (deferred to Phase 6 for ergonomic API)
 
 ### Tier 4: New Service Expansion
 

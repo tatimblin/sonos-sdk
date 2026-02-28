@@ -248,6 +248,24 @@ pub fn parse_sonos_bool(xml: &Element, child_name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Escape XML special characters in a string for safe SOAP payload interpolation.
+///
+/// Replaces `&`, `<`, `>`, `"`, and `'` with their XML entity equivalents.
+pub fn xml_escape(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => result.push_str("&amp;"),
+            '<' => result.push_str("&lt;"),
+            '>' => result.push_str("&gt;"),
+            '"' => result.push_str("&quot;"),
+            '\'' => result.push_str("&apos;"),
+            _ => result.push(c),
+        }
+    }
+    result
+}
+
 /// Validate a RenderingControl channel parameter.
 ///
 /// Sonos speakers accept "Master", "LF" (left front), and "RF" (right front) channels.
@@ -307,5 +325,19 @@ mod tests {
         let negative_request = TestRequest { value: -10 };
         assert!(negative_request.validate(ValidationLevel::None).is_ok());
         assert!(negative_request.validate(ValidationLevel::Basic).is_err());
+    }
+
+    #[test]
+    fn test_xml_escape() {
+        assert_eq!(xml_escape("hello"), "hello");
+        assert_eq!(xml_escape("<script>"), "&lt;script&gt;");
+        assert_eq!(xml_escape("a&b"), "a&amp;b");
+        assert_eq!(xml_escape("\"quoted\""), "&quot;quoted&quot;");
+        assert_eq!(xml_escape("it's"), "it&apos;s");
+        assert_eq!(
+            xml_escape("</CurrentURI><Injected>"),
+            "&lt;/CurrentURI&gt;&lt;Injected&gt;"
+        );
+        assert_eq!(xml_escape(""), "");
     }
 }

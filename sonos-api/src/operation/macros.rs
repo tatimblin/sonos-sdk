@@ -160,9 +160,10 @@ macro_rules! define_operation_with_response {
                                 Some(first) => first.to_uppercase().chain(chars).collect(),
                             }
                         };
+                        let escaped = $crate::operation::xml_escape(&format!("{}", request.$field));
                         xml.push_str(&format!("<{}>{}</{}>",
                             capitalized,
-                            request.$field,
+                            escaped,
                             capitalized));
                     )*
                     Ok(xml)

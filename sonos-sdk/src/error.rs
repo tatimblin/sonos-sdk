@@ -22,4 +22,7 @@ pub enum SdkError {
 
     #[error("Property fetch failed: {0}")]
     FetchFailed(String),
+
+    #[error("Validation failed: {0}")]
+    ValidationFailed(#[from] sonos_api::operation::ValidationError),
 }
