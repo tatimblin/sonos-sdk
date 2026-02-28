@@ -75,6 +75,16 @@ pub use property::{PropertyHandle, SpeakerContext, WatchMode, WatchStatus};
 // Re-export group property handle types
 pub use property::{GroupContext, GroupFetchable, GroupMuteHandle, GroupPropertyHandle, GroupVolumeChangeableHandle, GroupVolumeHandle};
 
+// Re-export response types for action methods
+pub use sonos_api::services::av_transport::{
+    AddURIToQueueResponse, BecomeCoordinatorOfStandaloneGroupResponse,
+    CreateSavedQueueResponse, GetCrossfadeModeResponse, GetCurrentTransportActionsResponse,
+    GetMediaInfoResponse, GetRemainingSleepTimerDurationResponse,
+    GetTransportSettingsResponse, SaveQueueResponse,
+};
+pub use sonos_api::services::group_rendering_control::SetRelativeGroupVolumeResponse;
+pub use sonos_api::services::rendering_control::SetRelativeVolumeResponse;
+
 // Re-export commonly used types from sonos-state
 pub use sonos_state::{
     ChangeEvent, ChangeIterator, GroupId, GroupMute, GroupVolume, GroupVolumeChangeable,

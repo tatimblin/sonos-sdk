@@ -3,12 +3,16 @@
 //! Provides access to group information and member speakers.
 //! All speakers are always in a group - a single speaker forms a group of one.
 
+use std::net::IpAddr;
 use std::sync::Arc;
 
+use sonos_api::operation::{ComposableOperation, UPnPOperation, ValidationError};
+use sonos_api::services::group_rendering_control::{self, SetRelativeGroupVolumeResponse};
 use sonos_api::SonosClient;
 use sonos_state::{GroupId, GroupInfo, SpeakerId, StateManager};
 
 use crate::property::{GroupContext, GroupMuteHandle, GroupPropertyHandle, GroupVolumeChangeableHandle, GroupVolumeHandle};
+use crate::SdkError;
 use crate::Speaker;
 
 /// Group handle with access to coordinator and members
@@ -53,6 +57,7 @@ pub struct Group {
     pub volume_changeable: GroupVolumeChangeableHandle,
 
     // Internal references
+    coordinator_ip: IpAddr,
     state_manager: Arc<StateManager>,
     api_client: SonosClient,
 }
@@ -84,6 +89,7 @@ impl Group {
             volume: GroupPropertyHandle::new(Arc::clone(&group_context)),
             mute: GroupPropertyHandle::new(Arc::clone(&group_context)),
             volume_changeable: GroupPropertyHandle::new(group_context),
+            coordinator_ip,
             state_manager,
             api_client,
         })
@@ -183,6 +189,53 @@ impl Group {
     /// ```
     pub fn is_standalone(&self) -> bool {
         self.member_ids.len() == 1
+    }
+
+    // ========================================================================
+    // Private helpers
+    // ========================================================================
+
+    /// Execute a UPnP operation against this group's coordinator
+    fn exec<Op: UPnPOperation>(
+        &self,
+        operation: Result<ComposableOperation<Op>, ValidationError>,
+    ) -> Result<Op::Response, SdkError> {
+        let op = operation.map_err(|e| SdkError::OperationFailed(e.to_string()))?;
+        self.api_client
+            .execute_enhanced(&self.coordinator_ip.to_string(), op)
+            .map_err(SdkError::ApiError)
+    }
+
+    // ========================================================================
+    // GroupRenderingControl — Volume and mute
+    // ========================================================================
+
+    /// Set group volume (0-100)
+    pub fn set_volume(&self, volume: u16) -> Result<(), SdkError> {
+        self.exec(group_rendering_control::set_group_volume(volume).build())?;
+        Ok(())
+    }
+
+    /// Adjust group volume relative to current level
+    ///
+    /// Returns the new absolute volume.
+    pub fn set_relative_volume(
+        &self,
+        adjustment: i16,
+    ) -> Result<SetRelativeGroupVolumeResponse, SdkError> {
+        self.exec(group_rendering_control::set_relative_group_volume(adjustment).build())
+    }
+
+    /// Set group mute state
+    pub fn set_mute(&self, muted: bool) -> Result<(), SdkError> {
+        self.exec(group_rendering_control::set_group_mute(muted).build())?;
+        Ok(())
+    }
+
+    /// Snapshot the current group volume (for later restore)
+    pub fn snapshot_volume(&self) -> Result<(), SdkError> {
+        self.exec(group_rendering_control::snapshot_group_volume().build())?;
+        Ok(())
     }
 }
 
@@ -401,5 +454,41 @@ mod tests {
         // Volume handle should exist and return None initially
         assert!(group.volume.get().is_none());
         assert_eq!(group.volume.group_id().as_str(), "RINCON_111:1");
+    }
+
+    fn create_test_group() -> Group {
+        let state_manager = create_test_state_manager_with_speakers(vec![
+            ("RINCON_111", "Living Room", "192.168.1.100"),
+        ]);
+        let api_client = SonosClient::new();
+
+        let group_info = GroupInfo::new(
+            GroupId::new("RINCON_111:1"),
+            SpeakerId::new("RINCON_111"),
+            vec![SpeakerId::new("RINCON_111")],
+        );
+
+        Group::from_info(group_info, state_manager, api_client).unwrap()
+    }
+
+    #[test]
+    fn test_group_set_volume_rejects_over_100() {
+        let group = create_test_group();
+        let result = group.set_volume(150);
+        assert!(matches!(result, Err(SdkError::OperationFailed(_))));
+    }
+
+    #[test]
+    fn test_group_action_methods_exist() {
+        fn assert_void(_r: Result<(), SdkError>) {}
+        fn assert_response<T>(_r: Result<T, SdkError>) {}
+
+        let group = create_test_group();
+
+        // These will fail at network level but prove signatures compile
+        assert_void(group.set_volume(50));
+        assert_response::<SetRelativeGroupVolumeResponse>(group.set_relative_volume(5));
+        assert_void(group.set_mute(true));
+        assert_void(group.snapshot_volume());
     }
 }

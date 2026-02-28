@@ -22,4 +22,7 @@ pub enum SdkError {
 
     #[error("Property fetch failed: {0}")]
     FetchFailed(String),
+
+    #[error("Operation failed: {0}")]
+    OperationFailed(String),
 }
