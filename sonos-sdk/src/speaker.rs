@@ -14,8 +14,11 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use sonos_api::SonosClient;
+use sonos_api::services::group_management::AddMemberResponse;
 use sonos_discovery::Device;
 use sonos_state::{Bass, Loudness, Mute, PlaybackState, SpeakerId, StateManager, Treble, Volume};
+
+use crate::Group;
 
 use sonos_api::operation::{ComposableOperation, UPnPOperation, ValidationError};
 use sonos_api::services::{
@@ -542,6 +545,24 @@ impl Speaker {
             .build(),
         )?;
         Ok(())
+    }
+
+    /// Join a group (convenience wrapper for `group.add_speaker(self)`)
+    ///
+    /// Adds this speaker to the specified group. After calling this,
+    /// re-fetch groups via `system.groups()` to see updated membership.
+    pub fn join_group(&self, group: &Group) -> Result<AddMemberResponse, SdkError> {
+        group.add_speaker(self)
+    }
+
+    /// Leave current group and become a standalone player
+    ///
+    /// Semantic alias for [`become_standalone()`](Self::become_standalone).
+    /// After calling this, the speaker forms its own group of one.
+    pub fn leave_group(
+        &self,
+    ) -> Result<BecomeCoordinatorOfStandaloneGroupResponse, SdkError> {
+        self.become_standalone()
     }
 
     // ========================================================================

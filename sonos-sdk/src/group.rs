@@ -14,6 +14,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use sonos_api::operation::{ComposableOperation, UPnPOperation, ValidationError};
+use sonos_api::services::group_management::{self, AddMemberResponse};
 use sonos_api::services::group_rendering_control::{self, SetRelativeGroupVolumeResponse};
 use sonos_api::SonosClient;
 use sonos_state::{GroupId, GroupInfo, GroupMute, GroupVolume, SpeakerId, StateManager};
@@ -211,6 +212,56 @@ impl Group {
         self.api_client
             .execute_enhanced(&self.coordinator_ip.to_string(), op)
             .map_err(SdkError::ApiError)
+    }
+
+    // ========================================================================
+    // GroupManagement — Group lifecycle
+    // ========================================================================
+
+    /// Add a speaker to this group
+    ///
+    /// Sends AddMember to the group coordinator with the speaker's boot_seq.
+    /// After calling this, re-fetch groups via `system.groups()` to see updated membership.
+    pub fn add_speaker(&self, speaker: &Speaker) -> Result<AddMemberResponse, SdkError> {
+        if speaker.id == self.coordinator_id {
+            return Err(SdkError::InvalidOperation(
+                "Cannot add coordinator to its own group".to_string(),
+            ));
+        }
+        let boot_seq = self.state_manager.get_boot_seq(&speaker.id).unwrap_or(0);
+        self.exec(group_management::add_member(
+            speaker.id.as_str().to_string(),
+            boot_seq,
+        ).build())
+    }
+
+    /// Remove a speaker from this group
+    ///
+    /// Sends RemoveMember to the group coordinator.
+    /// Cannot remove the coordinator — use `speaker.delegate_coordination_to()` first.
+    pub fn remove_speaker(&self, speaker: &Speaker) -> Result<(), SdkError> {
+        if speaker.id == self.coordinator_id {
+            return Err(SdkError::InvalidOperation(
+                "Cannot remove coordinator from its own group; use delegate_coordination_to() first".to_string(),
+            ));
+        }
+        self.exec(group_management::remove_member(
+            speaker.id.as_str().to_string(),
+        ).build())?;
+        Ok(())
+    }
+
+    /// Dissolve this group by removing all non-coordinator members
+    ///
+    /// After dissolving, each former member becomes a standalone group.
+    /// Returns `Ok(())` for standalone groups (no-op).
+    pub fn dissolve(&self) -> Result<(), SdkError> {
+        for member in self.members() {
+            if !self.is_coordinator(&member.id) {
+                self.remove_speaker(&member)?;
+            }
+        }
+        Ok(())
     }
 
     // ========================================================================

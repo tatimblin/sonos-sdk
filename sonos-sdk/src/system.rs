@@ -249,6 +249,37 @@ impl SonosSystem {
             self._api_client.clone(),
         )
     }
+
+    /// Create a new group with the specified coordinator and members
+    ///
+    /// Adds each member speaker to the coordinator's current group.
+    /// After calling this, re-fetch groups via `groups()` to see the updated topology.
+    ///
+    /// **Partial failure:** If adding speaker 3 of 5 fails, speakers 1-2 remain in the group.
+    /// The error is returned immediately with no automatic rollback.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let living_room = system.get_speaker_by_name("Living Room").unwrap();
+    /// let kitchen = system.get_speaker_by_name("Kitchen").unwrap();
+    /// let bedroom = system.get_speaker_by_name("Bedroom").unwrap();
+    ///
+    /// system.create_group(&living_room, &[&kitchen, &bedroom])?;
+    /// ```
+    pub fn create_group(
+        &self,
+        coordinator: &Speaker,
+        members: &[&Speaker],
+    ) -> Result<(), SdkError> {
+        let coord_group = self
+            .get_group_for_speaker(&coordinator.id)
+            .ok_or_else(|| SdkError::SpeakerNotFound(coordinator.id.as_str().to_string()))?;
+        for member in members {
+            coord_group.add_speaker(member)?;
+        }
+        Ok(())
+    }
 }
 
 
