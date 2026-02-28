@@ -763,6 +763,57 @@ mod tests {
         assert!(result.groups.is_empty());
         assert!(result.memberships.is_empty());
     }
+
+    #[test]
+    fn test_decode_topology_extracts_boot_seq_values() {
+        let event = ZoneGroupTopologyState {
+            zone_groups: vec![ZoneGroupInfo {
+                coordinator: "RINCON_111111111111".to_string(),
+                id: "RINCON_111111111111:0".to_string(),
+                members: vec![
+                    make_member_with_boot_seq("RINCON_111111111111", "Living Room", 42),
+                    make_member_with_boot_seq("RINCON_222222222222", "Kitchen", 17),
+                ],
+            }],
+            vanished_devices: vec![],
+        };
+
+        let result = decode_topology_event(&event);
+
+        assert_eq!(result.boot_seqs.len(), 2);
+
+        let boot_seq_111 = result
+            .boot_seqs
+            .iter()
+            .find(|(id, _)| id.as_str() == "RINCON_111111111111")
+            .map(|(_, bs)| *bs);
+        assert_eq!(boot_seq_111, Some(42));
+
+        let boot_seq_222 = result
+            .boot_seqs
+            .iter()
+            .find(|(id, _)| id.as_str() == "RINCON_222222222222")
+            .map(|(_, bs)| *bs);
+        assert_eq!(boot_seq_222, Some(17));
+    }
+
+    #[test]
+    fn test_decode_topology_boot_seq_defaults_to_zero() {
+        // make_member() uses boot_seq: 0
+        let event = ZoneGroupTopologyState {
+            zone_groups: vec![ZoneGroupInfo {
+                coordinator: "RINCON_111111111111".to_string(),
+                id: "RINCON_111111111111:0".to_string(),
+                members: vec![make_member("RINCON_111111111111", "Living Room")],
+            }],
+            vanished_devices: vec![],
+        };
+
+        let result = decode_topology_event(&event);
+
+        assert_eq!(result.boot_seqs.len(), 1);
+        assert_eq!(result.boot_seqs[0].1, 0);
+    }
 }
 
 // ============================================================================

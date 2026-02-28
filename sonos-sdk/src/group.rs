@@ -557,4 +557,61 @@ mod tests {
         assert_void(group.set_mute(true));
         assert_void(group.snapshot_volume());
     }
+
+    fn create_test_group_with_member() -> (Group, Speaker) {
+        let state_manager = create_test_state_manager_with_speakers(vec![
+            ("RINCON_111", "Living Room", "192.168.1.100"),
+            ("RINCON_222", "Kitchen", "192.168.1.101"),
+        ]);
+        let api_client = SonosClient::new();
+
+        let group_info = GroupInfo::new(
+            GroupId::new("RINCON_111:1"),
+            SpeakerId::new("RINCON_111"),
+            vec![SpeakerId::new("RINCON_111"), SpeakerId::new("RINCON_222")],
+        );
+
+        let group = Group::from_info(group_info, Arc::clone(&state_manager), api_client.clone()).unwrap();
+        let member = Speaker::new(
+            SpeakerId::new("RINCON_222"),
+            "Kitchen".to_string(),
+            "192.168.1.101".parse().unwrap(),
+            "Sonos One".to_string(),
+            state_manager,
+            api_client,
+        );
+
+        (group, member)
+    }
+
+    #[test]
+    fn test_add_speaker_rejects_coordinator_self_add() {
+        let (group, _) = create_test_group_with_member();
+        let coordinator = group.coordinator().unwrap();
+
+        let result = group.add_speaker(&coordinator);
+        assert!(matches!(result, Err(SdkError::InvalidOperation(_))));
+    }
+
+    #[test]
+    fn test_remove_speaker_rejects_coordinator_removal() {
+        let (group, _) = create_test_group_with_member();
+        let coordinator = group.coordinator().unwrap();
+
+        let result = group.remove_speaker(&coordinator);
+        assert!(matches!(result, Err(SdkError::InvalidOperation(_))));
+    }
+
+    #[test]
+    fn test_group_lifecycle_methods_exist() {
+        fn assert_void(_r: Result<(), SdkError>) {}
+        fn assert_response<T>(_r: Result<T, SdkError>) {}
+
+        let (group, member) = create_test_group_with_member();
+
+        // These will fail at network level but prove signatures compile
+        assert_response::<AddMemberResponse>(group.add_speaker(&member));
+        assert_void(group.remove_speaker(&member));
+        assert_void(group.dissolve());
+    }
 }

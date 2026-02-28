@@ -538,4 +538,51 @@ mod tests {
         assert_eq!(groups[0].coordinator_id.as_str(), by_id.as_ref().unwrap().coordinator_id.as_str());
         assert_eq!(groups[0].coordinator_id.as_str(), by_speaker.as_ref().unwrap().coordinator_id.as_str());
     }
+
+    #[test]
+    fn test_create_group_method_exists() {
+        // Compile-time assertion that method signature is correct
+        fn assert_void(_r: Result<(), SdkError>) {}
+
+        let devices = vec![
+            Device {
+                id: "RINCON_111".to_string(),
+                name: "Living Room".to_string(),
+                room_name: "Living Room".to_string(),
+                ip_address: "192.168.1.100".to_string(),
+                port: 1400,
+                model_name: "Sonos One".to_string(),
+            },
+            Device {
+                id: "RINCON_222".to_string(),
+                name: "Kitchen".to_string(),
+                room_name: "Kitchen".to_string(),
+                ip_address: "192.168.1.101".to_string(),
+                port: 1400,
+                model_name: "Sonos One".to_string(),
+            },
+        ];
+
+        let system = create_test_system(devices).unwrap();
+
+        // Initialize topology so get_group_for_speaker works
+        let speaker1 = SpeakerId::new("RINCON_111");
+        let speaker2 = SpeakerId::new("RINCON_222");
+        let group = GroupInfo::new(
+            GroupId::new("RINCON_111:1"),
+            speaker1.clone(),
+            vec![speaker1.clone()],
+        );
+        let topology = Topology::new(
+            system.state_manager.speaker_infos(),
+            vec![group],
+        );
+        system.state_manager.initialize(topology);
+
+        let coordinator = system.get_speaker_by_id(&speaker1).unwrap();
+        let member = system.get_speaker_by_id(&speaker2).unwrap();
+
+        // Will fail at network level but proves signature compiles
+        assert_void(system.create_group(&coordinator, &[&member]));
+    }
 }
