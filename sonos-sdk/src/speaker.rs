@@ -7,20 +7,72 @@ use std::sync::Arc;
 
 use sonos_api::SonosClient;
 use sonos_discovery::Device;
-use sonos_state::{SpeakerId, StateManager};
+use sonos_state::{Bass, Loudness, Mute, PlaybackState, SpeakerId, StateManager, Treble, Volume};
 
 use sonos_api::operation::{ComposableOperation, UPnPOperation, ValidationError};
 use sonos_api::services::{
     av_transport::{
         self, AddURIToQueueResponse, BecomeCoordinatorOfStandaloneGroupResponse,
         CreateSavedQueueResponse, GetCrossfadeModeResponse, GetCurrentTransportActionsResponse,
-        GetMediaInfoResponse, GetRemainingSleepTimerDurationResponse,
-        GetTransportSettingsResponse, SaveQueueResponse,
+        GetDeviceCapabilitiesResponse, GetMediaInfoResponse, GetRemainingSleepTimerDurationResponse,
+        GetRunningAlarmPropertiesResponse, GetTransportSettingsResponse,
+        RemoveTrackRangeFromQueueResponse, SaveQueueResponse,
     },
     rendering_control::{self, SetRelativeVolumeResponse},
 };
 
 use crate::SdkError;
+
+/// Seek unit for the `seek()` method
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeekUnit {
+    /// Seek by track number (target: `"3"`)
+    TrackNr,
+    /// Seek by relative time (target: `"0:02:30"`)
+    RelTime,
+    /// Seek by time delta (target: `"+0:00:30"`)
+    TimeDelta,
+}
+
+impl std::fmt::Display for SeekUnit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SeekUnit::TrackNr => write!(f, "TRACK_NR"),
+            SeekUnit::RelTime => write!(f, "REL_TIME"),
+            SeekUnit::TimeDelta => write!(f, "TIME_DELTA"),
+        }
+    }
+}
+
+/// Play mode for the `set_play_mode()` method
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayMode {
+    /// Normal sequential playback
+    Normal,
+    /// Repeat all tracks
+    RepeatAll,
+    /// Repeat current track
+    RepeatOne,
+    /// Shuffle without repeat
+    ShuffleNoRepeat,
+    /// Shuffle with repeat
+    Shuffle,
+    /// Shuffle and repeat current track
+    ShuffleRepeatOne,
+}
+
+impl std::fmt::Display for PlayMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PlayMode::Normal => write!(f, "NORMAL"),
+            PlayMode::RepeatAll => write!(f, "REPEAT_ALL"),
+            PlayMode::RepeatOne => write!(f, "REPEAT_ONE"),
+            PlayMode::ShuffleNoRepeat => write!(f, "SHUFFLE_NOREPEAT"),
+            PlayMode::Shuffle => write!(f, "SHUFFLE"),
+            PlayMode::ShuffleRepeatOne => write!(f, "SHUFFLE_REPEAT_ONE"),
+        }
+    }
+}
 
 use crate::property::{
     BassHandle, CurrentTrackHandle, GroupMembershipHandle, LoudnessHandle, MuteHandle,
@@ -173,7 +225,7 @@ impl Speaker {
         &self,
         operation: Result<ComposableOperation<Op>, ValidationError>,
     ) -> Result<Op::Response, SdkError> {
-        let op = operation.map_err(|e| SdkError::OperationFailed(e.to_string()))?;
+        let op = operation?;
         self.context
             .api_client
             .execute_enhanced(&self.context.speaker_ip.to_string(), op)
@@ -187,18 +239,21 @@ impl Speaker {
     /// Start or resume playback
     pub fn play(&self) -> Result<(), SdkError> {
         self.exec(av_transport::play("1".to_string()).build())?;
+        self.context.state_manager.set_property(&self.context.speaker_id, PlaybackState::Playing);
         Ok(())
     }
 
     /// Pause playback
     pub fn pause(&self) -> Result<(), SdkError> {
         self.exec(av_transport::pause().build())?;
+        self.context.state_manager.set_property(&self.context.speaker_id, PlaybackState::Paused);
         Ok(())
     }
 
     /// Stop playback
     pub fn stop(&self) -> Result<(), SdkError> {
         self.exec(av_transport::stop().build())?;
+        self.context.state_manager.set_property(&self.context.speaker_id, PlaybackState::Stopped);
         Ok(())
     }
 
@@ -220,9 +275,13 @@ impl Speaker {
 
     /// Seek to a position
     ///
-    /// Common units: `"REL_TIME"` (with target like `"0:02:30"`),
-    /// `"TRACK_NR"` (with target like `"3"`)
-    pub fn seek(&self, unit: &str, target: &str) -> Result<(), SdkError> {
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// speaker.seek(SeekUnit::RelTime, "0:02:30")?;  // Seek to 2:30
+    /// speaker.seek(SeekUnit::TrackNr, "3")?;         // Seek to track 3
+    /// ```
+    pub fn seek(&self, unit: SeekUnit, target: &str) -> Result<(), SdkError> {
         self.exec(av_transport::seek(unit.to_string(), target.to_string()).build())?;
         Ok(())
     }
@@ -272,8 +331,15 @@ impl Speaker {
     // AVTransport — Play mode / crossfade
     // ========================================================================
 
-    /// Set play mode (e.g., `"NORMAL"`, `"SHUFFLE"`, `"REPEAT_ALL"`, `"SHUFFLE_NOREPEAT"`)
-    pub fn set_play_mode(&self, mode: &str) -> Result<(), SdkError> {
+    /// Set play mode
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// speaker.set_play_mode(PlayMode::Shuffle)?;
+    /// speaker.set_play_mode(PlayMode::RepeatAll)?;
+    /// ```
+    pub fn set_play_mode(&self, mode: PlayMode) -> Result<(), SdkError> {
         self.exec(av_transport::set_play_mode(mode.to_string()).build())?;
         Ok(())
     }
@@ -373,6 +439,51 @@ impl Speaker {
         )
     }
 
+    /// Remove a range of tracks from the queue
+    pub fn remove_track_range_from_queue(
+        &self,
+        update_id: u32,
+        starting_index: u32,
+        number_of_tracks: u32,
+    ) -> Result<RemoveTrackRangeFromQueueResponse, SdkError> {
+        self.exec(
+            av_transport::remove_track_range_from_queue(update_id, starting_index, number_of_tracks)
+                .build(),
+        )
+    }
+
+    /// Backup the current queue
+    pub fn backup_queue(&self) -> Result<(), SdkError> {
+        self.exec(av_transport::backup_queue().build())?;
+        Ok(())
+    }
+
+    // ========================================================================
+    // AVTransport — Device capabilities
+    // ========================================================================
+
+    /// Get device capabilities (supported media formats)
+    pub fn get_device_capabilities(&self) -> Result<GetDeviceCapabilitiesResponse, SdkError> {
+        self.exec(av_transport::get_device_capabilities().build())
+    }
+
+    // ========================================================================
+    // AVTransport — Alarm operations
+    // ========================================================================
+
+    /// Snooze the currently running alarm
+    pub fn snooze_alarm(&self, duration: &str) -> Result<(), SdkError> {
+        self.exec(av_transport::snooze_alarm(duration.to_string()).build())?;
+        Ok(())
+    }
+
+    /// Get properties of the currently running alarm
+    pub fn get_running_alarm_properties(
+        &self,
+    ) -> Result<GetRunningAlarmPropertiesResponse, SdkError> {
+        self.exec(av_transport::get_running_alarm_properties().build())
+    }
+
     // ========================================================================
     // AVTransport — Group coordination
     // ========================================================================
@@ -387,12 +498,12 @@ impl Speaker {
     /// Delegate group coordination to another speaker
     pub fn delegate_coordination_to(
         &self,
-        new_coordinator: &str,
+        new_coordinator: &SpeakerId,
         rejoin_group: bool,
     ) -> Result<(), SdkError> {
         self.exec(
             av_transport::delegate_group_coordination_to(
-                new_coordinator.to_string(),
+                new_coordinator.as_str().to_string(),
                 rejoin_group,
             )
             .build(),
@@ -407,6 +518,7 @@ impl Speaker {
     /// Set speaker volume (0-100)
     pub fn set_volume(&self, volume: u8) -> Result<(), SdkError> {
         self.exec(rendering_control::set_volume("Master".to_string(), volume).build())?;
+        self.context.state_manager.set_property(&self.context.speaker_id, Volume(volume));
         Ok(())
     }
 
@@ -414,30 +526,36 @@ impl Speaker {
     ///
     /// Returns the new absolute volume.
     pub fn set_relative_volume(&self, adjustment: i8) -> Result<SetRelativeVolumeResponse, SdkError> {
-        self.exec(rendering_control::set_relative_volume("Master".to_string(), adjustment).build())
+        let response = self.exec(rendering_control::set_relative_volume("Master".to_string(), adjustment).build())?;
+        self.context.state_manager.set_property(&self.context.speaker_id, Volume(response.new_volume));
+        Ok(response)
     }
 
     /// Set mute state
     pub fn set_mute(&self, muted: bool) -> Result<(), SdkError> {
         self.exec(rendering_control::set_mute("Master".to_string(), muted).build())?;
+        self.context.state_manager.set_property(&self.context.speaker_id, Mute(muted));
         Ok(())
     }
 
     /// Set bass EQ level (-10 to +10)
     pub fn set_bass(&self, level: i8) -> Result<(), SdkError> {
         self.exec(rendering_control::set_bass(level).build())?;
+        self.context.state_manager.set_property(&self.context.speaker_id, Bass(level));
         Ok(())
     }
 
     /// Set treble EQ level (-10 to +10)
     pub fn set_treble(&self, level: i8) -> Result<(), SdkError> {
         self.exec(rendering_control::set_treble(level).build())?;
+        self.context.state_manager.set_property(&self.context.speaker_id, Treble(level));
         Ok(())
     }
 
     /// Set loudness compensation
     pub fn set_loudness(&self, enabled: bool) -> Result<(), SdkError> {
         self.exec(rendering_control::set_loudness("Master".to_string(), enabled).build())?;
+        self.context.state_manager.set_property(&self.context.speaker_id, Loudness(enabled));
         Ok(())
     }
 }
@@ -475,21 +593,21 @@ mod tests {
     fn test_set_volume_rejects_invalid() {
         let speaker = create_test_speaker();
         let result = speaker.set_volume(150);
-        assert!(matches!(result, Err(SdkError::OperationFailed(_))));
+        assert!(matches!(result, Err(SdkError::ValidationFailed(_))));
     }
 
     #[test]
     fn test_set_bass_rejects_invalid() {
         let speaker = create_test_speaker();
         let result = speaker.set_bass(15);
-        assert!(matches!(result, Err(SdkError::OperationFailed(_))));
+        assert!(matches!(result, Err(SdkError::ValidationFailed(_))));
     }
 
     #[test]
     fn test_set_treble_rejects_invalid() {
         let speaker = create_test_speaker();
         let result = speaker.set_treble(-15);
-        assert!(matches!(result, Err(SdkError::OperationFailed(_))));
+        assert!(matches!(result, Err(SdkError::ValidationFailed(_))));
     }
 
     #[test]
@@ -506,7 +624,7 @@ mod tests {
         assert_void(speaker.stop());
         assert_void(speaker.next());
         assert_void(speaker.previous());
-        assert_void(speaker.seek("REL_TIME", "0:00:00"));
+        assert_void(speaker.seek(SeekUnit::RelTime, "0:00:00"));
         assert_void(speaker.set_av_transport_uri("", ""));
         assert_void(speaker.set_next_av_transport_uri("", ""));
         assert_response::<GetMediaInfoResponse>(speaker.get_media_info());
@@ -514,7 +632,7 @@ mod tests {
         assert_response::<GetCurrentTransportActionsResponse>(
             speaker.get_current_transport_actions(),
         );
-        assert_void(speaker.set_play_mode("NORMAL"));
+        assert_void(speaker.set_play_mode(PlayMode::Normal));
         assert_response::<GetCrossfadeModeResponse>(speaker.get_crossfade_mode());
         assert_void(speaker.set_crossfade_mode(true));
         assert_void(speaker.configure_sleep_timer(""));
@@ -528,10 +646,19 @@ mod tests {
         assert_void(speaker.remove_all_tracks_from_queue());
         assert_response::<SaveQueueResponse>(speaker.save_queue("", ""));
         assert_response::<CreateSavedQueueResponse>(speaker.create_saved_queue("", "", ""));
+        assert_response::<RemoveTrackRangeFromQueueResponse>(
+            speaker.remove_track_range_from_queue(0, 0, 1),
+        );
+        assert_void(speaker.backup_queue());
+        assert_response::<GetDeviceCapabilitiesResponse>(speaker.get_device_capabilities());
+        assert_void(speaker.snooze_alarm("00:10:00"));
+        assert_response::<GetRunningAlarmPropertiesResponse>(
+            speaker.get_running_alarm_properties(),
+        );
         assert_response::<BecomeCoordinatorOfStandaloneGroupResponse>(
             speaker.become_standalone(),
         );
-        assert_void(speaker.delegate_coordination_to("", false));
+        assert_void(speaker.delegate_coordination_to(&SpeakerId::new("RINCON_OTHER"), false));
 
         // RenderingControl
         assert_void(speaker.set_volume(50));

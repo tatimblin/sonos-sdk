@@ -112,7 +112,9 @@ define_upnp_operation! {
     payload: |req| {
         format!(
             "<InstanceID>{}</InstanceID><Unit>{}</Unit><Target>{}</Target>",
-            req.instance_id, req.unit, req.target
+            req.instance_id,
+            crate::operation::xml_escape(&req.unit),
+            crate::operation::xml_escape(&req.target)
         )
     },
     parse: |_xml| Ok(()),
@@ -283,7 +285,9 @@ define_upnp_operation! {
     payload: |req| {
         format!(
             "<InstanceID>{}</InstanceID><CurrentURI>{}</CurrentURI><CurrentURIMetaData>{}</CurrentURIMetaData>",
-            req.instance_id, req.current_uri, req.current_uri_meta_data
+            req.instance_id,
+            crate::operation::xml_escape(&req.current_uri),
+            crate::operation::xml_escape(&req.current_uri_meta_data)
         )
     },
     parse: |_xml| Ok(()),
@@ -303,7 +307,9 @@ define_upnp_operation! {
     payload: |req| {
         format!(
             "<InstanceID>{}</InstanceID><NextURI>{}</NextURI><NextURIMetaData>{}</NextURIMetaData>",
-            req.instance_id, req.next_uri, req.next_uri_meta_data
+            req.instance_id,
+            crate::operation::xml_escape(&req.next_uri),
+            crate::operation::xml_escape(&req.next_uri_meta_data)
         )
     },
     parse: |_xml| Ok(()),
@@ -361,7 +367,8 @@ define_upnp_operation! {
     payload: |req| {
         format!(
             "<InstanceID>{}</InstanceID><NewPlayMode>{}</NewPlayMode>",
-            req.instance_id, req.new_play_mode
+            req.instance_id,
+            crate::operation::xml_escape(&req.new_play_mode)
         )
     },
     parse: |_xml| Ok(()),
@@ -398,7 +405,8 @@ define_upnp_operation! {
     payload: |req| {
         format!(
             "<InstanceID>{}</InstanceID><NewSleepTimerDuration>{}</NewSleepTimerDuration>",
-            req.instance_id, req.new_sleep_timer_duration
+            req.instance_id,
+            crate::operation::xml_escape(&req.new_sleep_timer_duration)
         )
     },
     parse: |_xml| Ok(()),
@@ -523,7 +531,9 @@ define_upnp_operation! {
     payload: |req| {
         format!(
             "<InstanceID>{}</InstanceID><ObjectID>{}</ObjectID><UpdateID>{}</UpdateID>",
-            req.instance_id, req.object_id, req.update_id
+            req.instance_id,
+            crate::operation::xml_escape(&req.object_id),
+            req.update_id
         )
     },
     parse: |_xml| Ok(()),
@@ -650,7 +660,9 @@ define_upnp_operation! {
     payload: |req| {
         format!(
             "<InstanceID>{}</InstanceID><NewCoordinator>{}</NewCoordinator><RejoinGroup>{}</RejoinGroup>",
-            req.instance_id, req.new_coordinator, if req.rejoin_group { "true" } else { "false" }
+            req.instance_id,
+            crate::operation::xml_escape(&req.new_coordinator),
+            if req.rejoin_group { "true" } else { "false" }
         )
     },
     parse: |_xml| Ok(()),
@@ -673,7 +685,8 @@ define_upnp_operation! {
     payload: |req| {
         format!(
             "<InstanceID>{}</InstanceID><Duration>{}</Duration>",
-            req.instance_id, req.duration
+            req.instance_id,
+            crate::operation::xml_escape(&req.duration)
         )
     },
     parse: |_xml| Ok(()),

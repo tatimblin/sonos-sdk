@@ -66,7 +66,7 @@
 // Main exports
 pub use error::SdkError;
 pub use group::Group;
-pub use speaker::Speaker;
+pub use speaker::{PlayMode, SeekUnit, Speaker};
 pub use system::SonosSystem;
 
 // Re-export the generic PropertyHandle, SpeakerContext, and watch types
@@ -79,8 +79,9 @@ pub use property::{GroupContext, GroupFetchable, GroupMuteHandle, GroupPropertyH
 pub use sonos_api::services::av_transport::{
     AddURIToQueueResponse, BecomeCoordinatorOfStandaloneGroupResponse,
     CreateSavedQueueResponse, GetCrossfadeModeResponse, GetCurrentTransportActionsResponse,
-    GetMediaInfoResponse, GetRemainingSleepTimerDurationResponse,
-    GetTransportSettingsResponse, SaveQueueResponse,
+    GetDeviceCapabilitiesResponse, GetMediaInfoResponse, GetRemainingSleepTimerDurationResponse,
+    GetRunningAlarmPropertiesResponse, GetTransportSettingsResponse,
+    RemoveTrackRangeFromQueueResponse, SaveQueueResponse,
 };
 pub use sonos_api::services::group_rendering_control::SetRelativeGroupVolumeResponse;
 pub use sonos_api::services::rendering_control::SetRelativeVolumeResponse;

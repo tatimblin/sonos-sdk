@@ -9,7 +9,7 @@ use std::sync::Arc;
 use sonos_api::operation::{ComposableOperation, UPnPOperation, ValidationError};
 use sonos_api::services::group_rendering_control::{self, SetRelativeGroupVolumeResponse};
 use sonos_api::SonosClient;
-use sonos_state::{GroupId, GroupInfo, SpeakerId, StateManager};
+use sonos_state::{GroupId, GroupInfo, GroupMute, GroupVolume, SpeakerId, StateManager};
 
 use crate::property::{GroupContext, GroupMuteHandle, GroupPropertyHandle, GroupVolumeChangeableHandle, GroupVolumeHandle};
 use crate::SdkError;
@@ -200,7 +200,7 @@ impl Group {
         &self,
         operation: Result<ComposableOperation<Op>, ValidationError>,
     ) -> Result<Op::Response, SdkError> {
-        let op = operation.map_err(|e| SdkError::OperationFailed(e.to_string()))?;
+        let op = operation?;
         self.api_client
             .execute_enhanced(&self.coordinator_ip.to_string(), op)
             .map_err(SdkError::ApiError)
@@ -213,6 +213,7 @@ impl Group {
     /// Set group volume (0-100)
     pub fn set_volume(&self, volume: u16) -> Result<(), SdkError> {
         self.exec(group_rendering_control::set_group_volume(volume).build())?;
+        self.state_manager.set_group_property(&self.id, GroupVolume(volume));
         Ok(())
     }
 
@@ -223,12 +224,15 @@ impl Group {
         &self,
         adjustment: i16,
     ) -> Result<SetRelativeGroupVolumeResponse, SdkError> {
-        self.exec(group_rendering_control::set_relative_group_volume(adjustment).build())
+        let response = self.exec(group_rendering_control::set_relative_group_volume(adjustment).build())?;
+        self.state_manager.set_group_property(&self.id, GroupVolume(response.new_volume));
+        Ok(response)
     }
 
     /// Set group mute state
     pub fn set_mute(&self, muted: bool) -> Result<(), SdkError> {
         self.exec(group_rendering_control::set_group_mute(muted).build())?;
+        self.state_manager.set_group_property(&self.id, GroupMute(muted));
         Ok(())
     }
 
@@ -475,7 +479,7 @@ mod tests {
     fn test_group_set_volume_rejects_over_100() {
         let group = create_test_group();
         let result = group.set_volume(150);
-        assert!(matches!(result, Err(SdkError::OperationFailed(_))));
+        assert!(matches!(result, Err(SdkError::ValidationFailed(_))));
     }
 
     #[test]

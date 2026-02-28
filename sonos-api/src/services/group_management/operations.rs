@@ -121,7 +121,9 @@ define_upnp_operation! {
     },
     response: (),
     payload: |req| {
-        format!("<InstanceID>{}</InstanceID><MemberID>{}</MemberID>", req.instance_id, req.member_id)
+        format!("<InstanceID>{}</InstanceID><MemberID>{}</MemberID>",
+            req.instance_id,
+            crate::operation::xml_escape(&req.member_id))
     },
     parse: |_xml| Ok(()),
 }
@@ -144,7 +146,9 @@ define_upnp_operation! {
     payload: |req| {
         format!(
             "<InstanceID>{}</InstanceID><MemberID>{}</MemberID><ResultCode>{}</ResultCode>",
-            req.instance_id, req.member_id, req.result_code
+            req.instance_id,
+            crate::operation::xml_escape(&req.member_id),
+            req.result_code
         )
     },
     parse: |_xml| Ok(()),
@@ -167,7 +171,8 @@ define_upnp_operation! {
     payload: |req| {
         format!(
             "<InstanceID>{}</InstanceID><DesiredSourceAreaIds>{}</DesiredSourceAreaIds>",
-            req.instance_id, req.desired_source_area_ids
+            req.instance_id,
+            crate::operation::xml_escape(&req.desired_source_area_ids)
         )
     },
     parse: |_xml| Ok(()),
