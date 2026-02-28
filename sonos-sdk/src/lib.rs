@@ -73,11 +73,12 @@ pub use system::SonosSystem;
 pub use property::{PropertyHandle, SpeakerContext, WatchMode, WatchStatus};
 
 // Re-export group property handle types
-pub use property::{GroupContext, GroupFetchable, GroupPropertyHandle, GroupVolumeHandle};
+pub use property::{GroupContext, GroupFetchable, GroupMuteHandle, GroupPropertyHandle, GroupVolumeChangeableHandle, GroupVolumeHandle};
 
 // Re-export commonly used types from sonos-state
 pub use sonos_state::{
-    ChangeEvent, ChangeIterator, GroupId, GroupVolume, PlaybackState, SpeakerId, Volume,
+    ChangeEvent, ChangeIterator, GroupId, GroupMute, GroupVolume, GroupVolumeChangeable,
+    PlaybackState, SpeakerId, Volume,
 };
 
 // Internal modules

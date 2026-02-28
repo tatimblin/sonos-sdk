@@ -8,7 +8,7 @@ use std::sync::Arc;
 use sonos_api::SonosClient;
 use sonos_state::{GroupId, GroupInfo, SpeakerId, StateManager};
 
-use crate::property::{GroupContext, GroupPropertyHandle, GroupVolumeHandle};
+use crate::property::{GroupContext, GroupMuteHandle, GroupPropertyHandle, GroupVolumeChangeableHandle, GroupVolumeHandle};
 use crate::Speaker;
 
 /// Group handle with access to coordinator and members
@@ -47,6 +47,10 @@ pub struct Group {
     // ========================================================================
     /// Group volume (0-100)
     pub volume: GroupVolumeHandle,
+    /// Group mute state
+    pub mute: GroupMuteHandle,
+    /// Whether group volume can be changed (event-only, no fetch)
+    pub volume_changeable: GroupVolumeChangeableHandle,
 
     // Internal references
     state_manager: Arc<StateManager>,
@@ -77,7 +81,9 @@ impl Group {
             id: info.id,
             coordinator_id: info.coordinator_id,
             member_ids: info.member_ids,
-            volume: GroupPropertyHandle::new(group_context),
+            volume: GroupPropertyHandle::new(Arc::clone(&group_context)),
+            mute: GroupPropertyHandle::new(Arc::clone(&group_context)),
+            volume_changeable: GroupPropertyHandle::new(group_context),
             state_manager,
             api_client,
         })
