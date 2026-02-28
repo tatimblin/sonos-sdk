@@ -265,70 +265,106 @@ Phase 7 → docs (rustdoc + examples + guide)
 This is the largest phase — the SDK is currently entirely read-only.
 
 **Files to modify:**
-- `sonos-sdk/src/speaker.rs` — methods for AVTransport, RenderingControl, ZoneGroupTopology ops
-- `sonos-sdk/src/group.rs` — methods for GroupRenderingControl, GroupManagement ops
+- `sonos-sdk/src/error.rs` — Add `OperationFailed(String)` variant
+- `sonos-sdk/src/speaker.rs` — Add `api_client` field, `exec()` helper, 29 action methods
+- `sonos-sdk/src/group.rs` — Add `coordinator_ip` field, `exec()` helper, 6 action methods
+- `sonos-sdk/src/lib.rs` — Re-export response types via `responses` module
 
-**Design decision:** Methods on Speaker/Group, not generic execute (see brainstorm). Each method wraps the corresponding `SonosClient::execute()` call.
+**Design: `exec()` helper pattern** — Private helper on Speaker and Group eliminates boilerplate. Takes the `Result` from `.build()` directly, maps `ValidationError` → `SdkError::OperationFailed`, and calls `execute_enhanced`. Every action method becomes a one-liner:
 
-**Pattern for operation methods:**
 ```rust
 impl Speaker {
+    fn exec<Op: UPnPOperation>(
+        &self,
+        operation: Result<ComposableOperation<Op>, ValidationError>,
+    ) -> Result<Op::Response, SdkError> {
+        let op = operation.map_err(|e| SdkError::OperationFailed(e.to_string()))?;
+        self.api_client
+            .execute_enhanced(&self.ip.to_string(), op)
+            .map_err(SdkError::ApiError)
+    }
+
     pub fn play(&self) -> Result<(), SdkError> {
-        let op = av_transport::play_operation("1");
-        self.context.api_client.execute_at(&self.ip, op)?;
+        self.exec(av_transport::play("1".to_string()).build())?;
         Ok(())
     }
 }
 ```
 
-**Tasks — AVTransport methods on Speaker:**
+**Ergonomic API:** UPnP details hidden — `play()` (no args, speed "1" hardcoded), `set_volume(50)` (one arg, channel "Master" hardcoded), `&str` params at boundary with `.to_string()` internally.
 
-- [ ] `play()` — PlayOperation
-- [ ] `pause()` — PauseOperation
-- [ ] `stop()` — StopOperation
-- [ ] `next()` — NextOperation
-- [ ] `previous()` — PreviousOperation
-- [ ] `seek(target: &str, unit: SeekUnit)` — SeekOperation
-- [ ] `set_av_transport_uri(uri: &str, metadata: &str)` — SetAVTransportURIOperation
-- [ ] `set_next_av_transport_uri(uri: &str, metadata: &str)` — SetNextAVTransportURIOperation
-- [ ] `get_media_info()` — GetMediaInfoOperation
-- [ ] `get_transport_settings()` — GetTransportSettingsOperation
-- [ ] `get_current_transport_actions()` — GetCurrentTransportActionsOperation
-- [ ] `set_play_mode(mode: PlayMode)` — SetPlayModeOperation
-- [ ] `get_crossfade_mode()` / `set_crossfade_mode(enabled: bool)` — Get/SetCrossfadeModeOperation
-- [ ] `configure_sleep_timer(duration: &str)` / `get_remaining_sleep_timer()` — Sleep timer ops
-- [ ] `add_uri_to_queue(uri: &str, metadata: &str, position: u32)` — AddURIToQueueOperation
-- [ ] `remove_track_from_queue(track: u32)` — RemoveTrackFromQueueOperation
-- [ ] `remove_all_tracks_from_queue()` — RemoveAllTracksFromQueueOperation
-- [ ] `save_queue(title: &str)` / `create_saved_queue(title: &str)` — Queue save ops
-- [ ] `become_standalone()` — BecomeCoordinatorOfStandaloneGroupOperation
-- [ ] `delegate_coordination_to(new_coordinator_id: &str)` — DelegateGroupCoordinationToOperation
+**Structural changes:**
+- Speaker: Add private `api_client: SonosClient` field (clone before passing to SpeakerContext)
+- Group: Add private `coordinator_ip: IpAddr` field (already resolved in `from_info()`)
 
-**Tasks — RenderingControl methods on Speaker:**
+**Tasks — Structural:**
 
-- [ ] `set_volume(volume: u8)` — SetVolumeOperation
-- [ ] `set_relative_volume(adjustment: i8)` — SetRelativeVolumeOperation
-- [ ] `set_mute(muted: bool)` — SetMuteOperation (from Phase 1)
-- [ ] `set_bass(level: i8)` — SetBassOperation (from Phase 1)
-- [ ] `set_treble(level: i8)` — SetTrebleOperation (from Phase 1)
-- [ ] `set_loudness(enabled: bool)` — SetLoudnessOperation (from Phase 1)
+- [x] Add `SdkError::ValidationFailed(#[from] ValidationError)` variant to `error.rs`
+- [x] Store `Arc<SpeakerContext>` on Speaker (shares api_client + speaker_ip with property handles)
+- [x] Add `exec()` helper to Speaker
+- [x] Add `coordinator_ip: IpAddr` private field to Group, store in `from_info()`
+- [x] Add `exec()` helper to Group
+- [x] Flat `pub use` re-exports of 14 response types in `lib.rs`
 
-**Tasks — GroupRenderingControl methods on Group:**
+**Tasks — AVTransport methods on Speaker (28):**
 
-- [ ] `set_volume(volume: u16)` — SetGroupVolumeOperation
-- [ ] `set_relative_volume(adjustment: i16)` — SetRelativeGroupVolumeOperation
-- [ ] `set_mute(muted: bool)` — SetGroupMuteOperation
-- [ ] `snapshot_volume()` — SnapshotGroupVolumeOperation
+- [x] `play()` — `av_transport::play("1")` — void, updates PlaybackState::Playing
+- [x] `pause()` — `av_transport::pause()` — void, updates PlaybackState::Paused
+- [x] `stop()` — `av_transport::stop()` — void, updates PlaybackState::Stopped
+- [x] `next()` — `av_transport::next()` — void
+- [x] `previous()` — `av_transport::previous()` — void
+- [x] `seek(target: SeekTarget)` — typed enum replaces raw unit+target strings
+- [x] `set_av_transport_uri(uri: &str, metadata: &str)` — void
+- [x] `set_next_av_transport_uri(uri: &str, metadata: &str)` — void
+- [x] `get_media_info()` → `GetMediaInfoResponse`
+- [x] `get_transport_settings()` → `GetTransportSettingsResponse`
+- [x] `get_current_transport_actions()` → `GetCurrentTransportActionsResponse`
+- [x] `set_play_mode(mode: PlayMode)` — typed enum
+- [x] `get_crossfade_mode()` → `GetCrossfadeModeResponse`
+- [x] `set_crossfade_mode(enabled: bool)` — void
+- [x] `configure_sleep_timer(duration: &str)` — void
+- [x] `cancel_sleep_timer()` — convenience wrapper
+- [x] `get_remaining_sleep_timer()` → `GetRemainingSleepTimerDurationResponse`
+- [x] `add_uri_to_queue(uri, metadata, position, enqueue_as_next)` → `AddURIToQueueResponse`
+- [x] `remove_track_from_queue(object_id: &str, update_id: u32)` — void
+- [x] `remove_all_tracks_from_queue()` — void
+- [x] `save_queue(title: &str, object_id: &str)` → `SaveQueueResponse`
+- [x] `create_saved_queue(title, uri, metadata)` → `CreateSavedQueueResponse`
+- [x] `remove_track_range_from_queue(update_id, starting_index, count)` → `RemoveTrackRangeFromQueueResponse`
+- [x] `backup_queue()` — void
+- [x] `get_device_capabilities()` → `GetDeviceCapabilitiesResponse`
+- [x] `snooze_alarm(duration: &str)` — void
+- [x] `get_running_alarm_properties()` → `GetRunningAlarmPropertiesResponse`
+- [x] `become_standalone()` → `BecomeCoordinatorOfStandaloneGroupResponse`
+- [x] `delegate_coordination_to(new_coordinator: &SpeakerId, rejoin_group: bool)` — void
 
-**Tasks — GroupManagement methods on Group:**
+**Tasks — RenderingControl methods on Speaker (6):**
 
-- [ ] `add_member(member_id: &str)` — AddMemberOperation
-- [ ] `remove_member(member_id: &str)` — RemoveMemberOperation
+- [x] `set_volume(volume: u8)` — channel "Master" hardcoded, updates Volume cache
+- [x] `set_relative_volume(adjustment: i8)` → `SetRelativeVolumeResponse`, updates Volume cache
+- [x] `set_mute(muted: bool)` — channel "Master" hardcoded, updates Mute cache
+- [x] `set_bass(level: i8)` — updates Bass cache
+- [x] `set_treble(level: i8)` — updates Treble cache
+- [x] `set_loudness(enabled: bool)` — channel "Master" hardcoded, updates Loudness cache
+
+**Tasks — GroupRenderingControl methods on Group (4):**
+
+- [x] `set_volume(volume: u16)` — updates GroupVolume cache
+- [x] `set_relative_volume(adjustment: i16)` → `SetRelativeGroupVolumeResponse`, updates GroupVolume cache
+- [x] `set_mute(muted: bool)` — updates GroupMute cache
+- [x] `snapshot_volume()` — void
+
+**Tasks — GroupManagement methods on Group (2) — DEFERRED to Phase 6:**
+
+- [ ] `add_member` / `remove_member` — deferred to Phase 6 where ergonomic `group.add_speaker(&speaker)` replaces raw UPnP calls
 
 **Tasks — Testing:**
-- [ ] Tests for each operation method category (don't need per-method tests if the pattern is uniform, test representative samples)
 
-**Success criteria:** `cargo test -p sonos-sdk` passes. Users can call every operation from the 5 core services via Speaker/Group methods.
+- [x] Validation error propagation tests (`set_volume(150)` → `SdkError::ValidationFailed`)
+- [x] Method signature assertion tests (compile-time verification for all 34 methods)
+- [x] Group method tests (set_volume rejects >100, action methods exist)
+
+**Success criteria:** `cargo test -p sonos-sdk` passes. Users can call every operation from the 5 core services via Speaker/Group methods. Response types accessible via `sonos_sdk::responses`.
 
 ---
 
