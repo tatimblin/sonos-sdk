@@ -1,5 +1,5 @@
 [package]
-name = "sonos-state"
+name = "sonos-sdk-state"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,21 +9,24 @@ description = "Internal reactive state management for sonos-sdk"
 readme = "README.md"
 exclude = ["plans/"]
 
+[lib]
+name = "sonos_state"
+
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 tracing = "0.1"
 
 # Workspace dependencies
-sonos-api = { path = "../sonos-api" }
-sonos-stream = { path = "../sonos-stream" }
-sonos-event-manager = { path = "../sonos-event-manager" }
-sonos-discovery = { path = "../sonos-discovery" }
-state-store = { path = "../state-store" }
+sonos-api = { path = "../sonos-api", version = "0.1.0" }
+sonos-stream = { package = "sonos-sdk-stream", path = "../sonos-stream", version = "0.1.0" }
+sonos-event-manager = { package = "sonos-sdk-event-manager", path = "../sonos-event-manager", version = "0.1.0" }
+sonos-discovery = { package = "sonos-sdk-discovery", path = "../sonos-discovery", version = "0.1.0" }
+state-store = { package = "sonos-sdk-state-store", path = "../state-store", version = "0.1.0" }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
-sonos-discovery = { path = "../sonos-discovery" }
-sonos-event-manager = { path = "../sonos-event-manager" }
+sonos-discovery = { package = "sonos-sdk-discovery", path = "../sonos-discovery", version = "0.1.0" }
+sonos-event-manager = { package = "sonos-sdk-event-manager", path = "../sonos-event-manager", version = "0.1.0" }
 chrono = "0.4"
 ctrlc = "3.4"
 proptest = "1.4"

@@ -140,7 +140,7 @@ categories = ["multimedia::audio", "network-programming"]
 
 Rename the 7 internal crates on crates.io while preserving source code ergonomics.
 
-- [ ] **Update `name` field** in each internal crate's `Cargo.toml`:
+- [x] **Update `name` field** in each internal crate's `Cargo.toml`:
 
 | File | Old name | New name |
 |------|----------|----------|
@@ -152,7 +152,7 @@ Rename the 7 internal crates on crates.io while preserving source code ergonomic
 | `sonos-stream/Cargo.toml` | `sonos-stream` | `sonos-sdk-stream` |
 | `sonos-event-manager/Cargo.toml` | `sonos-event-manager` | `sonos-sdk-event-manager` |
 
-- [ ] **Update all inter-crate dependency declarations** to use `package` aliases + version fields. Every path dependency becomes a triple: `package` (new crates.io name) + `path` (unchanged directory) + `version` ("0.1.0"). The dependency key (left side of `=`) stays the same as the old crate name so all `use` statements remain unchanged.
+- [x] **Update all inter-crate dependency declarations** to use `package` aliases + version fields. Every path dependency becomes a triple: `package` (new crates.io name) + `path` (unchanged directory) + `version` ("0.1.0"). The dependency key (left side of `=`) stays the same as the old crate name so all `use` statements remain unchanged.
 
 Example transformation for `sonos-api/Cargo.toml`:
 ```toml
@@ -192,7 +192,7 @@ Full dependency update list (after phantom dep cleanup from Phase 0):
 
 **Note:** `sonos-api` keeps its crate name (it's a public crate, not renamed), so dependencies on `sonos-api` use `version = "0.1.0"` and `path` but no `package` field.
 
-- [ ] **Verify** — `cargo build --workspace && cargo test --workspace` passes. Cargo.lock will regenerate with new crate names (expect a large diff — this is normal).
+- [x] **Verify** — `cargo build --workspace && cargo test --workspace` passes. Cargo.lock will regenerate with new crate names (expect a large diff — this is normal).
 
 #### Phase 3: Documentation
 

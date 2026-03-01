@@ -1,5 +1,5 @@
 [package]
-name = "state-store"
+name = "sonos-sdk-state-store"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 description = "Generic, type-safe state management with change detection and blocking iteration"
 readme = "README.md"
+
+[lib]
+name = "state_store"
 
 [dependencies]
 # Minimal dependencies - no Sonos-specific crates

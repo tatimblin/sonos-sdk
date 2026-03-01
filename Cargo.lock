@@ -163,24 +163,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b35204fbdc0b3f4446b89fc1ac2cf84a8a68971995d0bf2e925ec7cd960f9cb3"
 
 [[package]]
-name = "callback-server"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "bytes",
- "proptest",
- "reqwest",
- "thiserror",
- "tokio",
- "tokio-test",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid",
- "warp",
-]
-
-[[package]]
 name = "cassowary"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2213,15 +2195,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 
 [[package]]
-name = "soap-client"
-version = "0.1.0"
-dependencies = [
- "thiserror",
- "ureq",
- "xmltree",
-]
-
-[[package]]
 name = "socket2"
 version = "0.5.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2251,8 +2224,8 @@ dependencies = [
  "quick-xml",
  "rstest",
  "serde",
- "soap-client",
- "sonos-discovery",
+ "sonos-sdk-discovery",
+ "sonos-sdk-soap-client",
  "thiserror",
  "tokio",
  "ureq",
@@ -2260,7 +2233,40 @@ dependencies = [
 ]
 
 [[package]]
-name = "sonos-discovery"
+name = "sonos-sdk"
+version = "0.1.0"
+dependencies = [
+ "crossterm 0.27.0",
+ "proptest",
+ "ratatui 0.26.3",
+ "sonos-api",
+ "sonos-sdk-discovery",
+ "sonos-sdk-event-manager",
+ "sonos-sdk-state",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
+name = "sonos-sdk-callback-server"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "proptest",
+ "reqwest",
+ "thiserror",
+ "tokio",
+ "tokio-test",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "warp",
+]
+
+[[package]]
+name = "sonos-sdk-discovery"
 version = "0.1.0"
 dependencies = [
  "mockito",
@@ -2272,16 +2278,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "sonos-event-manager"
+name = "sonos-sdk-event-manager"
 version = "0.1.0"
 dependencies = [
  "chrono",
  "ctrlc",
  "dashmap",
  "sonos-api",
- "sonos-discovery",
- "sonos-state",
- "sonos-stream",
+ "sonos-sdk-discovery",
+ "sonos-sdk-state",
+ "sonos-sdk-stream",
  "thiserror",
  "tokio",
  "tracing",
@@ -2289,22 +2295,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "sonos-sdk"
+name = "sonos-sdk-soap-client"
 version = "0.1.0"
 dependencies = [
- "crossterm 0.27.0",
- "proptest",
- "ratatui 0.26.3",
- "sonos-api",
- "sonos-discovery",
- "sonos-event-manager",
- "sonos-state",
  "thiserror",
- "tracing",
+ "ureq",
+ "xmltree",
 ]
 
 [[package]]
-name = "sonos-state"
+name = "sonos-sdk-state"
 version = "0.1.0"
 dependencies = [
  "chrono",
@@ -2314,21 +2314,28 @@ dependencies = [
  "ratatui 0.26.3",
  "serde",
  "sonos-api",
- "sonos-discovery",
- "sonos-event-manager",
- "sonos-stream",
- "state-store",
+ "sonos-sdk-discovery",
+ "sonos-sdk-event-manager",
+ "sonos-sdk-state-store",
+ "sonos-sdk-stream",
  "tokio",
  "tracing",
 ]
 
 [[package]]
-name = "sonos-stream"
+name = "sonos-sdk-state-store"
+version = "0.1.0"
+dependencies = [
+ "crossterm 0.28.1",
+ "ratatui 0.29.0",
+]
+
+[[package]]
+name = "sonos-sdk-stream"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
- "callback-server",
  "chrono",
  "crossbeam",
  "dashmap",
@@ -2341,7 +2348,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sonos-api",
- "sonos-discovery",
+ "sonos-sdk-callback-server",
+ "sonos-sdk-discovery",
  "thiserror",
  "tokio",
  "tokio-test",
@@ -2373,14 +2381,6 @@ name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
-
-[[package]]
-name = "state-store"
-version = "0.1.0"
-dependencies = [
- "crossterm 0.28.1",
- "ratatui 0.29.0",
-]
 
 [[package]]
 name = "static_assertions"
