@@ -156,13 +156,13 @@ impl EventRouter {
     /// ```
     pub async fn route_event(&self, subscription_id: String, event_xml: String) -> bool {
         let subs = self.subscriptions.read().await;
-        
+
         if subs.contains(&subscription_id) {
             let payload = NotificationPayload {
                 subscription_id,
                 event_xml,
             };
-            
+
             // Send payload to channel (ignore errors if receiver is dropped)
             let _ = self.event_sender.send(payload);
             true

@@ -67,9 +67,9 @@ pub mod decoder;
 pub(crate) mod event_worker;
 
 // Sync-first API
-pub mod state;
 pub mod iter;
 pub mod speaker;
+pub mod state;
 
 // Error types
 pub mod error;
@@ -79,7 +79,7 @@ pub mod error;
 // ============================================================================
 
 // State manager
-pub use state::{StateManager, StateManagerBuilder, ChangeEvent};
+pub use state::{ChangeEvent, StateManager, StateManagerBuilder};
 
 // Change iterator
 pub use iter::ChangeIterator;
@@ -94,7 +94,10 @@ pub use property::{
 pub use model::{GroupId, SpeakerId, SpeakerInfo};
 
 // Event decoder
-pub use decoder::{decode_event, decode_topology_event, parse_track_metadata, DecodedChanges, PropertyChange, TopologyChanges};
+pub use decoder::{
+    decode_event, decode_topology_event, parse_track_metadata, DecodedChanges, PropertyChange,
+    TopologyChanges,
+};
 
 // Error types
 pub use error::{Result, StateError};
@@ -115,8 +118,8 @@ pub mod prelude {
     pub use crate::model::{GroupId, SpeakerId, SpeakerInfo};
 
     // State management
-    pub use crate::state::{StateManager, ChangeEvent};
     pub use crate::iter::ChangeIterator;
+    pub use crate::state::{ChangeEvent, StateManager};
 
     // Error types
     pub use crate::error::{Result, StateError};

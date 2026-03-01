@@ -9,8 +9,8 @@
 //! - `report_track_buffering_result` - Report track buffering status
 //! - `set_source_area_ids` - Set source area identifiers
 
-use crate::{define_upnp_operation, Validate};
 use crate::operation::parse_sonos_bool;
+use crate::{define_upnp_operation, Validate};
 use paste::paste;
 use serde::{Deserialize, Serialize};
 
@@ -105,7 +105,10 @@ pub fn add_member_operation(
     member_id: String,
     boot_seq: u32,
 ) -> crate::operation::OperationBuilder<AddMemberOperation> {
-    let request = AddMemberOperationRequest { member_id, boot_seq };
+    let request = AddMemberOperationRequest {
+        member_id,
+        boot_seq,
+    };
     crate::operation::OperationBuilder::new(request)
 }
 
@@ -248,7 +251,7 @@ mod tests {
         </AddMemberResponse>"#;
         let xml = xmltree::Element::parse(xml_str.as_bytes()).unwrap();
         let response = AddMemberOperation::parse_response(&xml).unwrap();
-        
+
         assert_eq!(response.current_transport_settings, "settings");
         assert_eq!(response.current_uri, "x-rincon:RINCON_123");
         assert_eq!(response.group_uuid_joined, "group-uuid-123");
@@ -267,7 +270,7 @@ mod tests {
         </AddMemberResponse>"#;
         let xml = xmltree::Element::parse(xml_str.as_bytes()).unwrap();
         let response = AddMemberOperation::parse_response(&xml).unwrap();
-        
+
         assert!(!response.reset_volume_after);
     }
 
@@ -345,13 +348,24 @@ mod tests {
 
     #[test]
     fn test_service_constant() {
-        assert_eq!(AddMemberOperation::SERVICE, crate::service::Service::GroupManagement);
-        assert_eq!(RemoveMemberOperation::SERVICE, crate::service::Service::GroupManagement);
-        assert_eq!(ReportTrackBufferingResultOperation::SERVICE, crate::service::Service::GroupManagement);
-        assert_eq!(SetSourceAreaIdsOperation::SERVICE, crate::service::Service::GroupManagement);
+        assert_eq!(
+            AddMemberOperation::SERVICE,
+            crate::service::Service::GroupManagement
+        );
+        assert_eq!(
+            RemoveMemberOperation::SERVICE,
+            crate::service::Service::GroupManagement
+        );
+        assert_eq!(
+            ReportTrackBufferingResultOperation::SERVICE,
+            crate::service::Service::GroupManagement
+        );
+        assert_eq!(
+            SetSourceAreaIdsOperation::SERVICE,
+            crate::service::Service::GroupManagement
+        );
     }
 }
-
 
 // =============================================================================
 // PROPERTY-BASED TESTS
@@ -383,9 +397,9 @@ mod property_tests {
                 <CurrentTransportSettings>test-settings</CurrentTransportSettings>
                 <CurrentURI>x-rincon:RINCON_TEST</CurrentURI>
                 <GroupUUIDJoined>test-group-uuid</GroupUUIDJoined>
-                <ResetVolumeAfter>{}</ResetVolumeAfter>
+                <ResetVolumeAfter>{xml_value}</ResetVolumeAfter>
                 <VolumeAVTransportURI>x-rincon:RINCON_VOL</VolumeAVTransportURI>
-            </AddMemberResponse>"#, xml_value);
+            </AddMemberResponse>"#);
 
             let xml = xmltree::Element::parse(xml_str.as_bytes())
                 .expect("XML should parse successfully");
@@ -413,14 +427,12 @@ mod property_tests {
 
     /// Strategy for generating arbitrary member IDs
     fn member_id_strategy() -> impl Strategy<Value = String> {
-        prop::string::string_regex("[A-Za-z0-9_-]{0,50}")
-            .unwrap()
+        prop::string::string_regex("[A-Za-z0-9_-]{0,50}").unwrap()
     }
 
     /// Strategy for generating arbitrary source area IDs
     fn source_area_ids_strategy() -> impl Strategy<Value = String> {
-        prop::string::string_regex("[A-Za-z0-9,_-]{0,100}")
-            .unwrap()
+        prop::string::string_regex("[A-Za-z0-9,_-]{0,100}").unwrap()
     }
 
     proptest! {

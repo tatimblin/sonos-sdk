@@ -82,12 +82,9 @@ mod tests {
         let client = crate::SonosClient::new();
 
         // Test that functions exist with correct signatures
-        let _subscribe_fn = || {
-            subscribe(&client, "192.168.1.100", "http://callback.url")
-        };
+        let _subscribe_fn = || subscribe(&client, "192.168.1.100", "http://callback.url");
 
-        let _subscribe_timeout_fn = || {
-            subscribe_with_timeout(&client, "192.168.1.100", "http://callback.url", 3600)
-        };
+        let _subscribe_timeout_fn =
+            || subscribe_with_timeout(&client, "192.168.1.100", "http://callback.url", 3600);
     }
 }

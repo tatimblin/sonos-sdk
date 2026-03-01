@@ -32,7 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // --- Discover speakers (blocking call — run off the async runtime) ---
     println!("Discovering speakers...");
-    let devices = tokio::task::spawn_blocking(|| sonos_discovery::get())
+    let devices = tokio::task::spawn_blocking(sonos_discovery::get)
         .await
         .expect("discovery task panicked");
     if devices.is_empty() {
@@ -54,7 +54,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let ip = device.ip_address.parse()?;
         for &svc in SERVICES {
             let reg = broker.register_speaker_service(ip, svc).await?;
-            let mode = if reg.polling_reason.is_some() { "polling" } else { "UPnP" };
+            let mode = if reg.polling_reason.is_some() {
+                "polling"
+            } else {
+                "UPnP"
+            };
             println!("  Registered {:?} on {} [{}]", svc, device.name, mode);
         }
     }
@@ -84,13 +88,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .unwrap_or("unknown");
                 let source = match &event.event_source {
                     EventSource::UPnPNotification { .. } => "UPnP",
-                    EventSource::PollingDetection { poll_interval } => {
-                        if poll_interval.as_secs() > 0 {
-                            "poll"
-                        } else {
-                            "poll"
-                        }
-                    }
+                    EventSource::PollingDetection { .. } => "poll",
                 };
 
                 print!("[{count}] {speaker} ({source}) ");
@@ -118,19 +116,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     EventData::ZoneGroupTopology(s) => {
                         let groups = s.zone_groups.len();
-                        let speakers: usize = s.zone_groups.iter()
-                            .map(|g| g.members.len())
-                            .sum();
-                        let group_names: Vec<String> = s.zone_groups.iter().map(|g| {
-                            let room_names: Vec<&str> = g.members.iter()
-                                .map(|m| m.zone_name.as_str())
-                                .collect();
-                            format!("[{}]", room_names.join(" + "))
-                        }).collect();
-                        println!("ZoneGroupTopology  {groups} group(s), {speakers} speaker(s): {}", group_names.join(", "));
+                        let speakers: usize = s.zone_groups.iter().map(|g| g.members.len()).sum();
+                        let group_names: Vec<String> = s
+                            .zone_groups
+                            .iter()
+                            .map(|g| {
+                                let room_names: Vec<&str> =
+                                    g.members.iter().map(|m| m.zone_name.as_str()).collect();
+                                format!("[{}]", room_names.join(" + "))
+                            })
+                            .collect();
+                        println!(
+                            "ZoneGroupTopology  {groups} group(s), {speakers} speaker(s): {}",
+                            group_names.join(", ")
+                        );
                     }
                     EventData::GroupManagement(s) => {
-                        let local = s.group_coordinator_is_local.map(|b| b.to_string()).unwrap_or("-".into());
+                        let local = s
+                            .group_coordinator_is_local
+                            .map(|b| b.to_string())
+                            .unwrap_or("-".into());
                         let uuid = s.local_group_uuid.as_deref().unwrap_or("-");
                         println!("GroupManagement  coordinator_local={local}  group={uuid}");
                     }

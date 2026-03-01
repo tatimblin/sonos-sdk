@@ -7,12 +7,12 @@
 //! 4. Parses and validates device information
 //! 5. Yields discovered devices as events
 
-use std::collections::HashSet;
-use std::time::Duration;
+use crate::device::{extract_ip_from_url, DeviceDescription};
 use crate::error::Result;
 use crate::ssdp::{SsdpClient, SsdpResponse};
-use crate::device::{DeviceDescription, extract_ip_from_url};
 use crate::DeviceEvent;
+use std::collections::HashSet;
+use std::time::Duration;
 
 /// Iterator that discovers Sonos devices on the local network.
 ///
@@ -49,7 +49,11 @@ impl DiscoveryIterator {
         let http_client = reqwest::blocking::Client::builder()
             .timeout(timeout)
             .build()
-            .map_err(|e| crate::error::DiscoveryError::NetworkError(format!("Failed to create HTTP client: {}", e)))?;
+            .map_err(|e| {
+                crate::error::DiscoveryError::NetworkError(format!(
+                    "Failed to create HTTP client: {e}"
+                ))
+            })?;
 
         Ok(Self {
             ssdp_client: Some(ssdp_client),
@@ -99,14 +103,17 @@ impl DiscoveryIterator {
 
     /// Fetch and parse device description from a location URL
     fn fetch_device_description(&self, location: &str) -> Result<DeviceDescription> {
-        let response = self.http_client
-            .get(location)
-            .send()
-            .map_err(|e| crate::error::DiscoveryError::NetworkError(format!("Failed to fetch device description: {}", e)))?;
+        let response = self.http_client.get(location).send().map_err(|e| {
+            crate::error::DiscoveryError::NetworkError(format!(
+                "Failed to fetch device description: {e}"
+            ))
+        })?;
 
-        let xml = response
-            .text()
-            .map_err(|e| crate::error::DiscoveryError::NetworkError(format!("Failed to read response body: {}", e)))?;
+        let xml = response.text().map_err(|e| {
+            crate::error::DiscoveryError::NetworkError(format!(
+                "Failed to read response body: {e}"
+            ))
+        })?;
 
         DeviceDescription::from_xml(&xml)
     }
@@ -117,10 +124,8 @@ impl DiscoveryIterator {
             match client.search("urn:schemas-upnp-org:device:ZonePlayer:1") {
                 Ok(iter) => {
                     // Collect all SSDP responses into buffer
-                    for result in iter {
-                        if let Ok(response) = result {
-                            self.ssdp_buffer.push(response);
-                        }
+                    for response in iter.flatten() {
+                        self.ssdp_buffer.push(response);
                     }
                 }
                 Err(_) => {

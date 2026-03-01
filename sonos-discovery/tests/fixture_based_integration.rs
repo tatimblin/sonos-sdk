@@ -23,8 +23,8 @@ fn test_parse_device_fixture(
     #[case] expected_room: &str,
 ) {
     let fixture = DeviceFixture::load(fixture_file, "192.168.1.100");
-    let device_desc = DeviceDescription::from_xml(&fixture.xml_content)
-        .expect("Failed to parse device XML");
+    let device_desc =
+        DeviceDescription::from_xml(&fixture.xml_content).expect("Failed to parse device XML");
 
     assert_eq!(device_desc.model_name, expected_model);
     assert!(device_desc.is_sonos_device());
@@ -46,13 +46,12 @@ fn test_parse_device_fixture(
 #[case("minimal_sonos_device.xml")]
 fn test_sonos_device_identification(#[case] fixture_file: &str) {
     let fixture = DeviceFixture::load(fixture_file, "192.168.1.100");
-    let device_desc = DeviceDescription::from_xml(&fixture.xml_content)
-        .expect("Failed to parse device XML");
+    let device_desc =
+        DeviceDescription::from_xml(&fixture.xml_content).expect("Failed to parse device XML");
 
     assert!(
         device_desc.is_sonos_device(),
-        "{} should be identified as a Sonos device",
-        fixture_file
+        "{fixture_file} should be identified as a Sonos device"
     );
 }
 
@@ -60,8 +59,8 @@ fn test_sonos_device_identification(#[case] fixture_file: &str) {
 #[test]
 fn test_non_sonos_device_filtering() {
     let fixture = DeviceFixture::load("non_sonos_router_device.xml", "192.168.1.200");
-    let device_desc = DeviceDescription::from_xml(&fixture.xml_content)
-        .expect("Failed to parse device XML");
+    let device_desc =
+        DeviceDescription::from_xml(&fixture.xml_content).expect("Failed to parse device XML");
 
     assert!(
         !device_desc.is_sonos_device(),
@@ -96,17 +95,21 @@ fn test_fixture_set_parsing(
     assert_eq!(
         parsed_devices.len(),
         expected_count,
-        "Scenario '{}' should have {} Sonos devices",
-        scenario,
-        expected_count
+        "Scenario '{scenario}' should have {expected_count} Sonos devices"
     );
 
     // Verify all devices have required fields
     for device in &parsed_devices {
         assert!(!device.id.is_empty(), "Device ID should not be empty");
         assert!(!device.name.is_empty(), "Device name should not be empty");
-        assert!(!device.ip_address.is_empty(), "Device IP should not be empty");
-        assert!(!device.model_name.is_empty(), "Device model should not be empty");
+        assert!(
+            !device.ip_address.is_empty(),
+            "Device IP should not be empty"
+        );
+        assert!(
+            !device.model_name.is_empty(),
+            "Device model should not be empty"
+        );
         assert_eq!(device.port, 1400, "Sonos devices use port 1400");
     }
 }
@@ -119,8 +122,8 @@ fn test_mixed_device_filtering() {
     let mut non_sonos_count = 0;
 
     for fixture in &fixture_set.devices {
-        let device_desc = DeviceDescription::from_xml(&fixture.xml_content)
-            .expect("Failed to parse device XML");
+        let device_desc =
+            DeviceDescription::from_xml(&fixture.xml_content).expect("Failed to parse device XML");
 
         if device_desc.is_sonos_device() {
             sonos_count += 1;
@@ -140,8 +143,8 @@ fn test_device_id_uniqueness() {
     let mut device_ids = std::collections::HashSet::new();
 
     for fixture in &fixture_set.devices {
-        let device_desc = DeviceDescription::from_xml(&fixture.xml_content)
-            .expect("Failed to parse device XML");
+        let device_desc =
+            DeviceDescription::from_xml(&fixture.xml_content).expect("Failed to parse device XML");
 
         let device = device_desc.to_device(fixture.ip.to_string());
 
@@ -166,8 +169,8 @@ fn test_device_id_uniqueness() {
 #[case("172.16.0.10")]
 fn test_device_ip_assignment(#[case] ip_address: &str) {
     let fixture = DeviceFixture::load("sonos_one_device.xml", ip_address);
-    let device_desc = DeviceDescription::from_xml(&fixture.xml_content)
-        .expect("Failed to parse device XML");
+    let device_desc =
+        DeviceDescription::from_xml(&fixture.xml_content).expect("Failed to parse device XML");
 
     let device = device_desc.to_device(ip_address.to_string());
 
@@ -221,14 +224,12 @@ fn test_http_mock_with_fixture() {
 #[test]
 fn test_multiple_device_mocks() {
     let mut server = Server::new();
-    let fixtures = vec![
-        DeviceFixture::load("sonos_one_device.xml", "192.168.1.100"),
-        DeviceFixture::load("sonos_play1_device.xml", "192.168.1.101"),
-    ];
+    let fixtures = [DeviceFixture::load("sonos_one_device.xml", "192.168.1.100"),
+        DeviceFixture::load("sonos_play1_device.xml", "192.168.1.101")];
 
     let mut mocks = Vec::new();
     for (i, fixture) in fixtures.iter().enumerate() {
-        let path = format!("/device{}/xml/device_description.xml", i);
+        let path = format!("/device{i}/xml/device_description.xml");
         let mock = server
             .mock("GET", path.as_str())
             .with_status(200)
@@ -277,8 +278,8 @@ fn test_malformed_xml_handling() {
 #[case("minimal_sonos_device.xml", "uuid:RINCON_TEST123456")]
 fn test_device_id_extraction(#[case] fixture_file: &str, #[case] expected_id: &str) {
     let fixture = DeviceFixture::load(fixture_file, "192.168.1.100");
-    let device_desc = DeviceDescription::from_xml(&fixture.xml_content)
-        .expect("Failed to parse device XML");
+    let device_desc =
+        DeviceDescription::from_xml(&fixture.xml_content).expect("Failed to parse device XML");
 
     assert_eq!(device_desc.udn, expected_id);
 

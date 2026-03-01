@@ -8,8 +8,8 @@
 //! in `crate::events`. Service-specific event handling is now done in
 //! individual service modules.
 
-use serde::{Deserialize, Serialize};
 use crate::{ApiError, Result, Service};
+use serde::{Deserialize, Serialize};
 
 /// Subscribe operation for UPnP event subscriptions
 ///

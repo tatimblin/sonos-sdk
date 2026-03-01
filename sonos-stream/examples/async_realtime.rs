@@ -4,10 +4,8 @@
 //! when you need to perform async operations in response to events or handle
 //! multiple event streams concurrently.
 
-use sonos_stream::{
-    BrokerConfig, EventBroker, EventData,
-};
 use sonos_api::Service;
+use sonos_stream::{BrokerConfig, EventBroker, EventData};
 use std::net::IpAddr;
 use std::time::Duration;
 use tokio::time::timeout;
@@ -27,12 +25,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n📋 Registering Sonos services...");
 
     // Register multiple services
-    let transport_reg = broker.register_speaker_service(device_ip, Service::AVTransport).await?;
-    let volume_reg = broker.register_speaker_service(device_ip, Service::RenderingControl).await?;
-    let group_mgmt_reg = broker.register_speaker_service(device_ip, Service::GroupManagement).await?;
+    let transport_reg = broker
+        .register_speaker_service(device_ip, Service::AVTransport)
+        .await?;
+    let volume_reg = broker
+        .register_speaker_service(device_ip, Service::RenderingControl)
+        .await?;
+    let group_mgmt_reg = broker
+        .register_speaker_service(device_ip, Service::GroupManagement)
+        .await?;
 
-    println!("✅ Services registered with IDs: {}, {}, and {}",
-             transport_reg.registration_id, volume_reg.registration_id, group_mgmt_reg.registration_id);
+    println!(
+        "✅ Services registered with IDs: {}, {}, and {}",
+        transport_reg.registration_id, volume_reg.registration_id, group_mgmt_reg.registration_id
+    );
 
     // Print firewall status
     println!("🔍 Firewall Status: {:?}", transport_reg.firewall_status);
@@ -56,12 +62,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(Some(event)) => {
                 event_count += 1;
 
-                println!("📨 Event #{} received at {:?}",
-                         event_count, event.timestamp);
-                println!("   Device: {} | Service: {:?} | Source: {}",
-                         event.speaker_ip,
-                         event.service,
-                         format_event_source(&event.event_source));
+                println!(
+                    "📨 Event #{} received at {:?}",
+                    event_count, event.timestamp
+                );
+                println!(
+                    "   Device: {} | Service: {:?} | Source: {}",
+                    event.speaker_ip,
+                    event.service,
+                    format_event_source(&event.event_source)
+                );
 
                 // Process different event types with async operations
                 match event.event_data {
@@ -81,8 +91,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         handle_group_management_async(event.speaker_ip, gm_event).await;
                     }
                     EventData::GroupRenderingControl(grc_event) => {
-                        println!("🔊 Group rendering control from {}: volume={:?}, mute={:?}",
-                                 event.speaker_ip, grc_event.group_volume, grc_event.group_mute);
+                        println!(
+                            "🔊 Group rendering control from {}: volume={:?}, mute={:?}",
+                            event.speaker_ip, grc_event.group_volume, grc_event.group_mute
+                        );
                     }
                 }
 
@@ -90,7 +102,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 // Stop after max events for demonstration
                 if event_count >= max_events {
-                    println!("📋 Processed {} events, stopping demonstration", event_count);
+                    println!(
+                        "📋 Processed {event_count} events, stopping demonstration"
+                    );
                     break;
                 }
             }
@@ -120,38 +134,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Handle transport events asynchronously
-async fn handle_transport_event_async(device_ip: IpAddr, transport_event: sonos_stream::events::types::AVTransportState) {
+async fn handle_transport_event_async(
+    device_ip: IpAddr,
+    transport_event: sonos_stream::events::types::AVTransportState,
+) {
     println!("🎵 Processing transport event asynchronously...");
 
     if let Some(ref state) = transport_event.transport_state {
         match state.as_str() {
             "PLAYING" => {
-                println!("   ▶️  Playback started on {}", device_ip);
+                println!("   ▶️  Playback started on {device_ip}");
                 // Example: Send notification to external service
                 simulate_external_notification("play_started", device_ip).await;
             }
             "PAUSED_PLAYBACK" => {
-                println!("   ⏸️  Playback paused on {}", device_ip);
+                println!("   ⏸️  Playback paused on {device_ip}");
                 simulate_external_notification("play_paused", device_ip).await;
             }
             "STOPPED" => {
-                println!("   ⏹️  Playback stopped on {}", device_ip);
+                println!("   ⏹️  Playback stopped on {device_ip}");
                 simulate_external_notification("play_stopped", device_ip).await;
             }
             _ => {
-                println!("   🔄 Transport state: {} on {}", state, device_ip);
+                println!("   🔄 Transport state: {state} on {device_ip}");
             }
         }
     }
 
     if let Some(ref track_uri) = transport_event.current_track_uri {
-        println!("   🎵 Track changed to: {}", track_uri);
+        println!("   🎵 Track changed to: {track_uri}");
         // Example: Update external playlist or database
         simulate_track_update(device_ip, track_uri).await;
     }
 
     if let Some(ref position) = transport_event.rel_time {
-        println!("   ⏱️  Position updated: {}", position);
+        println!("   ⏱️  Position updated: {position}");
     }
 
     if let Some(ref metadata) = transport_event.track_metadata {
@@ -160,12 +177,15 @@ async fn handle_transport_event_async(device_ip: IpAddr, transport_event: sonos_
 }
 
 /// Handle volume events asynchronously
-async fn handle_volume_event_async(device_ip: IpAddr, volume_event: sonos_stream::events::types::RenderingControlState) {
+async fn handle_volume_event_async(
+    device_ip: IpAddr,
+    volume_event: sonos_stream::events::types::RenderingControlState,
+) {
     println!("🔊 Processing volume event asynchronously...");
 
     if let Some(ref volume_str) = volume_event.master_volume {
         if let Ok(volume) = volume_str.parse::<u16>() {
-            println!("   🎚️  Volume changed to {} on {}", volume, device_ip);
+            println!("   🎚️  Volume changed to {volume} on {device_ip}");
 
             // Example: Adjust related systems based on volume
             if volume == 0 {
@@ -178,47 +198,63 @@ async fn handle_volume_event_async(device_ip: IpAddr, volume_event: sonos_stream
 
     if let Some(ref mute_str) = volume_event.master_mute {
         let mute = mute_str == "1" || mute_str.to_lowercase() == "true";
-        println!("   🔇 Mute {} on {}", if mute { "enabled" } else { "disabled" }, device_ip);
+        println!(
+            "   🔇 Mute {} on {}",
+            if mute { "enabled" } else { "disabled" },
+            device_ip
+        );
         if mute {
             simulate_external_notification("device_muted", device_ip).await;
         }
     }
 
     if let Some(ref bass) = volume_event.bass {
-        println!("   🎵 Bass level: {}", bass);
+        println!("   🎵 Bass level: {bass}");
     }
 
     if let Some(ref treble) = volume_event.treble {
-        println!("   🎶 Treble level: {}", treble);
+        println!("   🎶 Treble level: {treble}");
     }
 }
 
 /// Handle topology changes asynchronously
 async fn handle_topology_change_async(
     device_ip: IpAddr,
-    topology: sonos_stream::events::types::ZoneGroupTopologyState
+    topology: sonos_stream::events::types::ZoneGroupTopologyState,
 ) {
     println!("🏠 Processing topology change asynchronously...");
-    println!("   📡 Received from: {}", device_ip);
+    println!("   📡 Received from: {device_ip}");
     println!("   🔢 Zone groups: {}", topology.zone_groups.len());
 
     // Analyze topology changes
-    let total_speakers = topology.zone_groups.iter()
-        .map(|group| group.members.len() + group.members.iter().map(|m| m.satellites.len()).sum::<usize>())
+    let total_speakers = topology
+        .zone_groups
+        .iter()
+        .map(|group| {
+            group.members.len()
+                + group
+                    .members
+                    .iter()
+                    .map(|m| m.satellites.len())
+                    .sum::<usize>()
+        })
         .sum::<usize>();
 
-    println!("   📊 Total speakers in household: {}", total_speakers);
+    println!("   📊 Total speakers in household: {total_speakers}");
 
     // Process each zone group
     for (i, group) in topology.zone_groups.iter().enumerate() {
-        println!("   🏠 Group {}: {} ({} members)",
-                 i + 1, group.coordinator, group.members.len());
+        println!(
+            "   🏠 Group {}: {} ({} members)",
+            i + 1,
+            group.coordinator,
+            group.members.len()
+        );
 
         // Check for multi-room groups
         if group.members.len() > 1 {
-            let zone_names: Vec<&str> = group.members.iter()
-                .map(|m| m.zone_name.as_str())
-                .collect();
+            let zone_names: Vec<&str> =
+                group.members.iter().map(|m| m.zone_name.as_str()).collect();
             println!("      🔗 Multi-room group: {}", zone_names.join(" + "));
 
             // Example: Notify external system about multi-room group
@@ -228,15 +264,20 @@ async fn handle_topology_change_async(
         // Check for home theater setups
         for member in &group.members {
             if !member.satellites.is_empty() {
-                println!("      🎭 Home theater setup detected in {}: {} satellites",
-                         member.zone_name, member.satellites.len());
+                println!(
+                    "      🎭 Home theater setup detected in {}: {} satellites",
+                    member.zone_name,
+                    member.satellites.len()
+                );
                 simulate_external_notification("hometheater_detected", device_ip).await;
             }
 
             // Check network configuration
             if member.network_info.wifi_enabled == "1" {
-                println!("      📶 {} using WiFi on {}MHz",
-                         member.zone_name, member.network_info.channel_freq);
+                println!(
+                    "      📶 {} using WiFi on {}MHz",
+                    member.zone_name, member.network_info.channel_freq
+                );
             } else if member.network_info.eth_link == "1" {
                 println!("      🔌 {} using Ethernet", member.zone_name);
             }
@@ -250,29 +291,29 @@ async fn handle_topology_change_async(
 /// Handle device properties events asynchronously
 async fn handle_device_properties_async(
     device_ip: IpAddr,
-    device_event: sonos_stream::events::types::DevicePropertiesEvent
+    device_event: sonos_stream::events::types::DevicePropertiesEvent,
 ) {
     println!("⚙️  Processing device properties event asynchronously...");
-    println!("   Device: {}", device_ip);
+    println!("   Device: {device_ip}");
 
     if let Some(ref zone_name) = device_event.zone_name {
-        println!("   📍 Zone name: {}", zone_name);
+        println!("   📍 Zone name: {zone_name}");
         // Example: Update room database
         simulate_external_notification("zone_renamed", device_ip).await;
     }
 
     if let Some(ref model) = device_event.model_name {
-        println!("   📱 Model: {}", model);
+        println!("   📱 Model: {model}");
     }
 
     if let Some(ref version) = device_event.software_version {
-        println!("   💾 Software version: {}", version);
+        println!("   💾 Software version: {version}");
         // Example: Track firmware updates
         simulate_external_notification("firmware_updated", device_ip).await;
     }
 
     if let Some(ref config) = device_event.configuration {
-        println!("   ⚙️  Configuration: {}", config);
+        println!("   ⚙️  Configuration: {config}");
     }
 
     // Example: Update device registry
@@ -282,29 +323,29 @@ async fn handle_device_properties_async(
 /// Handle group management events asynchronously
 async fn handle_group_management_async(
     device_ip: IpAddr,
-    gm_event: sonos_stream::events::types::GroupManagementState
+    gm_event: sonos_stream::events::types::GroupManagementState,
 ) {
     println!("🔗 Processing group management event asynchronously...");
-    println!("   Device: {}", device_ip);
+    println!("   Device: {device_ip}");
 
     if let Some(is_local) = gm_event.group_coordinator_is_local {
-        println!("   📍 Coordinator is local: {}", is_local);
+        println!("   📍 Coordinator is local: {is_local}");
     }
 
     if let Some(ref group_uuid) = gm_event.local_group_uuid {
-        println!("   🏷️  Local group UUID: {}", group_uuid);
+        println!("   🏷️  Local group UUID: {group_uuid}");
     }
 
     if let Some(reset_vol) = gm_event.reset_volume_after {
-        println!("   🔊 Reset volume after ungroup: {}", reset_vol);
+        println!("   🔊 Reset volume after ungroup: {reset_vol}");
     }
 
     if let Some(ref vli_group_id) = gm_event.virtual_line_in_group_id {
-        println!("   🔌 Virtual line-in group ID: {}", vli_group_id);
+        println!("   🔌 Virtual line-in group ID: {vli_group_id}");
     }
 
     if let Some(ref vol_uri) = gm_event.volume_av_transport_uri {
-        println!("   🎵 Volume AV transport URI: {}", vol_uri);
+        println!("   🎵 Volume AV transport URI: {vol_uri}");
     }
 
     simulate_external_notification("group_management_update", device_ip).await;
@@ -316,22 +357,26 @@ async fn demonstrate_async_features(events: &mut sonos_stream::events::iterator:
 
     match events.try_next() {
         Ok(Some(event)) => {
-            println!("  📨 Found buffered event: {} {:?}",
-                     event.speaker_ip, event.service);
+            println!(
+                "  📨 Found buffered event: {} {:?}",
+                event.speaker_ip, event.service
+            );
         }
         Ok(None) => {
             println!("  📭 No events immediately available");
         }
         Err(e) => {
-            println!("  ❌ Error: {}", e);
+            println!("  ❌ Error: {e}");
         }
     }
 
     println!("\nTesting next_timeout() with 2-second timeout:");
     match events.next_timeout(Duration::from_secs(2)).await {
         Ok(Some(event)) => {
-            println!("  📨 Received event within timeout: {} {:?}",
-                     event.speaker_ip, event.service);
+            println!(
+                "  📨 Received event within timeout: {} {:?}",
+                event.speaker_ip, event.service
+            );
         }
         Ok(None) => {
             println!("  📡 Event stream ended");
@@ -354,42 +399,54 @@ async fn demonstrate_async_features(events: &mut sonos_stream::events::iterator:
 async fn simulate_external_notification(event_type: &str, device_ip: IpAddr) {
     // Simulate async operation (e.g., HTTP request to webhook)
     tokio::time::sleep(Duration::from_millis(50)).await;
-    println!("   📤 Sent '{}' notification for device {}", event_type, device_ip);
+    println!(
+        "   📤 Sent '{event_type}' notification for device {device_ip}"
+    );
 }
 
 /// Simulate updating track information in external service
 async fn simulate_track_update(device_ip: IpAddr, track_uri: &str) {
     // Simulate async database update
     tokio::time::sleep(Duration::from_millis(100)).await;
-    println!("   💾 Updated track database: {} -> {}", device_ip, track_uri);
+    println!(
+        "   💾 Updated track database: {device_ip} -> {track_uri}"
+    );
 }
-
 
 /// Simulate topology database update
 async fn simulate_topology_update(
     device_ip: IpAddr,
-    topology: &sonos_stream::events::types::ZoneGroupTopologyState
+    topology: &sonos_stream::events::types::ZoneGroupTopologyState,
 ) {
     // Simulate async database update
     tokio::time::sleep(Duration::from_millis(120)).await;
-    println!("   💾 Updated topology database: {} with {} groups",
-             device_ip, topology.zone_groups.len());
+    println!(
+        "   💾 Updated topology database: {} with {} groups",
+        device_ip,
+        topology.zone_groups.len()
+    );
 }
 
 /// Simulate device properties database update
 async fn simulate_device_update(
     device_ip: IpAddr,
-    device_event: &sonos_stream::events::types::DevicePropertiesEvent
+    device_event: &sonos_stream::events::types::DevicePropertiesEvent,
 ) {
     // Simulate async database update
     tokio::time::sleep(Duration::from_millis(100)).await;
     let properties_count = [
-        &device_event.zone_name, &device_event.model_name,
-        &device_event.software_version, &device_event.configuration
-    ].iter().filter(|prop| prop.is_some()).count();
+        &device_event.zone_name,
+        &device_event.model_name,
+        &device_event.software_version,
+        &device_event.configuration,
+    ]
+    .iter()
+    .filter(|prop| prop.is_some())
+    .count();
 
-    println!("   💾 Updated device database: {} with {} properties",
-             device_ip, properties_count);
+    println!(
+        "   💾 Updated device database: {device_ip} with {properties_count} properties"
+    );
 }
 
 /// Format event source for display
@@ -405,4 +462,3 @@ fn format_event_source(source: &sonos_stream::events::types::EventSource) -> Str
         }
     }
 }
-

@@ -13,7 +13,6 @@ use std::thread;
 use std::time::Duration;
 
 use sonos_event_manager::SonosEventManager;
-use tracing_subscriber;
 use sonos_state::{
     model::SpeakerId,
     property::{CurrentTrack, Mute, PlaybackState, Position, Volume},
@@ -27,7 +26,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             tracing_subscriber::EnvFilter::from_default_env()
                 .add_directive("sonos_stream=debug".parse().unwrap())
                 .add_directive("sonos_event_manager=debug".parse().unwrap())
-                .add_directive("sonos_state=debug".parse().unwrap())
+                .add_directive("sonos_state=debug".parse().unwrap()),
         )
         .init();
 
@@ -81,23 +80,23 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     for (speaker_id, name) in &speaker_ids {
         // Watch volume - automatically subscribes to RenderingControl service!
         if let Err(e) = manager.watch_property_with_subscription::<Volume>(speaker_id) {
-            println!("  Failed to watch volume for {}: {}", name, e);
+            println!("  Failed to watch volume for {name}: {e}");
         } else {
-            println!("  Watching volume for {}", name);
+            println!("  Watching volume for {name}");
         }
 
         // Watch mute - shares the same RenderingControl subscription!
         if let Err(e) = manager.watch_property_with_subscription::<Mute>(speaker_id) {
-            println!("  Failed to watch mute for {}: {}", name, e);
+            println!("  Failed to watch mute for {name}: {e}");
         } else {
-            println!("  Watching mute for {}", name);
+            println!("  Watching mute for {name}");
         }
 
         // Watch playback state - automatically subscribes to AVTransport service!
         if let Err(e) = manager.watch_property_with_subscription::<PlaybackState>(speaker_id) {
-            println!("  Failed to watch playback state for {}: {}", name, e);
+            println!("  Failed to watch playback state for {name}: {e}");
         } else {
-            println!("  Watching playback state for {}", name);
+            println!("  Watching playback state for {name}");
         }
     }
 
@@ -152,7 +151,7 @@ fn display_dashboard(manager: &StateManager, speaker_ids: &[(SpeakerId, String)]
     println!("Time: {}", chrono::Utc::now().format("%H:%M:%S"));
 
     for (speaker_id, name) in speaker_ids {
-        println!("\n{}", name);
+        println!("\n{name}");
         println!("{}", "=".repeat(name.len()));
 
         // Volume & Mute
@@ -174,7 +173,7 @@ fn display_dashboard(manager: &StateManager, speaker_ids: &[(SpeakerId, String)]
                 PlaybackState::Stopped => "Stopped",
                 PlaybackState::Transitioning => "Transitioning",
             };
-            println!("  State: {}", state_str);
+            println!("  State: {state_str}");
         } else {
             println!("  State: Not available");
         }
@@ -182,10 +181,10 @@ fn display_dashboard(manager: &StateManager, speaker_ids: &[(SpeakerId, String)]
         // Current Track
         if let Some(track) = manager.get_property::<CurrentTrack>(speaker_id) {
             if let Some(title) = &track.title {
-                println!("  Track: {}", title);
+                println!("  Track: {title}");
             }
             if let Some(artist) = &track.artist {
-                println!("  Artist: {}", artist);
+                println!("  Artist: {artist}");
             }
         }
 
@@ -195,7 +194,7 @@ fn display_dashboard(manager: &StateManager, speaker_ids: &[(SpeakerId, String)]
                 let progress = pos.progress();
                 let pos_str = format_time(pos.position_ms);
                 let dur_str = format_time(pos.duration_ms);
-                println!("  Position: {} / {} ({:.0}%)", pos_str, dur_str, progress);
+                println!("  Position: {pos_str} / {dur_str} ({progress:.0}%)");
             }
         }
     }
@@ -206,5 +205,5 @@ fn format_time(ms: u64) -> String {
     let total_secs = ms / 1000;
     let mins = total_secs / 60;
     let secs = total_secs % 60;
-    format!("{:02}:{:02}", mins, secs)
+    format!("{mins:02}:{secs:02}")
 }

@@ -9,8 +9,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, RwLock};
 
-use tracing::debug;
 use callback_server::{FirewallDetectionCoordinator, FirewallStatus};
+use tracing::debug;
 
 use crate::broker::PollingReason;
 use crate::registry::{RegistrationId, SpeakerServicePair};
@@ -110,7 +110,9 @@ impl EventDetector {
         pair: &SpeakerServicePair,
     ) -> Option<PollingRequest> {
         if let Some(firewall_coordinator) = &self.firewall_coordinator {
-            let status = firewall_coordinator.get_device_status(pair.speaker_ip).await;
+            let status = firewall_coordinator
+                .get_device_status(pair.speaker_ip)
+                .await;
 
             match status {
                 FirewallStatus::Blocked => {
@@ -209,11 +211,14 @@ impl EventDetector {
         pair: SpeakerServicePair,
     ) {
         let mut registrations = self.registrations.write().await;
-        registrations.insert(registration_id, MonitoredRegistration {
-            last_event_time: Instant::now(),
-            pair,
-            polling_activated: false,
-        });
+        registrations.insert(
+            registration_id,
+            MonitoredRegistration {
+                last_event_time: Instant::now(),
+                pair,
+                polling_activated: false,
+            },
+        );
     }
 
     /// Unregister a subscription from monitoring
@@ -253,7 +258,6 @@ impl EventDetector {
     }
 }
 
-
 /// Statistics about event detection
 #[derive(Debug)]
 pub struct EventDetectorStats {
@@ -282,10 +286,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_event_detector_creation() {
-        let detector = EventDetector::new(
-            Duration::from_secs(30),
-            Duration::from_secs(5),
-        );
+        let detector = EventDetector::new(Duration::from_secs(30), Duration::from_secs(5));
 
         assert_eq!(detector.event_timeout, Duration::from_secs(30));
         assert_eq!(detector.polling_activation_delay, Duration::from_secs(5));
@@ -293,10 +294,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_event_recording() {
-        let detector = EventDetector::new(
-            Duration::from_secs(30),
-            Duration::from_secs(5),
-        );
+        let detector = EventDetector::new(Duration::from_secs(30), Duration::from_secs(5));
 
         let registration_id = RegistrationId::new(1);
         let pair = SpeakerServicePair::new(
@@ -317,10 +315,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_subscription_registration() {
-        let detector = EventDetector::new(
-            Duration::from_secs(30),
-            Duration::from_secs(5),
-        );
+        let detector = EventDetector::new(Duration::from_secs(30), Duration::from_secs(5));
 
         let registration_id = RegistrationId::new(1);
         let pair = SpeakerServicePair::new(
@@ -343,10 +338,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_register_and_unregister() {
-        let detector = EventDetector::new(
-            Duration::from_secs(30),
-            Duration::from_secs(5),
-        );
+        let detector = EventDetector::new(Duration::from_secs(30), Duration::from_secs(5));
 
         let registration_id = RegistrationId::new(1);
         let pair = SpeakerServicePair::new(
@@ -355,7 +347,9 @@ mod tests {
         );
 
         // Register
-        detector.register_subscription(registration_id, pair.clone()).await;
+        detector
+            .register_subscription(registration_id, pair.clone())
+            .await;
 
         // Verify it's stored
         let regs = detector.registrations.read().await;
@@ -375,10 +369,7 @@ mod tests {
         use tokio::sync::mpsc;
 
         // Very short timeout so we can trigger it quickly
-        let mut detector = EventDetector::new(
-            Duration::from_millis(50),
-            Duration::from_secs(5),
-        );
+        let mut detector = EventDetector::new(Duration::from_millis(50), Duration::from_secs(5));
 
         let (sender, mut receiver) = mpsc::unbounded_channel();
         detector.set_polling_request_sender(sender);
@@ -391,7 +382,9 @@ mod tests {
         );
 
         // Register subscription with pair
-        detector.register_subscription(registration_id, pair.clone()).await;
+        detector
+            .register_subscription(registration_id, pair.clone())
+            .await;
 
         // Backdate the last event time to simulate a timeout
         {
@@ -407,7 +400,10 @@ mod tests {
         // Wait for the monitoring loop to run (first tick is immediate)
         let request = tokio::time::timeout(Duration::from_secs(2), receiver.recv()).await;
 
-        assert!(request.is_ok(), "Should receive a polling request within timeout");
+        assert!(
+            request.is_ok(),
+            "Should receive a polling request within timeout"
+        );
         let request = request.unwrap().expect("Channel should have a message");
         assert_eq!(request.registration_id, registration_id);
         assert_eq!(request.speaker_service_pair.speaker_ip, pair.speaker_ip);

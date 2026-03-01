@@ -93,7 +93,7 @@
 //!     let server = CallbackServer::new((3400, 3500), notification_tx).await?;
 //!     
 //!     // Maintain mapping from subscription ID to device context
-//!     let subscription_map: Arc<RwLock<HashMap<String, (String, String)>>> = 
+//!     let subscription_map: Arc<RwLock<HashMap<String, (String, String)>>> =
 //!         Arc::new(RwLock::new(HashMap::new()));
 //!     
 //!     // Spawn adapter task to add device-specific context
@@ -142,8 +142,8 @@ pub mod router;
 mod server;
 
 pub use firewall_detection::{
-    FirewallDetectionCoordinator, FirewallStatus, FirewallDetectionConfig,
-    DeviceFirewallState, DetectionResult, DetectionReason, CoordinatorStats
+    CoordinatorStats, DetectionReason, DetectionResult, DeviceFirewallState,
+    FirewallDetectionConfig, FirewallDetectionCoordinator, FirewallStatus,
 };
 pub use router::{EventRouter, NotificationPayload};
 pub use server::CallbackServer;

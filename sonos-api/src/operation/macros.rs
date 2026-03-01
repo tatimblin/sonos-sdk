@@ -4,7 +4,6 @@
 //! UPnP operations. Instead of manually implementing traits and structs, developers
 //! can use simple declarative syntax to generate all necessary code.
 
-
 /// Simplified macro for defining UPnP operations with minimal boilerplate
 ///
 /// This macro generates all the necessary structs and trait implementations
@@ -82,7 +81,6 @@ macro_rules! define_upnp_operation {
         }
     };
 }
-
 
 /// Macro for defining operations with XML response parsing
 ///
@@ -204,6 +202,5 @@ mod tests {
 
         // Note: Actual usage tests would go in the services modules where the macros are used
         // since we can't easily test macro expansion here without a more complex test setup
-        assert!(true, "Macro definitions compile successfully");
     }
 }

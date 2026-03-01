@@ -24,9 +24,9 @@ use sonos_api::services::{
     av_transport::{
         self, AddURIToQueueResponse, BecomeCoordinatorOfStandaloneGroupResponse,
         CreateSavedQueueResponse, GetCrossfadeModeResponse, GetCurrentTransportActionsResponse,
-        GetDeviceCapabilitiesResponse, GetMediaInfoResponse, GetRemainingSleepTimerDurationResponse,
-        GetRunningAlarmPropertiesResponse, GetTransportSettingsResponse,
-        RemoveTrackRangeFromQueueResponse, SaveQueueResponse,
+        GetDeviceCapabilitiesResponse, GetMediaInfoResponse,
+        GetRemainingSleepTimerDurationResponse, GetRunningAlarmPropertiesResponse,
+        GetTransportSettingsResponse, RemoveTrackRangeFromQueueResponse, SaveQueueResponse,
     },
     rendering_control::{self, SetRelativeVolumeResponse},
 };
@@ -99,7 +99,8 @@ impl std::fmt::Display for PlayMode {
 
 use crate::property::{
     BassHandle, CurrentTrackHandle, GroupMembershipHandle, LoudnessHandle, MuteHandle,
-    PlaybackStateHandle, PositionHandle, PropertyHandle, SpeakerContext, TrebleHandle, VolumeHandle,
+    PlaybackStateHandle, PositionHandle, PropertyHandle, SpeakerContext, TrebleHandle,
+    VolumeHandle,
 };
 
 /// Speaker handle with property access
@@ -264,7 +265,9 @@ impl Speaker {
     /// Updates the state cache to `PlaybackState::Playing` on success.
     pub fn play(&self) -> Result<(), SdkError> {
         self.exec(av_transport::play("1".to_string()).build())?;
-        self.context.state_manager.set_property(&self.context.speaker_id, PlaybackState::Playing);
+        self.context
+            .state_manager
+            .set_property(&self.context.speaker_id, PlaybackState::Playing);
         Ok(())
     }
 
@@ -273,7 +276,9 @@ impl Speaker {
     /// Updates the state cache to `PlaybackState::Paused` on success.
     pub fn pause(&self) -> Result<(), SdkError> {
         self.exec(av_transport::pause().build())?;
-        self.context.state_manager.set_property(&self.context.speaker_id, PlaybackState::Paused);
+        self.context
+            .state_manager
+            .set_property(&self.context.speaker_id, PlaybackState::Paused);
         Ok(())
     }
 
@@ -282,7 +287,9 @@ impl Speaker {
     /// Updates the state cache to `PlaybackState::Stopped` on success.
     pub fn stop(&self) -> Result<(), SdkError> {
         self.exec(av_transport::stop().build())?;
-        self.context.state_manager.set_property(&self.context.speaker_id, PlaybackState::Stopped);
+        self.context
+            .state_manager
+            .set_property(&self.context.speaker_id, PlaybackState::Stopped);
         Ok(())
     }
 
@@ -431,14 +438,8 @@ impl Speaker {
     }
 
     /// Remove a track from the queue
-    pub fn remove_track_from_queue(
-        &self,
-        object_id: &str,
-        update_id: u32,
-    ) -> Result<(), SdkError> {
-        self.exec(
-            av_transport::remove_track_from_queue(object_id.to_string(), update_id).build(),
-        )?;
+    pub fn remove_track_from_queue(&self, object_id: &str, update_id: u32) -> Result<(), SdkError> {
+        self.exec(av_transport::remove_track_from_queue(object_id.to_string(), update_id).build())?;
         Ok(())
     }
 
@@ -449,11 +450,7 @@ impl Speaker {
     }
 
     /// Save the current queue as a Sonos playlist
-    pub fn save_queue(
-        &self,
-        title: &str,
-        object_id: &str,
-    ) -> Result<SaveQueueResponse, SdkError> {
+    pub fn save_queue(&self, title: &str, object_id: &str) -> Result<SaveQueueResponse, SdkError> {
         self.exec(av_transport::save_queue(title.to_string(), object_id.to_string()).build())
     }
 
@@ -482,8 +479,12 @@ impl Speaker {
         number_of_tracks: u32,
     ) -> Result<RemoveTrackRangeFromQueueResponse, SdkError> {
         self.exec(
-            av_transport::remove_track_range_from_queue(update_id, starting_index, number_of_tracks)
-                .build(),
+            av_transport::remove_track_range_from_queue(
+                update_id,
+                starting_index,
+                number_of_tracks,
+            )
+            .build(),
         )
     }
 
@@ -558,9 +559,7 @@ impl Speaker {
     ///
     /// Semantic alias for [`become_standalone()`](Self::become_standalone).
     /// After calling this, the speaker forms its own group of one.
-    pub fn leave_group(
-        &self,
-    ) -> Result<BecomeCoordinatorOfStandaloneGroupResponse, SdkError> {
+    pub fn leave_group(&self) -> Result<BecomeCoordinatorOfStandaloneGroupResponse, SdkError> {
         self.become_standalone()
     }
 
@@ -573,16 +572,25 @@ impl Speaker {
     /// Updates the state cache to the new `Volume` on success.
     pub fn set_volume(&self, volume: u8) -> Result<(), SdkError> {
         self.exec(rendering_control::set_volume("Master".to_string(), volume).build())?;
-        self.context.state_manager.set_property(&self.context.speaker_id, Volume(volume));
+        self.context
+            .state_manager
+            .set_property(&self.context.speaker_id, Volume(volume));
         Ok(())
     }
 
     /// Adjust volume relative to current level
     ///
     /// Returns the new absolute volume.
-    pub fn set_relative_volume(&self, adjustment: i8) -> Result<SetRelativeVolumeResponse, SdkError> {
-        let response = self.exec(rendering_control::set_relative_volume("Master".to_string(), adjustment).build())?;
-        self.context.state_manager.set_property(&self.context.speaker_id, Volume(response.new_volume));
+    pub fn set_relative_volume(
+        &self,
+        adjustment: i8,
+    ) -> Result<SetRelativeVolumeResponse, SdkError> {
+        let response = self.exec(
+            rendering_control::set_relative_volume("Master".to_string(), adjustment).build(),
+        )?;
+        self.context
+            .state_manager
+            .set_property(&self.context.speaker_id, Volume(response.new_volume));
         Ok(response)
     }
 
@@ -591,28 +599,36 @@ impl Speaker {
     /// Updates the state cache to the new `Mute` value on success.
     pub fn set_mute(&self, muted: bool) -> Result<(), SdkError> {
         self.exec(rendering_control::set_mute("Master".to_string(), muted).build())?;
-        self.context.state_manager.set_property(&self.context.speaker_id, Mute(muted));
+        self.context
+            .state_manager
+            .set_property(&self.context.speaker_id, Mute(muted));
         Ok(())
     }
 
     /// Set bass EQ level (-10 to +10)
     pub fn set_bass(&self, level: i8) -> Result<(), SdkError> {
         self.exec(rendering_control::set_bass(level).build())?;
-        self.context.state_manager.set_property(&self.context.speaker_id, Bass(level));
+        self.context
+            .state_manager
+            .set_property(&self.context.speaker_id, Bass(level));
         Ok(())
     }
 
     /// Set treble EQ level (-10 to +10)
     pub fn set_treble(&self, level: i8) -> Result<(), SdkError> {
         self.exec(rendering_control::set_treble(level).build())?;
-        self.context.state_manager.set_property(&self.context.speaker_id, Treble(level));
+        self.context
+            .state_manager
+            .set_property(&self.context.speaker_id, Treble(level));
         Ok(())
     }
 
     /// Set loudness compensation
     pub fn set_loudness(&self, enabled: bool) -> Result<(), SdkError> {
         self.exec(rendering_control::set_loudness("Master".to_string(), enabled).build())?;
-        self.context.state_manager.set_property(&self.context.speaker_id, Loudness(enabled));
+        self.context
+            .state_manager
+            .set_property(&self.context.speaker_id, Loudness(enabled));
         Ok(())
     }
 }
@@ -697,9 +713,7 @@ mod tests {
         assert_response::<GetRemainingSleepTimerDurationResponse>(
             speaker.get_remaining_sleep_timer(),
         );
-        assert_response::<AddURIToQueueResponse>(
-            speaker.add_uri_to_queue("", "", 0, false),
-        );
+        assert_response::<AddURIToQueueResponse>(speaker.add_uri_to_queue("", "", 0, false));
         assert_void(speaker.remove_track_from_queue("", 0));
         assert_void(speaker.remove_all_tracks_from_queue());
         assert_response::<SaveQueueResponse>(speaker.save_queue("", ""));
@@ -713,9 +727,7 @@ mod tests {
         assert_response::<GetRunningAlarmPropertiesResponse>(
             speaker.get_running_alarm_properties(),
         );
-        assert_response::<BecomeCoordinatorOfStandaloneGroupResponse>(
-            speaker.become_standalone(),
-        );
+        assert_response::<BecomeCoordinatorOfStandaloneGroupResponse>(speaker.become_standalone());
         assert_void(speaker.delegate_coordination_to(&SpeakerId::new("RINCON_OTHER"), false));
 
         // RenderingControl
@@ -746,7 +758,7 @@ mod tests {
         state_manager.add_devices(devices).unwrap();
 
         let group_info = GroupInfo::new(
-            GroupId::new(&format!("{}:1", speaker.id.as_str())),
+            GroupId::new(format!("{}:1", speaker.id.as_str())),
             speaker.id.clone(),
             vec![speaker.id.clone()],
         );

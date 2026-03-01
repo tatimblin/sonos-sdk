@@ -21,10 +21,10 @@ pub enum DiscoveryError {
 impl fmt::Display for DiscoveryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            DiscoveryError::NetworkError(msg) => write!(f, "Network error: {}", msg),
-            DiscoveryError::ParseError(msg) => write!(f, "Parse error: {}", msg),
+            DiscoveryError::NetworkError(msg) => write!(f, "Network error: {msg}"),
+            DiscoveryError::ParseError(msg) => write!(f, "Parse error: {msg}"),
             DiscoveryError::Timeout => write!(f, "Operation timed out"),
-            DiscoveryError::InvalidDevice(msg) => write!(f, "Invalid device: {}", msg),
+            DiscoveryError::InvalidDevice(msg) => write!(f, "Invalid device: {msg}"),
         }
     }
 }

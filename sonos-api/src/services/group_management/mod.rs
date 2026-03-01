@@ -29,8 +29,8 @@
 //! # Important Notes
 //! - Operations should only be sent to the group coordinator
 
-pub mod operations;
 pub mod events;
+pub mod operations;
 pub mod state;
 
 // Re-export operations for convenience
@@ -38,8 +38,8 @@ pub use operations::*;
 
 // Re-export event types and parsers
 pub use events::{
-    GroupManagementEvent, GroupManagementEventParser,
-    create_enriched_event, create_enriched_event_with_registration_id
+    create_enriched_event, create_enriched_event_with_registration_id, GroupManagementEvent,
+    GroupManagementEventParser,
 };
 pub use state::GroupManagementState;
 
@@ -78,12 +78,18 @@ mod tests {
     fn test_subscribe_function_exists() {
         // Verify subscribe function signature compiles correctly
         // This is a compile-time check - the function exists with correct types
-        let _: fn(&crate::SonosClient, &str, &str) -> crate::Result<crate::ManagedSubscription> = subscribe;
+        let _: fn(&crate::SonosClient, &str, &str) -> crate::Result<crate::ManagedSubscription> =
+            subscribe;
     }
 
     #[test]
     fn test_subscribe_with_timeout_function_exists() {
         // Verify subscribe_with_timeout function signature compiles correctly
-        let _: fn(&crate::SonosClient, &str, &str, u32) -> crate::Result<crate::ManagedSubscription> = subscribe_with_timeout;
+        let _: fn(
+            &crate::SonosClient,
+            &str,
+            &str,
+            u32,
+        ) -> crate::Result<crate::ManagedSubscription> = subscribe_with_timeout;
     }
 }

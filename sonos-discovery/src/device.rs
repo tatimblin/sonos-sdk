@@ -45,8 +45,9 @@ impl DeviceDescription {
     ///
     /// Returns `DiscoveryError::ParseError` if the XML is malformed or missing required fields.
     pub fn from_xml(xml: &str) -> Result<Self> {
-        let root: Root = quick_xml::de::from_str(xml)
-            .map_err(|e| DiscoveryError::ParseError(format!("Failed to parse device XML: {}", e)))?;
+        let root: Root = quick_xml::de::from_str(xml).map_err(|e| {
+            DiscoveryError::ParseError(format!("Failed to parse device XML: {e}"))
+        })?;
 
         Ok(root.device)
     }

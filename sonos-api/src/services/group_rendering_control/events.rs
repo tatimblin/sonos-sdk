@@ -182,6 +182,5 @@ mod tests {
         assert_eq!(state.group_volume, Some(42));
         assert_eq!(state.group_mute, Some(false));
         assert_eq!(state.group_volume_changeable, Some(true));
-
     }
 }

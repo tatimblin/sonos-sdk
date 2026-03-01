@@ -164,6 +164,6 @@ mod tests {
             ip: "192.168.1.100".parse().unwrap(),
             service: Service::RenderingControl,
         };
-        assert!(format!("{:?}", cmd).contains("Subscribe"));
+        assert!(format!("{cmd:?}").contains("Subscribe"));
     }
 }

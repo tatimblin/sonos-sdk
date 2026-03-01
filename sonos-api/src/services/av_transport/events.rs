@@ -6,8 +6,8 @@
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 
-use crate::{Result, Service, ApiError};
-use crate::events::{EnrichedEvent, EventSource, EventParser, xml_utils};
+use crate::events::{xml_utils, EnrichedEvent, EventParser, EventSource};
+use crate::{ApiError, Result, Service};
 
 /// Minimal AVTransport event - direct serde mapping from UPnP event XML
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,7 +19,10 @@ pub struct AVTransportEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AVTransportProperty {
-    #[serde(rename = "LastChange", deserialize_with = "xml_utils::deserialize_nested")]
+    #[serde(
+        rename = "LastChange",
+        deserialize_with = "xml_utils::deserialize_nested"
+    )]
     last_change: AVTransportEventData,
 }
 
@@ -75,42 +78,82 @@ struct AVTransportInstance {
 impl AVTransportEvent {
     /// Get transport state
     pub fn transport_state(&self) -> Option<String> {
-        self.property.last_change.instance.transport_state.as_ref().map(|v| v.val.clone())
+        self.property
+            .last_change
+            .instance
+            .transport_state
+            .as_ref()
+            .map(|v| v.val.clone())
     }
 
     /// Get transport status
     pub fn transport_status(&self) -> Option<String> {
-        self.property.last_change.instance.transport_status.as_ref().map(|v| v.val.clone())
+        self.property
+            .last_change
+            .instance
+            .transport_status
+            .as_ref()
+            .map(|v| v.val.clone())
     }
 
     /// Get speed
     pub fn speed(&self) -> Option<String> {
-        self.property.last_change.instance.speed.as_ref().map(|v| v.val.clone())
+        self.property
+            .last_change
+            .instance
+            .speed
+            .as_ref()
+            .map(|v| v.val.clone())
     }
 
     /// Get current track URI
     pub fn current_track_uri(&self) -> Option<String> {
-        self.property.last_change.instance.current_track_uri.as_ref().map(|v| v.val.clone())
+        self.property
+            .last_change
+            .instance
+            .current_track_uri
+            .as_ref()
+            .map(|v| v.val.clone())
     }
 
     /// Get track duration
     pub fn track_duration(&self) -> Option<String> {
-        self.property.last_change.instance.track_duration.as_ref().map(|v| v.val.clone())
+        self.property
+            .last_change
+            .instance
+            .track_duration
+            .as_ref()
+            .map(|v| v.val.clone())
     }
 
     /// Get relative time
     pub fn rel_time(&self) -> Option<String> {
-        self.property.last_change.instance.rel_time.as_ref().map(|v| v.val.clone())
+        self.property
+            .last_change
+            .instance
+            .rel_time
+            .as_ref()
+            .map(|v| v.val.clone())
     }
 
     /// Get absolute time
     pub fn abs_time(&self) -> Option<String> {
-        self.property.last_change.instance.abs_time.as_ref().map(|v| v.val.clone())
+        self.property
+            .last_change
+            .instance
+            .abs_time
+            .as_ref()
+            .map(|v| v.val.clone())
     }
 
     /// Get relative count
     pub fn rel_count(&self) -> Option<u32> {
-        self.property.last_change.instance.rel_count.as_ref().and_then(|v| v.val.parse().ok())
+        self.property
+            .last_change
+            .instance
+            .rel_count
+            .as_ref()
+            .and_then(|v| v.val.parse().ok())
     }
 
     /// Get absolute count (not available)
@@ -120,27 +163,52 @@ impl AVTransportEvent {
 
     /// Get play mode
     pub fn play_mode(&self) -> Option<String> {
-        self.property.last_change.instance.play_mode.as_ref().map(|v| v.val.clone())
+        self.property
+            .last_change
+            .instance
+            .play_mode
+            .as_ref()
+            .map(|v| v.val.clone())
     }
 
     /// Get track metadata
     pub fn track_metadata(&self) -> Option<String> {
-        self.property.last_change.instance.track_metadata.as_ref().map(|v| v.val.clone())
+        self.property
+            .last_change
+            .instance
+            .track_metadata
+            .as_ref()
+            .map(|v| v.val.clone())
     }
 
     /// Get next track URI
     pub fn next_track_uri(&self) -> Option<String> {
-        self.property.last_change.instance.next_track_uri.as_ref().map(|v| v.val.clone())
+        self.property
+            .last_change
+            .instance
+            .next_track_uri
+            .as_ref()
+            .map(|v| v.val.clone())
     }
 
     /// Get next track metadata
     pub fn next_track_metadata(&self) -> Option<String> {
-        self.property.last_change.instance.next_track_metadata.as_ref().map(|v| v.val.clone())
+        self.property
+            .last_change
+            .instance
+            .next_track_metadata
+            .as_ref()
+            .map(|v| v.val.clone())
     }
 
     /// Get queue length
     pub fn queue_length(&self) -> Option<u32> {
-        self.property.last_change.instance.queue_length.as_ref().and_then(|v| v.val.parse().ok())
+        self.property
+            .last_change
+            .instance
+            .queue_length
+            .as_ref()
+            .and_then(|v| v.val.parse().ok())
     }
 
     /// Convert parsed UPnP event to canonical state representation.
@@ -167,7 +235,7 @@ impl AVTransportEvent {
     pub fn from_xml(xml: &str) -> Result<Self> {
         let clean_xml = xml_utils::strip_namespaces(xml);
         quick_xml::de::from_str(&clean_xml)
-            .map_err(|e| ApiError::ParseError(format!("Failed to parse AVTransport XML: {}", e)))
+            .map_err(|e| ApiError::ParseError(format!("Failed to parse AVTransport XML: {e}")))
     }
 }
 
@@ -225,9 +293,15 @@ mod tests {
     fn test_av_transport_event_creation() {
         let event_data = AVTransportEventData {
             instance: AVTransportInstance {
-                transport_state: Some(xml_utils::ValueAttribute { val: "PLAYING".to_string() }),
-                transport_status: Some(xml_utils::ValueAttribute { val: "OK".to_string() }),
-                speed: Some(xml_utils::ValueAttribute { val: "1".to_string() }),
+                transport_state: Some(xml_utils::ValueAttribute {
+                    val: "PLAYING".to_string(),
+                }),
+                transport_status: Some(xml_utils::ValueAttribute {
+                    val: "OK".to_string(),
+                }),
+                speed: Some(xml_utils::ValueAttribute {
+                    val: "1".to_string(),
+                }),
                 current_track_uri: None,
                 track_duration: None,
                 rel_time: None,
@@ -238,13 +312,13 @@ mod tests {
                 next_track_uri: None,
                 next_track_metadata: None,
                 queue_length: None,
-            }
+            },
         };
 
         let event = AVTransportEvent {
             property: AVTransportProperty {
                 last_change: event_data,
-            }
+            },
         };
 
         assert_eq!(event.transport_state(), Some("PLAYING".to_string()));
@@ -261,7 +335,9 @@ mod tests {
             property: AVTransportProperty {
                 last_change: AVTransportEventData {
                     instance: AVTransportInstance {
-                        transport_state: Some(xml_utils::ValueAttribute { val: "PLAYING".to_string() }),
+                        transport_state: Some(xml_utils::ValueAttribute {
+                            val: "PLAYING".to_string(),
+                        }),
                         transport_status: None,
                         speed: None,
                         current_track_uri: None,
@@ -274,9 +350,9 @@ mod tests {
                         next_track_uri: None,
                         next_track_metadata: None,
                         queue_length: None,
-                    }
-                }
-            }
+                    },
+                },
+            },
         };
 
         let enriched = create_enriched_event(ip, source, event_data);
@@ -296,7 +372,9 @@ mod tests {
             property: AVTransportProperty {
                 last_change: AVTransportEventData {
                     instance: AVTransportInstance {
-                        transport_state: Some(xml_utils::ValueAttribute { val: "PLAYING".to_string() }),
+                        transport_state: Some(xml_utils::ValueAttribute {
+                            val: "PLAYING".to_string(),
+                        }),
                         transport_status: None,
                         speed: None,
                         current_track_uri: None,
@@ -309,9 +387,9 @@ mod tests {
                         next_track_uri: None,
                         next_track_metadata: None,
                         queue_length: None,
-                    }
-                }
-            }
+                    },
+                },
+            },
         };
 
         let enriched = create_enriched_event_with_registration_id(42, ip, source, event_data);
@@ -347,22 +425,40 @@ mod tests {
             property: AVTransportProperty {
                 last_change: AVTransportEventData {
                     instance: AVTransportInstance {
-                        transport_state: Some(xml_utils::ValueAttribute { val: "PLAYING".to_string() }),
-                        transport_status: Some(xml_utils::ValueAttribute { val: "OK".to_string() }),
-                        speed: Some(xml_utils::ValueAttribute { val: "1".to_string() }),
-                        current_track_uri: Some(xml_utils::ValueAttribute { val: "x-sonos-spotify:track123".to_string() }),
-                        track_duration: Some(xml_utils::ValueAttribute { val: "0:03:45".to_string() }),
-                        rel_time: Some(xml_utils::ValueAttribute { val: "0:01:30".to_string() }),
+                        transport_state: Some(xml_utils::ValueAttribute {
+                            val: "PLAYING".to_string(),
+                        }),
+                        transport_status: Some(xml_utils::ValueAttribute {
+                            val: "OK".to_string(),
+                        }),
+                        speed: Some(xml_utils::ValueAttribute {
+                            val: "1".to_string(),
+                        }),
+                        current_track_uri: Some(xml_utils::ValueAttribute {
+                            val: "x-sonos-spotify:track123".to_string(),
+                        }),
+                        track_duration: Some(xml_utils::ValueAttribute {
+                            val: "0:03:45".to_string(),
+                        }),
+                        rel_time: Some(xml_utils::ValueAttribute {
+                            val: "0:01:30".to_string(),
+                        }),
                         abs_time: None,
-                        rel_count: Some(xml_utils::ValueAttribute { val: "1".to_string() }),
-                        play_mode: Some(xml_utils::ValueAttribute { val: "NORMAL".to_string() }),
+                        rel_count: Some(xml_utils::ValueAttribute {
+                            val: "1".to_string(),
+                        }),
+                        play_mode: Some(xml_utils::ValueAttribute {
+                            val: "NORMAL".to_string(),
+                        }),
                         track_metadata: None,
                         next_track_uri: None,
                         next_track_metadata: None,
-                        queue_length: Some(xml_utils::ValueAttribute { val: "5".to_string() }),
-                    }
-                }
-            }
+                        queue_length: Some(xml_utils::ValueAttribute {
+                            val: "5".to_string(),
+                        }),
+                    },
+                },
+            },
         };
 
         let state = event.into_state();
@@ -370,7 +466,10 @@ mod tests {
         assert_eq!(state.transport_state, Some("PLAYING".to_string()));
         assert_eq!(state.transport_status, Some("OK".to_string()));
         assert_eq!(state.speed, Some("1".to_string()));
-        assert_eq!(state.current_track_uri, Some("x-sonos-spotify:track123".to_string()));
+        assert_eq!(
+            state.current_track_uri,
+            Some("x-sonos-spotify:track123".to_string())
+        );
         assert_eq!(state.track_duration, Some("0:03:45".to_string()));
         assert_eq!(state.rel_time, Some("0:01:30".to_string()));
         assert_eq!(state.abs_time, None);

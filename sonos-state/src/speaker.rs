@@ -6,7 +6,7 @@
 #[cfg(test)]
 mod tests {
     use crate::model::{SpeakerId, SpeakerInfo};
-    use crate::property::{Property, Volume, Mute, PlaybackState};
+    use crate::property::{Mute, PlaybackState, Property, Volume};
 
     fn create_test_speaker_info() -> SpeakerInfo {
         SpeakerInfo {
@@ -25,7 +25,7 @@ mod tests {
     #[test]
     fn test_speaker_info_debug() {
         let info = create_test_speaker_info();
-        let debug_str = format!("{:?}", info);
+        let debug_str = format!("{info:?}");
         assert!(debug_str.contains("Living Room"));
         assert!(debug_str.contains("RINCON_123"));
     }

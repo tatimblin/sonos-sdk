@@ -350,7 +350,10 @@ impl Position {
 
         let seconds_parts: Vec<&str> = parts[2].split('.').collect();
         let seconds: u64 = seconds_parts[0].parse().ok()?;
-        let millis: u64 = seconds_parts.get(1).and_then(|m| m.parse().ok()).unwrap_or(0);
+        let millis: u64 = seconds_parts
+            .get(1)
+            .and_then(|m| m.parse().ok())
+            .unwrap_or(0);
 
         Some((hours * 3600 + minutes * 60 + seconds) * 1000 + millis)
     }
@@ -394,7 +397,7 @@ impl CurrentTrack {
     /// Get a display string for the track
     pub fn display(&self) -> String {
         match (&self.artist, &self.title) {
-            (Some(artist), Some(title)) => format!("{} - {}", artist, title),
+            (Some(artist), Some(title)) => format!("{artist} - {title}"),
             (None, Some(title)) => title.clone(),
             (Some(artist), None) => artist.clone(),
             (None, None) => "Unknown".to_string(),
@@ -615,7 +618,10 @@ mod tests {
     fn test_group_volume_property_metadata() {
         assert_eq!(GroupVolume::KEY, "group_volume");
         assert_eq!(<GroupVolume as SonosProperty>::SCOPE, Scope::Group);
-        assert_eq!(<GroupVolume as SonosProperty>::SERVICE, Service::GroupRenderingControl);
+        assert_eq!(
+            <GroupVolume as SonosProperty>::SERVICE,
+            Service::GroupRenderingControl
+        );
     }
 
     #[test]
@@ -623,7 +629,7 @@ mod tests {
         // GroupMembership always requires a valid GroupId
         let group_id = GroupId::new("RINCON_12345:1");
         let membership = GroupMembership::new(group_id.clone(), true);
-        
+
         // Verify group_id is always present and matches what was provided
         assert_eq!(membership.group_id, group_id);
         assert!(!membership.group_id.as_str().is_empty());
@@ -632,11 +638,11 @@ mod tests {
     #[test]
     fn test_group_membership_is_coordinator_flag() {
         let group_id = GroupId::new("RINCON_12345:1");
-        
+
         // Test coordinator
         let coordinator = GroupMembership::new(group_id.clone(), true);
         assert!(coordinator.is_coordinator);
-        
+
         // Test non-coordinator (member)
         let member = GroupMembership::new(group_id.clone(), false);
         assert!(!member.is_coordinator);
@@ -645,18 +651,18 @@ mod tests {
     #[test]
     fn test_group_membership_equality() {
         let group_id = GroupId::new("RINCON_12345:1");
-        
+
         let membership1 = GroupMembership::new(group_id.clone(), true);
         let membership2 = GroupMembership::new(group_id.clone(), true);
         let membership3 = GroupMembership::new(group_id.clone(), false);
         let membership4 = GroupMembership::new(GroupId::new("RINCON_67890:1"), true);
-        
+
         // Same group_id and is_coordinator should be equal
         assert_eq!(membership1, membership2);
-        
+
         // Different is_coordinator should not be equal
         assert_ne!(membership1, membership3);
-        
+
         // Different group_id should not be equal
         assert_ne!(membership1, membership4);
     }
@@ -665,20 +671,32 @@ mod tests {
     fn test_group_membership_property_metadata() {
         assert_eq!(GroupMembership::KEY, "group_membership");
         assert_eq!(<GroupMembership as SonosProperty>::SCOPE, Scope::Speaker);
-        assert_eq!(<GroupMembership as SonosProperty>::SERVICE, Service::ZoneGroupTopology);
+        assert_eq!(
+            <GroupMembership as SonosProperty>::SERVICE,
+            Service::ZoneGroupTopology
+        );
     }
 
     #[test]
     fn test_group_mute_property_metadata() {
         assert_eq!(GroupMute::KEY, "group_mute");
         assert_eq!(<GroupMute as SonosProperty>::SCOPE, Scope::Group);
-        assert_eq!(<GroupMute as SonosProperty>::SERVICE, Service::GroupRenderingControl);
+        assert_eq!(
+            <GroupMute as SonosProperty>::SERVICE,
+            Service::GroupRenderingControl
+        );
     }
 
     #[test]
     fn test_group_volume_changeable_property_metadata() {
         assert_eq!(GroupVolumeChangeable::KEY, "group_volume_changeable");
-        assert_eq!(<GroupVolumeChangeable as SonosProperty>::SCOPE, Scope::Group);
-        assert_eq!(<GroupVolumeChangeable as SonosProperty>::SERVICE, Service::GroupRenderingControl);
+        assert_eq!(
+            <GroupVolumeChangeable as SonosProperty>::SCOPE,
+            Scope::Group
+        );
+        assert_eq!(
+            <GroupVolumeChangeable as SonosProperty>::SERVICE,
+            Service::GroupRenderingControl
+        );
     }
 }

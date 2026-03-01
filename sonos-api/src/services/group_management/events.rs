@@ -93,7 +93,7 @@ impl GroupManagementEvent {
     pub fn from_xml(xml: &str) -> Result<Self> {
         let clean_xml = xml_utils::strip_namespaces(xml);
         quick_xml::de::from_str(&clean_xml).map_err(|e| {
-            ApiError::ParseError(format!("Failed to parse GroupManagement XML: {}", e))
+            ApiError::ParseError(format!("Failed to parse GroupManagement XML: {e}"))
         })
     }
 }
@@ -282,8 +282,7 @@ mod tests {
         let result = GroupManagementEvent::from_xml(xml);
         assert!(
             result.is_ok(),
-            "Failed to parse GroupManagement XML: {:?}",
-            result
+            "Failed to parse GroupManagement XML: {result:?}"
         );
 
         let event = result.unwrap();
@@ -316,7 +315,7 @@ mod tests {
         </e:propertyset>"#;
 
         let result = GroupManagementEvent::from_xml(xml);
-        assert!(result.is_ok(), "Failed to parse: {:?}", result);
+        assert!(result.is_ok(), "Failed to parse: {result:?}");
 
         let event = result.unwrap();
         assert_eq!(event.group_coordinator_is_local(), Some(true));
@@ -368,7 +367,6 @@ mod tests {
         assert_eq!(event.reset_volume_after(), None);
     }
 }
-
 
 // =============================================================================
 // PROPERTY-BASED TESTS
@@ -470,7 +468,9 @@ mod property_tests {
         assert_eq!(state.local_group_uuid, Some("RINCON_111:1".to_string()));
         assert_eq!(state.reset_volume_after, Some(true));
         assert_eq!(state.virtual_line_in_group_id, Some("vline123".to_string()));
-        assert_eq!(state.volume_av_transport_uri, Some("x-rincon:RINCON_111".to_string()));
-
+        assert_eq!(
+            state.volume_av_transport_uri,
+            Some("x-rincon:RINCON_111".to_string())
+        );
     }
 }

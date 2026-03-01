@@ -10,20 +10,18 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use callback_server::{CallbackServer, FirewallDetectionCoordinator, FirewallDetectionConfig, FirewallStatus};
+use callback_server::{
+    CallbackServer, FirewallDetectionConfig, FirewallDetectionCoordinator, FirewallStatus,
+};
 use sonos_api::Service;
 
 use crate::config::BrokerConfig;
 use crate::error::{BrokerError, BrokerResult};
-use crate::events::{
-    iterator::EventIterator,
-    processor::EventProcessor,
-    types::EnrichedEvent,
-};
+use crate::events::{iterator::EventIterator, processor::EventProcessor, types::EnrichedEvent};
 use crate::polling::scheduler::PollingScheduler;
 use crate::registry::{RegistrationId, SpeakerServicePair, SpeakerServiceRegistry};
 use crate::subscription::{
-    event_detector::{EventDetector, PollingRequest, PollingAction},
+    event_detector::{EventDetector, PollingAction, PollingRequest},
     manager::SubscriptionManager,
 };
 
@@ -90,7 +88,6 @@ pub struct EventBroker {
     /// Event activity detector
     event_detector: Arc<EventDetector>,
 
-
     /// Polling scheduler
     polling_scheduler: Arc<PollingScheduler>,
 
@@ -153,20 +150,20 @@ impl EventBroker {
         let (upnp_sender, upnp_receiver) = mpsc::unbounded_channel();
 
         // Initialize callback server which creates its own internal EventRouter
-        let callback_server = Self::create_callback_server_with_routing(&config, upnp_sender).await?;
+        let callback_server =
+            Self::create_callback_server_with_routing(&config, upnp_sender).await?;
 
         // Get the event router from the callback server for subscription registration
         let event_router = Arc::clone(callback_server.router());
 
         // Get the actual network IP address so Sonos devices can reach the callback server
-        let local_ip = get_local_ip()
-            .map_err(|e| BrokerError::Configuration(format!("Failed to determine local IP address: {}", e)))?;
+        let local_ip = get_local_ip().map_err(|e| {
+            BrokerError::Configuration(format!("Failed to determine local IP address: {e}"))
+        })?;
         let server_url = format!("http://{}:{}", local_ip, callback_server.port());
 
         // Initialize subscription manager with correct callback URL
-        let subscription_manager = Arc::new(SubscriptionManager::new(
-            server_url.clone(),
-        ));
+        let subscription_manager = Arc::new(SubscriptionManager::new(server_url.clone()));
 
         // Initialize firewall detection coordinator if enabled
         let firewall_coordinator = if config.enable_proactive_firewall_detection {
@@ -209,10 +206,8 @@ impl EventBroker {
         let (polling_request_sender, polling_request_receiver) = mpsc::unbounded_channel();
 
         // Initialize event detector and connect to firewall coordinator + polling channel
-        let mut event_detector = EventDetector::new(
-            config.event_timeout,
-            config.polling_activation_delay,
-        );
+        let mut event_detector =
+            EventDetector::new(config.event_timeout, config.polling_activation_delay);
         if let Some(ref coordinator) = firewall_coordinator {
             event_detector.set_firewall_coordinator(Arc::clone(coordinator));
         }
@@ -289,7 +284,8 @@ impl EventBroker {
 
         // Start polling request processing using pre-created channel
         if let Some(polling_request_receiver) = self.polling_request_receiver.take() {
-            self.start_polling_request_processing(polling_request_receiver).await;
+            self.start_polling_request_processing(polling_request_receiver)
+                .await;
         }
 
         // Start event activity monitoring
@@ -327,7 +323,10 @@ impl EventBroker {
                         );
 
                         if let Err(e) = polling_scheduler
-                            .start_polling(request.registration_id, request.speaker_service_pair.clone())
+                            .start_polling(
+                                request.registration_id,
+                                request.speaker_service_pair.clone(),
+                            )
                             .await
                         {
                             error!(
@@ -401,10 +400,7 @@ impl EventBroker {
                 match subscription_manager.check_renewals().await {
                     Ok(renewed_count) => {
                         if renewed_count > 0 {
-                            debug!(
-                                renewed_count = renewed_count,
-                                "Renewed subscriptions"
-                            );
+                            debug!(renewed_count = renewed_count, "Renewed subscriptions");
                         }
                     }
                     Err(e) => {
@@ -464,7 +460,8 @@ impl EventBroker {
             // so monitoring would just detect a false timeout.
 
             // Start polling immediately
-            if let Err(e) = self.polling_scheduler
+            if let Err(e) = self
+                .polling_scheduler
                 .start_polling(registration_id, pair.clone())
                 .await
             {
@@ -512,7 +509,9 @@ impl EventBroker {
 
                     // Register subscription ID with EventRouter for event routing
                     if let Some(router) = &self.event_router {
-                        router.register(subscription.subscription_id().to_string()).await;
+                        router
+                            .register(subscription.subscription_id().to_string())
+                            .await;
                         debug!(
                             subscription_id = %subscription.subscription_id(),
                             "Registered subscription with EventRouter"
@@ -520,7 +519,9 @@ impl EventBroker {
                     }
 
                     // Register with event detector for timeout monitoring
-                    self.event_detector.register_subscription(registration_id, pair.clone()).await;
+                    self.event_detector
+                        .register_subscription(registration_id, pair.clone())
+                        .await;
 
                     // Evaluate firewall status for immediate polling decision
                     if let Some(request) = self
@@ -531,7 +532,8 @@ impl EventBroker {
                         polling_reason = Some(request.reason.clone());
 
                         // Start polling immediately
-                        if let Err(e) = self.polling_scheduler
+                        if let Err(e) = self
+                            .polling_scheduler
                             .start_polling(registration_id, pair.clone())
                             .await
                         {
@@ -559,7 +561,8 @@ impl EventBroker {
                     polling_reason = Some(PollingReason::SubscriptionFailed);
 
                     // Start polling as fallback
-                    if let Err(e) = self.polling_scheduler
+                    if let Err(e) = self
+                        .polling_scheduler
                         .start_polling(registration_id, pair.clone())
                         .await
                     {
@@ -607,12 +610,13 @@ impl EventBroker {
         debug!(registration_id = %registration_id, "Unregistering subscription");
 
         // Get the pair before removing
-        let pair = self.registry
+        let pair = self
+            .registry
             .get_pair(registration_id)
             .await
-            .ok_or_else(|| BrokerError::Registry(
-                crate::error::RegistryError::NotFound(registration_id)
-            ))?;
+            .ok_or({
+                BrokerError::Registry(crate::error::RegistryError::NotFound(registration_id))
+            })?;
 
         // Stop polling if active
         if let Err(e) = self.polling_scheduler.stop_polling(registration_id).await {
@@ -624,7 +628,11 @@ impl EventBroker {
         }
 
         // Remove subscription
-        if let Err(e) = self.subscription_manager.remove_subscription(registration_id).await {
+        if let Err(e) = self
+            .subscription_manager
+            .remove_subscription(registration_id)
+            .await
+        {
             warn!(
                 registration_id = %registration_id,
                 error = %e,
@@ -633,7 +641,9 @@ impl EventBroker {
         }
 
         // Unregister from event detector
-        self.event_detector.unregister_subscription(registration_id).await;
+        self.event_detector
+            .unregister_subscription(registration_id)
+            .await;
 
         // Remove from registry
         let removed_pair = self.registry.unregister(registration_id).await?;
@@ -651,11 +661,9 @@ impl EventBroker {
     /// Get an event iterator for consuming events
     /// This consumes the broker's event receiver, so it can only be called once
     pub fn event_iterator(&mut self) -> BrokerResult<EventIterator> {
-        let receiver = self.event_receiver
-            .take()
-            .ok_or_else(|| BrokerError::Configuration(
-                "Event iterator already created".to_string()
-            ))?;
+        let receiver = self.event_receiver.take().ok_or_else(|| {
+            BrokerError::Configuration("Event iterator already created".to_string())
+        })?;
 
         let iterator = EventIterator::new(receiver);
 
@@ -698,14 +706,17 @@ impl EventBroker {
     }
 
     /// Manually trigger firewall detection for a specific device
-    pub async fn trigger_firewall_detection(&self, device_ip: IpAddr) -> BrokerResult<FirewallStatus> {
+    pub async fn trigger_firewall_detection(
+        &self,
+        device_ip: IpAddr,
+    ) -> BrokerResult<FirewallStatus> {
         if let Some(coordinator) = &self.firewall_coordinator {
             // Trigger detection by calling on_first_subscription
             // This will start monitoring for the device
             Ok(coordinator.on_first_subscription(device_ip).await)
         } else {
             Err(BrokerError::Configuration(
-                "Firewall detection is disabled".to_string()
+                "Firewall detection is disabled".to_string(),
             ))
         }
     }
@@ -803,9 +814,15 @@ mod tests {
 
     #[test]
     fn test_polling_reason_display() {
-        assert_eq!(PollingReason::FirewallBlocked.to_string(), "firewall blocked");
+        assert_eq!(
+            PollingReason::FirewallBlocked.to_string(),
+            "firewall blocked"
+        );
         assert_eq!(PollingReason::EventTimeout.to_string(), "event timeout");
-        assert_eq!(PollingReason::SubscriptionFailed.to_string(), "subscription failed");
+        assert_eq!(
+            PollingReason::SubscriptionFailed.to_string(),
+            "subscription failed"
+        );
         assert_eq!(PollingReason::NetworkIssues.to_string(), "network issues");
         assert_eq!(PollingReason::ForcedPolling.to_string(), "forced polling");
     }

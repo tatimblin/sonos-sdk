@@ -4,12 +4,11 @@
 //! and provides transparent switching between UPnP events and polling based on
 //! network conditions.
 
-use sonos_stream::{
-    BrokerConfig, EventBroker, EventData, PollingReason,
-    events::types::EventSource
-};
-use sonos_api::Service;
 use callback_server::firewall_detection::FirewallStatus;
+use sonos_api::Service;
+use sonos_stream::{
+    events::types::EventSource, BrokerConfig, EventBroker, EventData, PollingReason,
+};
 use std::net::IpAddr;
 use std::time::Duration;
 
@@ -37,24 +36,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     test_firewall_scenario(
         BrokerConfig::default(),
         device_ip,
-        "Default - proactive firewall detection enabled"
-    ).await?;
+        "Default - proactive firewall detection enabled",
+    )
+    .await?;
 
     // Test 2: Fast polling configuration for poor network conditions
     println!("\n📋 TEST 2: Fast Polling Configuration");
     test_firewall_scenario(
         BrokerConfig::fast_polling(),
         device_ip,
-        "Fast polling - optimized for unstable networks"
-    ).await?;
+        "Fast polling - optimized for unstable networks",
+    )
+    .await?;
 
     // Test 3: Configuration without firewall detection (fallback only)
     println!("\n📋 TEST 3: No Firewall Detection (Fallback Only)");
     test_firewall_scenario(
         BrokerConfig::no_firewall_detection(),
         device_ip,
-        "No firewall detection - relies on event timeout fallback"
-    ).await?;
+        "No firewall detection - relies on event timeout fallback",
+    )
+    .await?;
 
     // Test 4: Force polling mode (firewall simulation for testing)
     println!("\n📋 TEST 4: Force Polling Mode (Firewall Simulation)");
@@ -63,8 +65,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     test_firewall_scenario(
         BrokerConfig::firewall_simulation(),
         device_ip,
-        "Firewall simulation - force polling mode, no UPnP subscriptions"
-    ).await?;
+        "Firewall simulation - force polling mode, no UPnP subscriptions",
+    )
+    .await?;
 
     println!("\n✅ All firewall handling scenarios tested successfully!");
 
@@ -75,13 +78,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn test_firewall_scenario(
     config: BrokerConfig,
     device_ip: IpAddr,
-    description: &str
+    description: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    println!("🔧 Configuration: {}", description);
-    println!("   Firewall Detection: {}", config.enable_proactive_firewall_detection);
+    println!("🔧 Configuration: {description}");
+    println!(
+        "   Firewall Detection: {}",
+        config.enable_proactive_firewall_detection
+    );
     println!("   Force Polling Mode: {}", config.force_polling_mode);
     println!("   Event Timeout: {:?}", config.event_timeout);
-    println!("   Base Polling Interval: {:?}", config.base_polling_interval);
+    println!(
+        "   Base Polling Interval: {:?}",
+        config.base_polling_interval
+    );
 
     // Create broker with the test configuration
     let mut broker = EventBroker::new(config).await?;
@@ -89,13 +98,25 @@ async fn test_firewall_scenario(
     println!("\n📋 Registering services...");
 
     // Register services and analyze the results
-    let transport_reg = broker.register_speaker_service(device_ip, Service::AVTransport).await?;
-    let volume_reg = broker.register_speaker_service(device_ip, Service::RenderingControl).await?;
+    let transport_reg = broker
+        .register_speaker_service(device_ip, Service::AVTransport)
+        .await?;
+    let volume_reg = broker
+        .register_speaker_service(device_ip, Service::RenderingControl)
+        .await?;
 
     // Analyze and report on the registration results
     println!("\n🔍 Registration Analysis:");
-    analyze_registration_result(&transport_reg.firewall_status, transport_reg.polling_reason.as_ref(), "AVTransport");
-    analyze_registration_result(&volume_reg.firewall_status, volume_reg.polling_reason.as_ref(), "RenderingControl");
+    analyze_registration_result(
+        &transport_reg.firewall_status,
+        transport_reg.polling_reason.as_ref(),
+        "AVTransport",
+    );
+    analyze_registration_result(
+        &volume_reg.firewall_status,
+        volume_reg.polling_reason.as_ref(),
+        "RenderingControl",
+    );
 
     // Demonstrate event processing for a short period
     println!("\n🎧 Monitoring events for 10 seconds...");
@@ -106,8 +127,14 @@ async fn test_firewall_scenario(
     println!("\n📊 Final Statistics:");
     println!("   Firewall Status: {:?}", stats.firewall_status);
     println!("   Background Tasks: {}", stats.background_tasks_count);
-    println!("   Registry: {} active registrations", stats.registry_stats.total_registrations);
-    println!("   Polling: {} active tasks", stats.polling_stats.total_active_tasks);
+    println!(
+        "   Registry: {} active registrations",
+        stats.registry_stats.total_registrations
+    );
+    println!(
+        "   Polling: {} active tasks",
+        stats.polling_stats.total_active_tasks
+    );
 
     // Shutdown cleanly
     broker.shutdown().await?;
@@ -120,9 +147,9 @@ async fn test_firewall_scenario(
 fn analyze_registration_result(
     firewall_status: &FirewallStatus,
     polling_reason: Option<&PollingReason>,
-    service_name: &str
+    service_name: &str,
 ) {
-    println!("  {} Service Analysis:", service_name);
+    println!("  {service_name} Service Analysis:");
 
     match firewall_status {
         FirewallStatus::Accessible => {
@@ -172,7 +199,9 @@ fn analyze_registration_result(
                 println!("    💡 Explanation: Uncertain network conditions, fell back to polling");
             } else {
                 println!("    📡 Mode: UPnP Events (with close monitoring)");
-                println!("    💡 Explanation: Attempting events but ready to switch to polling quickly");
+                println!(
+                    "    💡 Explanation: Attempting events but ready to switch to polling quickly"
+                );
             }
         }
 
@@ -187,7 +216,7 @@ fn analyze_registration_result(
 /// Monitor events for a specified duration
 async fn monitor_events(
     broker: &mut EventBroker,
-    duration: Duration
+    duration: Duration,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut events = broker.event_iterator()?;
     let start_time = std::time::Instant::now();
@@ -206,46 +235,71 @@ async fn monitor_events(
                 match &event.event_source {
                     EventSource::UPnPNotification { .. } => {
                         upnp_events += 1;
-                        println!("    📡 UPnP Event #{}: {} {:?}", event_count, event.speaker_ip, event.service);
+                        println!(
+                            "    📡 UPnP Event #{}: {} {:?}",
+                            event_count, event.speaker_ip, event.service
+                        );
                     }
                     EventSource::PollingDetection { poll_interval } => {
                         polling_events += 1;
-                        println!("    🔄 Polling Event #{}: {} {:?} ({}s interval)",
-                                 event_count, event.speaker_ip, event.service, poll_interval.as_secs());
+                        println!(
+                            "    🔄 Polling Event #{}: {} {:?} ({}s interval)",
+                            event_count,
+                            event.speaker_ip,
+                            event.service,
+                            poll_interval.as_secs()
+                        );
                     }
                 }
 
                 // Show event content
                 match &event.event_data {
                     EventData::AVTransport(transport_event) => {
-                        if transport_event.transport_state.is_some() || transport_event.current_track_uri.is_some() {
-                            println!("       🎵 Transport event: state={:?}, track={:?}",
-                                     transport_event.transport_state, transport_event.current_track_uri);
+                        if transport_event.transport_state.is_some()
+                            || transport_event.current_track_uri.is_some()
+                        {
+                            println!(
+                                "       🎵 Transport event: state={:?}, track={:?}",
+                                transport_event.transport_state, transport_event.current_track_uri
+                            );
                         }
                     }
                     EventData::RenderingControl(volume_event) => {
-                        if volume_event.master_volume.is_some() || volume_event.master_mute.is_some() {
-                            println!("       🔊 Volume event: level={:?}, mute={:?}",
-                                     volume_event.master_volume, volume_event.master_mute);
+                        if volume_event.master_volume.is_some()
+                            || volume_event.master_mute.is_some()
+                        {
+                            println!(
+                                "       🔊 Volume event: level={:?}, mute={:?}",
+                                volume_event.master_volume, volume_event.master_mute
+                            );
                         }
                     }
                     EventData::ZoneGroupTopology(topology) => {
-                        println!("       🏠 Topology event: {} groups, {} total speakers",
-                                 topology.zone_groups.len(),
-                                 topology.zone_groups.iter()
-                                     .map(|g| g.members.len() + g.members.iter().map(|m| m.satellites.len()).sum::<usize>())
-                                     .sum::<usize>());
+                        println!(
+                            "       🏠 Topology event: {} groups, {} total speakers",
+                            topology.zone_groups.len(),
+                            topology
+                                .zone_groups
+                                .iter()
+                                .map(|g| g.members.len()
+                                    + g.members.iter().map(|m| m.satellites.len()).sum::<usize>())
+                                .sum::<usize>()
+                        );
                     }
                     EventData::DeviceProperties(_) => {
                         println!("       ⚙️ Device properties event received");
                     }
                     EventData::GroupManagement(gm_event) => {
-                        println!("       🔗 Group management: coordinator_local={:?}, group_uuid={:?}",
-                                 gm_event.group_coordinator_is_local, gm_event.local_group_uuid);
+                        println!(
+                            "       🔗 Group management: coordinator_local={:?}, group_uuid={:?}",
+                            gm_event.group_coordinator_is_local, gm_event.local_group_uuid
+                        );
                     }
                     EventData::GroupRenderingControl(grc_event) => {
-                        println!("       🔊 Group rendering control: volume={:?}, mute={:?}",
-                                 grc_event.group_volume, grc_event.group_mute);
+                        println!(
+                            "       🔊 Group rendering control: volume={:?}, mute={:?}",
+                            grc_event.group_volume, grc_event.group_mute
+                        );
                     }
                 }
             }
@@ -268,9 +322,17 @@ async fn monitor_events(
         println!("       • Device not accessible or configured");
     } else {
         println!("\n    📈 Event Summary:");
-        println!("       Total Events: {}", event_count);
-        println!("       UPnP Events: {} ({:.1}%)", upnp_events, (upnp_events as f64 / event_count as f64) * 100.0);
-        println!("       Polling Events: {} ({:.1}%)", polling_events, (polling_events as f64 / event_count as f64) * 100.0);
+        println!("       Total Events: {event_count}");
+        println!(
+            "       UPnP Events: {} ({:.1}%)",
+            upnp_events,
+            (upnp_events as f64 / event_count as f64) * 100.0
+        );
+        println!(
+            "       Polling Events: {} ({:.1}%)",
+            polling_events,
+            (polling_events as f64 / event_count as f64) * 100.0
+        );
 
         if upnp_events > 0 && polling_events > 0 {
             println!("    🔄 Observed transparent switching between UPnP events and polling!");
@@ -294,4 +356,3 @@ fn format_polling_reason(reason: &PollingReason) -> String {
         PollingReason::ForcedPolling => "forced polling".to_string(),
     }
 }
-

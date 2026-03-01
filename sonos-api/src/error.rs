@@ -78,20 +78,26 @@ impl From<SoapError> for ApiError {
 impl From<crate::operation::ValidationError> for ApiError {
     fn from(validation_error: crate::operation::ValidationError) -> Self {
         match validation_error {
-            crate::operation::ValidationError::InvalidValue { parameter, value, reason } => {
-                ApiError::InvalidParameter(format!("Invalid value '{}' for parameter '{}': {}", value, parameter, reason))
-            }
-            crate::operation::ValidationError::RangeError { parameter, value, min, max } => {
-                ApiError::InvalidParameter(format!(
-                    "Parameter '{}' value {} is out of range [{}, {}]",
-                    parameter, value, min, max
-                ))
-            }
+            crate::operation::ValidationError::InvalidValue {
+                parameter,
+                value,
+                reason,
+            } => ApiError::InvalidParameter(format!(
+                "Invalid value '{value}' for parameter '{parameter}': {reason}"
+            )),
+            crate::operation::ValidationError::RangeError {
+                parameter,
+                value,
+                min,
+                max,
+            } => ApiError::InvalidParameter(format!(
+                "Parameter '{parameter}' value {value} is out of range [{min}, {max}]"
+            )),
             crate::operation::ValidationError::Custom { parameter, message } => {
-                ApiError::InvalidParameter(format!("Parameter '{}': {}", parameter, message))
+                ApiError::InvalidParameter(format!("Parameter '{parameter}': {message}"))
             }
             crate::operation::ValidationError::MissingParameter { parameter } => {
-                ApiError::InvalidParameter(format!("Required parameter '{}' is missing", parameter))
+                ApiError::InvalidParameter(format!("Required parameter '{parameter}' is missing"))
             }
         }
     }
@@ -105,7 +111,7 @@ mod tests {
     fn test_subscription_expired() {
         let error = ApiError::subscription_expired();
         assert!(matches!(error, ApiError::SubscriptionError(_)));
-        let error_str = format!("{}", error);
+        let error_str = format!("{error}");
         assert!(error_str.contains("expired"));
     }
 
@@ -127,12 +133,15 @@ mod tests {
     #[test]
     fn test_error_display() {
         let network_err = ApiError::NetworkError("connection failed".to_string());
-        assert_eq!(format!("{}", network_err), "Network error: connection failed");
+        assert_eq!(
+            format!("{network_err}"),
+            "Network error: connection failed"
+        );
 
         let parse_err = ApiError::ParseError("invalid XML".to_string());
-        assert_eq!(format!("{}", parse_err), "Parse error: invalid XML");
+        assert_eq!(format!("{parse_err}"), "Parse error: invalid XML");
 
         let soap_fault = ApiError::SoapFault(500);
-        assert_eq!(format!("{}", soap_fault), "SOAP fault: error code 500");
+        assert_eq!(format!("{soap_fault}"), "SOAP fault: error code 500");
     }
 }

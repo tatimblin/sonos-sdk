@@ -19,7 +19,7 @@ impl DeviceFixture {
         path.push(filename);
 
         let xml_content = fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("Failed to load fixture {}: {}", filename, e));
+            .unwrap_or_else(|e| panic!("Failed to load fixture {filename}: {e}"));
 
         Self {
             name: filename.to_string(),

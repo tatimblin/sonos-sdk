@@ -61,13 +61,13 @@ pub mod subscription;
 pub use broker::{EventBroker, PollingReason, RegistrationResult};
 pub use config::BrokerConfig;
 pub use error::{BrokerError, PollingError, RegistryError, SubscriptionError};
-pub use events::types::{EnrichedEvent, EventData, EventSource};
 pub use events::iterator::EventIterator;
+pub use events::types::{EnrichedEvent, EventData, EventSource};
 pub use registry::{RegistrationId, SpeakerServicePair};
 
 // Re-export types from dependencies that users commonly need
-pub use sonos_api::Service;
 pub use callback_server::firewall_detection::FirewallStatus;
+pub use sonos_api::Service;
 
 #[cfg(test)]
 mod tests {

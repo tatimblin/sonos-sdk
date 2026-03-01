@@ -7,12 +7,15 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, trace, warn};
 
-use callback_server::{router::{EventRouter, NotificationPayload}, FirewallDetectionCoordinator};
-use sonos_api::events::{EventProcessor as ApiEventProcessor};
+use callback_server::{
+    router::{EventRouter, NotificationPayload},
+    FirewallDetectionCoordinator,
+};
+use sonos_api::events::EventProcessor as ApiEventProcessor;
 
 use crate::error::{EventProcessingError, EventProcessingResult};
-use crate::subscription::manager::SubscriptionManager;
 use crate::events::types::{EnrichedEvent, EventData, EventSource};
+use crate::subscription::manager::SubscriptionManager;
 
 /// Simplified event processor that delegates to sonos-api event framework
 pub struct EventProcessor {
@@ -87,17 +90,19 @@ impl EventProcessor {
         }
 
         // Parse the event using sonos-api event processor
-        let api_enriched_event = self.api_processor
+        let api_enriched_event = self
+            .api_processor
             .process_upnp_event(
                 pair.speaker_ip, // speaker_ip is already an IpAddr
                 pair.service,
                 payload.subscription_id.clone(),
                 &payload.event_xml,
             )
-            .map_err(|e| EventProcessingError::Parsing(format!("API processing failed: {}", e)))?;
+            .map_err(|e| EventProcessingError::Parsing(format!("API processing failed: {e}")))?;
 
         // Convert from sonos-api enriched event to sonos-stream compatible format
-        let event_data = self.convert_api_event_data(&pair.service, api_enriched_event.event_data)?;
+        let event_data =
+            self.convert_api_event_data(&pair.service, api_enriched_event.event_data)?;
 
         // Create enriched event compatible with existing sonos-stream code
         let enriched_event = EnrichedEvent::new(
@@ -199,13 +204,21 @@ impl EventProcessor {
             sonos_api::Service::AVTransport => {
                 let event = api_event_data
                     .downcast::<sonos_api::services::av_transport::AVTransportEvent>()
-                    .map_err(|_| EventProcessingError::Parsing("Failed to downcast AVTransport event".to_string()))?;
+                    .map_err(|_| {
+                        EventProcessingError::Parsing(
+                            "Failed to downcast AVTransport event".to_string(),
+                        )
+                    })?;
                 Ok(EventData::AVTransport(event.into_state()))
             }
             sonos_api::Service::RenderingControl => {
                 let event = api_event_data
                     .downcast::<sonos_api::services::rendering_control::RenderingControlEvent>()
-                    .map_err(|_| EventProcessingError::Parsing("Failed to downcast RenderingControl event".to_string()))?;
+                    .map_err(|_| {
+                        EventProcessingError::Parsing(
+                            "Failed to downcast RenderingControl event".to_string(),
+                        )
+                    })?;
                 Ok(EventData::RenderingControl(event.into_state()))
             }
             sonos_api::Service::GroupRenderingControl => {
@@ -217,13 +230,21 @@ impl EventProcessor {
             sonos_api::Service::ZoneGroupTopology => {
                 let event = api_event_data
                     .downcast::<sonos_api::services::zone_group_topology::ZoneGroupTopologyEvent>()
-                    .map_err(|_| EventProcessingError::Parsing("Failed to downcast ZoneGroupTopology event".to_string()))?;
+                    .map_err(|_| {
+                        EventProcessingError::Parsing(
+                            "Failed to downcast ZoneGroupTopology event".to_string(),
+                        )
+                    })?;
                 Ok(EventData::ZoneGroupTopology(event.into_state()))
             }
             sonos_api::Service::GroupManagement => {
                 let event = api_event_data
                     .downcast::<sonos_api::services::group_management::GroupManagementEvent>()
-                    .map_err(|_| EventProcessingError::Parsing("Failed to downcast GroupManagement event".to_string()))?;
+                    .map_err(|_| {
+                        EventProcessingError::Parsing(
+                            "Failed to downcast GroupManagement event".to_string(),
+                        )
+                    })?;
                 Ok(EventData::GroupManagement(event.into_state()))
             }
         }
@@ -420,7 +441,10 @@ impl std::fmt::Display for EventProcessorStats {
 /// Helper function to create an EventRouter integrated with EventProcessor
 pub async fn create_integrated_event_router(
     _event_processor: Arc<EventProcessor>,
-) -> (Arc<EventRouter>, mpsc::UnboundedReceiver<NotificationPayload>) {
+) -> (
+    Arc<EventRouter>,
+    mpsc::UnboundedReceiver<NotificationPayload>,
+) {
     let (upnp_sender, upnp_receiver) = mpsc::unbounded_channel();
     let router = Arc::new(EventRouter::new(upnp_sender));
 
@@ -434,9 +458,8 @@ mod tests {
     #[test]
     fn test_event_processor_creation() {
         let (event_sender, _event_receiver) = mpsc::unbounded_channel();
-        let subscription_manager = Arc::new(SubscriptionManager::new(
-            "http://callback.url".to_string(),
-        ));
+        let subscription_manager =
+            Arc::new(SubscriptionManager::new("http://callback.url".to_string()));
 
         let processor = EventProcessor::new(subscription_manager, event_sender, None);
 
@@ -452,9 +475,8 @@ mod tests {
     #[tokio::test]
     async fn test_event_processor_stats() {
         let (event_sender, _event_receiver) = mpsc::unbounded_channel();
-        let subscription_manager = Arc::new(SubscriptionManager::new(
-            "http://callback.url".to_string(),
-        ));
+        let subscription_manager =
+            Arc::new(SubscriptionManager::new("http://callback.url".to_string()));
 
         let processor = EventProcessor::new(subscription_manager, event_sender, None);
 

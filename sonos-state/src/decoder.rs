@@ -5,16 +5,16 @@
 
 use sonos_api::Service;
 use sonos_stream::events::{
-    AVTransportState, EnrichedEvent, EventData, GroupRenderingControlState,
-    RenderingControlState, ZoneGroupTopologyState,
+    AVTransportState, EnrichedEvent, EventData, GroupRenderingControlState, RenderingControlState,
+    ZoneGroupTopologyState,
 };
 
 use crate::model::{GroupId, SpeakerId};
-use crate::state::StateStore;
 use crate::property::{
     Bass, CurrentTrack, GroupInfo, GroupMembership, GroupMute, GroupVolume, GroupVolumeChangeable,
     Loudness, Mute, PlaybackState, Position, Treble, Volume,
 };
+use crate::state::StateStore;
 
 /// Decoded changes from a single event
 #[derive(Debug)]
@@ -153,7 +153,10 @@ pub fn decode_event(event: &EnrichedEvent, speaker_id: SpeakerId) -> DecodedChan
         EventData::GroupRenderingControl(grc) => decode_group_rendering_control(grc),
     };
 
-    DecodedChanges { speaker_id, changes }
+    DecodedChanges {
+        speaker_id,
+        changes,
+    }
 }
 
 /// Decode RenderingControl event data
@@ -265,7 +268,9 @@ fn decode_group_rendering_control(event: &GroupRenderingControlState) -> Vec<Pro
     }
 
     if let Some(changeable) = event.group_volume_changeable {
-        changes.push(PropertyChange::GroupVolumeChangeable(GroupVolumeChangeable(changeable)));
+        changes.push(PropertyChange::GroupVolumeChangeable(
+            GroupVolumeChangeable(changeable),
+        ));
     }
 
     changes
@@ -298,11 +303,8 @@ pub fn decode_topology_event(event: &ZoneGroupTopologyState) -> TopologyChanges 
             .collect();
 
         // Create GroupInfo for this zone group
-        let group_info = GroupInfo::new(
-            group_id.clone(),
-            coordinator_id.clone(),
-            member_ids.clone(),
-        );
+        let group_info =
+            GroupInfo::new(group_id.clone(), coordinator_id.clone(), member_ids.clone());
         groups.push(group_info);
 
         // Create GroupMembership and extract boot_seq for each member
@@ -315,7 +317,11 @@ pub fn decode_topology_event(event: &ZoneGroupTopologyState) -> TopologyChanges 
         }
     }
 
-    TopologyChanges { groups, memberships, boot_seqs }
+    TopologyChanges {
+        groups,
+        memberships,
+        boot_seqs,
+    }
 }
 
 /// Parse duration string (HH:MM:SS or H:MM:SS) to milliseconds
@@ -338,7 +344,10 @@ fn parse_duration_ms(duration: Option<&str>) -> Option<u64> {
     // Handle potential milliseconds in seconds part (HH:MM:SS.mmm)
     let seconds_parts: Vec<&str> = parts[2].split('.').collect();
     let seconds: u64 = seconds_parts[0].parse().ok()?;
-    let millis: u64 = seconds_parts.get(1).and_then(|m| m.parse().ok()).unwrap_or(0);
+    let millis: u64 = seconds_parts
+        .get(1)
+        .and_then(|m| m.parse().ok())
+        .unwrap_or(0);
 
     Some((hours * 3600 + minutes * 60 + seconds) * 1000 + millis)
 }
@@ -346,7 +355,12 @@ fn parse_duration_ms(duration: Option<&str>) -> Option<u64> {
 /// Parse DIDL-Lite track metadata XML
 pub fn parse_track_metadata(
     metadata: Option<&str>,
-) -> (Option<String>, Option<String>, Option<String>, Option<String>) {
+) -> (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+) {
     let xml = match metadata {
         Some(m) if !m.is_empty() && m != "NOT_IMPLEMENTED" => m,
         _ => return (None, None, None, None),
@@ -364,8 +378,8 @@ pub fn parse_track_metadata(
 
 /// Extract content from an XML element (simple regex-free implementation)
 pub fn extract_xml_element(xml: &str, element: &str) -> Option<String> {
-    let start_tag = format!("<{}>", element);
-    let end_tag = format!("</{}>", element);
+    let start_tag = format!("<{element}>");
+    let end_tag = format!("</{element}>");
 
     let start_idx = xml.find(&start_tag)? + start_tag.len();
     let end_idx = xml[start_idx..].find(&end_tag)? + start_idx;
@@ -568,8 +582,8 @@ mod tests {
 
     #[test]
     fn test_property_change_service() {
-        use crate::property::SonosProperty;
         use crate::model::GroupId;
+        use crate::property::SonosProperty;
 
         let vol_change = PropertyChange::Volume(Volume(50));
         assert_eq!(vol_change.service(), Volume::SERVICE);
@@ -577,8 +591,10 @@ mod tests {
         let ps_change = PropertyChange::PlaybackState(PlaybackState::Playing);
         assert_eq!(ps_change.service(), PlaybackState::SERVICE);
 
-        let gm_change =
-            PropertyChange::GroupMembership(GroupMembership::new(GroupId::new("RINCON_test:1"), true));
+        let gm_change = PropertyChange::GroupMembership(GroupMembership::new(
+            GroupId::new("RINCON_test:1"),
+            true,
+        ));
         assert_eq!(gm_change.service(), GroupMembership::SERVICE);
     }
 
@@ -593,10 +609,14 @@ mod tests {
         make_member_with_boot_seq(uuid, zone_name, 0)
     }
 
-    fn make_member_with_boot_seq(uuid: &str, zone_name: &str, boot_seq: u32) -> ZoneGroupMemberInfo {
+    fn make_member_with_boot_seq(
+        uuid: &str,
+        zone_name: &str,
+        boot_seq: u32,
+    ) -> ZoneGroupMemberInfo {
         ZoneGroupMemberInfo {
             uuid: uuid.to_string(),
-            location: format!("http://192.168.1.100:1400/xml/device_description.xml"),
+            location: "http://192.168.1.100:1400/xml/device_description.xml".to_string(),
             zone_name: zone_name.to_string(),
             software_version: "79.1-56030".to_string(),
             boot_seq,
@@ -669,20 +689,26 @@ mod tests {
         assert_eq!(result.memberships.len(), 3);
 
         // Check coordinator membership
-        let coordinator_membership = result.memberships.iter()
+        let coordinator_membership = result
+            .memberships
+            .iter()
             .find(|(sid, _)| sid.as_str() == "RINCON_111111111111")
             .map(|(_, m)| m);
         assert!(coordinator_membership.is_some());
         assert!(coordinator_membership.unwrap().is_coordinator);
 
         // Check non-coordinator memberships
-        let kitchen_membership = result.memberships.iter()
+        let kitchen_membership = result
+            .memberships
+            .iter()
             .find(|(sid, _)| sid.as_str() == "RINCON_222222222222")
             .map(|(_, m)| m);
         assert!(kitchen_membership.is_some());
         assert!(!kitchen_membership.unwrap().is_coordinator);
 
-        let bedroom_membership = result.memberships.iter()
+        let bedroom_membership = result
+            .memberships
+            .iter()
             .find(|(sid, _)| sid.as_str() == "RINCON_333333333333")
             .map(|(_, m)| m);
         assert!(bedroom_membership.is_some());
@@ -731,21 +757,30 @@ mod tests {
         assert_eq!(result.memberships.len(), 3);
 
         // Verify each speaker has correct group_id
-        let living_room = result.memberships.iter()
+        let living_room = result
+            .memberships
+            .iter()
             .find(|(sid, _)| sid.as_str() == "RINCON_111111111111")
-            .map(|(_, m)| m).unwrap();
+            .map(|(_, m)| m)
+            .unwrap();
         assert_eq!(living_room.group_id.as_str(), "RINCON_111111111111:0");
         assert!(living_room.is_coordinator);
 
-        let kitchen = result.memberships.iter()
+        let kitchen = result
+            .memberships
+            .iter()
             .find(|(sid, _)| sid.as_str() == "RINCON_222222222222")
-            .map(|(_, m)| m).unwrap();
+            .map(|(_, m)| m)
+            .unwrap();
         assert_eq!(kitchen.group_id.as_str(), "RINCON_111111111111:0");
         assert!(!kitchen.is_coordinator);
 
-        let bedroom = result.memberships.iter()
+        let bedroom = result
+            .memberships
+            .iter()
             .find(|(sid, _)| sid.as_str() == "RINCON_333333333333")
-            .map(|(_, m)| m).unwrap();
+            .map(|(_, m)| m)
+            .unwrap();
         assert_eq!(bedroom.group_id.as_str(), "RINCON_333333333333:0");
         assert!(bedroom.is_coordinator);
     }
@@ -828,15 +863,12 @@ mod property_tests {
 
     /// Strategy for generating valid RINCON-style speaker UUIDs
     fn speaker_uuid_strategy() -> impl Strategy<Value = String> {
-        "[A-F0-9]{12}".prop_map(|s| format!("RINCON_{}", s))
+        "[A-F0-9]{12}".prop_map(|s| format!("RINCON_{s}"))
     }
 
     /// Strategy for generating a zone group member
     fn zone_group_member_strategy() -> impl Strategy<Value = ZoneGroupMemberInfo> {
-        (
-            speaker_uuid_strategy(),
-            "[A-Za-z ]{3,15}",
-        ).prop_map(|(uuid, zone_name)| {
+        (speaker_uuid_strategy(), "[A-Za-z ]{3,15}").prop_map(|(uuid, zone_name)| {
             ZoneGroupMemberInfo {
                 uuid,
                 location: "http://192.168.1.100:1400/xml/device_description.xml".to_string(),
@@ -857,28 +889,26 @@ mod property_tests {
 
     /// Strategy for generating a zone group with 1-5 members
     fn zone_group_strategy() -> impl Strategy<Value = ZoneGroupInfo> {
-        proptest::collection::vec(zone_group_member_strategy(), 1..=5)
-            .prop_flat_map(|members| {
-                // First member is always the coordinator
-                let coordinator = members[0].uuid.clone();
-                let group_id = format!("{}:0", coordinator);
-                Just(ZoneGroupInfo {
-                    coordinator,
-                    id: group_id,
-                    members,
-                })
+        proptest::collection::vec(zone_group_member_strategy(), 1..=5).prop_flat_map(|members| {
+            // First member is always the coordinator
+            let coordinator = members[0].uuid.clone();
+            let group_id = format!("{coordinator}:0");
+            Just(ZoneGroupInfo {
+                coordinator,
+                id: group_id,
+                members,
             })
+        })
     }
 
     /// Strategy for generating a topology event with 1-3 groups
     fn topology_event_strategy() -> impl Strategy<Value = ZoneGroupTopologyState> {
-        proptest::collection::vec(zone_group_strategy(), 1..=3)
-            .prop_map(|zone_groups| {
-                ZoneGroupTopologyState {
-                    zone_groups,
-                    vanished_devices: vec![],
-                }
-            })
+        proptest::collection::vec(zone_group_strategy(), 1..=3).prop_map(|zone_groups| {
+            ZoneGroupTopologyState {
+                zone_groups,
+                vanished_devices: vec![],
+            }
+        })
     }
 
     proptest! {

@@ -95,6 +95,7 @@ impl PollingTask {
     }
 
     /// Main polling loop
+    #[allow(clippy::too_many_arguments)]
     async fn polling_loop(
         registration_id: RegistrationId,
         pair: SpeakerServicePair,
@@ -309,8 +310,7 @@ impl PollingTask {
         match self.task_handle.await {
             Ok(()) => Ok(()),
             Err(e) => Err(PollingError::TaskSpawn(format!(
-                "Failed to await task completion: {}",
-                e
+                "Failed to await task completion: {e}"
             ))),
         }
     }
@@ -561,7 +561,10 @@ mod tests {
         );
 
         // Start polling
-        scheduler.start_polling(registration_id, pair.clone()).await.unwrap();
+        scheduler
+            .start_polling(registration_id, pair.clone())
+            .await
+            .unwrap();
         assert!(scheduler.is_polling(registration_id).await);
 
         // Stop polling

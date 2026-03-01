@@ -8,8 +8,8 @@
 //! `poll()` calls in `tokio::task::spawn_blocking` to avoid starving the async runtime.
 
 use async_trait::async_trait;
+use sonos_api::{Service, SonosClient};
 use std::collections::HashMap;
-use sonos_api::{SonosClient, Service};
 
 use crate::error::{PollingError, PollingResult};
 use crate::events::types::EventData;
@@ -21,7 +21,11 @@ use crate::registry::SpeakerServicePair;
 #[async_trait]
 pub trait ServicePoller: Send + Sync {
     /// Poll the device state and return a JSON snapshot for comparison.
-    async fn poll_state(&self, client: &SonosClient, pair: &SpeakerServicePair) -> PollingResult<String>;
+    async fn poll_state(
+        &self,
+        client: &SonosClient,
+        pair: &SpeakerServicePair,
+    ) -> PollingResult<String>;
 
     /// Convert a JSON state snapshot back into an EventData variant.
     fn state_to_event_data(&self, json_state: &str) -> PollingResult<EventData>;
@@ -37,7 +41,11 @@ pub struct AVTransportPoller;
 
 #[async_trait]
 impl ServicePoller for AVTransportPoller {
-    async fn poll_state(&self, client: &SonosClient, pair: &SpeakerServicePair) -> PollingResult<String> {
+    async fn poll_state(
+        &self,
+        client: &SonosClient,
+        pair: &SpeakerServicePair,
+    ) -> PollingResult<String> {
         let client = client.clone();
         let ip = pair.speaker_ip.to_string();
 
@@ -45,17 +53,20 @@ impl ServicePoller for AVTransportPoller {
             sonos_api::services::av_transport::state::poll(&client, &ip)
         })
         .await
-        .map_err(|e| PollingError::Network(format!("Polling task panicked: {}", e)))?
+        .map_err(|e| PollingError::Network(format!("Polling task panicked: {e}")))?
         .map_err(|e| PollingError::Network(e.to_string()))?;
 
         serde_json::to_string(&state)
-            .map_err(|e| PollingError::StateParsing(format!("Failed to serialize state: {}", e)))
+            .map_err(|e| PollingError::StateParsing(format!("Failed to serialize state: {e}")))
     }
 
     fn state_to_event_data(&self, json_state: &str) -> PollingResult<EventData> {
         let state: sonos_api::services::av_transport::state::AVTransportState =
-            serde_json::from_str(json_state)
-                .map_err(|e| PollingError::StateParsing(format!("Failed to deserialize AVTransport state: {}", e)))?;
+            serde_json::from_str(json_state).map_err(|e| {
+                PollingError::StateParsing(format!(
+                    "Failed to deserialize AVTransport state: {e}"
+                ))
+            })?;
         Ok(EventData::AVTransport(state))
     }
 
@@ -71,7 +82,11 @@ pub struct RenderingControlPoller;
 
 #[async_trait]
 impl ServicePoller for RenderingControlPoller {
-    async fn poll_state(&self, client: &SonosClient, pair: &SpeakerServicePair) -> PollingResult<String> {
+    async fn poll_state(
+        &self,
+        client: &SonosClient,
+        pair: &SpeakerServicePair,
+    ) -> PollingResult<String> {
         let client = client.clone();
         let ip = pair.speaker_ip.to_string();
 
@@ -79,17 +94,20 @@ impl ServicePoller for RenderingControlPoller {
             sonos_api::services::rendering_control::state::poll(&client, &ip)
         })
         .await
-        .map_err(|e| PollingError::Network(format!("Polling task panicked: {}", e)))?
+        .map_err(|e| PollingError::Network(format!("Polling task panicked: {e}")))?
         .map_err(|e| PollingError::Network(e.to_string()))?;
 
         serde_json::to_string(&state)
-            .map_err(|e| PollingError::StateParsing(format!("Failed to serialize state: {}", e)))
+            .map_err(|e| PollingError::StateParsing(format!("Failed to serialize state: {e}")))
     }
 
     fn state_to_event_data(&self, json_state: &str) -> PollingResult<EventData> {
         let state: sonos_api::services::rendering_control::state::RenderingControlState =
-            serde_json::from_str(json_state)
-                .map_err(|e| PollingError::StateParsing(format!("Failed to deserialize RenderingControl state: {}", e)))?;
+            serde_json::from_str(json_state).map_err(|e| {
+                PollingError::StateParsing(format!(
+                    "Failed to deserialize RenderingControl state: {e}"
+                ))
+            })?;
         Ok(EventData::RenderingControl(state))
     }
 
@@ -105,7 +123,11 @@ pub struct ZoneGroupTopologyPoller;
 
 #[async_trait]
 impl ServicePoller for ZoneGroupTopologyPoller {
-    async fn poll_state(&self, client: &SonosClient, pair: &SpeakerServicePair) -> PollingResult<String> {
+    async fn poll_state(
+        &self,
+        client: &SonosClient,
+        pair: &SpeakerServicePair,
+    ) -> PollingResult<String> {
         let client = client.clone();
         let ip = pair.speaker_ip.to_string();
 
@@ -113,17 +135,20 @@ impl ServicePoller for ZoneGroupTopologyPoller {
             sonos_api::services::zone_group_topology::state::poll(&client, &ip)
         })
         .await
-        .map_err(|e| PollingError::Network(format!("Polling task panicked: {}", e)))?
+        .map_err(|e| PollingError::Network(format!("Polling task panicked: {e}")))?
         .map_err(|e| PollingError::Network(e.to_string()))?;
 
         serde_json::to_string(&state)
-            .map_err(|e| PollingError::StateParsing(format!("Failed to serialize state: {}", e)))
+            .map_err(|e| PollingError::StateParsing(format!("Failed to serialize state: {e}")))
     }
 
     fn state_to_event_data(&self, json_state: &str) -> PollingResult<EventData> {
         let state: sonos_api::services::zone_group_topology::state::ZoneGroupTopologyState =
-            serde_json::from_str(json_state)
-                .map_err(|e| PollingError::StateParsing(format!("Failed to deserialize ZoneGroupTopology state: {}", e)))?;
+            serde_json::from_str(json_state).map_err(|e| {
+                PollingError::StateParsing(format!(
+                    "Failed to deserialize ZoneGroupTopology state: {e}"
+                ))
+            })?;
         Ok(EventData::ZoneGroupTopology(state))
     }
 
@@ -146,15 +171,22 @@ pub struct GroupManagementPoller;
 
 #[async_trait]
 impl ServicePoller for GroupManagementPoller {
-    async fn poll_state(&self, _client: &SonosClient, _pair: &SpeakerServicePair) -> PollingResult<String> {
+    async fn poll_state(
+        &self,
+        _client: &SonosClient,
+        _pair: &SpeakerServicePair,
+    ) -> PollingResult<String> {
         // No Get operations — return stable empty state
         Ok("{}".to_string())
     }
 
     fn state_to_event_data(&self, json_state: &str) -> PollingResult<EventData> {
         let state: sonos_api::services::group_management::state::GroupManagementState =
-            serde_json::from_str(json_state)
-                .map_err(|e| PollingError::StateParsing(format!("Failed to deserialize GroupManagement state: {}", e)))?;
+            serde_json::from_str(json_state).map_err(|e| {
+                PollingError::StateParsing(format!(
+                    "Failed to deserialize GroupManagement state: {e}"
+                ))
+            })?;
         Ok(EventData::GroupManagement(state))
     }
 
@@ -170,7 +202,11 @@ pub struct GroupRenderingControlPoller;
 
 #[async_trait]
 impl ServicePoller for GroupRenderingControlPoller {
-    async fn poll_state(&self, client: &SonosClient, pair: &SpeakerServicePair) -> PollingResult<String> {
+    async fn poll_state(
+        &self,
+        client: &SonosClient,
+        pair: &SpeakerServicePair,
+    ) -> PollingResult<String> {
         let client = client.clone();
         let ip = pair.speaker_ip.to_string();
 
@@ -178,17 +214,20 @@ impl ServicePoller for GroupRenderingControlPoller {
             sonos_api::services::group_rendering_control::state::poll(&client, &ip)
         })
         .await
-        .map_err(|e| PollingError::Network(format!("Polling task panicked: {}", e)))?
+        .map_err(|e| PollingError::Network(format!("Polling task panicked: {e}")))?
         .map_err(|e| PollingError::Network(e.to_string()))?;
 
         serde_json::to_string(&state)
-            .map_err(|e| PollingError::StateParsing(format!("Failed to serialize state: {}", e)))
+            .map_err(|e| PollingError::StateParsing(format!("Failed to serialize state: {e}")))
     }
 
     fn state_to_event_data(&self, json_state: &str) -> PollingResult<EventData> {
         let state: sonos_api::services::group_rendering_control::state::GroupRenderingControlState =
-            serde_json::from_str(json_state)
-                .map_err(|e| PollingError::StateParsing(format!("Failed to deserialize GroupRenderingControl state: {}", e)))?;
+            serde_json::from_str(json_state).map_err(|e| {
+                PollingError::StateParsing(format!(
+                    "Failed to deserialize GroupRenderingControl state: {e}"
+                ))
+            })?;
         Ok(EventData::GroupRenderingControl(state))
     }
 
@@ -205,6 +244,12 @@ pub struct DeviceStatePoller {
     sonos_client: SonosClient,
 }
 
+impl Default for DeviceStatePoller {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DeviceStatePoller {
     /// Create a new device state poller with all supported strategies
     pub fn new() -> Self {
@@ -212,9 +257,15 @@ impl DeviceStatePoller {
 
         service_pollers.insert(Service::AVTransport, Box::new(AVTransportPoller));
         service_pollers.insert(Service::RenderingControl, Box::new(RenderingControlPoller));
-        service_pollers.insert(Service::ZoneGroupTopology, Box::new(ZoneGroupTopologyPoller));
+        service_pollers.insert(
+            Service::ZoneGroupTopology,
+            Box::new(ZoneGroupTopologyPoller),
+        );
         service_pollers.insert(Service::GroupManagement, Box::new(GroupManagementPoller));
-        service_pollers.insert(Service::GroupRenderingControl, Box::new(GroupRenderingControlPoller));
+        service_pollers.insert(
+            Service::GroupRenderingControl,
+            Box::new(GroupRenderingControlPoller),
+        );
 
         Self {
             service_pollers,
@@ -233,12 +284,14 @@ impl DeviceStatePoller {
     }
 
     /// Convert a JSON state snapshot to EventData for a given service.
-    pub fn state_to_event_data(&self, service: &Service, json_state: &str) -> PollingResult<EventData> {
+    pub fn state_to_event_data(
+        &self,
+        service: &Service,
+        json_state: &str,
+    ) -> PollingResult<EventData> {
         match self.service_pollers.get(service) {
             Some(poller) => poller.state_to_event_data(json_state),
-            None => Err(PollingError::UnsupportedService {
-                service: *service,
-            }),
+            None => Err(PollingError::UnsupportedService { service: *service }),
         }
     }
 
@@ -274,7 +327,7 @@ impl std::fmt::Display for DevicePollerStats {
         writeln!(f, "  Total pollers: {}", self.total_pollers)?;
         writeln!(f, "  Supported services:")?;
         for service in &self.supported_services {
-            writeln!(f, "    {:?}", service)?;
+            writeln!(f, "    {service:?}")?;
         }
         Ok(())
     }
@@ -300,19 +353,29 @@ mod tests {
     #[test]
     fn test_service_poller_types() {
         assert_eq!(AVTransportPoller.service_type(), Service::AVTransport);
-        assert_eq!(RenderingControlPoller.service_type(), Service::RenderingControl);
-        assert_eq!(ZoneGroupTopologyPoller.service_type(), Service::ZoneGroupTopology);
-        assert_eq!(GroupManagementPoller.service_type(), Service::GroupManagement);
-        assert_eq!(GroupRenderingControlPoller.service_type(), Service::GroupRenderingControl);
+        assert_eq!(
+            RenderingControlPoller.service_type(),
+            Service::RenderingControl
+        );
+        assert_eq!(
+            ZoneGroupTopologyPoller.service_type(),
+            Service::ZoneGroupTopology
+        );
+        assert_eq!(
+            GroupManagementPoller.service_type(),
+            Service::GroupManagement
+        );
+        assert_eq!(
+            GroupRenderingControlPoller.service_type(),
+            Service::GroupRenderingControl
+        );
     }
 
     #[tokio::test]
     async fn test_group_management_poller_returns_stable_state() {
         let poller = GroupManagementPoller;
-        let pair = SpeakerServicePair::new(
-            "192.168.1.100".parse().unwrap(),
-            Service::GroupManagement,
-        );
+        let pair =
+            SpeakerServicePair::new("192.168.1.100".parse().unwrap(), Service::GroupManagement);
 
         let state1 = poller.poll_state(&SonosClient::new(), &pair).await.unwrap();
         let state2 = poller.poll_state(&SonosClient::new(), &pair).await.unwrap();
@@ -328,13 +391,23 @@ mod tests {
         let avt_state = sonos_api::services::av_transport::state::AVTransportState {
             transport_state: Some("PLAYING".to_string()),
             transport_status: Some("OK".to_string()),
-            speed: None, current_track_uri: None, track_duration: None,
-            track_metadata: None, rel_time: None, abs_time: None,
-            rel_count: None, abs_count: None, play_mode: None,
-            next_track_uri: None, next_track_metadata: None, queue_length: None,
+            speed: None,
+            current_track_uri: None,
+            track_duration: None,
+            track_metadata: None,
+            rel_time: None,
+            abs_time: None,
+            rel_count: None,
+            abs_count: None,
+            play_mode: None,
+            next_track_uri: None,
+            next_track_metadata: None,
+            queue_length: None,
         };
         let json = serde_json::to_string(&avt_state).unwrap();
-        let event_data = poller.state_to_event_data(&Service::AVTransport, &json).unwrap();
+        let event_data = poller
+            .state_to_event_data(&Service::AVTransport, &json)
+            .unwrap();
         match event_data {
             EventData::AVTransport(state) => {
                 assert_eq!(state.transport_state, Some("PLAYING".to_string()));
@@ -347,12 +420,20 @@ mod tests {
         let rc_state = sonos_api::services::rendering_control::state::RenderingControlState {
             master_volume: Some("75".to_string()),
             master_mute: Some("0".to_string()),
-            bass: None, treble: None, loudness: None, balance: None,
-            lf_volume: None, rf_volume: None, lf_mute: None, rf_mute: None,
+            bass: None,
+            treble: None,
+            loudness: None,
+            balance: None,
+            lf_volume: None,
+            rf_volume: None,
+            lf_mute: None,
+            rf_mute: None,
             other_channels: std::collections::HashMap::new(),
         };
         let json = serde_json::to_string(&rc_state).unwrap();
-        let event_data = poller.state_to_event_data(&Service::RenderingControl, &json).unwrap();
+        let event_data = poller
+            .state_to_event_data(&Service::RenderingControl, &json)
+            .unwrap();
         match event_data {
             EventData::RenderingControl(state) => {
                 assert_eq!(state.master_volume, Some("75".to_string()));
@@ -361,13 +442,16 @@ mod tests {
         }
 
         // GroupRenderingControl round-trip
-        let grc_state = sonos_api::services::group_rendering_control::state::GroupRenderingControlState {
-            group_volume: Some(42),
-            group_mute: Some(false),
-            group_volume_changeable: Some(true),
-        };
+        let grc_state =
+            sonos_api::services::group_rendering_control::state::GroupRenderingControlState {
+                group_volume: Some(42),
+                group_mute: Some(false),
+                group_volume_changeable: Some(true),
+            };
         let json = serde_json::to_string(&grc_state).unwrap();
-        let event_data = poller.state_to_event_data(&Service::GroupRenderingControl, &json).unwrap();
+        let event_data = poller
+            .state_to_event_data(&Service::GroupRenderingControl, &json)
+            .unwrap();
         match event_data {
             EventData::GroupRenderingControl(state) => {
                 assert_eq!(state.group_volume, Some(42));
@@ -382,7 +466,9 @@ mod tests {
             vanished_devices: vec![],
         };
         let json = serde_json::to_string(&zgt_state).unwrap();
-        let event_data = poller.state_to_event_data(&Service::ZoneGroupTopology, &json).unwrap();
+        let event_data = poller
+            .state_to_event_data(&Service::ZoneGroupTopology, &json)
+            .unwrap();
         match event_data {
             EventData::ZoneGroupTopology(state) => {
                 assert!(state.zone_groups.is_empty());
@@ -393,11 +479,15 @@ mod tests {
         // GroupManagement round-trip
         let gm_state = sonos_api::services::group_management::state::GroupManagementState {
             group_coordinator_is_local: Some(true),
-            local_group_uuid: None, reset_volume_after: None,
-            virtual_line_in_group_id: None, volume_av_transport_uri: None,
+            local_group_uuid: None,
+            reset_volume_after: None,
+            virtual_line_in_group_id: None,
+            volume_av_transport_uri: None,
         };
         let json = serde_json::to_string(&gm_state).unwrap();
-        let event_data = poller.state_to_event_data(&Service::GroupManagement, &json).unwrap();
+        let event_data = poller
+            .state_to_event_data(&Service::GroupManagement, &json)
+            .unwrap();
         match event_data {
             EventData::GroupManagement(state) => {
                 assert_eq!(state.group_coordinator_is_local, Some(true));

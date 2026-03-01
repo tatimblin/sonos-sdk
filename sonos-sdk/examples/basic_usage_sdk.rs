@@ -7,7 +7,7 @@
 //!
 //! Run with: cargo run -p sonos-sdk --example basic_usage_sdk
 
-use sonos_sdk::{SonosSystem, SdkError};
+use sonos_sdk::{SdkError, SonosSystem};
 
 fn main() -> Result<(), SdkError> {
     println!("Sonos SDK - DOM-like API Example");
@@ -24,11 +24,16 @@ fn main() -> Result<(), SdkError> {
         return Ok(());
     }
 
-    println!("Found {} speakers: {}", speaker_names.len(), speaker_names.join(", "));
+    println!(
+        "Found {} speakers: {}",
+        speaker_names.len(),
+        speaker_names.join(", ")
+    );
 
     // Get the first available speaker
     let speaker_name = &speaker_names[0];
-    let speaker = system.get_speaker_by_name(speaker_name)
+    let speaker = system
+        .get_speaker_by_name(speaker_name)
         .ok_or_else(|| SdkError::SpeakerNotFound(speaker_name.clone()))?;
 
     println!("\nUsing speaker: {} ({})", speaker.name, speaker.ip);
@@ -49,7 +54,7 @@ fn main() -> Result<(), SdkError> {
     println!("fetch() - Fresh from device:");
     match speaker.volume.fetch() {
         Ok(vol) => println!("   Fresh volume: {}%", vol.0),
-        Err(e) => println!("   Error fetching volume: {}", e),
+        Err(e) => println!("   Error fetching volume: {e}"),
     }
 
     // Method 3: watch() - Register for change notifications (sync)
@@ -61,8 +66,8 @@ fn main() -> Result<(), SdkError> {
                 println!("   Current volume: {}%", vol.0);
             }
             println!("   (Changes will appear in system.iter())");
-        },
-        Err(e) => println!("   Error starting volume watcher: {}", e),
+        }
+        Err(e) => println!("   Error starting volume watcher: {e}"),
     }
 
     // Demonstrate playback state access
@@ -71,14 +76,14 @@ fn main() -> Result<(), SdkError> {
 
     println!("get() - Cached playback state:");
     match speaker.playback_state.get() {
-        Some(state) => println!("   Current state: {:?}", state),
+        Some(state) => println!("   Current state: {state:?}"),
         None => println!("   No cached playback state available"),
     }
 
     println!("fetch() - Fresh playback state:");
     match speaker.playback_state.fetch() {
-        Ok(state) => println!("   Fresh state: {:?}", state),
-        Err(e) => println!("   Error fetching playback state: {}", e),
+        Ok(state) => println!("   Fresh state: {state:?}"),
+        Err(e) => println!("   Error fetching playback state: {e}"),
     }
 
     println!("\nDOM-like API demonstration complete!");
