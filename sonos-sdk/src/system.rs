@@ -253,10 +253,8 @@ impl SonosSystem {
     /// Create a new group with the specified coordinator and members
     ///
     /// Adds each member speaker to the coordinator's current group.
+    /// Attempts every speaker even if some fail, returning per-speaker results.
     /// After calling this, re-fetch groups via `groups()` to see the updated topology.
-    ///
-    /// **Partial failure:** If adding speaker 3 of 5 fails, speakers 1-2 remain in the group.
-    /// The error is returned immediately with no automatic rollback.
     ///
     /// # Example
     ///
@@ -265,20 +263,33 @@ impl SonosSystem {
     /// let kitchen = system.get_speaker_by_name("Kitchen").unwrap();
     /// let bedroom = system.get_speaker_by_name("Bedroom").unwrap();
     ///
-    /// system.create_group(&living_room, &[&kitchen, &bedroom])?;
+    /// let result = system.create_group(&living_room, &[&kitchen, &bedroom])?;
+    /// if !result.is_success() {
+    ///     for (id, err) in &result.failed {
+    ///         eprintln!("Failed to add {}: {}", id, err);
+    ///     }
+    /// }
     /// ```
     pub fn create_group(
         &self,
         coordinator: &Speaker,
         members: &[&Speaker],
-    ) -> Result<(), SdkError> {
+    ) -> Result<crate::group::GroupChangeResult, SdkError> {
         let coord_group = self
             .get_group_for_speaker(&coordinator.id)
             .ok_or_else(|| SdkError::SpeakerNotFound(coordinator.id.as_str().to_string()))?;
+
+        let mut succeeded = Vec::new();
+        let mut failed = Vec::new();
+
         for member in members {
-            coord_group.add_speaker(member)?;
+            match coord_group.add_speaker(member) {
+                Ok(()) => succeeded.push(member.id.clone()),
+                Err(e) => failed.push((member.id.clone(), e)),
+            }
         }
-        Ok(())
+
+        Ok(crate::group::GroupChangeResult { succeeded, failed })
     }
 }
 
@@ -542,7 +553,7 @@ mod tests {
     #[test]
     fn test_create_group_method_exists() {
         // Compile-time assertion that method signature is correct
-        fn assert_void(_r: Result<(), SdkError>) {}
+        fn assert_change_result(_r: Result<crate::group::GroupChangeResult, SdkError>) {}
 
         let devices = vec![
             Device {
@@ -583,6 +594,6 @@ mod tests {
         let member = system.get_speaker_by_id(&speaker2).unwrap();
 
         // Will fail at network level but proves signature compiles
-        assert_void(system.create_group(&coordinator, &[&member]));
+        assert_change_result(system.create_group(&coordinator, &[&member]));
     }
 }

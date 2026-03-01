@@ -65,7 +65,7 @@
 
 // Main exports
 pub use error::SdkError;
-pub use group::Group;
+pub use group::{Group, GroupChangeResult};
 pub use speaker::{PlayMode, SeekTarget, Speaker};
 pub use system::SonosSystem;
 

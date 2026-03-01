@@ -187,7 +187,12 @@ fn main() -> Result<(), SdkError> {
     // ===== TEST 5: system.create_group =====
     println!("=== TEST 5: system.create_group(&coordinator, &[&member]) ===");
     match system.create_group(&coordinator, &[&member]) {
-        Ok(()) => println!("OK — create_group succeeded"),
+        Ok(result) => {
+            println!("OK — {} succeeded, {} failed", result.succeeded.len(), result.failed.len());
+            for (id, err) in &result.failed {
+                println!("  FAILED {}: {}", id, err);
+            }
+        }
         Err(e) => println!("FAILED: {}", e),
     }
 
@@ -199,9 +204,10 @@ fn main() -> Result<(), SdkError> {
     let coord_group = system.get_group_for_speaker(&coordinator.id)
         .ok_or_else(|| SdkError::SpeakerNotFound(coordinator.id.as_str().to_string()))?;
 
-    match coord_group.dissolve() {
-        Ok(()) => println!("OK — dissolve succeeded"),
-        Err(e) => println!("FAILED: {}", e),
+    let result = coord_group.dissolve();
+    println!("OK — {} succeeded, {} failed", result.succeeded.len(), result.failed.len());
+    for (id, err) in &result.failed {
+        println!("  FAILED {}: {}", id, err);
     }
 
     wait_for_topology_change(&system, &coordinator.id, |count| count == 1, "dissolve");

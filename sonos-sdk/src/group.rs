@@ -23,6 +23,31 @@ use crate::property::{GroupContext, GroupMuteHandle, GroupPropertyHandle, GroupV
 use crate::SdkError;
 use crate::Speaker;
 
+/// Result of a multi-speaker group operation (e.g., `dissolve()`, `create_group()`)
+///
+/// Instead of short-circuiting on the first failure, multi-speaker operations
+/// attempt every speaker and report per-speaker results. This gives callers
+/// full visibility into partial failures.
+#[derive(Debug)]
+pub struct GroupChangeResult {
+    /// Speakers that were successfully changed
+    pub succeeded: Vec<SpeakerId>,
+    /// Speakers that failed, with error descriptions
+    pub failed: Vec<(SpeakerId, SdkError)>,
+}
+
+impl GroupChangeResult {
+    /// Returns `true` if all speakers were changed successfully
+    pub fn is_success(&self) -> bool {
+        self.failed.is_empty()
+    }
+
+    /// Returns `true` if some speakers succeeded and some failed
+    pub fn is_partial(&self) -> bool {
+        !self.succeeded.is_empty() && !self.failed.is_empty()
+    }
+}
+
 /// Group handle with access to coordinator and members
 ///
 /// Provides access to group information and member speakers.
@@ -266,15 +291,23 @@ impl Group {
 
     /// Dissolve this group by removing all non-coordinator members
     ///
-    /// After dissolving, each former member becomes a standalone group.
-    /// Returns `Ok(())` for standalone groups (no-op).
-    pub fn dissolve(&self) -> Result<(), SdkError> {
+    /// Attempts to remove every non-coordinator member, even if some fail.
+    /// Returns a [`GroupChangeResult`] showing which speakers were successfully
+    /// removed and which failed. For standalone groups, returns an empty result.
+    pub fn dissolve(&self) -> GroupChangeResult {
+        let mut succeeded = Vec::new();
+        let mut failed = Vec::new();
+
         for member in self.members() {
             if !self.is_coordinator(&member.id) {
-                self.remove_speaker(&member)?;
+                match self.remove_speaker(&member) {
+                    Ok(()) => succeeded.push(member.id.clone()),
+                    Err(e) => failed.push((member.id.clone(), e)),
+                }
             }
         }
-        Ok(())
+
+        GroupChangeResult { succeeded, failed }
     }
 
     // ========================================================================
@@ -618,12 +651,22 @@ mod tests {
     #[test]
     fn test_group_lifecycle_methods_exist() {
         fn assert_void(_r: Result<(), SdkError>) {}
+        fn assert_change_result(_r: GroupChangeResult) {}
 
         let (group, member) = create_test_group_with_member();
 
         // These will fail at network level but prove signatures compile
         assert_void(group.add_speaker(&member));
         assert_void(group.remove_speaker(&member));
-        assert_void(group.dissolve());
+        assert_change_result(group.dissolve());
+    }
+
+    #[test]
+    fn test_dissolve_standalone_returns_empty_result() {
+        let group = create_test_group();
+        let result = group.dissolve();
+        assert!(result.is_success());
+        assert!(result.succeeded.is_empty());
+        assert!(result.failed.is_empty());
     }
 }
