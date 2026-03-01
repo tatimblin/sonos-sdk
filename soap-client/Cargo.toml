@@ -1,9 +1,11 @@
 [package]
 name = "soap-client"
-version = "0.1.0"
-edition = "2021"
-description = "Private SOAP client for UPnP device communication"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Internal SOAP client for sonos-sdk UPnP device communication"
 
 [dependencies]
 ureq = { version = "2.9", features = ["json"] }

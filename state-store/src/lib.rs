@@ -1,3 +1,5 @@
+//! Internal implementation detail of [`sonos-sdk`](https://crates.io/crates/sonos-sdk). Not intended for direct use.
+//!
 //! Generic State Management Library
 //!
 //! A type-safe, generic state management library with change detection

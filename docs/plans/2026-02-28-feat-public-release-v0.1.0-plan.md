@@ -101,9 +101,9 @@ Fix blockers that affect all subsequent phases.
 
 Centralize metadata and establish licensing.
 
-- [ ] **Create LICENSE-MIT** at workspace root (full MIT license text, copyright holder: Tristan Timblin)
-- [ ] **Create LICENSE-APACHE** at workspace root (full Apache 2.0 license text)
-- [ ] **Add `[workspace.package]`** to root `Cargo.toml`:
+- [x] **Create LICENSE-MIT** at workspace root (full MIT license text, copyright holder: Tristan Timblin)
+- [x] **Create LICENSE-APACHE** at workspace root (full Apache 2.0 license text)
+- [x] **Add `[workspace.package]`** to root `Cargo.toml`:
 
 ```toml
 [workspace.package]
@@ -116,7 +116,7 @@ keywords = ["sonos", "upnp", "audio", "smart-home"]
 categories = ["multimedia::audio", "network-programming"]
 ```
 
-- [ ] **Update all 9 crate Cargo.toml files** to inherit workspace fields:
+- [x] **Update all 9 crate Cargo.toml files** to inherit workspace fields:
 
   **Public crates** (`sonos-sdk`, `sonos-api`):
   - Inherit: version, edition, rust-version, license, repository, keywords, categories
@@ -131,10 +131,10 @@ categories = ["multimedia::audio", "network-programming"]
   - Remove `authors = ["Claude Code"]` from `sonos-stream` and `sonos-event-manager`
   - Add `//! Internal implementation detail of sonos-sdk. Not intended for direct use.` to `lib.rs` of each internal crate (if not already present)
 
-- [ ] **Add `exclude` fields** to crates with internal files:
+- [x] **Add `exclude` fields** to crates with internal files:
   - `sonos-state/Cargo.toml`: `exclude = ["plans/"]`
 
-- [ ] **Verify** — `cargo build --workspace` succeeds
+- [x] **Verify** — `cargo build --workspace` succeeds
 
 #### Phase 2: Crate Renaming
 

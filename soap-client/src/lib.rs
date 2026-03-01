@@ -1,3 +1,5 @@
+//! Internal implementation detail of [`sonos-sdk`](https://crates.io/crates/sonos-sdk). Not intended for direct use.
+//!
 //! Private SOAP client for UPnP device communication
 //! 
 //! This crate provides a minimal SOAP client specifically designed for

@@ -1,3 +1,5 @@
+//! Internal implementation detail of [`sonos-sdk`](https://crates.io/crates/sonos-sdk). Not intended for direct use.
+//!
 //! # Sonos Stream - Event Streaming and Subscription Management
 //!
 //! This crate provides a modern event streaming and subscription management system for Sonos devices.

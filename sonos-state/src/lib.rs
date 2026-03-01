@@ -1,3 +1,5 @@
+//! Internal implementation detail of [`sonos-sdk`](https://crates.io/crates/sonos-sdk). Not intended for direct use.
+//!
 //! Sonos State Management
 //!
 //! A sync-first state management system for Sonos devices.
