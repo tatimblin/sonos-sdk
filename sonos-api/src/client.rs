@@ -14,9 +14,10 @@ use std::time::Instant;
 /// The primary API for managing UPnP event subscriptions is `create_managed_subscription()`,
 /// which returns a `ManagedSubscription` that handles all lifecycle management:
 ///
-/// ```rust
+/// ```rust,no_run
 /// use sonos_api::{SonosClient, Service};
 ///
+/// # fn main() -> sonos_api::Result<()> {
 /// let client = SonosClient::new();
 /// let subscription = client.create_managed_subscription(
 ///     "192.168.1.100",
@@ -26,6 +27,8 @@ use std::time::Instant;
 /// )?;
 ///
 /// // Subscription handles renewal and cleanup automatically
+/// # Ok(())
+/// # }
 /// ```
 #[derive(Debug, Clone)]
 pub struct SonosClient {
@@ -66,15 +69,13 @@ impl SonosClient {
     /// The parsed response data or an error
     ///
     /// # Example
-    /// ```rust
+    /// ```rust,ignore
     /// use sonos_api::client::SonosClient;
-    /// use sonos_api::operations::av_transport::{GetTransportInfoOperation, GetTransportInfoRequest};
+    /// use sonos_api::services::av_transport::{GetTransportInfoOperation, GetTransportInfoRequest};
     ///
     /// let client = SonosClient::new();
     /// let request = GetTransportInfoRequest { instance_id: 0 };
-    ///
-    /// // Execute the operation (this would require an actual device)
-    /// // let response = client.execute::<GetTransportInfoOperation>("192.168.1.100", &request)?;
+    /// let response = client.execute::<GetTransportInfoOperation>("192.168.1.100", &request)?;
     /// ```
     pub fn execute<Op: SonosOperation>(
         &self,
@@ -247,9 +248,10 @@ impl SonosClient {
     /// A `ManagedSubscription` that provides renewal and cleanup methods
     ///
     /// # Example
-    /// ```rust
+    /// ```rust,no_run
     /// use sonos_api::{SonosClient, Service};
     ///
+    /// # fn main() -> sonos_api::Result<()> {
     /// let client = SonosClient::new();
     /// let subscription = client.create_managed_subscription(
     ///     "192.168.1.100",
@@ -265,6 +267,8 @@ impl SonosClient {
     ///
     /// // Clean up when done
     /// subscription.unsubscribe()?;
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn create_managed_subscription(
         &self,

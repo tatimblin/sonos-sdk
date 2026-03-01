@@ -21,9 +21,10 @@ use std::time::{Duration, SystemTime};
 /// - Thread-safe state management
 ///
 /// # Example
-/// ```rust
+/// ```rust,no_run
 /// use sonos_api::{SonosClient, Service};
 ///
+/// # fn main() -> sonos_api::Result<()> {
 /// let client = SonosClient::new();
 /// let subscription = client.create_managed_subscription(
 ///     "192.168.1.100",
@@ -39,6 +40,8 @@ use std::time::{Duration, SystemTime};
 ///
 /// // Clean up when done
 /// subscription.unsubscribe()?;
+/// # Ok(())
+/// # }
 /// ```
 #[derive(Debug)]
 pub struct ManagedSubscription {
