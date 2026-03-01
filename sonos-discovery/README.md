@@ -1,4 +1,7 @@
-# sonos-discovery
+# sonos-sdk-discovery
+
+> **Internal crate** — this is an implementation detail of [sonos-sdk](https://crates.io/crates/sonos-sdk).
+> Its API may change without notice between versions.
 
 A Rust library for discovering Sonos devices on your local network using SSDP (Simple Service Discovery Protocol).
 

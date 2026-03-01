@@ -1,7 +1,7 @@
-# sonos-stream
+# sonos-sdk-stream
 
-> ⚠️ **INTERNAL CRATE - NOT FOR DIRECT USE**
-> This crate is an **internal implementation detail** of the sonos-sdk workspace, specifically designed to be used exclusively by [`sonos-state`](../sonos-state). It is not intended for direct use by end-users and may change at any time without notice.
+> **Internal crate** — this is an implementation detail of [sonos-sdk](https://crates.io/crates/sonos-sdk).
+> Its API may change without notice between versions.
 
 ## Overview
 

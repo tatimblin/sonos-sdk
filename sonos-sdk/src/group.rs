@@ -294,6 +294,17 @@ impl Group {
     /// Attempts to remove every non-coordinator member, even if some fail.
     /// Returns a [`GroupChangeResult`] showing which speakers were successfully
     /// removed and which failed. For standalone groups, returns an empty result.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let result = group.dissolve();
+    /// if !result.is_success() {
+    ///     for (id, err) in &result.failed {
+    ///         eprintln!("Failed to remove {}: {}", id, err);
+    ///     }
+    /// }
+    /// ```
     pub fn dissolve(&self) -> GroupChangeResult {
         let mut succeeded = Vec::new();
         let mut failed = Vec::new();

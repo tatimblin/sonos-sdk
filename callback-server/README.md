@@ -1,10 +1,9 @@
-# callback-server
+# sonos-sdk-callback-server
+
+> **Internal crate** — this is an implementation detail of [sonos-sdk](https://crates.io/crates/sonos-sdk).
+> Its API may change without notice between versions.
 
 A generic UPnP callback server for receiving event notifications.
-
-## Overview
-
-This is an internal implementation detail of [sonos-sdk](https://crates.io/crates/sonos-sdk). It is published to crates.io as a transitive dependency but is not intended for direct use.
 
 The callback-server crate provides a lightweight HTTP server for handling UPnP NOTIFY requests. It is completely generic and has no knowledge of device-specific protocols or implementations.
 

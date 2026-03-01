@@ -52,6 +52,26 @@
 //! - `bass`, `treble`, `loudness` - EQ settings
 //! - `position` - Current track position
 //! - `current_track` - Track metadata
+//! - `group_membership` - Group ID and coordinator status
+//!
+//! ## Speaker Actions
+//!
+//! Control speakers with methods like `play()`, `pause()`, `stop()`, `set_volume()`,
+//! `set_mute()`, `seek()`, `set_play_mode()`, and queue operations.
+//!
+//! ```rust,ignore
+//! speaker.play()?;
+//! speaker.set_volume(50)?;
+//! speaker.seek(SeekTarget::Time("0:02:30".into()))?;
+//! ```
+//!
+//! ## Group Management
+//!
+//! All speakers are always in a group (a single speaker forms a group of one).
+//! Manage groups via `system.groups()`, `system.create_group()`, `group.dissolve()`,
+//! `speaker.join_group()`, and `speaker.leave_group()`.
+//!
+//! Groups also have properties: `group.volume`, `group.mute`, `group.volume_changeable`.
 //!
 //! ## Architecture
 //!
