@@ -14,7 +14,6 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use sonos_api::SonosClient;
-use sonos_api::services::group_management::AddMemberResponse;
 use sonos_discovery::Device;
 use sonos_state::{Bass, Loudness, Mute, PlaybackState, SpeakerId, StateManager, Treble, Volume};
 
@@ -551,7 +550,7 @@ impl Speaker {
     ///
     /// Adds this speaker to the specified group. After calling this,
     /// re-fetch groups via `system.groups()` to see updated membership.
-    pub fn join_group(&self, group: &Group) -> Result<AddMemberResponse, SdkError> {
+    pub fn join_group(&self, group: &Group) -> Result<(), SdkError> {
         group.add_speaker(self)
     }
 
@@ -729,7 +728,7 @@ mod tests {
 
         // Group convenience methods
         let group = create_test_group_for_speaker(&speaker);
-        assert_response::<AddMemberResponse>(speaker.join_group(&group));
+        assert_void(speaker.join_group(&group));
         assert_response::<BecomeCoordinatorOfStandaloneGroupResponse>(speaker.leave_group());
     }
 

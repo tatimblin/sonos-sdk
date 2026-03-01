@@ -14,7 +14,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use sonos_api::operation::{ComposableOperation, UPnPOperation, ValidationError};
-use sonos_api::services::group_management::{self, AddMemberResponse};
+use sonos_api::services::av_transport;
 use sonos_api::services::group_rendering_control::{self, SetRelativeGroupVolumeResponse};
 use sonos_api::SonosClient;
 use sonos_state::{GroupId, GroupInfo, GroupMute, GroupVolume, SpeakerId, StateManager};
@@ -220,34 +220,47 @@ impl Group {
 
     /// Add a speaker to this group
     ///
-    /// Sends AddMember to the group coordinator with the speaker's boot_seq.
+    /// Sends `SetAVTransportURI` to the member speaker with `x-rincon:{coordinator_id}`
+    /// to join the coordinator's audio stream. This is the standard Sonos grouping mechanism.
     /// After calling this, re-fetch groups via `system.groups()` to see updated membership.
-    pub fn add_speaker(&self, speaker: &Speaker) -> Result<AddMemberResponse, SdkError> {
+    pub fn add_speaker(&self, speaker: &Speaker) -> Result<(), SdkError> {
         if speaker.id == self.coordinator_id {
             return Err(SdkError::InvalidOperation(
                 "Cannot add coordinator to its own group".to_string(),
             ));
         }
-        let boot_seq = self.state_manager.get_boot_seq(&speaker.id).unwrap_or(0);
-        self.exec(group_management::add_member(
-            speaker.id.as_str().to_string(),
-            boot_seq,
-        ).build())
+        let rincon_uri = format!("x-rincon:{}", self.coordinator_id.as_str());
+        let op = av_transport::set_av_transport_uri(
+            rincon_uri,
+            String::new(),
+        ).build()?;
+        self.api_client
+            .execute_enhanced::<av_transport::SetAVTransportURIOperation>(
+                &speaker.ip.to_string(),
+                op,
+            )
+            .map_err(SdkError::ApiError)?;
+        Ok(())
     }
 
     /// Remove a speaker from this group
     ///
-    /// Sends RemoveMember to the group coordinator.
-    /// Cannot remove the coordinator — use `speaker.delegate_coordination_to()` first.
+    /// Sends `BecomeCoordinatorOfStandaloneGroup` to the member speaker, causing it
+    /// to leave the group and become standalone. Cannot remove the coordinator.
     pub fn remove_speaker(&self, speaker: &Speaker) -> Result<(), SdkError> {
         if speaker.id == self.coordinator_id {
             return Err(SdkError::InvalidOperation(
                 "Cannot remove coordinator from its own group; use delegate_coordination_to() first".to_string(),
             ));
         }
-        self.exec(group_management::remove_member(
-            speaker.id.as_str().to_string(),
-        ).build())?;
+        let op = av_transport::become_coordinator_of_standalone_group()
+            .build()?;
+        self.api_client
+            .execute_enhanced::<av_transport::BecomeCoordinatorOfStandaloneGroupOperation>(
+                &speaker.ip.to_string(),
+                op,
+            )
+            .map_err(SdkError::ApiError)?;
         Ok(())
     }
 
@@ -605,12 +618,11 @@ mod tests {
     #[test]
     fn test_group_lifecycle_methods_exist() {
         fn assert_void(_r: Result<(), SdkError>) {}
-        fn assert_response<T>(_r: Result<T, SdkError>) {}
 
         let (group, member) = create_test_group_with_member();
 
         // These will fail at network level but prove signatures compile
-        assert_response::<AddMemberResponse>(group.add_speaker(&member));
+        assert_void(group.add_speaker(&member));
         assert_void(group.remove_speaker(&member));
         assert_void(group.dissolve());
     }

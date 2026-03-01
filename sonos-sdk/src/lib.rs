@@ -83,7 +83,6 @@ pub use sonos_api::services::av_transport::{
     GetRunningAlarmPropertiesResponse, GetTransportSettingsResponse,
     RemoveTrackRangeFromQueueResponse, SaveQueueResponse,
 };
-pub use sonos_api::services::group_management::AddMemberResponse;
 pub use sonos_api::services::group_rendering_control::SetRelativeGroupVolumeResponse;
 pub use sonos_api::services::rendering_control::SetRelativeVolumeResponse;
 
