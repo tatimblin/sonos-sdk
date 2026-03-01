@@ -45,17 +45,16 @@
 //! processor.process_event(service, xml_content, event_source)?;
 //! ```
 
-pub mod types;
 pub mod processor;
+pub mod types;
 pub mod xml_utils;
 
 // Re-export common types for convenience
-pub use types::{
-    EnrichedEvent, EventSource, EventParser, EventParserRegistry, EventParserDyn,
-    extract_xml_value,
-};
 pub use processor::EventProcessor;
+pub use types::{
+    extract_xml_value, EnrichedEvent, EventParser, EventParserDyn, EventParserRegistry, EventSource,
+};
 pub use xml_utils::{
-    DidlLite, DidlItem, DidlResource, ValueAttribute, NestedAttribute,
-    strip_namespaces, deserialize_nested, parse,
+    deserialize_nested, parse, strip_namespaces, DidlItem, DidlLite, DidlResource, NestedAttribute,
+    ValueAttribute,
 };

@@ -3,9 +3,9 @@
 //! This module provides internal SSDP client functionality for discovering UPnP devices
 //! on the local network. It is not part of the public API.
 
+use crate::error::{DiscoveryError, Result};
 use std::net::UdpSocket;
 use std::time::Duration;
-use crate::error::{DiscoveryError, Result};
 
 /// SSDP response containing device information
 #[derive(Debug, Clone, PartialEq)]
@@ -25,33 +25,35 @@ impl SsdpClient {
     /// Create a new SSDP client with the specified timeout
     pub fn new(timeout: Duration) -> Result<Self> {
         let socket = UdpSocket::bind("0.0.0.0:0")
-            .map_err(|e| DiscoveryError::NetworkError(format!("Failed to bind UDP socket: {}", e)))?;
-        
-        socket.set_read_timeout(Some(timeout))
-            .map_err(|e| DiscoveryError::NetworkError(format!("Failed to set read timeout: {}", e)))?;
-        
-        socket.set_multicast_loop_v4(true)
-            .map_err(|e| DiscoveryError::NetworkError(format!("Failed to set multicast loop: {}", e)))?;
-        
+            .map_err(|e| DiscoveryError::NetworkError(format!("Failed to bind UDP socket: {e}")))?;
+
+        socket.set_read_timeout(Some(timeout)).map_err(|e| {
+            DiscoveryError::NetworkError(format!("Failed to set read timeout: {e}"))
+        })?;
+
+        socket.set_multicast_loop_v4(true).map_err(|e| {
+            DiscoveryError::NetworkError(format!("Failed to set multicast loop: {e}"))
+        })?;
+
         Ok(Self { socket })
     }
 
     /// Send an M-SEARCH request and return an iterator of responses
-    pub fn search(&self, search_target: &str) -> Result<SsdpResponseIterator> {
+    pub fn search(&self, search_target: &str) -> Result<SsdpResponseIterator<'_>> {
         let request = format!(
             "M-SEARCH * HTTP/1.1\r\n\
              HOST: 239.255.255.250:1900\r\n\
              MAN: \"ssdp:discover\"\r\n\
              MX: 2\r\n\
-             ST: {}\r\n\
+             ST: {search_target}\r\n\
              USER-AGENT: sonos-rs/1.0 UPnP/1.0\r\n\
-             \r\n",
-            search_target
+             \r\n"
         );
 
-        self.socket.send_to(request.as_bytes(), "239.255.255.250:1900")
-            .map_err(|e| DiscoveryError::NetworkError(format!("Failed to send M-SEARCH: {}", e)))?;
-        
+        self.socket
+            .send_to(request.as_bytes(), "239.255.255.250:1900")
+            .map_err(|e| DiscoveryError::NetworkError(format!("Failed to send M-SEARCH: {e}")))?;
+
         Ok(SsdpResponseIterator::new(&self.socket))
     }
 }
@@ -100,11 +102,15 @@ impl<'a> Iterator for SsdpResponseIterator<'a> {
                 }
             }
             Err(e) => {
-                if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut {
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut
+                {
                     self.finished = true;
                     None
                 } else {
-                    Some(Err(DiscoveryError::NetworkError(format!("Socket error: {}", e))))
+                    Some(Err(DiscoveryError::NetworkError(format!(
+                        "Socket error: {e}"
+                    ))))
                 }
             }
         }
@@ -120,7 +126,7 @@ fn parse_ssdp_response(response: &str) -> Option<SsdpResponse> {
 
     for line in response.lines() {
         let line = line.trim();
-        
+
         if let Some(value) = extract_header_value(line, "LOCATION:") {
             location = Some(value);
         } else if let Some(value) = extract_header_value(line, "ST:") {
@@ -133,14 +139,12 @@ fn parse_ssdp_response(response: &str) -> Option<SsdpResponse> {
     }
 
     match (location, urn, usn) {
-        (Some(location), Some(urn), Some(usn)) => {
-            Some(SsdpResponse {
-                location,
-                urn,
-                usn,
-                server,
-            })
-        }
+        (Some(location), Some(urn), Some(usn)) => Some(SsdpResponse {
+            location,
+            urn,
+            usn,
+            server,
+        }),
         _ => None,
     }
 }
@@ -168,11 +172,20 @@ mod tests {
             \r\n";
 
         let parsed = parse_ssdp_response(response).unwrap();
-        
-        assert_eq!(parsed.location, "http://192.168.1.100:1400/xml/device_description.xml");
+
+        assert_eq!(
+            parsed.location,
+            "http://192.168.1.100:1400/xml/device_description.xml"
+        );
         assert_eq!(parsed.urn, "urn:schemas-upnp-org:device:ZonePlayer:1");
-        assert_eq!(parsed.usn, "uuid:RINCON_000E58A0123456::urn:schemas-upnp-org:device:ZonePlayer:1");
-        assert_eq!(parsed.server, Some("Linux/3.14.0 UPnP/1.0 Sonos/70.3-35220".to_string()));
+        assert_eq!(
+            parsed.usn,
+            "uuid:RINCON_000E58A0123456::urn:schemas-upnp-org:device:ZonePlayer:1"
+        );
+        assert_eq!(
+            parsed.server,
+            Some("Linux/3.14.0 UPnP/1.0 Sonos/70.3-35220".to_string())
+        );
     }
 
     #[test]
@@ -184,10 +197,16 @@ mod tests {
             \r\n";
 
         let parsed = parse_ssdp_response(response).unwrap();
-        
-        assert_eq!(parsed.location, "http://192.168.1.101:1400/xml/device_description.xml");
+
+        assert_eq!(
+            parsed.location,
+            "http://192.168.1.101:1400/xml/device_description.xml"
+        );
         assert_eq!(parsed.urn, "urn:schemas-upnp-org:device:ZonePlayer:1");
-        assert_eq!(parsed.usn, "uuid:RINCON_000E58A0654321::urn:schemas-upnp-org:device:ZonePlayer:1");
+        assert_eq!(
+            parsed.usn,
+            "uuid:RINCON_000E58A0654321::urn:schemas-upnp-org:device:ZonePlayer:1"
+        );
         assert_eq!(parsed.server, None);
     }
 
@@ -201,11 +220,20 @@ mod tests {
             \r\n";
 
         let parsed = parse_ssdp_response(response).unwrap();
-        
-        assert_eq!(parsed.location, "http://192.168.1.102:1400/xml/device_description.xml");
+
+        assert_eq!(
+            parsed.location,
+            "http://192.168.1.102:1400/xml/device_description.xml"
+        );
         assert_eq!(parsed.urn, "urn:schemas-upnp-org:device:ZonePlayer:1");
-        assert_eq!(parsed.usn, "uuid:RINCON_000E58A0ABCDEF::urn:schemas-upnp-org:device:ZonePlayer:1");
-        assert_eq!(parsed.server, Some("Linux/3.14.0 UPnP/1.0 Sonos/70.3-35220".to_string()));
+        assert_eq!(
+            parsed.usn,
+            "uuid:RINCON_000E58A0ABCDEF::urn:schemas-upnp-org:device:ZonePlayer:1"
+        );
+        assert_eq!(
+            parsed.server,
+            Some("Linux/3.14.0 UPnP/1.0 Sonos/70.3-35220".to_string())
+        );
     }
 
     #[test]
@@ -301,33 +329,26 @@ mod tests {
             Some("".to_string())
         );
         // When there's no character after the header, it returns None (line too short)
-        assert_eq!(
-            extract_header_value("LOCATION:", "LOCATION:"),
-            None
-        );
+        assert_eq!(extract_header_value("LOCATION:", "LOCATION:"), None);
     }
 
     #[test]
     fn test_extract_header_value_no_match() {
-        assert_eq!(
-            extract_header_value("OTHER: value", "LOCATION:"),
-            None
-        );
-        assert_eq!(
-            extract_header_value("LOCATIONS: value", "LOCATION:"),
-            None
-        );
-        assert_eq!(
-            extract_header_value("LOC: value", "LOCATION:"),
-            None
-        );
+        assert_eq!(extract_header_value("OTHER: value", "LOCATION:"), None);
+        assert_eq!(extract_header_value("LOCATIONS: value", "LOCATION:"), None);
+        assert_eq!(extract_header_value("LOC: value", "LOCATION:"), None);
     }
 
     #[test]
     fn test_extract_header_value_complex_value() {
         assert_eq!(
-            extract_header_value("USN: uuid:RINCON_000E58A0123456::urn:schemas-upnp-org:device:ZonePlayer:1", "USN:"),
-            Some("uuid:RINCON_000E58A0123456::urn:schemas-upnp-org:device:ZonePlayer:1".to_string())
+            extract_header_value(
+                "USN: uuid:RINCON_000E58A0123456::urn:schemas-upnp-org:device:ZonePlayer:1",
+                "USN:"
+            ),
+            Some(
+                "uuid:RINCON_000E58A0123456::urn:schemas-upnp-org:device:ZonePlayer:1".to_string()
+            )
         );
     }
 }

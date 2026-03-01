@@ -11,8 +11,8 @@
 //! - `get_treble` / `set_treble` - Get/set treble level (-10 to +10)
 //! - `get_loudness` / `set_loudness` - Get/set loudness compensation
 
-use crate::{define_upnp_operation, define_operation_with_response, Validate};
-use crate::operation::{validate_channel, parse_sonos_bool};
+use crate::operation::{parse_sonos_bool, validate_channel};
+use crate::{define_operation_with_response, define_upnp_operation, Validate};
 use paste::paste;
 
 // Operation with complex response parsing and channel validation
@@ -61,7 +61,12 @@ define_upnp_operation! {
 impl Validate for SetVolumeOperationRequest {
     fn validate_basic(&self) -> Result<(), crate::operation::ValidationError> {
         if self.desired_volume > 100 {
-            return Err(crate::operation::ValidationError::range_error("desired_volume", 0, 100, self.desired_volume));
+            return Err(crate::operation::ValidationError::range_error(
+                "desired_volume",
+                0,
+                100,
+                self.desired_volume,
+            ));
         }
         validate_channel(&self.channel)
     }
@@ -89,7 +94,12 @@ impl Validate for SetRelativeVolumeOperationRequest {
     fn validate_basic(&self) -> Result<(), crate::operation::ValidationError> {
         // i8 range is already enforced by type, but we can check reasonable bounds
         if self.adjustment < -100 || self.adjustment > 100 {
-            return Err(crate::operation::ValidationError::range_error("adjustment", -100, 100, self.adjustment));
+            return Err(crate::operation::ValidationError::range_error(
+                "adjustment",
+                -100,
+                100,
+                self.adjustment,
+            ));
         }
         validate_channel(&self.channel)
     }
@@ -228,7 +238,10 @@ impl Validate for SetBassOperationRequest {
     fn validate_basic(&self) -> Result<(), crate::operation::ValidationError> {
         if self.desired_bass < -10 || self.desired_bass > 10 {
             return Err(crate::operation::ValidationError::range_error(
-                "desired_bass", -10, 10, self.desired_bass,
+                "desired_bass",
+                -10,
+                10,
+                self.desired_bass,
             ));
         }
         Ok(())
@@ -283,7 +296,10 @@ impl Validate for SetTrebleOperationRequest {
     fn validate_basic(&self) -> Result<(), crate::operation::ValidationError> {
         if self.desired_treble < -10 || self.desired_treble > 10 {
             return Err(crate::operation::ValidationError::range_error(
-                "desired_treble", -10, 10, self.desired_treble,
+                "desired_treble",
+                -10,
+                10,
+                self.desired_treble,
             ));
         }
         Ok(())
@@ -332,7 +348,9 @@ impl crate::operation::UPnPOperation for GetLoudnessOperation {
     }
 }
 
-pub fn get_loudness_operation(channel: String) -> crate::operation::OperationBuilder<GetLoudnessOperation> {
+pub fn get_loudness_operation(
+    channel: String,
+) -> crate::operation::OperationBuilder<GetLoudnessOperation> {
     let request = GetLoudnessOperationRequest {
         channel,
         instance_id: 0,
@@ -380,8 +398,8 @@ pub use set_loudness_operation as set_loudness;
 
 // Legacy convenience functions for backward compatibility
 pub use get_volume_operation as get_volume;
-pub use set_volume_operation as set_volume;
 pub use set_relative_volume_operation as set_relative_volume;
+pub use set_volume_operation as set_volume;
 
 /// Service identifier for RenderingControl
 pub const SERVICE: crate::Service = crate::Service::RenderingControl;
@@ -454,7 +472,9 @@ mod tests {
         let get_vol = get_volume_operation("Master".to_string()).build().unwrap();
         assert_eq!(get_vol.request().channel, "Master");
 
-        let set_vol = set_volume_operation("Master".to_string(), 75).build().unwrap();
+        let set_vol = set_volume_operation("Master".to_string(), 75)
+            .build()
+            .unwrap();
         assert_eq!(set_vol.request().desired_volume, 75);
     }
 
@@ -493,7 +513,6 @@ mod tests {
         assert!(request.validate_basic().is_err());
     }
 
-
     #[test]
     fn test_service_constant() {
         // Verify that SERVICE constant is correctly set
@@ -511,7 +530,10 @@ mod tests {
         // Verify correct Sonos XML format with capitalized element names
         assert!(payload.contains("<InstanceID>0</InstanceID>"));
         assert!(payload.contains("<Channel>Master</Channel>"));
-        assert_eq!(payload, "<InstanceID>0</InstanceID><Channel>Master</Channel>");
+        assert_eq!(
+            payload,
+            "<InstanceID>0</InstanceID><Channel>Master</Channel>"
+        );
     }
 
     #[test]
@@ -520,17 +542,11 @@ mod tests {
         let client = crate::SonosClient::new();
 
         // Test subscribe function exists and has correct signature
-        let _subscribe_fn = || {
-            subscribe(&client, "192.168.1.100", "http://callback.url")
-        };
+        let _subscribe_fn = || subscribe(&client, "192.168.1.100", "http://callback.url");
 
         // Test subscribe_with_timeout function exists and has correct signature
-        let _subscribe_timeout_fn = || {
-            subscribe_with_timeout(&client, "192.168.1.100", "http://callback.url", 3600)
-        };
-
-        // If this compiles, the function signatures are correct
-        assert!(true);
+        let _subscribe_timeout_fn =
+            || subscribe_with_timeout(&client, "192.168.1.100", "http://callback.url", 3600);
     }
 
     #[test]
@@ -564,7 +580,10 @@ mod tests {
             channel: "Master".to_string(),
         };
         let payload = GetMuteOperation::build_payload(&request).unwrap();
-        assert_eq!(payload, "<InstanceID>0</InstanceID><Channel>Master</Channel>");
+        assert_eq!(
+            payload,
+            "<InstanceID>0</InstanceID><Channel>Master</Channel>"
+        );
     }
 
     #[test]
@@ -594,7 +613,9 @@ mod tests {
 
     #[test]
     fn test_set_mute_builder() {
-        let op = set_mute_operation("Master".to_string(), true).build().unwrap();
+        let op = set_mute_operation("Master".to_string(), true)
+            .build()
+            .unwrap();
         assert!(op.request().desired_mute);
         assert_eq!(op.request().channel, "Master");
     }
@@ -667,15 +688,27 @@ mod tests {
     #[test]
     fn test_set_bass_validation() {
         // Valid range
-        let request = SetBassOperationRequest { instance_id: 0, desired_bass: -10 };
+        let request = SetBassOperationRequest {
+            instance_id: 0,
+            desired_bass: -10,
+        };
         assert!(request.validate_basic().is_ok());
-        let request = SetBassOperationRequest { instance_id: 0, desired_bass: 10 };
+        let request = SetBassOperationRequest {
+            instance_id: 0,
+            desired_bass: 10,
+        };
         assert!(request.validate_basic().is_ok());
 
         // Out of range
-        let request = SetBassOperationRequest { instance_id: 0, desired_bass: -11 };
+        let request = SetBassOperationRequest {
+            instance_id: 0,
+            desired_bass: -11,
+        };
         assert!(request.validate_basic().is_err());
-        let request = SetBassOperationRequest { instance_id: 0, desired_bass: 11 };
+        let request = SetBassOperationRequest {
+            instance_id: 0,
+            desired_bass: 11,
+        };
         assert!(request.validate_basic().is_err());
     }
 
@@ -714,14 +747,26 @@ mod tests {
 
     #[test]
     fn test_set_treble_validation() {
-        let request = SetTrebleOperationRequest { instance_id: 0, desired_treble: -10 };
+        let request = SetTrebleOperationRequest {
+            instance_id: 0,
+            desired_treble: -10,
+        };
         assert!(request.validate_basic().is_ok());
-        let request = SetTrebleOperationRequest { instance_id: 0, desired_treble: 10 };
+        let request = SetTrebleOperationRequest {
+            instance_id: 0,
+            desired_treble: 10,
+        };
         assert!(request.validate_basic().is_ok());
 
-        let request = SetTrebleOperationRequest { instance_id: 0, desired_treble: -11 };
+        let request = SetTrebleOperationRequest {
+            instance_id: 0,
+            desired_treble: -11,
+        };
         assert!(request.validate_basic().is_err());
-        let request = SetTrebleOperationRequest { instance_id: 0, desired_treble: 11 };
+        let request = SetTrebleOperationRequest {
+            instance_id: 0,
+            desired_treble: 11,
+        };
         assert!(request.validate_basic().is_err());
     }
 
@@ -731,7 +776,9 @@ mod tests {
 
     #[test]
     fn test_get_loudness_builder() {
-        let op = get_loudness_operation("Master".to_string()).build().unwrap();
+        let op = get_loudness_operation("Master".to_string())
+            .build()
+            .unwrap();
         assert_eq!(op.request().channel, "Master");
         assert_eq!(op.request().instance_id, 0);
     }
@@ -743,12 +790,16 @@ mod tests {
             channel: "Master".to_string(),
         };
         let payload = GetLoudnessOperation::build_payload(&request).unwrap();
-        assert_eq!(payload, "<InstanceID>0</InstanceID><Channel>Master</Channel>");
+        assert_eq!(
+            payload,
+            "<InstanceID>0</InstanceID><Channel>Master</Channel>"
+        );
     }
 
     #[test]
     fn test_get_loudness_parse_response_true() {
-        let xml_str = r#"<GetLoudnessResponse><CurrentLoudness>1</CurrentLoudness></GetLoudnessResponse>"#;
+        let xml_str =
+            r#"<GetLoudnessResponse><CurrentLoudness>1</CurrentLoudness></GetLoudnessResponse>"#;
         let xml = xmltree::Element::parse(xml_str.as_bytes()).unwrap();
         let response = GetLoudnessOperation::parse_response(&xml).unwrap();
         assert!(response.current_loudness);
@@ -756,7 +807,8 @@ mod tests {
 
     #[test]
     fn test_get_loudness_parse_response_false() {
-        let xml_str = r#"<GetLoudnessResponse><CurrentLoudness>0</CurrentLoudness></GetLoudnessResponse>"#;
+        let xml_str =
+            r#"<GetLoudnessResponse><CurrentLoudness>0</CurrentLoudness></GetLoudnessResponse>"#;
         let xml = xmltree::Element::parse(xml_str.as_bytes()).unwrap();
         let response = GetLoudnessOperation::parse_response(&xml).unwrap();
         assert!(!response.current_loudness);
@@ -773,7 +825,9 @@ mod tests {
 
     #[test]
     fn test_set_loudness_builder() {
-        let op = set_loudness_operation("Master".to_string(), true).build().unwrap();
+        let op = set_loudness_operation("Master".to_string(), true)
+            .build()
+            .unwrap();
         assert!(op.request().desired_loudness);
         assert_eq!(op.request().channel, "Master");
     }

@@ -350,7 +350,11 @@ mod tests {
         // Add speaker and group to store
         {
             let mut s = store.write().unwrap();
-            s.add_speaker(make_speaker_info("RINCON_111", "Living Room", "192.168.1.101"));
+            s.add_speaker(make_speaker_info(
+                "RINCON_111",
+                "Living Room",
+                "192.168.1.101",
+            ));
             s.add_group(GroupInfo::new(
                 group_id.clone(),
                 speaker_id.clone(),
@@ -384,7 +388,11 @@ mod tests {
         // Add speaker but no group
         {
             let mut s = store.write().unwrap();
-            s.add_speaker(make_speaker_info("RINCON_111", "Living Room", "192.168.1.101"));
+            s.add_speaker(make_speaker_info(
+                "RINCON_111",
+                "Living Room",
+                "192.168.1.101",
+            ));
         }
 
         // Apply GroupVolume change - should be silently dropped
@@ -410,7 +418,11 @@ mod tests {
         // Add speakers to store
         {
             let mut s = store.write().unwrap();
-            s.add_speaker(make_speaker_info("RINCON_111", "Living Room", "192.168.1.101"));
+            s.add_speaker(make_speaker_info(
+                "RINCON_111",
+                "Living Room",
+                "192.168.1.101",
+            ));
             s.add_speaker(make_speaker_info("RINCON_222", "Kitchen", "192.168.1.102"));
         }
 
@@ -426,8 +438,14 @@ mod tests {
                 vec![speaker1.clone(), speaker2.clone()],
             )],
             memberships: vec![
-                (speaker1.clone(), GroupMembership::new(group_id.clone(), true)),
-                (speaker2.clone(), GroupMembership::new(group_id.clone(), false)),
+                (
+                    speaker1.clone(),
+                    GroupMembership::new(group_id.clone(), true),
+                ),
+                (
+                    speaker2.clone(),
+                    GroupMembership::new(group_id.clone(), false),
+                ),
             ],
             boot_seqs: vec![],
         };
@@ -438,7 +456,7 @@ mod tests {
         // Verify groups are updated
         let s = store.read().unwrap();
         assert_eq!(s.groups.len(), 1);
-        
+
         let group = s.groups.get(&group_id).unwrap();
         assert_eq!(group.coordinator_id, speaker1);
         assert_eq!(group.member_ids.len(), 2);
@@ -455,7 +473,11 @@ mod tests {
         // Add speakers to store
         {
             let mut s = store.write().unwrap();
-            s.add_speaker(make_speaker_info("RINCON_111", "Living Room", "192.168.1.101"));
+            s.add_speaker(make_speaker_info(
+                "RINCON_111",
+                "Living Room",
+                "192.168.1.101",
+            ));
             s.add_speaker(make_speaker_info("RINCON_222", "Kitchen", "192.168.1.102"));
         }
 
@@ -470,8 +492,14 @@ mod tests {
                 vec![speaker1.clone(), speaker2.clone()],
             )],
             memberships: vec![
-                (speaker1.clone(), GroupMembership::new(group_id.clone(), true)),
-                (speaker2.clone(), GroupMembership::new(group_id.clone(), false)),
+                (
+                    speaker1.clone(),
+                    GroupMembership::new(group_id.clone(), true),
+                ),
+                (
+                    speaker2.clone(),
+                    GroupMembership::new(group_id.clone(), false),
+                ),
             ],
             boot_seqs: vec![],
         };
@@ -480,7 +508,7 @@ mod tests {
 
         // Verify GroupMembership is updated for each speaker
         let s = store.read().unwrap();
-        
+
         let membership1: Option<GroupMembership> = s.get(&speaker1);
         assert!(membership1.is_some());
         let m1 = membership1.unwrap();
@@ -506,7 +534,11 @@ mod tests {
         // Add speakers to store
         {
             let mut s = store.write().unwrap();
-            s.add_speaker(make_speaker_info("RINCON_111", "Living Room", "192.168.1.101"));
+            s.add_speaker(make_speaker_info(
+                "RINCON_111",
+                "Living Room",
+                "192.168.1.101",
+            ));
             s.add_speaker(make_speaker_info("RINCON_222", "Kitchen", "192.168.1.102"));
         }
 
@@ -525,8 +557,14 @@ mod tests {
                 vec![speaker1.clone(), speaker2.clone()],
             )],
             memberships: vec![
-                (speaker1.clone(), GroupMembership::new(group_id.clone(), true)),
-                (speaker2.clone(), GroupMembership::new(group_id.clone(), false)),
+                (
+                    speaker1.clone(),
+                    GroupMembership::new(group_id.clone(), true),
+                ),
+                (
+                    speaker2.clone(),
+                    GroupMembership::new(group_id.clone(), false),
+                ),
             ],
             boot_seqs: vec![],
         };
@@ -555,9 +593,13 @@ mod tests {
         // Add speakers and an initial group
         {
             let mut s = store.write().unwrap();
-            s.add_speaker(make_speaker_info("RINCON_111", "Living Room", "192.168.1.101"));
+            s.add_speaker(make_speaker_info(
+                "RINCON_111",
+                "Living Room",
+                "192.168.1.101",
+            ));
             s.add_speaker(make_speaker_info("RINCON_222", "Kitchen", "192.168.1.102"));
-            
+
             // Add initial group
             let old_group_id = GroupId::new("OLD_GROUP:1");
             s.add_group(GroupInfo::new(
@@ -583,8 +625,14 @@ mod tests {
                 vec![speaker1.clone(), speaker2.clone()],
             )],
             memberships: vec![
-                (speaker1.clone(), GroupMembership::new(new_group_id.clone(), false)),
-                (speaker2.clone(), GroupMembership::new(new_group_id.clone(), true)),
+                (
+                    speaker1.clone(),
+                    GroupMembership::new(new_group_id.clone(), false),
+                ),
+                (
+                    speaker2.clone(),
+                    GroupMembership::new(new_group_id.clone(), true),
+                ),
             ],
             boot_seqs: vec![],
         };
@@ -610,7 +658,11 @@ mod tests {
         // Add speakers
         {
             let mut s = store.write().unwrap();
-            s.add_speaker(make_speaker_info("RINCON_111", "Living Room", "192.168.1.101"));
+            s.add_speaker(make_speaker_info(
+                "RINCON_111",
+                "Living Room",
+                "192.168.1.101",
+            ));
             s.add_speaker(make_speaker_info("RINCON_222", "Kitchen", "192.168.1.102"));
         }
 
@@ -623,8 +675,14 @@ mod tests {
                 vec![speaker1.clone(), speaker2.clone()],
             )],
             memberships: vec![
-                (speaker1.clone(), GroupMembership::new(group_id.clone(), true)),
-                (speaker2.clone(), GroupMembership::new(group_id.clone(), false)),
+                (
+                    speaker1.clone(),
+                    GroupMembership::new(group_id.clone(), true),
+                ),
+                (
+                    speaker2.clone(),
+                    GroupMembership::new(group_id.clone(), false),
+                ),
             ],
             boot_seqs: vec![],
         };
@@ -649,7 +707,11 @@ mod tests {
         // Add speaker and set initial membership
         {
             let mut s = store.write().unwrap();
-            s.add_speaker(make_speaker_info("RINCON_111", "Living Room", "192.168.1.101"));
+            s.add_speaker(make_speaker_info(
+                "RINCON_111",
+                "Living Room",
+                "192.168.1.101",
+            ));
             s.set(&speaker1, GroupMembership::new(group_id.clone(), true));
         }
 
@@ -666,9 +728,10 @@ mod tests {
                 speaker1.clone(),
                 vec![speaker1.clone()],
             )],
-            memberships: vec![
-                (speaker1.clone(), GroupMembership::new(group_id.clone(), true)),
-            ],
+            memberships: vec![(
+                speaker1.clone(),
+                GroupMembership::new(group_id.clone(), true),
+            )],
             boot_seqs: vec![],
         };
 
@@ -678,4 +741,3 @@ mod tests {
         assert!(rx.try_recv().is_err());
     }
 }
-

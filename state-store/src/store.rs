@@ -224,7 +224,9 @@ where
                 Ok(e) => e,
                 Err(_) => return,
             };
-            let bag = entities.entry(entity_id.clone()).or_insert_with(PropertyBag::new);
+            let bag = entities
+                .entry(entity_id.clone())
+                .or_insert_with(PropertyBag::new);
             bag.set(value)
         };
 
@@ -266,10 +268,7 @@ where
 
     /// Get the number of entities in the store
     pub fn entity_count(&self) -> usize {
-        self.entities
-            .read()
-            .map(|e| e.len())
-            .unwrap_or(0)
+        self.entities.read().map(|e| e.len()).unwrap_or(0)
     }
 
     /// Check if the store is empty
@@ -426,7 +425,10 @@ mod tests {
         // Set creates entity
         store.set(&"entity-1".to_string(), TestProp(42));
         assert_eq!(store.entity_count(), 1);
-        assert_eq!(store.get::<TestProp>(&"entity-1".to_string()), Some(TestProp(42)));
+        assert_eq!(
+            store.get::<TestProp>(&"entity-1".to_string()),
+            Some(TestProp(42))
+        );
     }
 
     #[test]
@@ -508,6 +510,9 @@ mod tests {
 
         // Both share the same state
         store.set(&"entity-1".to_string(), TestProp(42));
-        assert_eq!(cloned.get::<TestProp>(&"entity-1".to_string()), Some(TestProp(42)));
+        assert_eq!(
+            cloned.get::<TestProp>(&"entity-1".to_string()),
+            Some(TestProp(42))
+        );
     }
 }

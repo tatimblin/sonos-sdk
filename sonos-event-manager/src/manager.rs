@@ -248,7 +248,7 @@ impl SonosEventManager {
     pub fn is_service_subscribed(&self, device_ip: IpAddr, service: Service) -> bool {
         self.service_refs
             .read()
-            .map(|refs| refs.get(&(device_ip, service)).map_or(false, |&c| c > 0))
+            .map(|refs| refs.get(&(device_ip, service)).is_some_and(|&c| c > 0))
             .unwrap_or(false)
     }
 
@@ -272,10 +272,7 @@ impl Drop for SonosEventManager {
     fn drop(&mut self) {
         tracing::debug!(
             "SonosEventManager dropping, {} active service subscriptions",
-            self.service_refs
-                .read()
-                .map(|r| r.len())
-                .unwrap_or(0)
+            self.service_refs.read().map(|r| r.len()).unwrap_or(0)
         );
 
         // Send shutdown command to worker

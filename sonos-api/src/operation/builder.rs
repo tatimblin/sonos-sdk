@@ -3,7 +3,7 @@
 //! This module provides the builder pattern for constructing UPnP operations
 //! with validation, timeout, and retry configuration.
 
-use super::{UPnPOperation, ValidationLevel, ValidationError, Validate, OperationMetadata};
+use super::{OperationMetadata, UPnPOperation, Validate, ValidationError, ValidationLevel};
 use std::marker::PhantomData;
 use std::time::Duration;
 
@@ -62,7 +62,6 @@ impl<Op: UPnPOperation> OperationBuilder<Op> {
         self
     }
 
-
     /// Build the final composable operation
     ///
     /// This validates the request according to the configured validation level
@@ -109,8 +108,6 @@ impl<Op: UPnPOperation> OperationBuilder<Op> {
     pub fn timeout(&self) -> Option<Duration> {
         self.timeout
     }
-
-
 }
 
 /// A composable operation ready for execution
@@ -144,7 +141,6 @@ impl<Op: UPnPOperation> ComposableOperation<Op> {
         self.timeout
     }
 
-
     /// Get the operation metadata
     pub fn metadata(&self) -> &OperationMetadata {
         &self.metadata
@@ -165,7 +161,10 @@ impl<Op: UPnPOperation> ComposableOperation<Op> {
     ///
     /// # Returns
     /// The parsed response or an API error
-    pub fn parse_response(&self, xml: &xmltree::Element) -> Result<Op::Response, crate::error::ApiError> {
+    pub fn parse_response(
+        &self,
+        xml: &xmltree::Element,
+    ) -> Result<Op::Response, crate::error::ApiError> {
         Op::parse_response(xml)
     }
 }
@@ -183,7 +182,7 @@ impl<Op: UPnPOperation> std::fmt::Debug for ComposableOperation<Op> {
 
 impl<Op: UPnPOperation> Clone for ComposableOperation<Op>
 where
-    Op::Request: Clone
+    Op::Request: Clone,
 {
     fn clone(&self) -> Self {
         Self {
@@ -196,13 +195,12 @@ where
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::operation::{ValidationLevel, ValidationError, Validate};
+    use crate::operation::{Validate, ValidationError, ValidationLevel};
     use crate::service::Service;
-    use serde::{Serialize, Deserialize};
+    use serde::{Deserialize, Serialize};
     use xmltree::Element;
 
     // Mock types for testing
@@ -237,12 +235,16 @@ mod tests {
 
         fn build_payload(request: &Self::Request) -> Result<String, ValidationError> {
             request.validate(ValidationLevel::Basic)?;
-            Ok(format!("<TestRequest><Value>{}</Value></TestRequest>", request.value))
+            Ok(format!(
+                "<TestRequest><Value>{}</Value></TestRequest>",
+                request.value
+            ))
         }
 
         fn parse_response(xml: &Element) -> Result<Self::Response, crate::error::ApiError> {
             Ok(TestResponse {
-                result: xml.get_child("Result")
+                result: xml
+                    .get_child("Result")
                     .and_then(|e| e.get_text())
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| "default".to_string()),
@@ -324,7 +326,7 @@ mod tests {
             .build()
             .expect("Should build successfully");
 
-        let debug_str = format!("{:?}", operation);
+        let debug_str = format!("{operation:?}");
         assert!(debug_str.contains("TestAction"));
         assert!(debug_str.contains("AVTransport"));
     }
@@ -340,5 +342,4 @@ mod tests {
         assert_eq!(operation.request().value, cloned.request().value);
         assert_eq!(operation.validation_level(), cloned.validation_level());
     }
-
 }

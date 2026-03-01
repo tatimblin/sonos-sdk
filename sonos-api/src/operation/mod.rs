@@ -63,7 +63,6 @@ pub trait SonosOperation {
     fn parse_response(xml: &Element) -> Result<Self::Response, ApiError>;
 }
 
-
 /// Validation error types
 #[derive(Debug, thiserror::Error)]
 pub enum ValidationError {
@@ -90,7 +89,12 @@ pub enum ValidationError {
 }
 
 impl ValidationError {
-    pub fn range_error(parameter: &str, min: impl std::fmt::Display, max: impl std::fmt::Display, value: impl std::fmt::Display) -> Self {
+    pub fn range_error(
+        parameter: &str,
+        min: impl std::fmt::Display,
+        max: impl std::fmt::Display,
+        value: impl std::fmt::Display,
+    ) -> Self {
         Self::RangeError {
             parameter: parameter.to_string(),
             value: value.to_string(),
@@ -109,18 +113,13 @@ impl ValidationError {
 }
 
 /// Validation levels for operation parameters
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ValidationLevel {
     /// No validation - maximum performance
     None,
     /// Basic validation - type and range checks
+    #[default]
     Basic,
-}
-
-impl Default for ValidationLevel {
-    fn default() -> Self {
-        Self::Basic
-    }
 }
 
 /// Trait for types that can be validated
@@ -274,7 +273,7 @@ pub fn validate_channel(channel: &str) -> Result<(), ValidationError> {
         "Master" | "LF" | "RF" => Ok(()),
         other => Err(ValidationError::Custom {
             parameter: "channel".to_string(),
-            message: format!("Invalid channel '{}'. Must be 'Master', 'LF', or 'RF'", other),
+            message: format!("Invalid channel '{other}'. Must be 'Master', 'LF', or 'RF'"),
         }),
     }
 }
@@ -295,7 +294,6 @@ mod tests {
     fn test_validation_level_default() {
         assert_eq!(ValidationLevel::default(), ValidationLevel::Basic);
     }
-
 
     // Mock validation implementation for testing
     struct TestRequest {

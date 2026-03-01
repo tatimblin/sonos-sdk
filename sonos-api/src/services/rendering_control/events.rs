@@ -4,11 +4,11 @@
 //! replicating exactly what Sonos produces for sonos-stream consumption.
 
 use serde::{Deserialize, Serialize};
-use std::net::IpAddr;
 use std::collections::HashMap;
+use std::net::IpAddr;
 
-use crate::{Result, Service, ApiError};
-use crate::events::{EnrichedEvent, EventSource, EventParser, xml_utils};
+use crate::events::{xml_utils, EnrichedEvent, EventParser, EventSource};
+use crate::{ApiError, Result, Service};
 
 /// Minimal RenderingControl event - direct serde mapping from UPnP event XML
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,7 +20,10 @@ pub struct RenderingControlEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RenderingControlProperty {
-    #[serde(rename = "LastChange", deserialize_with = "xml_utils::deserialize_nested")]
+    #[serde(
+        rename = "LastChange",
+        deserialize_with = "xml_utils::deserialize_nested"
+    )]
     last_change: RenderingControlEventData,
 }
 
@@ -95,22 +98,42 @@ impl RenderingControlEvent {
 
     /// Get bass
     pub fn bass(&self) -> Option<String> {
-        self.property.last_change.instance.bass.as_ref().map(|v| v.val.clone())
+        self.property
+            .last_change
+            .instance
+            .bass
+            .as_ref()
+            .map(|v| v.val.clone())
     }
 
     /// Get treble
     pub fn treble(&self) -> Option<String> {
-        self.property.last_change.instance.treble.as_ref().map(|v| v.val.clone())
+        self.property
+            .last_change
+            .instance
+            .treble
+            .as_ref()
+            .map(|v| v.val.clone())
     }
 
     /// Get loudness
     pub fn loudness(&self) -> Option<String> {
-        self.property.last_change.instance.loudness.as_ref().map(|v| v.val.clone())
+        self.property
+            .last_change
+            .instance
+            .loudness
+            .as_ref()
+            .map(|v| v.val.clone())
     }
 
     /// Get balance
     pub fn balance(&self) -> Option<String> {
-        self.property.last_change.instance.balance.as_ref().map(|v| v.val.clone())
+        self.property
+            .last_change
+            .instance
+            .balance
+            .as_ref()
+            .map(|v| v.val.clone())
     }
 
     /// Get other channels as a map of all non-standard channels
@@ -136,7 +159,10 @@ impl RenderingControlEvent {
 
     /// Helper method to get volume for a specific channel
     fn get_volume_for_channel(&self, channel: &str) -> Option<String> {
-        self.property.last_change.instance.volumes
+        self.property
+            .last_change
+            .instance
+            .volumes
             .iter()
             .find(|v| v.channel == channel)
             .map(|v| v.val.clone())
@@ -144,7 +170,10 @@ impl RenderingControlEvent {
 
     /// Helper method to get mute for a specific channel
     fn get_mute_for_channel(&self, channel: &str) -> Option<String> {
-        self.property.last_change.instance.mutes
+        self.property
+            .last_change
+            .instance
+            .mutes
             .iter()
             .find(|m| m.channel == channel)
             .map(|m| m.val.clone())
@@ -171,7 +200,7 @@ impl RenderingControlEvent {
     pub fn from_xml(xml: &str) -> Result<Self> {
         let clean_xml = xml_utils::strip_namespaces(xml);
         quick_xml::de::from_str(&clean_xml)
-            .map_err(|e| ApiError::ParseError(format!("Failed to parse RenderingControl XML: {}", e)))
+            .map_err(|e| ApiError::ParseError(format!("Failed to parse RenderingControl XML: {e}")))
     }
 }
 
@@ -196,7 +225,12 @@ pub fn create_enriched_event(
     event_source: EventSource,
     event_data: RenderingControlEvent,
 ) -> EnrichedEvent<RenderingControlEvent> {
-    EnrichedEvent::new(speaker_ip, Service::RenderingControl, event_source, event_data)
+    EnrichedEvent::new(
+        speaker_ip,
+        Service::RenderingControl,
+        event_source,
+        event_data,
+    )
 }
 
 /// Create enriched event with registration ID
@@ -231,24 +265,34 @@ mod tests {
             property: RenderingControlProperty {
                 last_change: RenderingControlEventData {
                     instance: RenderingControlInstance {
-                        volumes: vec![
-                            ChannelValueAttribute { val: "75".to_string(), channel: "Master".to_string() },
-                        ],
-                        mutes: vec![
-                            ChannelValueAttribute { val: "false".to_string(), channel: "Master".to_string() },
-                        ],
-                        bass: Some(xml_utils::ValueAttribute { val: "0".to_string() }),
-                        treble: Some(xml_utils::ValueAttribute { val: "0".to_string() }),
-                        loudness: Some(xml_utils::ValueAttribute { val: "true".to_string() }),
-                        balance: Some(xml_utils::ValueAttribute { val: "0".to_string() }),
-                    }
-                }
-            }
+                        volumes: vec![ChannelValueAttribute {
+                            val: "75".to_string(),
+                            channel: "Master".to_string(),
+                        }],
+                        mutes: vec![ChannelValueAttribute {
+                            val: "false".to_string(),
+                            channel: "Master".to_string(),
+                        }],
+                        bass: Some(xml_utils::ValueAttribute {
+                            val: "0".to_string(),
+                        }),
+                        treble: Some(xml_utils::ValueAttribute {
+                            val: "0".to_string(),
+                        }),
+                        loudness: Some(xml_utils::ValueAttribute {
+                            val: "true".to_string(),
+                        }),
+                        balance: Some(xml_utils::ValueAttribute {
+                            val: "0".to_string(),
+                        }),
+                    },
+                },
+            },
         };
 
         assert_eq!(event.master_volume(), Some("75".to_string()));
         assert_eq!(event.master_mute(), Some("false".to_string()));
-        assert_eq!(event.other_channels().is_empty(), true);
+        assert!(event.other_channels().is_empty());
     }
 
     #[test]
@@ -305,19 +349,21 @@ mod tests {
             property: RenderingControlProperty {
                 last_change: RenderingControlEventData {
                     instance: RenderingControlInstance {
-                        volumes: vec![
-                            ChannelValueAttribute { val: "50".to_string(), channel: "Master".to_string() },
-                        ],
-                        mutes: vec![
-                            ChannelValueAttribute { val: "0".to_string(), channel: "Master".to_string() },
-                        ],
+                        volumes: vec![ChannelValueAttribute {
+                            val: "50".to_string(),
+                            channel: "Master".to_string(),
+                        }],
+                        mutes: vec![ChannelValueAttribute {
+                            val: "0".to_string(),
+                            channel: "Master".to_string(),
+                        }],
                         bass: None,
                         treble: None,
                         loudness: None,
                         balance: None,
-                    }
-                }
-            }
+                    },
+                },
+            },
         };
 
         let enriched = create_enriched_event(ip, source, event_data);
@@ -337,19 +383,21 @@ mod tests {
             property: RenderingControlProperty {
                 last_change: RenderingControlEventData {
                     instance: RenderingControlInstance {
-                        volumes: vec![
-                            ChannelValueAttribute { val: "50".to_string(), channel: "Master".to_string() },
-                        ],
-                        mutes: vec![
-                            ChannelValueAttribute { val: "0".to_string(), channel: "Master".to_string() },
-                        ],
+                        volumes: vec![ChannelValueAttribute {
+                            val: "50".to_string(),
+                            channel: "Master".to_string(),
+                        }],
+                        mutes: vec![ChannelValueAttribute {
+                            val: "0".to_string(),
+                            channel: "Master".to_string(),
+                        }],
                         bass: None,
                         treble: None,
                         loudness: None,
                         balance: None,
-                    }
-                }
-            }
+                    },
+                },
+            },
         };
 
         let enriched = create_enriched_event_with_registration_id(42, ip, source, event_data);
@@ -364,20 +412,36 @@ mod tests {
                 last_change: RenderingControlEventData {
                     instance: RenderingControlInstance {
                         volumes: vec![
-                            ChannelValueAttribute { val: "50".to_string(), channel: "Master".to_string() },
-                            ChannelValueAttribute { val: "45".to_string(), channel: "LF".to_string() },
-                            ChannelValueAttribute { val: "55".to_string(), channel: "RF".to_string() },
+                            ChannelValueAttribute {
+                                val: "50".to_string(),
+                                channel: "Master".to_string(),
+                            },
+                            ChannelValueAttribute {
+                                val: "45".to_string(),
+                                channel: "LF".to_string(),
+                            },
+                            ChannelValueAttribute {
+                                val: "55".to_string(),
+                                channel: "RF".to_string(),
+                            },
                         ],
-                        mutes: vec![
-                            ChannelValueAttribute { val: "0".to_string(), channel: "Master".to_string() },
-                        ],
-                        bass: Some(xml_utils::ValueAttribute { val: "5".to_string() }),
-                        treble: Some(xml_utils::ValueAttribute { val: "-3".to_string() }),
-                        loudness: Some(xml_utils::ValueAttribute { val: "1".to_string() }),
+                        mutes: vec![ChannelValueAttribute {
+                            val: "0".to_string(),
+                            channel: "Master".to_string(),
+                        }],
+                        bass: Some(xml_utils::ValueAttribute {
+                            val: "5".to_string(),
+                        }),
+                        treble: Some(xml_utils::ValueAttribute {
+                            val: "-3".to_string(),
+                        }),
+                        loudness: Some(xml_utils::ValueAttribute {
+                            val: "1".to_string(),
+                        }),
                         balance: None,
-                    }
-                }
-            }
+                    },
+                },
+            },
         };
 
         let state = event.into_state();
@@ -389,6 +453,5 @@ mod tests {
         assert_eq!(state.bass, Some("5".to_string()));
         assert_eq!(state.treble, Some("-3".to_string()));
         assert_eq!(state.loudness, Some("1".to_string()));
-
     }
 }

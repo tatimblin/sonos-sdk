@@ -64,7 +64,8 @@ pub struct AVTransportState {
 pub fn poll(client: &SonosClient, ip: &str) -> crate::Result<AVTransportState> {
     let transport = client.execute_enhanced(
         ip,
-        super::get_transport_info_operation().build()
+        super::get_transport_info_operation()
+            .build()
             .map_err(|e| crate::ApiError::ParseError(e.to_string()))?,
     )?;
 
@@ -90,8 +91,12 @@ pub fn poll(client: &SonosClient, ip: &str) -> crate::Result<AVTransportState> {
         track_metadata: position.as_ref().map(|p| p.track_meta_data.clone()),
         rel_time: position.as_ref().map(|p| p.rel_time.clone()),
         abs_time: position.as_ref().map(|p| p.abs_time.clone()),
-        rel_count: position.as_ref().and_then(|p| u32::try_from(p.rel_count).ok()),
-        abs_count: position.as_ref().and_then(|p| u32::try_from(p.abs_count).ok()),
+        rel_count: position
+            .as_ref()
+            .and_then(|p| u32::try_from(p.rel_count).ok()),
+        abs_count: position
+            .as_ref()
+            .and_then(|p| u32::try_from(p.abs_count).ok()),
         play_mode: settings.map(|s| s.play_mode),
         next_track_uri: media.as_ref().map(|m| m.next_uri.clone()),
         next_track_metadata: media.as_ref().map(|m| m.next_uri_meta_data.clone()),

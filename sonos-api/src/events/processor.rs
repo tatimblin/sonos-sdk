@@ -3,12 +3,18 @@
 //! This module provides a service-agnostic event processor that can handle
 //! events from any Sonos UPnP service using direct self-parsing methods.
 
-use std::net::IpAddr;
-use crate::{Result, Service};
 use super::types::{EnrichedEvent, EventSource};
+use crate::{Result, Service};
+use std::net::IpAddr;
 
 /// Generic event processor that can handle events from any service
 pub struct EventProcessor;
+
+impl Default for EventProcessor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl EventProcessor {
     /// Create a new event processor
@@ -91,19 +97,26 @@ impl EventProcessor {
                 Ok(Box::new(event))
             }
             Service::RenderingControl => {
-                let event = crate::services::rendering_control::RenderingControlEvent::from_xml(event_xml)?;
+                let event =
+                    crate::services::rendering_control::RenderingControlEvent::from_xml(event_xml)?;
                 Ok(Box::new(event))
             }
             Service::GroupRenderingControl => {
-                let event = crate::services::group_rendering_control::GroupRenderingControlEvent::from_xml(event_xml)?;
+                let event =
+                    crate::services::group_rendering_control::GroupRenderingControlEvent::from_xml(
+                        event_xml,
+                    )?;
                 Ok(Box::new(event))
             }
             Service::ZoneGroupTopology => {
-                let event = crate::services::zone_group_topology::ZoneGroupTopologyEvent::from_xml(event_xml)?;
+                let event = crate::services::zone_group_topology::ZoneGroupTopologyEvent::from_xml(
+                    event_xml,
+                )?;
                 Ok(Box::new(event))
             }
             Service::GroupManagement => {
-                let event = crate::services::group_management::GroupManagementEvent::from_xml(event_xml)?;
+                let event =
+                    crate::services::group_management::GroupManagementEvent::from_xml(event_xml)?;
                 Ok(Box::new(event))
             }
         }
@@ -245,7 +258,7 @@ mod tests {
             "192.168.1.100".parse().unwrap(),
             Service::AVTransport,
             "uuid:123".to_string(),
-            av_xml
+            av_xml,
         );
 
         assert!(result.is_ok());
@@ -265,7 +278,7 @@ mod tests {
             "192.168.1.100".parse().unwrap(),
             Service::RenderingControl,
             "uuid:456".to_string(),
-            rc_xml
+            rc_xml,
         );
 
         assert!(result.is_ok());
@@ -277,12 +290,13 @@ mod tests {
             "192.168.1.100".parse().unwrap(),
             Service::GroupRenderingControl,
             "uuid:789".to_string(),
-            grc_xml
+            grc_xml,
         );
 
         assert!(result.is_ok());
         let enriched = result.unwrap();
-        let grc_event = enriched.event_data
+        let grc_event = enriched
+            .event_data
             .downcast::<crate::services::group_rendering_control::GroupRenderingControlEvent>()
             .expect("Should downcast to GroupRenderingControlEvent");
         assert_eq!(grc_event.group_volume(), Some(14));

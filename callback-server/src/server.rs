@@ -3,8 +3,8 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use warp::Filter;
 use tracing::{debug, error, info, trace, warn};
+use warp::Filter;
 
 use super::router::{EventRouter, NotificationPayload};
 
@@ -93,22 +93,20 @@ impl CallbackServer {
         event_sender: mpsc::UnboundedSender<NotificationPayload>,
     ) -> Result<Self, String> {
         // Find an available port in the range
-        let port = Self::find_available_port(port_range.0, port_range.1)
-            .ok_or_else(|| {
-                format!(
-                    "No available port found in range {}-{}",
-                    port_range.0, port_range.1
-                )
-            })?;
-
-        // Detect local IP address
-        let local_ip = Self::detect_local_ip().ok_or_else(|| {
-            "Failed to detect local IP address".to_string()
+        let port = Self::find_available_port(port_range.0, port_range.1).ok_or_else(|| {
+            format!(
+                "No available port found in range {}-{}",
+                port_range.0, port_range.1
+            )
         })?;
 
-        eprintln!("Detected local IP address: {}", local_ip);
+        // Detect local IP address
+        let local_ip = Self::detect_local_ip()
+            .ok_or_else(|| "Failed to detect local IP address".to_string())?;
+
+        eprintln!("Detected local IP address: {local_ip}");
         let base_url = format!("http://{local_ip}:{port}");
-        eprintln!("Callback server base URL: {}", base_url);
+        eprintln!("Callback server base URL: {base_url}");
 
         // Create event router
         let event_router = Arc::new(EventRouter::new(event_sender));
@@ -120,17 +118,13 @@ impl CallbackServer {
         let (ready_tx, mut ready_rx) = mpsc::channel::<()>(1);
 
         // Start the HTTP server
-        let server_handle = Self::start_server(
-            port,
-            event_router.clone(),
-            shutdown_rx,
-            ready_tx
-        );
+        let server_handle = Self::start_server(port, event_router.clone(), shutdown_rx, ready_tx);
 
         // Wait for server to be ready
-        ready_rx.recv().await.ok_or_else(|| {
-            "Server failed to start".to_string()
-        })?;
+        ready_rx
+            .recv()
+            .await
+            .ok_or_else(|| "Server failed to start".to_string())?;
 
         Ok(Self {
             port,
@@ -193,8 +187,6 @@ impl CallbackServer {
         &self.event_router
     }
 
-
-
     /// Shutdown the callback server gracefully.
     ///
     /// Sends a shutdown signal to the HTTP server and waits for it to complete
@@ -233,11 +225,7 @@ impl CallbackServer {
 
     /// Check if a port is available for binding.
     fn is_port_available(port: u16) -> bool {
-        TcpListener::bind(SocketAddr::new(
-            IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
-            port,
-        ))
-        .is_ok()
+        TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), port)).is_ok()
     }
 
     /// Detect the local IP address for callback URLs.
@@ -334,7 +322,7 @@ impl CallbackServer {
                                     subscription_id = %sub_id,
                                     "UPnP event routed successfully"
                                 );
-                                Ok::<_ , warp::Rejection>(warp::reply::with_status(
+                                Ok::<_, warp::Rejection>(warp::reply::with_status(
                                     "",
                                     warp::http::StatusCode::OK,
                                 ))
@@ -353,13 +341,12 @@ impl CallbackServer {
             let routes = notify_route.recover(handle_rejection);
 
             // Create server with graceful shutdown
-            let (addr, server) = warp::serve(routes)
-                .bind_with_graceful_shutdown(
-                    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), port),
-                    async move {
-                        shutdown_rx.recv().await;
-                    },
-                );
+            let (addr, server) = warp::serve(routes).bind_with_graceful_shutdown(
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), port),
+                async move {
+                    shutdown_rx.recv().await;
+                },
+            );
 
             info!(
                 address = %addr,
@@ -395,8 +382,6 @@ impl CallbackServer {
 
         true
     }
-
-
 }
 
 /// Custom rejection for invalid UPnP headers.
@@ -456,14 +441,12 @@ mod tests {
     fn test_detect_local_ip() {
         let ip = CallbackServer::detect_local_ip();
         assert!(ip.is_some());
-        
+
         // Should not be localhost
         if let Some(IpAddr::V4(addr)) = ip {
             assert_ne!(addr, Ipv4Addr::new(127, 0, 0, 1));
         }
     }
-
-
 
     #[test]
     fn test_validate_upnp_headers() {
@@ -506,7 +489,7 @@ mod tests {
     #[tokio::test]
     async fn test_callback_server_creation() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        
+
         let server = CallbackServer::new((50000, 50100), tx).await;
         assert!(server.is_ok());
 
@@ -537,4 +520,3 @@ mod tests {
         server.shutdown().await.unwrap();
     }
 }
-

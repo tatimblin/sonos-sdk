@@ -6,8 +6,8 @@
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 
-use crate::{Result, Service, ApiError};
-use crate::events::{EnrichedEvent, EventSource, EventParser, xml_utils};
+use crate::events::{xml_utils, EnrichedEvent, EventParser, EventSource};
+use crate::{ApiError, Result, Service};
 
 /// Minimal ZoneGroupTopology event - direct serde mapping from UPnP event XML
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,7 +20,11 @@ pub struct ZoneGroupTopologyEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ZoneGroupTopologyProperty {
-    #[serde(rename = "ZoneGroupState", default, deserialize_with = "xml_utils::deserialize_zone_group_state")]
+    #[serde(
+        rename = "ZoneGroupState",
+        default,
+        deserialize_with = "xml_utils::deserialize_zone_group_state"
+    )]
     zone_group_state: Option<ZoneGroupState>,
 }
 
@@ -196,23 +200,30 @@ pub struct SatelliteInfo {
 pub fn parse_zone_group_state_xml(raw_xml: &str) -> Result<Vec<ZoneGroupInfo>> {
     let clean_xml = xml_utils::strip_namespaces(raw_xml);
     let state: ZoneGroupState = quick_xml::de::from_str(&clean_xml)
-        .map_err(|e| ApiError::ParseError(format!("ZoneGroupState parse error: {}", e)))?;
+        .map_err(|e| ApiError::ParseError(format!("ZoneGroupState parse error: {e}")))?;
     Ok(convert_zone_groups(&state))
 }
 
 /// Convert parsed private ZoneGroupState to public ZoneGroupInfo types.
 fn convert_zone_groups(zone_group_state: &ZoneGroupState) -> Vec<ZoneGroupInfo> {
-    zone_group_state.zone_groups.zone_groups.iter().map(|group| {
-        ZoneGroupInfo {
+    zone_group_state
+        .zone_groups
+        .zone_groups
+        .iter()
+        .map(|group| ZoneGroupInfo {
             coordinator: group.coordinator.clone(),
             id: group.id.clone(),
-            members: group.members.iter().map(|member| {
-                ZoneGroupMemberInfo {
+            members: group
+                .members
+                .iter()
+                .map(|member| ZoneGroupMemberInfo {
                     uuid: member.uuid.clone(),
                     location: member.location.clone(),
                     zone_name: member.zone_name.clone(),
                     software_version: member.software_version.clone().unwrap_or_default(),
-                    boot_seq: member.boot_seq.as_deref()
+                    boot_seq: member
+                        .boot_seq
+                        .as_deref()
                         .and_then(|s| s.parse::<u32>().ok())
                         .unwrap_or(0),
                     network_info: NetworkInfo {
@@ -220,27 +231,37 @@ fn convert_zone_groups(zone_group_state: &ZoneGroupState) -> Vec<ZoneGroupInfo> 
                         wifi_enabled: member.wifi_enabled.clone().unwrap_or_default(),
                         eth_link: member.eth_link.clone().unwrap_or_default(),
                         channel_freq: member.channel_freq.clone().unwrap_or_default(),
-                        behind_wifi_extender: member.behind_wifi_extender.clone().unwrap_or_default(),
+                        behind_wifi_extender: member
+                            .behind_wifi_extender
+                            .clone()
+                            .unwrap_or_default(),
                     },
-                    satellites: member.satellites.iter().map(|sat| {
-                        SatelliteInfo {
+                    satellites: member
+                        .satellites
+                        .iter()
+                        .map(|sat| SatelliteInfo {
                             uuid: sat.uuid.clone(),
                             location: sat.location.clone().unwrap_or_default(),
                             zone_name: sat.zone_name.clone().unwrap_or_default(),
-                            ht_sat_chan_map_set: sat.ht_sat_chan_map_set.clone().unwrap_or_default(),
+                            ht_sat_chan_map_set: sat
+                                .ht_sat_chan_map_set
+                                .clone()
+                                .unwrap_or_default(),
                             invisible: sat.invisible.clone().unwrap_or_default(),
-                        }
-                    }).collect(),
-                }
-            }).collect(),
-        }
-    }).collect()
+                        })
+                        .collect(),
+                })
+                .collect(),
+        })
+        .collect()
 }
 
 impl ZoneGroupTopologyEvent {
     /// Get zone groups from the topology event
     pub fn zone_groups(&self) -> Vec<ZoneGroupInfo> {
-        let zone_group_state = self.properties.iter()
+        let zone_group_state = self
+            .properties
+            .iter()
             .find_map(|p| p.zone_group_state.as_ref());
 
         if let Some(state) = zone_group_state {
@@ -266,8 +287,9 @@ impl ZoneGroupTopologyEvent {
     /// Parse from UPnP event XML using serde
     pub fn from_xml(xml: &str) -> Result<Self> {
         let clean_xml = xml_utils::strip_namespaces(xml);
-        quick_xml::de::from_str(&clean_xml)
-            .map_err(|e| ApiError::ParseError(format!("Failed to parse ZoneGroupTopology XML: {}", e)))
+        quick_xml::de::from_str(&clean_xml).map_err(|e| {
+            ApiError::ParseError(format!("Failed to parse ZoneGroupTopology XML: {e}"))
+        })
     }
 }
 
@@ -292,7 +314,12 @@ pub fn create_enriched_event(
     event_source: EventSource,
     event_data: ZoneGroupTopologyEvent,
 ) -> EnrichedEvent<ZoneGroupTopologyEvent> {
-    EnrichedEvent::new(speaker_ip, Service::ZoneGroupTopology, event_source, event_data)
+    EnrichedEvent::new(
+        speaker_ip,
+        Service::ZoneGroupTopology,
+        event_source,
+        event_data,
+    )
 }
 
 /// Create enriched event with registration ID
@@ -351,14 +378,14 @@ mod tests {
                     coordinator: zone_group.coordinator.clone(),
                     id: zone_group.id.clone(),
                     members: Vec::new(),
-                }]
-            }
+                }],
+            },
         };
 
         let event = ZoneGroupTopologyEvent {
             properties: vec![ZoneGroupTopologyProperty {
                 zone_group_state: Some(event_data),
-            }]
+            }],
         };
 
         let zone_groups = event.zone_groups();
@@ -375,7 +402,7 @@ mod tests {
         let event_data = ZoneGroupTopologyEvent {
             properties: vec![ZoneGroupTopologyProperty {
                 zone_group_state: None,
-            }]
+            }],
         };
 
         let enriched = create_enriched_event(ip, source, event_data);
@@ -394,7 +421,7 @@ mod tests {
         let event_data = ZoneGroupTopologyEvent {
             properties: vec![ZoneGroupTopologyProperty {
                 zone_group_state: None,
-            }]
+            }],
         };
 
         let enriched = create_enriched_event_with_registration_id(42, ip, source, event_data);
@@ -419,7 +446,10 @@ mod xml_parsing_tests {
 </e:propertyset>"#;
 
         let result = ZoneGroupTopologyEvent::from_xml(xml);
-        assert!(result.is_ok(), "Failed to parse multi-property event: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "Failed to parse multi-property event: {result:?}"
+        );
 
         let event = result.unwrap();
         let zone_groups = event.zone_groups();
@@ -436,7 +466,10 @@ mod xml_parsing_tests {
 </e:propertyset>"#;
 
         let result = ZoneGroupTopologyEvent::from_xml(xml);
-        assert!(result.is_ok(), "Failed with empty ZoneGroupState: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "Failed with empty ZoneGroupState: {result:?}"
+        );
 
         let event = result.unwrap();
         assert!(event.zone_groups().is_empty());
@@ -467,7 +500,7 @@ mod xml_parsing_tests {
 </e:propertyset>"#;
 
         let result = ZoneGroupTopologyEvent::from_xml(xml);
-        assert!(result.is_ok(), "Failed with satellites: {:?}", result);
+        assert!(result.is_ok(), "Failed with satellites: {result:?}");
 
         let event = result.unwrap();
         let zone_groups = event.zone_groups();

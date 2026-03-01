@@ -3,11 +3,11 @@
 //! This module provides both sync and async iterator interfaces for consuming events,
 //! with sync being the best practice for local state management and async for real-time processing.
 
+use futures::Stream;
 use std::collections::VecDeque;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
-use futures::Stream;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
@@ -23,7 +23,6 @@ pub struct EventIterator {
     /// Buffer for events when using sync iteration
     buffered_events: VecDeque<EnrichedEvent>,
 
-
     /// Tokio runtime handle for sync iteration
     runtime_handle: tokio::runtime::Handle,
 
@@ -36,9 +35,7 @@ pub struct EventIterator {
 
 impl EventIterator {
     /// Create a new event iterator
-    pub fn new(
-        receiver: mpsc::UnboundedReceiver<EnrichedEvent>,
-    ) -> Self {
+    pub fn new(receiver: mpsc::UnboundedReceiver<EnrichedEvent>) -> Self {
         let runtime_handle = tokio::runtime::Handle::try_current()
             .expect("EventIterator must be created within a Tokio runtime");
 
@@ -91,7 +88,10 @@ impl EventIterator {
     }
 
     /// ASYNC INTERFACE - Get next event with timeout
-    pub async fn next_timeout(&mut self, timeout_duration: Duration) -> EventProcessingResult<Option<EnrichedEvent>> {
+    pub async fn next_timeout(
+        &mut self,
+        timeout_duration: Duration,
+    ) -> EventProcessingResult<Option<EnrichedEvent>> {
         match timeout(timeout_duration, self.next_async()).await {
             Ok(event) => Ok(event),
             Err(_) => {
@@ -137,7 +137,7 @@ impl EventIterator {
     ///
     /// This is the recommended interface for maintaining local state from events.
     /// Use like: `for event in events.iter() { /* handle event */ }`
-    pub fn iter(&mut self) -> SyncEventIterator {
+    pub fn iter(&mut self) -> SyncEventIterator<'_> {
         SyncEventIterator::new(self)
     }
 
@@ -209,11 +209,14 @@ impl EventIterator {
     /// Filter events by source type (UPnP or polling)
     pub fn filter_by_source_type(self, source_type: EventSourceType) -> FilteredEventIterator {
         FilteredEventIterator::new(self, move |event| {
-            match (&event.event_source, source_type) {
-                (EventSource::UPnPNotification { .. }, EventSourceType::UPnP) => true,
-                (EventSource::PollingDetection { .. }, EventSourceType::Polling) => true,
-                _ => false,
-            }
+            matches!(
+                (&event.event_source, source_type),
+                (EventSource::UPnPNotification { .. }, EventSourceType::UPnP)
+                    | (
+                        EventSource::PollingDetection { .. },
+                        EventSourceType::Polling
+                    )
+            )
         })
     }
 }
@@ -315,7 +318,7 @@ impl FilteredEventIterator {
     }
 
     /// Get sync iterator for the filtered events
-    pub fn iter(&mut self) -> FilteredSyncIterator {
+    pub fn iter(&mut self) -> FilteredSyncIterator<'_> {
         FilteredSyncIterator::new(self)
     }
 }
@@ -391,9 +394,9 @@ impl std::fmt::Display for EventIteratorStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::IpAddr;
+    use crate::events::types::{AVTransportState, EventData, EventSource};
+
     use std::time::SystemTime;
-    use crate::events::types::{EventData, AVTransportState, EventSource};
 
     fn create_test_event(registration_id: RegistrationId) -> EnrichedEvent {
         EnrichedEvent {
@@ -425,7 +428,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_event_iterator_creation() {
-        let (sender, receiver) = mpsc::unbounded_channel();
+        let (_sender, receiver) = mpsc::unbounded_channel();
         let iterator = EventIterator::new(receiver);
 
         assert!(!iterator.is_consumed());
@@ -580,7 +583,7 @@ mod tests {
         let stats = EventIteratorStats::new();
         assert_eq!(stats.delivery_rate(), 1.0);
 
-        let mut stats_with_data = EventIteratorStats {
+        let stats_with_data = EventIteratorStats {
             events_received: 10,
             events_delivered: 8,
             resync_events_emitted: 1,

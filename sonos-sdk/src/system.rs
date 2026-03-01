@@ -200,7 +200,11 @@ impl SonosSystem {
             .groups()
             .into_iter()
             .filter_map(|info| {
-                Group::from_info(info, Arc::clone(&self.state_manager), self._api_client.clone())
+                Group::from_info(
+                    info,
+                    Arc::clone(&self.state_manager),
+                    self._api_client.clone(),
+                )
             })
             .collect()
     }
@@ -293,14 +297,13 @@ impl SonosSystem {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use sonos_state::{GroupInfo, Topology};
 
     /// Create a test SonosSystem with the given devices
-    /// 
+    ///
     /// Note: This requires network access for the event manager.
     /// Tests using this helper should be run with actual network connectivity
     /// or mocked appropriately.
@@ -345,10 +348,7 @@ mod tests {
             vec![speaker2.clone()],
         );
 
-        let topology = Topology::new(
-            system.state_manager.speaker_infos(),
-            vec![group1, group2],
-        );
+        let topology = Topology::new(system.state_manager.speaker_infos(), vec![group1, group2]);
         system.state_manager.initialize(topology);
 
         // Verify groups() returns all groups
@@ -394,16 +394,9 @@ mod tests {
         // Initialize with topology
         let speaker = SpeakerId::new("RINCON_111");
         let group_id = GroupId::new("RINCON_111:1");
-        let group = GroupInfo::new(
-            group_id.clone(),
-            speaker.clone(),
-            vec![speaker.clone()],
-        );
+        let group = GroupInfo::new(group_id.clone(), speaker.clone(), vec![speaker.clone()]);
 
-        let topology = Topology::new(
-            system.state_manager.speaker_infos(),
-            vec![group],
-        );
+        let topology = Topology::new(system.state_manager.speaker_infos(), vec![group]);
         system.state_manager.initialize(topology);
 
         // Verify get_group_by_id returns the correct group
@@ -466,10 +459,7 @@ mod tests {
             vec![speaker1.clone(), speaker2.clone()],
         );
 
-        let topology = Topology::new(
-            system.state_manager.speaker_infos(),
-            vec![group],
-        );
+        let topology = Topology::new(system.state_manager.speaker_infos(), vec![group]);
         system.state_manager.initialize(topology);
 
         // Verify get_group_for_speaker returns the correct group for both speakers
@@ -521,16 +511,9 @@ mod tests {
         // Initialize with topology
         let speaker = SpeakerId::new("RINCON_111");
         let group_id = GroupId::new("RINCON_111:1");
-        let group = GroupInfo::new(
-            group_id.clone(),
-            speaker.clone(),
-            vec![speaker.clone()],
-        );
+        let group = GroupInfo::new(group_id.clone(), speaker.clone(), vec![speaker.clone()]);
 
-        let topology = Topology::new(
-            system.state_manager.speaker_infos(),
-            vec![group],
-        );
+        let topology = Topology::new(system.state_manager.speaker_infos(), vec![group]);
         system.state_manager.initialize(topology);
 
         // Verify all three methods return consistent data
@@ -545,9 +528,18 @@ mod tests {
 
         // All should return the same group
         assert_eq!(groups[0].id.as_str(), by_id.as_ref().unwrap().id.as_str());
-        assert_eq!(groups[0].id.as_str(), by_speaker.as_ref().unwrap().id.as_str());
-        assert_eq!(groups[0].coordinator_id.as_str(), by_id.as_ref().unwrap().coordinator_id.as_str());
-        assert_eq!(groups[0].coordinator_id.as_str(), by_speaker.as_ref().unwrap().coordinator_id.as_str());
+        assert_eq!(
+            groups[0].id.as_str(),
+            by_speaker.as_ref().unwrap().id.as_str()
+        );
+        assert_eq!(
+            groups[0].coordinator_id.as_str(),
+            by_id.as_ref().unwrap().coordinator_id.as_str()
+        );
+        assert_eq!(
+            groups[0].coordinator_id.as_str(),
+            by_speaker.as_ref().unwrap().coordinator_id.as_str()
+        );
     }
 
     #[test]
@@ -584,10 +576,7 @@ mod tests {
             speaker1.clone(),
             vec![speaker1.clone()],
         );
-        let topology = Topology::new(
-            system.state_manager.speaker_infos(),
-            vec![group],
-        );
+        let topology = Topology::new(system.state_manager.speaker_infos(), vec![group]);
         system.state_manager.initialize(topology);
 
         let coordinator = system.get_speaker_by_id(&speaker1).unwrap();

@@ -11,8 +11,8 @@
 //! - `set_group_mute` - Set the group mute state
 //! - `snapshot_group_volume` - Snapshot volume ratios for proportional changes
 
-use crate::{define_operation_with_response, define_upnp_operation, Validate};
 use crate::operation::parse_sonos_bool;
+use crate::{define_operation_with_response, define_upnp_operation, Validate};
 use paste::paste;
 
 // =============================================================================
@@ -318,7 +318,8 @@ mod tests {
 
     #[test]
     fn test_get_group_mute_parse_response_true() {
-        let xml_str = r#"<GetGroupMuteResponse><CurrentMute>1</CurrentMute></GetGroupMuteResponse>"#;
+        let xml_str =
+            r#"<GetGroupMuteResponse><CurrentMute>1</CurrentMute></GetGroupMuteResponse>"#;
         let xml = xmltree::Element::parse(xml_str.as_bytes()).unwrap();
         let response = GetGroupMuteOperation::parse_response(&xml).unwrap();
         assert!(response.current_mute);
@@ -326,7 +327,8 @@ mod tests {
 
     #[test]
     fn test_get_group_mute_parse_response_false() {
-        let xml_str = r#"<GetGroupMuteResponse><CurrentMute>0</CurrentMute></GetGroupMuteResponse>"#;
+        let xml_str =
+            r#"<GetGroupMuteResponse><CurrentMute>0</CurrentMute></GetGroupMuteResponse>"#;
         let xml = xmltree::Element::parse(xml_str.as_bytes()).unwrap();
         let response = GetGroupMuteOperation::parse_response(&xml).unwrap();
         assert!(!response.current_mute);
@@ -439,7 +441,6 @@ mod tests {
         let client = crate::SonosClient::new();
         // Verify subscribe function has correct signature (compiles)
         let _subscribe_fn = || subscribe(&client, "192.168.1.100", "http://callback.url");
-        assert!(true);
     }
 
     #[test]
@@ -448,6 +449,5 @@ mod tests {
         // Verify subscribe_with_timeout function has correct signature (compiles)
         let _subscribe_fn =
             || subscribe_with_timeout(&client, "192.168.1.100", "http://callback.url", 3600);
-        assert!(true);
     }
 }

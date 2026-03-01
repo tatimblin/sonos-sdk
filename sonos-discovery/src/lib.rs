@@ -34,13 +34,13 @@
 //! }
 //! ```
 
-mod error;
-mod ssdp;
 pub mod device;
 mod discovery;
+mod error;
+mod ssdp;
 
-pub use error::{DiscoveryError, Result};
 pub use discovery::DiscoveryIterator;
+pub use error::{DiscoveryError, Result};
 
 /// Information about a discovered Sonos device.
 ///
@@ -114,8 +114,8 @@ pub fn get() -> Vec<Device> {
 /// ```
 pub fn get_with_timeout(timeout: Duration) -> Vec<Device> {
     get_iter_with_timeout(timeout)
-        .filter_map(|event| match event {
-            DeviceEvent::Found(device) => Some(device),
+        .map(|event| match event {
+            DeviceEvent::Found(device) => device,
         })
         .collect()
 }

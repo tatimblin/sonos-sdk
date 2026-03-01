@@ -146,7 +146,6 @@ pub struct SubscriptionManager {
     /// Callback URL for UPnP event notifications
     callback_url: String,
 
-
     /// Active subscriptions indexed by registration ID
     active_subscriptions: Arc<RwLock<HashMap<RegistrationId, Arc<ManagedSubscriptionWrapper>>>>,
 
@@ -189,11 +188,7 @@ impl SubscriptionManager {
         // Create the subscription using SonosClient
         let subscription = self
             .sonos_client
-            .subscribe(
-                &pair.speaker_ip.to_string(),
-                service,
-                &self.callback_url,
-            )
+            .subscribe(&pair.speaker_ip.to_string(), service, &self.callback_url)
             .map_err(|e| SubscriptionError::CreationFailed(e.to_string()))?;
 
         // Wrap it with our additional context
@@ -331,10 +326,10 @@ impl SubscriptionManager {
         for (registration_id, wrapper) in subscriptions.drain() {
             match wrapper.unsubscribe().await {
                 Ok(()) => {
-                    eprintln!("✅ Unsubscribed {}", registration_id);
+                    eprintln!("✅ Unsubscribed {registration_id}");
                 }
                 Err(e) => {
-                    eprintln!("❌ Failed to unsubscribe {}: {}", registration_id, e);
+                    eprintln!("❌ Failed to unsubscribe {registration_id}: {e}");
                 }
             }
         }
@@ -362,7 +357,7 @@ impl std::fmt::Display for SubscriptionStats {
         writeln!(f, "  Total renewals: {}", self.total_renewals)?;
         writeln!(f, "  Service breakdown:")?;
         for (service, count) in &self.service_breakdown {
-            writeln!(f, "    {:?}: {}", service, count)?;
+            writeln!(f, "    {service:?}: {count}")?;
         }
         Ok(())
     }
@@ -377,10 +372,7 @@ mod tests {
         // Note: We can't easily test ManagedSubscription creation without actual devices
         // So we'll test the basic wrapper functionality that doesn't require network calls
         let _reg_id = RegistrationId::new(1);
-        let pair = SpeakerServicePair::new(
-            "192.168.1.100".parse().unwrap(),
-            Service::AVTransport,
-        );
+        let pair = SpeakerServicePair::new("192.168.1.100".parse().unwrap(), Service::AVTransport);
 
         // Basic tests for the pair functionality
         assert_eq!(pair.speaker_ip.to_string(), "192.168.1.100");
@@ -389,24 +381,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_subscription_manager_creation() {
-        let manager = SubscriptionManager::new(
-            "http://192.168.1.50:3400/callback".to_string(),
-        );
+        let manager = SubscriptionManager::new("http://192.168.1.50:3400/callback".to_string());
 
         // Test initial state
         assert_eq!(manager.firewall_status().await, FirewallStatus::Unknown);
         assert_eq!(manager.list_subscriptions().await.len(), 0);
 
         // Test firewall status updates
-        manager.set_firewall_status(FirewallStatus::Accessible).await;
+        manager
+            .set_firewall_status(FirewallStatus::Accessible)
+            .await;
         assert_eq!(manager.firewall_status().await, FirewallStatus::Accessible);
     }
 
     #[tokio::test]
     async fn test_subscription_stats() {
-        let manager = SubscriptionManager::new(
-            "http://192.168.1.50:3400/callback".to_string(),
-        );
+        let manager = SubscriptionManager::new("http://192.168.1.50:3400/callback".to_string());
 
         let stats = manager.stats().await;
         assert_eq!(stats.total_subscriptions, 0);

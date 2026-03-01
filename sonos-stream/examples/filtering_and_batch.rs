@@ -6,15 +6,14 @@
 //! - Peek functionality for lookahead without consuming events
 //! - Working with multiple devices and services simultaneously
 
-use sonos_stream::{
-    BrokerConfig, EventBroker, EventData, RegistrationResult,
-    events::iterator::EventSourceType,
-    events::types::{EventSource}
-};
 use sonos_api::Service;
+use sonos_stream::{
+    events::iterator::EventSourceType, events::types::EventSource, BrokerConfig, EventBroker,
+    EventData, RegistrationResult,
+};
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::Duration;
-use std::collections::HashMap;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -26,14 +25,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Set up multiple devices and services for filtering demonstration
     let device1: IpAddr = "192.168.1.100".parse()?;
-    let device2: IpAddr = "192.168.1.101".parse()?; // Second device if available
+    let _device2: IpAddr = "192.168.1.101".parse()?; // Second device if available
 
     println!("\n📋 Registering multiple services for filtering demonstration...");
 
     // Register multiple services across potentially multiple devices
     let registrations = vec![
-        broker.register_speaker_service(device1, Service::AVTransport).await?,
-        broker.register_speaker_service(device1, Service::RenderingControl).await?,
+        broker
+            .register_speaker_service(device1, Service::AVTransport)
+            .await?,
+        broker
+            .register_speaker_service(device1, Service::RenderingControl)
+            .await?,
         // Uncomment if you have a second device:
         // broker.register_speaker_service(device2, Service::AVTransport).await?,
         // broker.register_speaker_service(device2, Service::RenderingControl).await?,
@@ -41,10 +44,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("✅ Registered {} services:", registrations.len());
     for reg in &registrations {
-        println!("   ID: {} | Status: {:?} | Polling: {:?}",
-                 reg.registration_id,
-                 reg.firewall_status,
-                 reg.polling_reason.as_ref().map(|r| format!("{:?}", r)).unwrap_or("None".to_string()));
+        println!(
+            "   ID: {} | Status: {:?} | Polling: {:?}",
+            reg.registration_id,
+            reg.firewall_status,
+            reg.polling_reason
+                .as_ref()
+                .map(|r| format!("{r:?}"))
+                .unwrap_or("None".to_string())
+        );
     }
 
     println!("\n🔍 DEMONSTRATION 1: Event Source Filtering");
@@ -70,7 +78,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Demonstrate filtering events by source type (UPnP vs Polling)
-async fn demonstrate_source_filtering(broker: &mut EventBroker) -> Result<(), Box<dyn std::error::Error>> {
+async fn demonstrate_source_filtering(
+    broker: &mut EventBroker,
+) -> Result<(), Box<dyn std::error::Error>> {
     println!("Filtering events by source type...");
 
     let events = broker.event_iterator()?;
@@ -83,9 +93,15 @@ async fn demonstrate_source_filtering(broker: &mut EventBroker) -> Result<(), Bo
     let start = std::time::Instant::now();
 
     println!("💡 Different filter types available (create separate iterators for each):");
-    println!("   • events.filter_by_source_type(EventSourceType::UPnP)     - UPnP notifications only");
-    println!("   • events.filter_by_source_type(EventSourceType::Polling)  - Polling-based events only");
-    println!("   • events.filter_by_service(Service::AVTransport)          - Transport events only");
+    println!(
+        "   • events.filter_by_source_type(EventSourceType::UPnP)     - UPnP notifications only"
+    );
+    println!(
+        "   • events.filter_by_source_type(EventSourceType::Polling)  - Polling-based events only"
+    );
+    println!(
+        "   • events.filter_by_service(Service::AVTransport)          - Transport events only"
+    );
     println!("   • events.filter_by_registration(registration_id)          - Single device only");
 
     // Actually demonstrate the UPnP filter in action
@@ -95,21 +111,23 @@ async fn demonstrate_source_filtering(broker: &mut EventBroker) -> Result<(), Bo
         }
 
         upnp_count += 1;
-        println!("📡 UPnP Event {}: {} from {} ({})",
-                 upnp_count,
-                 format_event_data(&event.event_data),
-                 event.speaker_ip,
-                 format_event_source(&event.event_source));
+        println!(
+            "📡 UPnP Event {}: {} from {} ({})",
+            upnp_count,
+            format_event_data(&event.event_data),
+            event.speaker_ip,
+            format_event_source(&event.event_source)
+        );
     }
 
-    println!("✅ Captured {} UPnP-only events in 5 seconds", upnp_count);
+    println!("✅ Captured {upnp_count} UPnP-only events in 5 seconds");
     Ok(())
 }
 
 /// Demonstrate filtering by service type
 async fn demonstrate_service_filtering(
     broker: &mut EventBroker,
-    registrations: &[RegistrationResult]
+    registrations: &[RegistrationResult],
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Creating service-specific event streams...");
 
@@ -126,8 +144,14 @@ async fn demonstrate_service_filtering(
 
     println!("\n🎯 Registration-Specific Filter:");
     if let Some(first_reg) = registrations.first() {
-        println!("   let device_events = events.filter_by_registration({});", first_reg.registration_id);
-        println!("   // This would only receive events from registration ID {}", first_reg.registration_id);
+        println!(
+            "   let device_events = events.filter_by_registration({});",
+            first_reg.registration_id
+        );
+        println!(
+            "   // This would only receive events from registration ID {}",
+            first_reg.registration_id
+        );
     }
 
     // Demonstrate actual filtering with a short event collection period
@@ -154,7 +178,9 @@ async fn demonstrate_service_filtering(
 }
 
 /// Demonstrate batch processing of events
-async fn demonstrate_batch_processing(broker: &mut EventBroker) -> Result<(), Box<dyn std::error::Error>> {
+async fn demonstrate_batch_processing(
+    broker: &mut EventBroker,
+) -> Result<(), Box<dyn std::error::Error>> {
     println!("Demonstrating batch processing for efficient event handling...");
 
     let mut events = broker.event_iterator()?;
@@ -184,39 +210,61 @@ async fn demonstrate_batch_processing(broker: &mut EventBroker) -> Result<(), Bo
             match &event.event_data {
                 EventData::AVTransport(_) => {
                     transport_changes += 1;
-                    println!("   {}. 🎵 Transport event from {} ({})",
-                             i + 1, event.speaker_ip, format_event_source(&event.event_source));
+                    println!(
+                        "   {}. 🎵 Transport event from {} ({})",
+                        i + 1,
+                        event.speaker_ip,
+                        format_event_source(&event.event_source)
+                    );
                 }
                 EventData::RenderingControl(_) => {
                     volume_changes += 1;
-                    println!("   {}. 🔊 Volume event from {} ({})",
-                             i + 1, event.speaker_ip, format_event_source(&event.event_source));
+                    println!(
+                        "   {}. 🔊 Volume event from {} ({})",
+                        i + 1,
+                        event.speaker_ip,
+                        format_event_source(&event.event_source)
+                    );
                 }
                 EventData::ZoneGroupTopology(topology) => {
-                    println!("   {}. 🏠 Topology event from {} ({} groups, {})",
-                             i + 1,
-                             event.speaker_ip,
-                             topology.zone_groups.len(),
-                             format_event_source(&event.event_source));
+                    println!(
+                        "   {}. 🏠 Topology event from {} ({} groups, {})",
+                        i + 1,
+                        event.speaker_ip,
+                        topology.zone_groups.len(),
+                        format_event_source(&event.event_source)
+                    );
                 }
                 EventData::DeviceProperties(_) => {
-                    println!("   {}. ⚙️  Device properties event from {} ({})",
-                             i + 1, event.speaker_ip, format_event_source(&event.event_source));
+                    println!(
+                        "   {}. ⚙️  Device properties event from {} ({})",
+                        i + 1,
+                        event.speaker_ip,
+                        format_event_source(&event.event_source)
+                    );
                 }
                 EventData::GroupManagement(_) => {
-                    println!("   {}. 🔗 Group management event from {} ({})",
-                             i + 1, event.speaker_ip, format_event_source(&event.event_source));
+                    println!(
+                        "   {}. 🔗 Group management event from {} ({})",
+                        i + 1,
+                        event.speaker_ip,
+                        format_event_source(&event.event_source)
+                    );
                 }
                 EventData::GroupRenderingControl(_) => {
-                    println!("   {}. 🔊 Group rendering control event from {} ({})",
-                             i + 1, event.speaker_ip, format_event_source(&event.event_source));
+                    println!(
+                        "   {}. 🔊 Group rendering control event from {} ({})",
+                        i + 1,
+                        event.speaker_ip,
+                        format_event_source(&event.event_source)
+                    );
                 }
             }
         }
 
         println!("\n📊 Batch Analysis:");
-        println!("   Transport changes: {}", transport_changes);
-        println!("   Volume changes: {}", volume_changes);
+        println!("   Transport changes: {transport_changes}");
+        println!("   Volume changes: {volume_changes}");
         println!("   Devices affected: {}", devices_affected.len());
 
         // Demonstrate batch processing benefits
@@ -231,7 +279,9 @@ async fn demonstrate_batch_processing(broker: &mut EventBroker) -> Result<(), Bo
 }
 
 /// Demonstrate peek functionality for lookahead
-async fn demonstrate_peek_functionality(broker: &mut EventBroker) -> Result<(), Box<dyn std::error::Error>> {
+async fn demonstrate_peek_functionality(
+    broker: &mut EventBroker,
+) -> Result<(), Box<dyn std::error::Error>> {
     println!("Demonstrating peek functionality for event lookahead...");
 
     let mut events = broker.event_iterator()?;
@@ -249,7 +299,10 @@ async fn demonstrate_peek_functionality(broker: &mut EventBroker) -> Result<(), 
             println!("👁️ Peeked at next event:");
             println!("   Device: {}", peeked_event.speaker_ip);
             println!("   Service: {:?}", peeked_event.service);
-            println!("   Source: {}", format_event_source(&peeked_event.event_source));
+            println!(
+                "   Source: {}",
+                format_event_source(&peeked_event.event_source)
+            );
 
             // Note: We'll consume this event next
 
@@ -280,14 +333,18 @@ async fn demonstrate_peek_functionality(broker: &mut EventBroker) -> Result<(), 
 /// Demonstrate coordination across multiple devices
 async fn demonstrate_multi_device_coordination(
     broker: &mut EventBroker,
-    registrations: &[RegistrationResult]
+    registrations: &[RegistrationResult],
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Demonstrating multi-device event coordination...");
 
     if registrations.len() < 2 {
-        println!("💡 Only one device registered - multi-device coordination requires multiple devices");
+        println!(
+            "💡 Only one device registered - multi-device coordination requires multiple devices"
+        );
         println!("   Consider adding a second device with:");
-        println!("   broker.register_speaker_service(\"192.168.1.101\".parse()?, Service::AVTransport)");
+        println!(
+            "   broker.register_speaker_service(\"192.168.1.101\".parse()?, Service::AVTransport)"
+        );
         return Ok(());
     }
 
@@ -309,30 +366,33 @@ async fn demonstrate_multi_device_coordination(
                 let device_count = events_per_device.entry(event.speaker_ip).or_insert(0);
                 *device_count += 1;
 
-                println!("📡 Event from {}: {:?} (total from this device: {})",
-                         event.speaker_ip, event.service, device_count);
+                println!(
+                    "📡 Event from {}: {:?} (total from this device: {})",
+                    event.speaker_ip, event.service, device_count
+                );
 
                 // Track device state changes
-                match &event.event_data {
-                    EventData::AVTransport(transport_event) => {
-                        if let Some(ref state) = transport_event.transport_state {
-                            device_states.insert(event.speaker_ip, Some(state.clone()));
+                if let EventData::AVTransport(transport_event) = &event.event_data {
+                    if let Some(ref state) = transport_event.transport_state {
+                        device_states.insert(event.speaker_ip, Some(state.clone()));
 
-                            // Check for synchronized playback
-                            if device_states.len() > 1 {
-                                let states: Vec<&Option<String>> = device_states.values().collect();
-                                let all_playing = states.iter().all(|s| s.as_ref().map_or(false, |st| st == "PLAYING"));
-                                let all_paused = states.iter().all(|s| s.as_ref().map_or(false, |st| st.contains("PAUSED")));
+                        // Check for synchronized playback
+                        if device_states.len() > 1 {
+                            let states: Vec<&Option<String>> = device_states.values().collect();
+                            let all_playing = states
+                                .iter()
+                                .all(|s| s.as_ref().is_some_and(|st| st == "PLAYING"));
+                            let all_paused = states
+                                .iter()
+                                .all(|s| s.as_ref().is_some_and(|st| st.contains("PAUSED")));
 
-                                if all_playing {
-                                    println!("   🎵 All devices are now playing - synchronized!");
-                                } else if all_paused {
-                                    println!("   ⏸️ All devices are now paused - synchronized!");
-                                }
+                            if all_playing {
+                                println!("   🎵 All devices are now playing - synchronized!");
+                            } else if all_paused {
+                                println!("   ⏸️ All devices are now paused - synchronized!");
                             }
                         }
                     }
-                    _ => {}
                 }
             }
             Ok(None) => break,
@@ -343,7 +403,7 @@ async fn demonstrate_multi_device_coordination(
     // Summary
     println!("\n📊 Multi-device Coordination Summary:");
     for (device, count) in events_per_device {
-        println!("   {}: {} events", device, count);
+        println!("   {device}: {count} events");
     }
 
     println!("💡 Use this pattern to:");
@@ -383,16 +443,28 @@ fn analyze_collected_events(events: &[sonos_stream::events::types::EnrichedEvent
     }
 
     println!("   Service Distribution:");
-    println!("     🎵 AVTransport: {} events ({:.1}%)",
-             av_transport_events, (av_transport_events as f64 / events.len() as f64) * 100.0);
-    println!("     🔊 RenderingControl: {} events ({:.1}%)",
-             rendering_control_events, (rendering_control_events as f64 / events.len() as f64) * 100.0);
+    println!(
+        "     🎵 AVTransport: {} events ({:.1}%)",
+        av_transport_events,
+        (av_transport_events as f64 / events.len() as f64) * 100.0
+    );
+    println!(
+        "     🔊 RenderingControl: {} events ({:.1}%)",
+        rendering_control_events,
+        (rendering_control_events as f64 / events.len() as f64) * 100.0
+    );
 
     println!("   Source Distribution:");
-    println!("     📡 UPnP Events: {} ({:.1}%)",
-             upnp_events, (upnp_events as f64 / events.len() as f64) * 100.0);
-    println!("     🔄 Polling Events: {} ({:.1}%)",
-             polling_events, (polling_events as f64 / events.len() as f64) * 100.0);
+    println!(
+        "     📡 UPnP Events: {} ({:.1}%)",
+        upnp_events,
+        (upnp_events as f64 / events.len() as f64) * 100.0
+    );
+    println!(
+        "     🔄 Polling Events: {} ({:.1}%)",
+        polling_events,
+        (polling_events as f64 / events.len() as f64) * 100.0
+    );
 
     println!("\n🎯 Filtering Use Cases:");
     if av_transport_events > 0 {

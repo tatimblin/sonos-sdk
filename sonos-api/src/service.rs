@@ -1,15 +1,15 @@
 /// Represents the different UPnP services exposed by Sonos devices
-/// 
+///
 /// Each service provides a specific set of operations for controlling different
 /// aspects of the Sonos device functionality.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Service {
     /// AVTransport service - Controls playback (play, pause, stop, seek, etc.)
     AVTransport,
-    
+
     /// RenderingControl service - Controls audio rendering (volume, mute, etc.)
     RenderingControl,
-    
+
     /// GroupRenderingControl service - Controls group-wide audio settings
     GroupRenderingControl,
 
@@ -25,10 +25,10 @@ pub enum Service {
 pub struct ServiceInfo {
     /// The HTTP endpoint path for this service (relative to device base URL)
     pub endpoint: &'static str,
-    
+
     /// The UPnP service URI used in SOAP requests
     pub service_uri: &'static str,
-    
+
     /// The HTTP event endpoint path for UPnP event subscriptions
     pub event_endpoint: &'static str,
 }
@@ -107,7 +107,6 @@ impl Service {
             Service::GroupManagement => ServiceScope::PerCoordinator,
         }
     }
-
 }
 
 #[cfg(test)]
@@ -118,9 +117,15 @@ mod scope_tests {
     fn test_service_scopes() {
         assert_eq!(Service::AVTransport.scope(), ServiceScope::PerSpeaker);
         assert_eq!(Service::RenderingControl.scope(), ServiceScope::PerSpeaker);
-        assert_eq!(Service::GroupRenderingControl.scope(), ServiceScope::PerCoordinator);
+        assert_eq!(
+            Service::GroupRenderingControl.scope(),
+            ServiceScope::PerCoordinator
+        );
         assert_eq!(Service::ZoneGroupTopology.scope(), ServiceScope::PerNetwork);
-        assert_eq!(Service::GroupManagement.scope(), ServiceScope::PerCoordinator);
+        assert_eq!(
+            Service::GroupManagement.scope(),
+            ServiceScope::PerCoordinator
+        );
     }
 
     #[test]

@@ -15,16 +15,16 @@ fn capture_real_device_data() {
     println!("\n=== Capturing Real Sonos Device Data ===\n");
     println!("This test will discover real Sonos devices and display their information.");
     println!("You can use this data to create test fixtures for mocking.\n");
-    
+
     let timeout = Duration::from_secs(3);
     let mut device_count = 0;
-    
+
     for event in get_iter_with_timeout(timeout) {
         match event {
             DeviceEvent::Found(device) => {
                 device_count += 1;
-                
-                println!("--- Device {} ---", device_count);
+
+                println!("--- Device {device_count} ---");
                 println!("ID:         {}", device.id);
                 println!("Name:       {}", device.name);
                 println!("Room:       {}", device.room_name);
@@ -32,51 +32,56 @@ fn capture_real_device_data() {
                 println!("Port:       {}", device.port);
                 println!("Model:      {}", device.model_name);
                 println!();
-                
+
                 // Fetch the device XML for this device
-                let url = format!("http://{}:{}/xml/device_description.xml", 
-                    device.ip_address, device.port);
-                
-                println!("Fetching device XML from: {}", url);
-                
+                let url = format!(
+                    "http://{}:{}/xml/device_description.xml",
+                    device.ip_address, device.port
+                );
+
+                println!("Fetching device XML from: {url}");
+
                 match reqwest::blocking::get(&url) {
                     Ok(response) => {
                         match response.text() {
                             Ok(xml) => {
                                 println!("Device XML:");
-                                println!("{}", xml);
+                                println!("{xml}");
                                 println!();
-                                
+
                                 // Suggest fixture filename
-                                let model_slug = device.model_name
+                                let model_slug = device
+                                    .model_name
                                     .to_lowercase()
                                     .replace(" ", "_")
                                     .replace(":", "");
-                                let filename = format!("sonos_{}_device.xml", model_slug);
-                                println!("Suggested fixture filename: {}", filename);
-                                println!("Save this XML to: sonos-discovery/tests/fixtures/{}", filename);
+                                let filename = format!("sonos_{model_slug}_device.xml");
+                                println!("Suggested fixture filename: {filename}");
+                                println!(
+                                    "Save this XML to: sonos-discovery/tests/fixtures/{filename}"
+                                );
                                 println!();
                             }
                             Err(e) => {
-                                println!("Failed to read XML response: {}", e);
+                                println!("Failed to read XML response: {e}");
                             }
                         }
                     }
                     Err(e) => {
-                        println!("Failed to fetch device XML: {}", e);
+                        println!("Failed to fetch device XML: {e}");
                     }
                 }
-                
+
                 println!("========================================\n");
             }
         }
     }
-    
+
     if device_count == 0 {
         println!("No Sonos devices found on the network.");
         println!("Make sure you have Sonos devices powered on and connected to the same network.");
     } else {
-        println!("Total devices captured: {}", device_count);
+        println!("Total devices captured: {device_count}");
         println!("\nTo use this data for mocking:");
         println!("1. Create directory: sonos-discovery/tests/fixtures/");
         println!("2. Save each device XML to a separate file in that directory");
@@ -90,7 +95,7 @@ fn capture_ssdp_response_format() {
     println!("\n=== SSDP Response Format ===\n");
     println!("This test shows the format of SSDP responses received from Sonos devices.");
     println!("Use this information to create mock SSDP responses for testing.\n");
-    
+
     println!("Typical Sonos SSDP M-SEARCH response format:");
     println!("---");
     println!("HTTP/1.1 200 OK");
@@ -103,7 +108,7 @@ fn capture_ssdp_response_format() {
     println!("X-RINCON-BOOTSEQ: 123");
     println!("X-RINCON-HOUSEHOLD: Sonos_abcdefghijklmnopqrstuvwxyz");
     println!("---\n");
-    
+
     println!("Key fields for Sonos device identification:");
     println!("- LOCATION: URL to fetch device description XML");
     println!("- SERVER: Contains 'Sonos' for Sonos devices");
@@ -127,16 +132,17 @@ fn document_test_fixture_structure() {
     println!("├── discovery_integration.rs");
     println!("├── capture_fixtures.rs");
     println!("└── resource_cleanup.rs\n");
-    
+
     println!("Each fixture file should contain:");
     println!("- Complete XML device description");
     println!("- All required UPnP fields");
     println!("- Sonos-specific fields (roomName, etc.)");
     println!("- Representative data for that device model\n");
-    
+
     println!("Example minimal fixture (minimal_sonos_device.xml):");
     println!("---");
-    println!(r#"<?xml version="1.0"?>
+    println!(
+        r#"<?xml version="1.0"?>
 <root xmlns="urn:schemas-upnp-org:device-1-0">
   <device>
     <deviceType>urn:schemas-upnp-org:device:ZonePlayer:1</deviceType>
@@ -146,6 +152,7 @@ fn document_test_fixture_structure() {
     <UDN>uuid:RINCON_TEST123456</UDN>
     <roomName>Test Room</roomName>
   </device>
-</root>"#);
+</root>"#
+    );
     println!("---\n");
 }

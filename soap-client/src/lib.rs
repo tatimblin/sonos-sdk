@@ -1,7 +1,7 @@
 //! Internal implementation detail of [`sonos-sdk`](https://crates.io/crates/sonos-sdk). Not intended for direct use.
 //!
 //! Private SOAP client for UPnP device communication
-//! 
+//!
 //! This crate provides a minimal SOAP client specifically designed for
 //! communicating with UPnP devices like Sonos speakers. It also supports
 //! UPnP event subscriptions using SUBSCRIBE/UNSUBSCRIBE methods.
@@ -33,15 +33,13 @@ pub struct SoapClient {
 }
 
 /// Global shared SOAP client instance for maximum resource efficiency
-static SHARED_SOAP_CLIENT: LazyLock<SoapClient> = LazyLock::new(|| {
-    SoapClient {
-        agent: Arc::new(
-            ureq::AgentBuilder::new()
-                .timeout_connect(Duration::from_secs(5))
-                .timeout_read(Duration::from_secs(10))
-                .build(),
-        ),
-    }
+static SHARED_SOAP_CLIENT: LazyLock<SoapClient> = LazyLock::new(|| SoapClient {
+    agent: Arc::new(
+        ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_secs(5))
+            .timeout_read(Duration::from_secs(10))
+            .build(),
+    ),
 });
 
 impl SoapClient {
@@ -95,41 +93,40 @@ impl SoapClient {
                         {payload}
                     </u:{action}>
                 </s:Body>
-            </s:Envelope>"#,
-            action = action,
-            service_uri = service_uri,
-            payload = payload
+            </s:Envelope>"#
         );
-        
-        let url = format!("http://{}:1400/{}", ip, endpoint);
-        let soap_action = format!("\"{}#{}\"", service_uri, action);
-        
-        let response = self.agent
+
+        let url = format!("http://{ip}:1400/{endpoint}");
+        let soap_action = format!("\"{service_uri}#{action}\"");
+
+        let response = self
+            .agent
             .post(&url)
             .set("Content-Type", "text/xml; charset=\"utf-8\"")
             .set("SOAPACTION", &soap_action)
             .send_string(&body)
             .map_err(|e| SoapError::Network(e.to_string()))?;
-            
-        let xml_text = response.into_string()
+
+        let xml_text = response
+            .into_string()
             .map_err(|e| SoapError::Network(e.to_string()))?;
-            
-        let xml = Element::parse(xml_text.as_bytes())
-            .map_err(|e| SoapError::Parse(e.to_string()))?;
-            
+
+        let xml =
+            Element::parse(xml_text.as_bytes()).map_err(|e| SoapError::Parse(e.to_string()))?;
+
         // Extract response or handle SOAP fault
         self.extract_response(&xml, action)
     }
 
     /// Subscribe to UPnP events for a specific service endpoint
-    /// 
+    ///
     /// # Arguments
     /// * `ip` - Device IP address
     /// * `port` - Device port (typically 1400)
     /// * `event_endpoint` - Event endpoint path (e.g., "MediaRenderer/AVTransport/Event")
     /// * `callback_url` - URL where events should be sent
     /// * `timeout_seconds` - Requested subscription timeout in seconds
-    /// 
+    ///
     /// # Returns
     /// A `SubscriptionResponse` containing the SID and actual timeout
     pub fn subscribe(
@@ -140,15 +137,16 @@ impl SoapClient {
         callback_url: &str,
         timeout_seconds: u32,
     ) -> Result<SubscriptionResponse, SoapError> {
-        let url = format!("http://{}:{}/{}", ip, port, event_endpoint);
-        let host = format!("{}:{}", ip, port);
-        
-        let response = self.agent
+        let url = format!("http://{ip}:{port}/{event_endpoint}");
+        let host = format!("{ip}:{port}");
+
+        let response = self
+            .agent
             .request("SUBSCRIBE", &url)
             .set("HOST", &host)
-            .set("CALLBACK", &format!("<{}>", callback_url))
+            .set("CALLBACK", &format!("<{callback_url}>"))
             .set("NT", "upnp:event")
-            .set("TIMEOUT", &format!("Second-{}", timeout_seconds))
+            .set("TIMEOUT", &format!("Second-{timeout_seconds}"))
             .call()
             .map_err(|e| SoapError::Network(e.to_string()))?;
 
@@ -162,7 +160,9 @@ impl SoapClient {
         // Extract SID from response headers
         let sid = response
             .header("SID")
-            .ok_or_else(|| SoapError::Parse("Missing SID header in SUBSCRIBE response".to_string()))?
+            .ok_or_else(|| {
+                SoapError::Parse("Missing SID header in SUBSCRIBE response".to_string())
+            })?
             .to_string();
 
         // Extract timeout from response headers (optional, fallback to requested timeout)
@@ -185,14 +185,14 @@ impl SoapClient {
     }
 
     /// Renew an existing UPnP subscription
-    /// 
+    ///
     /// # Arguments
     /// * `ip` - Device IP address
     /// * `port` - Device port (typically 1400)
     /// * `event_endpoint` - Event endpoint path
     /// * `sid` - Subscription ID to renew
     /// * `timeout_seconds` - Requested renewal timeout in seconds
-    /// 
+    ///
     /// # Returns
     /// The actual timeout granted by the device
     pub fn renew_subscription(
@@ -203,14 +203,15 @@ impl SoapClient {
         sid: &str,
         timeout_seconds: u32,
     ) -> Result<u32, SoapError> {
-        let url = format!("http://{}:{}/{}", ip, port, event_endpoint);
-        let host = format!("{}:{}", ip, port);
-        
-        let response = self.agent
+        let url = format!("http://{ip}:{port}/{event_endpoint}");
+        let host = format!("{ip}:{port}");
+
+        let response = self
+            .agent
             .request("SUBSCRIBE", &url)
             .set("HOST", &host)
             .set("SID", sid)
-            .set("TIMEOUT", &format!("Second-{}", timeout_seconds))
+            .set("TIMEOUT", &format!("Second-{timeout_seconds}"))
             .call()
             .map_err(|e| SoapError::Network(e.to_string()))?;
 
@@ -237,7 +238,7 @@ impl SoapClient {
     }
 
     /// Unsubscribe from UPnP events
-    /// 
+    ///
     /// # Arguments
     /// * `ip` - Device IP address
     /// * `port` - Device port (typically 1400)
@@ -250,10 +251,11 @@ impl SoapClient {
         event_endpoint: &str,
         sid: &str,
     ) -> Result<(), SoapError> {
-        let url = format!("http://{}:{}/{}", ip, port, event_endpoint);
-        let host = format!("{}:{}", ip, port);
-        
-        let response = self.agent
+        let url = format!("http://{ip}:{port}/{event_endpoint}");
+        let host = format!("{ip}:{port}");
+
+        let response = self
+            .agent
             .request("UNSUBSCRIBE", &url)
             .set("HOST", &host)
             .set("SID", sid)
@@ -271,9 +273,10 @@ impl SoapClient {
     }
 
     fn extract_response(&self, xml: &Element, action: &str) -> Result<Element, SoapError> {
-        let body = xml.get_child("Body")
+        let body = xml
+            .get_child("Body")
             .ok_or_else(|| SoapError::Parse("Missing SOAP Body".to_string()))?;
-            
+
         // Check for SOAP fault first
         if let Some(fault) = body.get_child("Fault") {
             let error_code = fault
@@ -285,12 +288,12 @@ impl SoapClient {
                 .unwrap_or(500);
             return Err(SoapError::Fault(error_code));
         }
-        
+
         // Extract the action response
-        let response_name = format!("{}Response", action);
+        let response_name = format!("{action}Response");
         body.get_child(response_name.as_str())
             .cloned()
-            .ok_or_else(|| SoapError::Parse(format!("Missing {} element", response_name)))
+            .ok_or_else(|| SoapError::Parse(format!("Missing {response_name} element")))
     }
 }
 
@@ -339,7 +342,7 @@ mod tests {
     #[test]
     fn test_extract_response_with_valid_response() {
         let client = SoapClient::get();
-        
+
         let xml_str = r#"
             <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
                 <s:Body>
@@ -348,10 +351,10 @@ mod tests {
                 </s:Body>
             </s:Envelope>
         "#;
-        
+
         let xml = Element::parse(xml_str.as_bytes()).unwrap();
         let result = client.extract_response(&xml, "Play");
-        
+
         assert!(result.is_ok());
         let response = result.unwrap();
         assert_eq!(response.name, "PlayResponse");
@@ -360,7 +363,7 @@ mod tests {
     #[test]
     fn test_extract_response_with_soap_fault() {
         let client = SoapClient::get();
-        
+
         let xml_str = r#"
             <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
                 <s:Body>
@@ -377,10 +380,10 @@ mod tests {
                 </s:Body>
             </s:Envelope>
         "#;
-        
+
         let xml = Element::parse(xml_str.as_bytes()).unwrap();
         let result = client.extract_response(&xml, "Play");
-        
+
         assert!(result.is_err());
         match result.unwrap_err() {
             SoapError::Fault(code) => assert_eq!(code, 401),
@@ -391,15 +394,15 @@ mod tests {
     #[test]
     fn test_extract_response_missing_body() {
         let client = SoapClient::get();
-        
+
         let xml_str = r#"
             <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
             </s:Envelope>
         "#;
-        
+
         let xml = Element::parse(xml_str.as_bytes()).unwrap();
         let result = client.extract_response(&xml, "Play");
-        
+
         assert!(result.is_err());
         match result.unwrap_err() {
             SoapError::Parse(msg) => assert!(msg.contains("Missing SOAP Body")),
@@ -410,17 +413,17 @@ mod tests {
     #[test]
     fn test_extract_response_missing_action_response() {
         let client = SoapClient::get();
-        
+
         let xml_str = r#"
             <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
                 <s:Body>
                 </s:Body>
             </s:Envelope>
         "#;
-        
+
         let xml = Element::parse(xml_str.as_bytes()).unwrap();
         let result = client.extract_response(&xml, "Play");
-        
+
         assert!(result.is_err());
         match result.unwrap_err() {
             SoapError::Parse(msg) => assert!(msg.contains("Missing PlayResponse element")),
@@ -431,7 +434,7 @@ mod tests {
     #[test]
     fn test_soap_fault_with_default_error_code() {
         let client = SoapClient::get();
-        
+
         let xml_str = r#"
             <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
                 <s:Body>
@@ -442,10 +445,10 @@ mod tests {
                 </s:Body>
             </s:Envelope>
         "#;
-        
+
         let xml = Element::parse(xml_str.as_bytes()).unwrap();
         let result = client.extract_response(&xml, "Play");
-        
+
         assert!(result.is_err());
         match result.unwrap_err() {
             SoapError::Fault(code) => assert_eq!(code, 500), // Default error code

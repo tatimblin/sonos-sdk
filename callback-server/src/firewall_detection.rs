@@ -12,9 +12,10 @@ use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, info, warn};
 
 /// Status of firewall detection for a device.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum FirewallStatus {
     /// Detection has not been performed yet
+    #[default]
     Unknown,
     /// Server can receive external requests from this device
     Accessible,
@@ -22,12 +23,6 @@ pub enum FirewallStatus {
     Blocked,
     /// Detection failed due to other errors
     Error,
-}
-
-impl Default for FirewallStatus {
-    fn default() -> Self {
-        Self::Unknown
-    }
 }
 
 /// Configuration for firewall detection behavior.
@@ -459,13 +454,19 @@ mod tests {
         coordinator.on_event_received(device_ip).await;
 
         // Verify cached
-        assert_eq!(coordinator.get_device_status(device_ip).await, FirewallStatus::Accessible);
+        assert_eq!(
+            coordinator.get_device_status(device_ip).await,
+            FirewallStatus::Accessible
+        );
 
         // Clear cache
         coordinator.clear_device_cache(device_ip).await;
 
         // Should be unknown again
-        assert_eq!(coordinator.get_device_status(device_ip).await, FirewallStatus::Unknown);
+        assert_eq!(
+            coordinator.get_device_status(device_ip).await,
+            FirewallStatus::Unknown
+        );
     }
 
     #[tokio::test]

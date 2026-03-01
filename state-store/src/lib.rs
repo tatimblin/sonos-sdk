@@ -124,8 +124,14 @@ mod tests {
         store.set(&"speaker-1".to_string(), Mute(false));
 
         // Verify values
-        assert_eq!(store.get::<Volume>(&"speaker-1".to_string()), Some(Volume(50)));
-        assert_eq!(store.get::<Mute>(&"speaker-1".to_string()), Some(Mute(false)));
+        assert_eq!(
+            store.get::<Volume>(&"speaker-1".to_string()),
+            Some(Volume(50))
+        );
+        assert_eq!(
+            store.get::<Mute>(&"speaker-1".to_string()),
+            Some(Mute(false))
+        );
 
         // Watch and verify events
         store.watch("speaker-1".to_string(), Volume::KEY);
@@ -134,7 +140,9 @@ mod tests {
         store.set(&"speaker-1".to_string(), Volume(75));
 
         // Get event
-        let event = store.iter().recv_timeout(std::time::Duration::from_millis(100));
+        let event = store
+            .iter()
+            .recv_timeout(std::time::Duration::from_millis(100));
         assert!(event.is_some());
         assert_eq!(event.unwrap().property_key, Volume::KEY);
     }
@@ -148,9 +156,18 @@ mod tests {
         store.set(&"speaker-3".to_string(), Volume(100));
 
         assert_eq!(store.entity_count(), 3);
-        assert_eq!(store.get::<Volume>(&"speaker-1".to_string()), Some(Volume(50)));
-        assert_eq!(store.get::<Volume>(&"speaker-2".to_string()), Some(Volume(75)));
-        assert_eq!(store.get::<Volume>(&"speaker-3".to_string()), Some(Volume(100)));
+        assert_eq!(
+            store.get::<Volume>(&"speaker-1".to_string()),
+            Some(Volume(50))
+        );
+        assert_eq!(
+            store.get::<Volume>(&"speaker-2".to_string()),
+            Some(Volume(75))
+        );
+        assert_eq!(
+            store.get::<Volume>(&"speaker-3".to_string()),
+            Some(Volume(100))
+        );
     }
 
     #[test]
@@ -161,6 +178,9 @@ mod tests {
         store1.set(&"speaker-1".to_string(), Volume(50));
 
         // Both clones see the same data
-        assert_eq!(store2.get::<Volume>(&"speaker-1".to_string()), Some(Volume(50)));
+        assert_eq!(
+            store2.get::<Volume>(&"speaker-1".to_string()),
+            Some(Volume(50))
+        );
     }
 }

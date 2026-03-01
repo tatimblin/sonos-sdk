@@ -6,9 +6,11 @@
 //! 3. Getting property values
 //! 4. Watching for changes via blocking iteration
 
-use sonos_state::{GroupId, GroupInfo, GroupVolume, StateManager, SpeakerId, Topology, Volume, Property};
-use sonos_state::property::SonosProperty;
 use sonos_event_manager::SonosEventManager;
+use sonos_state::property::SonosProperty;
+use sonos_state::{
+    GroupId, GroupInfo, GroupVolume, Property, SpeakerId, StateManager, Topology, Volume,
+};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -35,10 +37,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize topology so group events can route (speaker → group mapping)
     // In a real app, topology comes from ZoneGroupTopology events.
     // Here we create a simple one-speaker-per-group topology.
-    let groups: Vec<GroupInfo> = devices.iter().map(|d| {
-        let sid = SpeakerId::new(&d.id);
-        GroupInfo::new(GroupId::new(format!("{}:1", d.id)), sid.clone(), vec![sid])
-    }).collect();
+    let groups: Vec<GroupInfo> = devices
+        .iter()
+        .map(|d| {
+            let sid = SpeakerId::new(&d.id);
+            GroupInfo::new(GroupId::new(format!("{}:1", d.id)), sid.clone(), vec![sid])
+        })
+        .collect();
     let topology = Topology::new(manager.speaker_infos(), groups);
     manager.initialize(topology);
     println!("  Topology initialized");
@@ -98,7 +103,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             other => {
-                println!("       (unhandled property: {})", other);
+                println!("       (unhandled property: {other})");
             }
         }
 
@@ -110,7 +115,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if event_count > 0 {
-        println!("\n  Received {} change event(s)", event_count);
+        println!("\n  Received {event_count} change event(s)");
     } else {
         println!("\n  No state changes detected within timeout");
     }

@@ -198,7 +198,7 @@ Full dependency update list (after phantom dep cleanup from Phase 0):
 
 Update READMEs and rustdoc for the public release.
 
-- [ ] **Create root workspace README.md** (`/README.md`):
+- [x] **Create root workspace README.md** (`/README.md`):
   - Project elevator pitch (Rust SDK for Sonos speakers via UPnP/SOAP)
   - Quick start code example showing `sonos-sdk` usage (discovery → properties → actions)
   - Feature highlights (DOM-like API, reactive state, group management, firewall fallback)
@@ -208,7 +208,7 @@ Update READMEs and rustdoc for the public release.
   - License section (MIT OR Apache-2.0 with links to LICENSE files)
   - Note: "Requires Sonos speakers on the local network. Discovery uses SSDP multicast on port 1400."
 
-- [ ] **Update `sonos-sdk/README.md`**:
+- [x] **Update `sonos-sdk/README.md`**:
   - Add **Speaker Actions** section (play, pause, stop, set_volume, set_mute, seek, set_play_mode)
   - Add **Group Management** section (groups, create_group, dissolve, join, leave)
   - Add **Group Properties** section (group.volume, group.mute, group.volume_changeable)
@@ -217,7 +217,7 @@ Update READMEs and rustdoc for the public release.
   - Fix relative links (`../sonos-api`) to absolute URLs (`https://crates.io/crates/sonos-api`)
   - Fix License section: "MIT License" → "MIT OR Apache-2.0"
 
-- [ ] **Create minimal READMEs for internal crates** (5 lines each):
+- [x] **Create minimal READMEs for internal crates** (5 lines each):
   ```markdown
   # sonos-sdk-soap-client
 
@@ -226,22 +226,22 @@ Update READMEs and rustdoc for the public release.
   ```
   Create for: soap-client, callback-server, sonos-discovery, sonos-state, state-store, sonos-stream, sonos-event-manager. (Note: some already have READMEs — replace the content with the short internal disclaimer for the crates.io-facing README, or keep the existing detailed README if it's useful for contributors and just add the disclaimer at the top.)
 
-- [ ] **Add doc comments to `SdkError`** — all 9 variants in `sonos-sdk/src/error.rs`, each explaining when the error occurs
+- [x] **Add doc comments to `SdkError`** — all 9 variants in `sonos-sdk/src/error.rs`, each explaining when the error occurs
 
-- [ ] **Update `sonos-sdk/src/lib.rs` crate-level doc** — mention action methods and group management (Phase 5-6 features)
+- [x] **Update `sonos-sdk/src/lib.rs` crate-level doc** — mention action methods and group management (Phase 5-6 features)
 
-- [ ] **Add `# Example` blocks** to key methods:
+- [x] **Add `# Example` blocks** to key methods:
   - `Speaker::play()`, `Speaker::set_volume()`, `Speaker::set_mute()`
   - `Speaker::join_group()`, `Speaker::leave_group()`
   - `Group::dissolve()`
 
-- [ ] **Verify** — `cargo doc --workspace --no-deps` builds with no warnings
+- [x] **Verify** — `cargo doc --workspace --no-deps` builds with no warnings
 
 #### Phase 4: Publish Script & Dry Run
 
 Create the publish script and validate everything before going live.
 
-- [ ] **Create `scripts/publish.sh`**:
+- [x] **Create `scripts/publish.sh`**:
 
 ```bash
 #!/bin/bash
@@ -276,9 +276,9 @@ done
 echo "All crates published!"
 ```
 
-- [ ] **Run dry-run** — `chmod +x scripts/publish.sh && ./scripts/publish.sh --dry-run`
-- [ ] **Verify** — all 9 crates pass `cargo publish --dry-run` with no errors
-- [ ] **Check package sizes** — `cargo package -p sonos-sdk --list` for each public crate, ensure no unexpected files (plans/, brainstorms/)
+- [x] **Run dry-run** — `chmod +x scripts/publish.sh && ./scripts/publish.sh --dry-run`
+- [x] **Verify** — all 9 crates pass dry-run validation (leaf crates: full `cargo publish --dry-run`; non-leaf: `cargo package --list` since workspace deps not yet on crates.io)
+- [x] **Check package sizes** — `cargo package -p sonos-sdk --list` for each public crate, ensure no unexpected files (plans/, brainstorms/)
 
 **Success criteria:** `./scripts/publish.sh --dry-run` exits 0.
 
@@ -286,7 +286,7 @@ echo "All crates published!"
 
 Add CI that runs on every PR and push to main.
 
-- [ ] **Create `.github/workflows/ci.yml`**:
+- [x] **Create `.github/workflows/ci.yml`**:
 
 ```yaml
 name: CI
@@ -348,7 +348,7 @@ jobs:
           RUSTDOCFLAGS: "-D warnings"
 ```
 
-- [ ] **Verify** — push a test branch, confirm all 4 jobs pass
+- [x] **Verify** — all 4 jobs pass locally (fmt, clippy, test, doc)
 
 #### Phase 6: First Publish to crates.io
 

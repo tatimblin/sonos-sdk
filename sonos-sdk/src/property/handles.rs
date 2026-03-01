@@ -420,16 +420,14 @@ impl PropertyHandle<GroupMembership> {
             .execute_enhanced(&self.context.speaker_ip.to_string(), operation)
             .map_err(SdkError::ApiError)?;
 
-        let property_value = GroupMembership::from_response_with_context(
-            response,
-            &self.context.speaker_id,
-        )
-        .ok_or_else(|| {
-            SdkError::FetchFailed(format!(
-                "Speaker {} not found in topology response",
-                self.context.speaker_id.as_str()
-            ))
-        })?;
+        let property_value =
+            GroupMembership::from_response_with_context(response, &self.context.speaker_id)
+                .ok_or_else(|| {
+                    SdkError::FetchFailed(format!(
+                        "Speaker {} not found in topology response",
+                        self.context.speaker_id.as_str()
+                    ))
+                })?;
 
         self.context
             .state_manager
@@ -457,9 +455,7 @@ use sonos_api::services::{
         GetMuteOperation, GetMuteResponse, GetTrebleOperation, GetTrebleResponse,
         GetVolumeOperation, GetVolumeResponse,
     },
-    zone_group_topology::{
-        self, GetZoneGroupStateOperation, GetZoneGroupStateResponse,
-    },
+    zone_group_topology::{self, GetZoneGroupStateOperation, GetZoneGroupStateResponse},
 };
 use sonos_state::{
     Bass, CurrentTrack, GroupId, GroupMembership, GroupMute, GroupVolume, GroupVolumeChangeable,
@@ -601,8 +597,7 @@ impl Fetchable for CurrentTrack {
         } else {
             Some(response.track_meta_data.as_str())
         };
-        let (title, artist, album, album_art_uri) =
-            sonos_state::parse_track_metadata(metadata);
+        let (title, artist, album, album_art_uri) = sonos_state::parse_track_metadata(metadata);
         CurrentTrack {
             title,
             artist,
@@ -630,16 +625,11 @@ impl FetchableWithContext for GroupMembership {
         response: GetZoneGroupStateResponse,
         speaker_id: &SpeakerId,
     ) -> Option<Self> {
-        let zone_groups = zone_group_topology::parse_zone_group_state_xml(
-            &response.zone_group_state,
-        )
-        .ok()?;
+        let zone_groups =
+            zone_group_topology::parse_zone_group_state_xml(&response.zone_group_state).ok()?;
 
         for group in &zone_groups {
-            let is_member = group
-                .members
-                .iter()
-                .any(|m| m.uuid == speaker_id.as_str());
+            let is_member = group.members.iter().any(|m| m.uuid == speaker_id.as_str());
             if is_member {
                 let is_coordinator = group.coordinator == speaker_id.as_str();
                 return Some(GroupMembership::new(
@@ -798,8 +788,7 @@ impl<P: SonosProperty> GroupPropertyHandle<P> {
             .unregister_watch(&self.context.coordinator_id, P::KEY);
 
         if let Some(em) = self.context.state_manager.event_manager() {
-            if let Err(e) =
-                em.release_service_subscription(self.context.coordinator_ip, P::SERVICE)
+            if let Err(e) = em.release_service_subscription(self.context.coordinator_ip, P::SERVICE)
             {
                 tracing::warn!(
                     "Failed to release subscription for {:?} on group {}: {}",

@@ -17,7 +17,10 @@ use ratatui::{
 };
 use state_store::{Property, StateStore};
 use std::io;
-use std::sync::{atomic::{AtomicBool, Ordering}, mpsc, Arc};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc, Arc,
+};
 use std::thread;
 use std::time::Duration;
 
@@ -83,7 +86,11 @@ fn main() -> io::Result<()> {
             thread::sleep(Duration::from_millis(400));
             let room = ROOMS[i as usize % ROOMS.len()].to_string();
             if let Some(Temperature(t)) = store_sim.get::<Temperature>(&room) {
-                let new_t = if i % 3 == 0 { t.saturating_add(1).min(99) } else { t.saturating_sub(1).max(40) };
+                let new_t = if i % 3 == 0 {
+                    t.saturating_add(1).min(99)
+                } else {
+                    t.saturating_sub(1).max(40)
+                };
                 store_sim.set(&room, Temperature(new_t));
             }
             i = i.wrapping_add(1);
@@ -106,15 +113,17 @@ fn main() -> io::Result<()> {
                 match key {
                     KeyCode::Char('q') | KeyCode::Esc => break,
                     KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
-                    KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(ROOMS.len() - 1),
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        selected = (selected + 1).min(ROOMS.len() - 1)
+                    }
                     KeyCode::Char(' ') => {
                         let room = ROOMS[selected].to_string();
                         if store.is_watched(&room, Temperature::KEY) {
                             store.unwatch(&room, Temperature::KEY);
-                            log.push(format!("Unwatched: {}", room));
+                            log.push(format!("Unwatched: {room}"));
                         } else {
                             store.watch(room.clone(), Temperature::KEY);
-                            log.push(format!("Watching: {}", room));
+                            log.push(format!("Watching: {room}"));
                         }
                     }
                     _ => continue,
@@ -123,8 +132,10 @@ fn main() -> io::Result<()> {
                 term.draw(|f| draw(f, &store, selected, renders, &log))?;
             }
             Ok(Trigger::State(room, temp)) => {
-                log.push(format!("{}: {}°", room, temp));
-                if log.len() > 8 { log.remove(0); }
+                log.push(format!("{room}: {temp}°"));
+                if log.len() > 8 {
+                    log.remove(0);
+                }
                 renders += 1;
                 term.draw(|f| draw(f, &store, selected, renders, &log))?;
             }
@@ -143,34 +154,56 @@ fn draw(f: &mut Frame, store: &StateStore<String>, selected: usize, renders: u64
         Constraint::Length(3),
         Constraint::Length(ROOMS.len() as u16 * 2 + 2),
         Constraint::Min(5),
-    ]).split(f.area());
+    ])
+    .split(f.area());
 
     f.render_widget(
-        Paragraph::new(format!("Renders: {}", renders))
+        Paragraph::new(format!("Renders: {renders}"))
             .block(Block::bordered().title("Temperature Monitor")),
         chunks[0],
     );
 
-    let room_chunks = Layout::vertical(ROOMS.iter().map(|_| Constraint::Length(2)).collect::<Vec<_>>())
-        .split(Block::bordered().title("Rooms").inner(chunks[1]));
+    let room_chunks = Layout::vertical(
+        ROOMS
+            .iter()
+            .map(|_| Constraint::Length(2))
+            .collect::<Vec<_>>(),
+    )
+    .split(Block::bordered().title("Rooms").inner(chunks[1]));
     f.render_widget(Block::bordered().title("Rooms"), chunks[1]);
 
     for (i, room) in ROOMS.iter().enumerate() {
-        let temp = store.get::<Temperature>(&room.to_string()).map(|t| t.0).unwrap_or(0);
+        let temp = store
+            .get::<Temperature>(&room.to_string())
+            .map(|t| t.0)
+            .unwrap_or(0);
         let watched = store.is_watched(&room.to_string(), Temperature::KEY);
         let sel = if i == selected { "▶" } else { " " };
         let eye = if watched { "👁" } else { " " };
-        let color = if temp < 60 { Color::Cyan } else if temp < 80 { Color::Green } else { Color::Red };
+        let color = if temp < 60 {
+            Color::Cyan
+        } else if temp < 80 {
+            Color::Green
+        } else {
+            Color::Red
+        };
 
         f.render_widget(
             Gauge::default()
                 .gauge_style(Style::default().fg(color))
                 .percent(temp.saturating_sub(40).min(60) as u16 * 100 / 60)
-                .label(format!("{}{} {:<10} {}°", sel, eye, room, temp)),
+                .label(format!("{sel}{eye} {room:<10} {temp}°")),
             room_chunks[i],
         );
     }
 
-    let items: Vec<ListItem> = log.iter().rev().map(|s| ListItem::new(s.as_str()).fg(Color::Gray)).collect();
-    f.render_widget(List::new(items).block(Block::bordered().title("Events")), chunks[2]);
+    let items: Vec<ListItem> = log
+        .iter()
+        .rev()
+        .map(|s| ListItem::new(s.as_str()).fg(Color::Gray))
+        .collect();
+    f.render_widget(
+        List::new(items).block(Block::bordered().title("Events")),
+        chunks[2],
+    );
 }

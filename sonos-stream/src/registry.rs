@@ -150,7 +150,10 @@ impl SpeakerServiceRegistry {
     /// # Returns
     /// * `Ok(SpeakerServicePair)` - The pair that was unregistered
     /// * `Err(RegistryError::NotFound)` - If the registration ID is not found
-    pub async fn unregister(&self, registration_id: RegistrationId) -> RegistryResult<SpeakerServicePair> {
+    pub async fn unregister(
+        &self,
+        registration_id: RegistrationId,
+    ) -> RegistryResult<SpeakerServicePair> {
         let mut registrations = self.registrations.write().await;
         let mut pair_lookup = self.pair_to_registration.write().await;
 
@@ -272,10 +275,14 @@ pub struct RegistryStats {
 impl std::fmt::Display for RegistryStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "Registry Stats:")?;
-        writeln!(f, "  Total: {}/{}", self.total_registrations, self.max_registrations)?;
+        writeln!(
+            f,
+            "  Total: {}/{}",
+            self.total_registrations, self.max_registrations
+        )?;
         writeln!(f, "  Service breakdown:")?;
         for (service, count) in &self.service_breakdown {
-            writeln!(f, "    {:?}: {}", service, count)?;
+            writeln!(f, "    {service:?}: {count}")?;
         }
         Ok(())
     }
@@ -320,8 +327,14 @@ mod tests {
         let registry = SpeakerServiceRegistry::new(100);
         let ip: IpAddr = "192.168.1.100".parse().unwrap();
 
-        let av_reg = registry.register(ip, sonos_api::Service::AVTransport).await.unwrap();
-        let rc_reg = registry.register(ip, sonos_api::Service::RenderingControl).await.unwrap();
+        let av_reg = registry
+            .register(ip, sonos_api::Service::AVTransport)
+            .await
+            .unwrap();
+        let rc_reg = registry
+            .register(ip, sonos_api::Service::RenderingControl)
+            .await
+            .unwrap();
 
         assert_ne!(av_reg, rc_reg);
         assert_eq!(registry.count().await, 2);
@@ -369,11 +382,22 @@ mod tests {
         let reg_id = registry.register(ip, service).await.unwrap();
 
         // Test bidirectional lookups
-        assert_eq!(registry.get_registration_id(ip, service).await, Some(reg_id));
-        assert_eq!(registry.get_pair(reg_id).await, Some(SpeakerServicePair::new(ip, service)));
+        assert_eq!(
+            registry.get_registration_id(ip, service).await,
+            Some(reg_id)
+        );
+        assert_eq!(
+            registry.get_pair(reg_id).await,
+            Some(SpeakerServicePair::new(ip, service))
+        );
 
         // Test non-existent lookups
-        assert_eq!(registry.get_registration_id(ip, sonos_api::Service::RenderingControl).await, None);
+        assert_eq!(
+            registry
+                .get_registration_id(ip, sonos_api::Service::RenderingControl)
+                .await,
+            None
+        );
         assert_eq!(registry.get_pair(RegistrationId::new(999)).await, None);
     }
 
@@ -382,16 +406,32 @@ mod tests {
         let registry = SpeakerServiceRegistry::new(100);
         let ip: IpAddr = "192.168.1.100".parse().unwrap();
 
-        let av_reg = registry.register(ip, sonos_api::Service::AVTransport).await.unwrap();
-        let rc_reg = registry.register(ip, sonos_api::Service::RenderingControl).await.unwrap();
+        let _av_reg = registry
+            .register(ip, sonos_api::Service::AVTransport)
+            .await
+            .unwrap();
+        let _rc_reg = registry
+            .register(ip, sonos_api::Service::RenderingControl)
+            .await
+            .unwrap();
 
         let registrations = registry.list_registrations().await;
         assert_eq!(registrations.len(), 2);
 
         let stats = registry.stats().await;
         assert_eq!(stats.total_registrations, 2);
-        assert_eq!(stats.service_breakdown.get(&sonos_api::Service::AVTransport), Some(&1));
-        assert_eq!(stats.service_breakdown.get(&sonos_api::Service::RenderingControl), Some(&1));
+        assert_eq!(
+            stats
+                .service_breakdown
+                .get(&sonos_api::Service::AVTransport),
+            Some(&1)
+        );
+        assert_eq!(
+            stats
+                .service_breakdown
+                .get(&sonos_api::Service::RenderingControl),
+            Some(&1)
+        );
     }
 
     #[tokio::test]
@@ -404,9 +444,7 @@ mod tests {
         let handles: Vec<_> = (0..10)
             .map(|_| {
                 let registry = Arc::clone(&registry);
-                tokio::spawn(async move {
-                    registry.register(ip, service).await
-                })
+                tokio::spawn(async move { registry.register(ip, service).await })
             })
             .collect();
 

@@ -19,7 +19,10 @@ use sonos_api::services::group_rendering_control::{self, SetRelativeGroupVolumeR
 use sonos_api::SonosClient;
 use sonos_state::{GroupId, GroupInfo, GroupMute, GroupVolume, SpeakerId, StateManager};
 
-use crate::property::{GroupContext, GroupMuteHandle, GroupPropertyHandle, GroupVolumeChangeableHandle, GroupVolumeHandle};
+use crate::property::{
+    GroupContext, GroupMuteHandle, GroupPropertyHandle, GroupVolumeChangeableHandle,
+    GroupVolumeHandle,
+};
 use crate::SdkError;
 use crate::Speaker;
 
@@ -255,10 +258,7 @@ impl Group {
             ));
         }
         let rincon_uri = format!("x-rincon:{}", self.coordinator_id.as_str());
-        let op = av_transport::set_av_transport_uri(
-            rincon_uri,
-            String::new(),
-        ).build()?;
+        let op = av_transport::set_av_transport_uri(rincon_uri, String::new()).build()?;
         self.api_client
             .execute_enhanced::<av_transport::SetAVTransportURIOperation>(
                 &speaker.ip.to_string(),
@@ -278,8 +278,7 @@ impl Group {
                 "Cannot remove coordinator from its own group; use delegate_coordination_to() first".to_string(),
             ));
         }
-        let op = av_transport::become_coordinator_of_standalone_group()
-            .build()?;
+        let op = av_transport::become_coordinator_of_standalone_group().build()?;
         self.api_client
             .execute_enhanced::<av_transport::BecomeCoordinatorOfStandaloneGroupOperation>(
                 &speaker.ip.to_string(),
@@ -319,7 +318,8 @@ impl Group {
     /// Updates the state cache to the new `GroupVolume` on success.
     pub fn set_volume(&self, volume: u16) -> Result<(), SdkError> {
         self.exec(group_rendering_control::set_group_volume(volume).build())?;
-        self.state_manager.set_group_property(&self.id, GroupVolume(volume));
+        self.state_manager
+            .set_group_property(&self.id, GroupVolume(volume));
         Ok(())
     }
 
@@ -330,8 +330,10 @@ impl Group {
         &self,
         adjustment: i16,
     ) -> Result<SetRelativeGroupVolumeResponse, SdkError> {
-        let response = self.exec(group_rendering_control::set_relative_group_volume(adjustment).build())?;
-        self.state_manager.set_group_property(&self.id, GroupVolume(response.new_volume));
+        let response =
+            self.exec(group_rendering_control::set_relative_group_volume(adjustment).build())?;
+        self.state_manager
+            .set_group_property(&self.id, GroupVolume(response.new_volume));
         Ok(response)
     }
 
@@ -340,7 +342,8 @@ impl Group {
     /// Updates the state cache to the new `GroupMute` value on success.
     pub fn set_mute(&self, muted: bool) -> Result<(), SdkError> {
         self.exec(group_rendering_control::set_group_mute(muted).build())?;
-        self.state_manager.set_group_property(&self.id, GroupMute(muted));
+        self.state_manager
+            .set_group_property(&self.id, GroupMute(muted));
         Ok(())
     }
 
@@ -356,7 +359,9 @@ mod tests {
     use super::*;
     use sonos_discovery::Device;
 
-    fn create_test_state_manager_with_speakers(speakers: Vec<(&str, &str, &str)>) -> Arc<StateManager> {
+    fn create_test_state_manager_with_speakers(
+        speakers: Vec<(&str, &str, &str)>,
+    ) -> Arc<StateManager> {
         let manager = StateManager::new().unwrap();
         let devices: Vec<Device> = speakers
             .into_iter()
@@ -375,9 +380,11 @@ mod tests {
 
     #[test]
     fn test_group_from_info() {
-        let state_manager = create_test_state_manager_with_speakers(vec![
-            ("RINCON_111", "Living Room", "192.168.1.100"),
-        ]);
+        let state_manager = create_test_state_manager_with_speakers(vec![(
+            "RINCON_111",
+            "Living Room",
+            "192.168.1.100",
+        )]);
         let api_client = SonosClient::new();
 
         let group_info = GroupInfo::new(
@@ -395,9 +402,11 @@ mod tests {
 
     #[test]
     fn test_group_from_info_returns_none_for_unknown_coordinator() {
-        let state_manager = create_test_state_manager_with_speakers(vec![
-            ("RINCON_111", "Living Room", "192.168.1.100"),
-        ]);
+        let state_manager = create_test_state_manager_with_speakers(vec![(
+            "RINCON_111",
+            "Living Room",
+            "192.168.1.100",
+        )]);
         let api_client = SonosClient::new();
 
         // Coordinator is not a registered speaker
@@ -550,9 +559,11 @@ mod tests {
 
     #[test]
     fn test_group_volume_handle_accessible() {
-        let state_manager = create_test_state_manager_with_speakers(vec![
-            ("RINCON_111", "Living Room", "192.168.1.100"),
-        ]);
+        let state_manager = create_test_state_manager_with_speakers(vec![(
+            "RINCON_111",
+            "Living Room",
+            "192.168.1.100",
+        )]);
         let api_client = SonosClient::new();
 
         let group_info = GroupInfo::new(
@@ -569,9 +580,11 @@ mod tests {
     }
 
     fn create_test_group() -> Group {
-        let state_manager = create_test_state_manager_with_speakers(vec![
-            ("RINCON_111", "Living Room", "192.168.1.100"),
-        ]);
+        let state_manager = create_test_state_manager_with_speakers(vec![(
+            "RINCON_111",
+            "Living Room",
+            "192.168.1.100",
+        )]);
         let api_client = SonosClient::new();
 
         let group_info = GroupInfo::new(
@@ -617,7 +630,8 @@ mod tests {
             vec![SpeakerId::new("RINCON_111"), SpeakerId::new("RINCON_222")],
         );
 
-        let group = Group::from_info(group_info, Arc::clone(&state_manager), api_client.clone()).unwrap();
+        let group =
+            Group::from_info(group_info, Arc::clone(&state_manager), api_client.clone()).unwrap();
         let member = Speaker::new(
             SpeakerId::new("RINCON_222"),
             "Kitchen".to_string(),

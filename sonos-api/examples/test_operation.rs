@@ -17,13 +17,21 @@ fn main() {
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 4 {
-        eprintln!("Usage: {} <ip> <service> <action> [param=value...]", args[0]);
+        eprintln!(
+            "Usage: {} <ip> <service> <action> [param=value...]",
+            args[0]
+        );
         eprintln!();
-        eprintln!("Services: AVTransport, RenderingControl, ZoneGroupTopology, GroupRenderingControl");
+        eprintln!(
+            "Services: AVTransport, RenderingControl, ZoneGroupTopology, GroupRenderingControl"
+        );
         eprintln!();
         eprintln!("Examples:");
         eprintln!("  {} 192.168.1.100 AVTransport GetTransportInfo", args[0]);
-        eprintln!("  {} 192.168.1.100 RenderingControl GetVolume Channel=Master", args[0]);
+        eprintln!(
+            "  {} 192.168.1.100 RenderingControl GetVolume Channel=Master",
+            args[0]
+        );
         eprintln!("  {} 192.168.1.100 AVTransport Play Speed=1", args[0]);
         std::process::exit(1);
     }
@@ -40,14 +48,14 @@ fn main() {
         if let Some((key, value)) = arg.split_once('=') {
             params.insert(key.to_string(), value.to_string());
         } else {
-            eprintln!("Warning: ignoring malformed parameter '{}'", arg);
+            eprintln!("Warning: ignoring malformed parameter '{arg}'");
         }
     }
 
     // Build the SOAP body
     let body_content: String = params
         .iter()
-        .map(|(k, v)| format!("<{}>{}</{}>", k, v, k))
+        .map(|(k, v)| format!("<{k}>{v}</{k}>"))
         .collect::<Vec<_>>()
         .join("");
 
@@ -69,12 +77,12 @@ fn main() {
             "urn:schemas-upnp-org:service:GroupRenderingControl:1",
         ),
         _ => {
-            eprintln!("Unknown service: {}. Use: AVTransport, RenderingControl, ZoneGroupTopology, GroupRenderingControl", service);
+            eprintln!("Unknown service: {service}. Use: AVTransport, RenderingControl, ZoneGroupTopology, GroupRenderingControl");
             std::process::exit(1);
         }
     };
 
-    let url = format!("http://{}:1400/{}", ip, endpoint);
+    let url = format!("http://{ip}:1400/{endpoint}");
 
     let soap_body = format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
@@ -84,18 +92,15 @@ fn main() {
       {body_content}
     </u:{action}>
   </s:Body>
-</s:Envelope>"#,
-        action = action,
-        service_uri = service_uri,
-        body_content = body_content
+</s:Envelope>"#
     );
 
-    let soap_action = format!("{}#{}", service_uri, action);
+    let soap_action = format!("{service_uri}#{action}");
 
     println!("=== Request ===");
-    println!("URL: {}", url);
-    println!("SOAPAction: {}", soap_action);
-    println!("Body:\n{}\n", soap_body);
+    println!("URL: {url}");
+    println!("SOAPAction: {soap_action}");
+    println!("Body:\n{soap_body}\n");
 
     // Send the request
     let client = ureq::AgentBuilder::new()
@@ -110,21 +115,23 @@ fn main() {
     {
         Ok(response) => {
             let status = response.status();
-            let body = response.into_string().unwrap_or_else(|e| format!("Error reading body: {}", e));
+            let body = response
+                .into_string()
+                .unwrap_or_else(|e| format!("Error reading body: {e}"));
 
             println!("=== Response ===");
-            println!("Status: {}", status);
-            println!("Body:\n{}", body);
+            println!("Status: {status}");
+            println!("Body:\n{body}");
 
-            if status >= 200 && status < 300 {
+            if (200..300).contains(&status) {
                 println!("\n=== Success ===");
             } else {
-                println!("\n=== Error (Status {}) ===", status);
+                println!("\n=== Error (Status {status}) ===");
             }
         }
         Err(e) => {
             eprintln!("=== Error ===");
-            eprintln!("Request failed: {}", e);
+            eprintln!("Request failed: {e}");
             std::process::exit(1);
         }
     }

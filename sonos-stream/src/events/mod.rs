@@ -11,10 +11,19 @@ pub mod types;
 pub use iterator::{EventIterator, SyncEventIterator};
 pub use processor::EventProcessor;
 pub use types::{
-    EnrichedEvent, EventData, EventSource, DevicePropertiesEvent,
     // Re-export sonos-api state types for convenience
-    AVTransportState, RenderingControlState, GroupRenderingControlState,
-    ZoneGroupTopologyState, GroupManagementState,
+    AVTransportState,
+    DevicePropertiesEvent,
+    EnrichedEvent,
+    EventData,
+    EventSource,
+    GroupManagementState,
+    GroupRenderingControlState,
+    NetworkInfo,
+    RenderingControlState,
+    SatelliteInfo,
     // Re-export topology sub-types
-    ZoneGroupInfo, ZoneGroupMemberInfo, NetworkInfo, SatelliteInfo,
+    ZoneGroupInfo,
+    ZoneGroupMemberInfo,
+    ZoneGroupTopologyState,
 };

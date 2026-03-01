@@ -21,8 +21,8 @@
 //! ```
 
 pub mod av_transport;
+pub mod events;
 pub mod group_management;
 pub mod group_rendering_control;
 pub mod rendering_control;
 pub mod zone_group_topology;
-pub mod events;

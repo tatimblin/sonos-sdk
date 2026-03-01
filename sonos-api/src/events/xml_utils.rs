@@ -4,7 +4,7 @@
 //! from the sonos-parser crate. It includes namespace stripping, attribute parsing,
 //! and DIDL-Lite metadata structures.
 
-use crate::{Result, ApiError};
+use crate::{ApiError, Result};
 use serde::de::{DeserializeOwned, Deserializer};
 use serde::{Deserialize, Serialize};
 
@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 pub fn parse<T: DeserializeOwned>(xml: &str) -> Result<T> {
     let stripped = strip_namespaces(xml);
     quick_xml::de::from_str(&stripped)
-        .map_err(|e| ApiError::ParseError(format!("XML deserialization failed: {}", e)))
+        .map_err(|e| ApiError::ParseError(format!("XML deserialization failed: {e}")))
 }
 
 /// Strip namespace prefixes from XML content to simplify parsing.
@@ -54,7 +54,7 @@ pub fn strip_namespaces(xml: &str) -> String {
             if let Some(&next) = chars.peek() {
                 if next == '?' || next == '!' {
                     // Copy until '>'
-                    while let Some(ch) = chars.next() {
+                    for ch in chars.by_ref() {
                         result.push(ch);
                         if ch == '>' {
                             break;
@@ -115,7 +115,7 @@ pub fn strip_namespaces(xml: &str) -> String {
                     if let Some(&quote) = chars.peek() {
                         if quote == '"' || quote == '\'' {
                             chars.next();
-                            while let Some(ch) = chars.next() {
+                            for ch in chars.by_ref() {
                                 if ch == quote {
                                     break;
                                 }
@@ -138,7 +138,7 @@ pub fn strip_namespaces(xml: &str) -> String {
                         if ach == '"' || ach == '\'' {
                             let quote = chars.next().unwrap();
                             result.push(quote);
-                            while let Some(ch) = chars.next() {
+                            for ch in chars.by_ref() {
                                 result.push(ch);
                                 if ch == quote {
                                     break;
@@ -186,7 +186,9 @@ where
 ///
 /// Similar to `deserialize_nested` but specifically for ZoneGroupState XML content
 /// that comes nested within the event XML structure.
-pub fn deserialize_zone_group_state<'de, D, T>(deserializer: D) -> std::result::Result<Option<T>, D::Error>
+pub fn deserialize_zone_group_state<'de, D, T>(
+    deserializer: D,
+) -> std::result::Result<Option<T>, D::Error>
 where
     D: Deserializer<'de>,
     T: DeserializeOwned,
@@ -422,7 +424,11 @@ mod tests {
         let didl_xml = r#"<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"><item id="-1" parentID="-1"><dc:title>Test Song</dc:title><dc:creator>Test Artist</dc:creator><upnp:album>Test Album</upnp:album></item></DIDL-Lite>"#;
 
         let result = DidlLite::from_xml(didl_xml);
-        assert!(result.is_ok(), "Failed to parse DIDL-Lite: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Failed to parse DIDL-Lite: {:?}",
+            result.err()
+        );
 
         let didl = result.unwrap();
         assert_eq!(didl.items.len(), 1);
@@ -439,7 +445,11 @@ mod tests {
         let didl_xml = r#"<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/"><item id="-1" parentID="-1"><dc:title>Song</dc:title><dc:creator>Artist</dc:creator><res duration="0:03:58" protocolInfo="http-get:*:audio/mpeg:*">http://example.com/song.mp3</res></item></DIDL-Lite>"#;
 
         let result = DidlLite::from_xml(didl_xml);
-        assert!(result.is_ok(), "Failed to parse DIDL-Lite with resource: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Failed to parse DIDL-Lite with resource: {:?}",
+            result.err()
+        );
 
         let didl = result.unwrap();
         let item = &didl.items[0];
@@ -448,7 +458,10 @@ mod tests {
 
         let res = &item.resources[0];
         assert_eq!(res.duration, Some("0:03:58".to_string()));
-        assert_eq!(res.protocol_info, Some("http-get:*:audio/mpeg:*".to_string()));
+        assert_eq!(
+            res.protocol_info,
+            Some("http-get:*:audio/mpeg:*".to_string())
+        );
         assert_eq!(res.uri, Some("http://example.com/song.mp3".to_string()));
     }
 
@@ -457,7 +470,11 @@ mod tests {
         let didl_xml = r#"<DIDL-Lite><item id="1" parentID="0"></item></DIDL-Lite>"#;
 
         let result = DidlLite::from_xml(didl_xml);
-        assert!(result.is_ok(), "Failed to parse minimal DIDL-Lite: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Failed to parse minimal DIDL-Lite: {:?}",
+            result.err()
+        );
 
         let didl = result.unwrap();
         let item = &didl.items[0];

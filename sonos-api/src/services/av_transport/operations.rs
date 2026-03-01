@@ -127,8 +127,7 @@ impl Validate for SeekOperationRequest {
             other => Err(crate::operation::ValidationError::Custom {
                 parameter: "unit".to_string(),
                 message: format!(
-                    "Invalid unit '{}'. Must be 'TRACK_NR', 'REL_TIME', or 'TIME_DELTA'",
-                    other
+                    "Invalid unit '{other}'. Must be 'TRACK_NR', 'REL_TIME', or 'TIME_DELTA'"
                 ),
             }),
         }
@@ -382,8 +381,7 @@ impl Validate for SetPlayModeOperationRequest {
             other => Err(crate::operation::ValidationError::Custom {
                 parameter: "new_play_mode".to_string(),
                 message: format!(
-                    "Invalid play mode '{}'. Must be NORMAL, REPEAT_ALL, REPEAT_ONE, SHUFFLE_NOREPEAT, SHUFFLE, or SHUFFLE_REPEAT_ONE",
-                    other
+                    "Invalid play mode '{other}'. Must be NORMAL, REPEAT_ALL, REPEAT_ONE, SHUFFLE_NOREPEAT, SHUFFLE, or SHUFFLE_REPEAT_ONE"
                 ),
             }),
         }
@@ -466,9 +464,7 @@ impl crate::operation::UPnPOperation for AddURIToQueueOperation {
     const SERVICE: crate::service::Service = crate::service::Service::AVTransport;
     const ACTION: &'static str = "AddURIToQueue";
 
-    fn build_payload(
-        request: &Self::Request,
-    ) -> Result<String, crate::operation::ValidationError> {
+    fn build_payload(request: &Self::Request) -> Result<String, crate::operation::ValidationError> {
         <Self::Request as Validate>::validate(request, crate::operation::ValidationLevel::Basic)?;
         Ok(format!(
             "<InstanceID>{}</InstanceID><EnqueuedURI>{}</EnqueuedURI><EnqueuedURIMetaData>{}</EnqueuedURIMetaData><DesiredFirstTrackNumberEnqueued>{}</DesiredFirstTrackNumberEnqueued><EnqueueAsNext>{}</EnqueueAsNext>",
@@ -480,9 +476,7 @@ impl crate::operation::UPnPOperation for AddURIToQueueOperation {
         ))
     }
 
-    fn parse_response(
-        xml: &xmltree::Element,
-    ) -> Result<Self::Response, crate::error::ApiError> {
+    fn parse_response(xml: &xmltree::Element) -> Result<Self::Response, crate::error::ApiError> {
         Ok(AddURIToQueueResponse {
             first_track_number_enqueued: xml
                 .get_child("FirstTrackNumberEnqueued")
@@ -718,21 +712,21 @@ impl Validate for GetRunningAlarmPropertiesOperationRequest {}
 // =============================================================================
 
 // Basic playback
-pub use play_operation as play;
-pub use pause_operation as pause;
-pub use stop_operation as stop;
 pub use next_operation as next;
+pub use pause_operation as pause;
+pub use play_operation as play;
 pub use previous_operation as previous;
+pub use stop_operation as stop;
 
 // Seek and position
-pub use seek_operation as seek;
 pub use get_position_info_operation as get_position_info;
+pub use seek_operation as seek;
 
 // Transport info and settings
-pub use get_transport_info_operation as get_transport_info;
-pub use get_transport_settings_operation as get_transport_settings;
 pub use get_current_transport_actions_operation as get_current_transport_actions;
 pub use get_device_capabilities_operation as get_device_capabilities;
+pub use get_transport_info_operation as get_transport_info;
+pub use get_transport_settings_operation as get_transport_settings;
 
 // Media info and URI
 pub use get_media_info_operation as get_media_info;
@@ -750,20 +744,20 @@ pub use get_remaining_sleep_timer_duration_operation as get_remaining_sleep_time
 
 // Queue operations
 pub use add_uri_to_queue_operation as add_uri_to_queue;
+pub use backup_queue_operation as backup_queue;
+pub use create_saved_queue_operation as create_saved_queue;
+pub use remove_all_tracks_from_queue_operation as remove_all_tracks_from_queue;
 pub use remove_track_from_queue_operation as remove_track_from_queue;
 pub use remove_track_range_from_queue_operation as remove_track_range_from_queue;
-pub use remove_all_tracks_from_queue_operation as remove_all_tracks_from_queue;
 pub use save_queue_operation as save_queue;
-pub use create_saved_queue_operation as create_saved_queue;
-pub use backup_queue_operation as backup_queue;
 
 // Group coordination
 pub use become_coordinator_of_standalone_group_operation as become_coordinator_of_standalone_group;
 pub use delegate_group_coordination_to_operation as delegate_group_coordination_to;
 
 // Alarms
-pub use snooze_alarm_operation as snooze_alarm;
 pub use get_running_alarm_properties_operation as get_running_alarm_properties;
+pub use snooze_alarm_operation as snooze_alarm;
 
 // =============================================================================
 // SERVICE CONSTANT AND SUBSCRIPTION HELPERS
@@ -937,7 +931,7 @@ mod tests {
     #[test]
     fn test_set_crossfade_mode_builder() {
         let op = set_crossfade_mode_operation(true).build().unwrap();
-        assert_eq!(op.request().crossfade_mode, true);
+        assert!(op.request().crossfade_mode);
         assert_eq!(op.metadata().action, "SetCrossfadeMode");
     }
 
@@ -960,7 +954,9 @@ mod tests {
 
     #[test]
     fn test_set_play_mode_builder() {
-        let op = set_play_mode_operation("SHUFFLE".to_string()).build().unwrap();
+        let op = set_play_mode_operation("SHUFFLE".to_string())
+            .build()
+            .unwrap();
         assert_eq!(op.request().new_play_mode, "SHUFFLE");
         assert_eq!(op.metadata().action, "SetPlayMode");
     }
@@ -993,7 +989,9 @@ mod tests {
 
     #[test]
     fn test_get_remaining_sleep_timer_duration_builder() {
-        let op = get_remaining_sleep_timer_duration_operation().build().unwrap();
+        let op = get_remaining_sleep_timer_duration_operation()
+            .build()
+            .unwrap();
         assert_eq!(op.metadata().action, "GetRemainingSleepTimerDuration");
     }
 
@@ -1025,7 +1023,9 @@ mod tests {
 
     #[test]
     fn test_snooze_alarm_builder() {
-        let op = snooze_alarm_operation("0:10:00".to_string()).build().unwrap();
+        let op = snooze_alarm_operation("0:10:00".to_string())
+            .build()
+            .unwrap();
         assert_eq!(op.request().duration, "0:10:00");
         assert_eq!(op.metadata().action, "SnoozeAlarm");
     }
@@ -1049,6 +1049,5 @@ mod tests {
         let _subscribe_fn = || subscribe(&client, "192.168.1.100", "http://callback.url");
         let _subscribe_timeout_fn =
             || subscribe_with_timeout(&client, "192.168.1.100", "http://callback.url", 3600);
-        assert!(true);
     }
 }

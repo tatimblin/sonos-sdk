@@ -60,7 +60,6 @@ pub struct BrokerConfig {
     /// Default: 100
     pub max_cached_device_states: usize,
 
-
     /// Maximum number of registrations allowed
     /// Default: 1000
     pub max_registrations: usize,
@@ -200,7 +199,6 @@ impl BrokerConfig {
     }
 
     /// Builder pattern methods for fluent configuration
-
     pub fn with_callback_ports(mut self, start: u16, end: u16) -> Self {
         self.callback_port_range = (start, end);
         self
@@ -261,7 +259,6 @@ mod tests {
             ..Default::default()
         };
         assert!(invalid_polling.validate().is_err());
-
     }
 
     #[test]
