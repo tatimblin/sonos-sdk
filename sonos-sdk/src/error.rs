@@ -35,8 +35,7 @@ pub enum SdkError {
     #[error("Validation failed: {0}")]
     ValidationFailed(#[from] sonos_api::operation::ValidationError),
 
-    /// The requested operation is not valid in the current state
-    /// (e.g., removing a coordinator from its own group).
+    /// The requested operation is not valid in the current state (e.g., removing a coordinator from its own group).
     #[error("Invalid operation: {0}")]
     InvalidOperation(String),
 }

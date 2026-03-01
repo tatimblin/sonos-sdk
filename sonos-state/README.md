@@ -134,6 +134,6 @@ MIT License
 
 ## See Also
 
-- [`sonos-sdk`](../sonos-sdk) - Public DOM-like API (use this for applications)
-- [`state-store`](../state-store) - Generic state management primitives
-- [`sonos-api`](../sonos-api) - Low-level UPnP operations
+- [`sonos-sdk`](https://crates.io/crates/sonos-sdk) - Public DOM-like API (use this for applications)
+- [`sonos-sdk-state-store`](https://crates.io/crates/sonos-sdk-state-store) - Generic state management primitives
+- [`sonos-api`](https://crates.io/crates/sonos-api) - Low-level UPnP operations

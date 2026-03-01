@@ -311,7 +311,7 @@ sonos-api (UPnP Operations)         sonos-stream (Event Processing)
 
 ## License
 
-Licensed under either of [MIT](../LICENSE-MIT) or [Apache-2.0](../LICENSE-APACHE) at your option.
+Licensed under either of MIT or Apache-2.0 at your option. See [LICENSE-MIT](https://github.com/tatimblin/sonos-sdk/blob/main/LICENSE-MIT) and [LICENSE-APACHE](https://github.com/tatimblin/sonos-sdk/blob/main/LICENSE-APACHE).
 
 ## See Also
 

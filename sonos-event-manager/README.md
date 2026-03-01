@@ -199,6 +199,6 @@ MIT OR Apache-2.0
 
 ## See Also
 
-- **[`sonos-state`](../sonos-state)** - **Recommended user-facing API** for reactive state management
-- [`sonos-stream`](../sonos-stream) - Low-level event streaming and UPnP subscriptions
-- [`sonos-api`](../sonos-api) - Core Sonos UPnP API definitions
+- **[`sonos-sdk-state`](https://crates.io/crates/sonos-sdk-state)** - **Recommended user-facing API** for reactive state management
+- [`sonos-sdk-stream`](https://crates.io/crates/sonos-sdk-stream) - Low-level event streaming and UPnP subscriptions
+- [`sonos-api`](https://crates.io/crates/sonos-api) - Core Sonos UPnP API definitions

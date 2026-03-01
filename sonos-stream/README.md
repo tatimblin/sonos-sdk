@@ -161,6 +161,6 @@ MIT OR Apache-2.0
 
 ## See Also
 
-- **[`sonos-state`](../sonos-state)** - reactive state management
-- [`callback-server`](../callback-server) - UPnP event callback infrastructure
-- [`sonos-api`](../sonos-api) - Core Sonos UPnP API definitions
+- **[`sonos-sdk-state`](https://crates.io/crates/sonos-sdk-state)** - reactive state management
+- [`sonos-sdk-callback-server`](https://crates.io/crates/sonos-sdk-callback-server) - UPnP event callback infrastructure
+- [`sonos-api`](https://crates.io/crates/sonos-api) - Core Sonos UPnP API definitions
