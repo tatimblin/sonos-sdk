@@ -25,7 +25,6 @@ pub enum FirewallStatus {
     Error,
 }
 
-
 /// Configuration for firewall detection behavior.
 #[derive(Debug, Clone)]
 pub struct FirewallDetectionConfig {

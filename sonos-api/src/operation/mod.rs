@@ -113,18 +113,13 @@ impl ValidationError {
 }
 
 /// Validation levels for operation parameters
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ValidationLevel {
     /// No validation - maximum performance
     None,
     /// Basic validation - type and range checks
+    #[default]
     Basic,
-}
-
-impl Default for ValidationLevel {
-    fn default() -> Self {
-        Self::Basic
-    }
 }
 
 /// Trait for types that can be validated
