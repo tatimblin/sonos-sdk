@@ -224,8 +224,10 @@ fn test_http_mock_with_fixture() {
 #[test]
 fn test_multiple_device_mocks() {
     let mut server = Server::new();
-    let fixtures = [DeviceFixture::load("sonos_one_device.xml", "192.168.1.100"),
-        DeviceFixture::load("sonos_play1_device.xml", "192.168.1.101")];
+    let fixtures = [
+        DeviceFixture::load("sonos_one_device.xml", "192.168.1.100"),
+        DeviceFixture::load("sonos_play1_device.xml", "192.168.1.101"),
+    ];
 
     let mut mocks = Vec::new();
     for (i, fixture) in fixtures.iter().enumerate() {

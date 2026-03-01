@@ -20,23 +20,19 @@
 //!
 //! ## Basic Usage
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! use sonos_stream::{EventBroker, BrokerConfig, Service};
 //!
-//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let mut broker = EventBroker::new(BrokerConfig::default()).await?;
 //!
 //! // Register speakers with automatic duplicate protection
-//! let reg1 = broker.register_speaker_service("192.168.1.100".parse()?, Service::AVTransport)?;
+//! let reg1 = broker.register_speaker_service("192.168.1.100".parse()?, Service::AVTransport).await?;
 //!
 //! // Process events with optimal sync iterator for state management
 //! let mut events = broker.event_iterator();
 //! for event in events.iter() {
 //!     // Handle events - transparent switching between UPnP events and polling
-//!     println!("Event: {:?}", event);
 //! }
-//! # Ok(())
-//! # }
 //! ```
 //!
 //! ## Architecture

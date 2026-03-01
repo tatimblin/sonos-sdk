@@ -133,10 +133,7 @@ mod tests {
     #[test]
     fn test_error_display() {
         let network_err = ApiError::NetworkError("connection failed".to_string());
-        assert_eq!(
-            format!("{network_err}"),
-            "Network error: connection failed"
-        );
+        assert_eq!(format!("{network_err}"), "Network error: connection failed");
 
         let parse_err = ApiError::ParseError("invalid XML".to_string());
         assert_eq!(format!("{parse_err}"), "Parse error: invalid XML");

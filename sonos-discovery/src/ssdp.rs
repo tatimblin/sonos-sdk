@@ -24,9 +24,8 @@ pub(crate) struct SsdpClient {
 impl SsdpClient {
     /// Create a new SSDP client with the specified timeout
     pub fn new(timeout: Duration) -> Result<Self> {
-        let socket = UdpSocket::bind("0.0.0.0:0").map_err(|e| {
-            DiscoveryError::NetworkError(format!("Failed to bind UDP socket: {e}"))
-        })?;
+        let socket = UdpSocket::bind("0.0.0.0:0")
+            .map_err(|e| DiscoveryError::NetworkError(format!("Failed to bind UDP socket: {e}")))?;
 
         socket.set_read_timeout(Some(timeout)).map_err(|e| {
             DiscoveryError::NetworkError(format!("Failed to set read timeout: {e}"))

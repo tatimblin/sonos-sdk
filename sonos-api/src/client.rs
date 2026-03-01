@@ -319,7 +319,6 @@ mod tests {
             &str,
             u32,
         ) -> Result<ManagedSubscription> = SonosClient::subscribe_with_timeout;
-
     }
 
     #[test]
@@ -357,6 +356,5 @@ mod tests {
                 1800,
             )
         };
-
     }
 }

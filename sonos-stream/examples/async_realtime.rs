@@ -102,9 +102,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 // Stop after max events for demonstration
                 if event_count >= max_events {
-                    println!(
-                        "📋 Processed {event_count} events, stopping demonstration"
-                    );
+                    println!("📋 Processed {event_count} events, stopping demonstration");
                     break;
                 }
             }
@@ -399,18 +397,14 @@ async fn demonstrate_async_features(events: &mut sonos_stream::events::iterator:
 async fn simulate_external_notification(event_type: &str, device_ip: IpAddr) {
     // Simulate async operation (e.g., HTTP request to webhook)
     tokio::time::sleep(Duration::from_millis(50)).await;
-    println!(
-        "   📤 Sent '{event_type}' notification for device {device_ip}"
-    );
+    println!("   📤 Sent '{event_type}' notification for device {device_ip}");
 }
 
 /// Simulate updating track information in external service
 async fn simulate_track_update(device_ip: IpAddr, track_uri: &str) {
     // Simulate async database update
     tokio::time::sleep(Duration::from_millis(100)).await;
-    println!(
-        "   💾 Updated track database: {device_ip} -> {track_uri}"
-    );
+    println!("   💾 Updated track database: {device_ip} -> {track_uri}");
 }
 
 /// Simulate topology database update
@@ -444,9 +438,7 @@ async fn simulate_device_update(
     .filter(|prop| prop.is_some())
     .count();
 
-    println!(
-        "   💾 Updated device database: {device_ip} with {properties_count} properties"
-    );
+    println!("   💾 Updated device database: {device_ip} with {properties_count} properties");
 }
 
 /// Format event source for display

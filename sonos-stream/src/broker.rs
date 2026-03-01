@@ -610,13 +610,9 @@ impl EventBroker {
         debug!(registration_id = %registration_id, "Unregistering subscription");
 
         // Get the pair before removing
-        let pair = self
-            .registry
-            .get_pair(registration_id)
-            .await
-            .ok_or({
-                BrokerError::Registry(crate::error::RegistryError::NotFound(registration_id))
-            })?;
+        let pair = self.registry.get_pair(registration_id).await.ok_or({
+            BrokerError::Registry(crate::error::RegistryError::NotFound(registration_id))
+        })?;
 
         // Stop polling if active
         if let Err(e) = self.polling_scheduler.stop_polling(registration_id).await {

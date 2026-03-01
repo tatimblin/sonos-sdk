@@ -299,9 +299,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Stop after 10 events for demonstration purposes
         if event_count >= 10 {
-            println!(
-                "📋 Processed {event_count} events, stopping demonstration"
-            );
+            println!("📋 Processed {event_count} events, stopping demonstration");
             break;
         }
     }
@@ -370,34 +368,24 @@ fn print_registration_feedback(
                         );
                     }
                     PollingReason::SubscriptionFailed => {
-                        println!(
-                            "  {service_name} ❌→🔄 UPnP subscription failed - using polling"
-                        );
+                        println!("  {service_name} ❌→🔄 UPnP subscription failed - using polling");
                     }
                     _ => {
                         println!("  {service_name} 🔄 Using polling mode: {reason:?}");
                     }
                 }
             } else {
-                println!(
-                    "  {service_name} 📡 UPnP events active - real-time updates enabled"
-                );
+                println!("  {service_name} 📡 UPnP events active - real-time updates enabled");
             }
         }
         FirewallStatus::Blocked => {
-            println!(
-                "  {service_name} 🔥 Firewall detected - using polling for immediate updates"
-            );
+            println!("  {service_name} 🔥 Firewall detected - using polling for immediate updates");
         }
         FirewallStatus::Unknown => {
             if polling_reason.is_some() {
-                println!(
-                    "  {service_name} ❓ Firewall status unknown - using polling as fallback"
-                );
+                println!("  {service_name} ❓ Firewall status unknown - using polling as fallback");
             } else {
-                println!(
-                    "  {service_name} ❓ Firewall status unknown - monitoring events closely"
-                );
+                println!("  {service_name} ❓ Firewall status unknown - monitoring events closely");
             }
         }
         FirewallStatus::Error => {

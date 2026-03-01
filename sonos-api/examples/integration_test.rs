@@ -139,9 +139,7 @@ fn validate_menu_selection(selection: usize, max: usize) -> Result<usize, String
         return Err("Selection 0 means exit".to_string());
     }
     if selection > max {
-        return Err(format!(
-            "Selection {selection} is out of range (1-{max})"
-        ));
+        return Err(format!("Selection {selection} is out of range (1-{max})"));
     }
     Ok(selection)
 }

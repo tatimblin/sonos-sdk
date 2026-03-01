@@ -212,7 +212,10 @@ impl EventIterator {
             matches!(
                 (&event.event_source, source_type),
                 (EventSource::UPnPNotification { .. }, EventSourceType::UPnP)
-                    | (EventSource::PollingDetection { .. }, EventSourceType::Polling)
+                    | (
+                        EventSource::PollingDetection { .. },
+                        EventSourceType::Polling
+                    )
             )
         })
     }
@@ -392,7 +395,7 @@ impl std::fmt::Display for EventIteratorStats {
 mod tests {
     use super::*;
     use crate::events::types::{AVTransportState, EventData, EventSource};
-    
+
     use std::time::SystemTime;
 
     fn create_test_event(registration_id: RegistrationId) -> EnrichedEvent {

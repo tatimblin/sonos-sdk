@@ -44,8 +44,7 @@ fn speaker_id_strategy() -> impl Strategy<Value = String> {
 
 /// Strategy for generating valid IP addresses
 fn ip_strategy() -> impl Strategy<Value = String> {
-    (1u8..255, 0u8..255, 0u8..255, 1u8..255)
-        .prop_map(|(a, b, c, d)| format!("{a}.{b}.{c}.{d}"))
+    (1u8..255, 0u8..255, 0u8..255, 1u8..255).prop_map(|(a, b, c, d)| format!("{a}.{b}.{c}.{d}"))
 }
 
 /// Strategy for generating volume values (0-100)

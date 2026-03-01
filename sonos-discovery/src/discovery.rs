@@ -110,9 +110,7 @@ impl DiscoveryIterator {
         })?;
 
         let xml = response.text().map_err(|e| {
-            crate::error::DiscoveryError::NetworkError(format!(
-                "Failed to read response body: {e}"
-            ))
+            crate::error::DiscoveryError::NetworkError(format!("Failed to read response body: {e}"))
         })?;
 
         DeviceDescription::from_xml(&xml)

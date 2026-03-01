@@ -199,9 +199,8 @@ impl RenderingControlEvent {
     /// Parse from UPnP event XML using serde
     pub fn from_xml(xml: &str) -> Result<Self> {
         let clean_xml = xml_utils::strip_namespaces(xml);
-        quick_xml::de::from_str(&clean_xml).map_err(|e| {
-            ApiError::ParseError(format!("Failed to parse RenderingControl XML: {e}"))
-        })
+        quick_xml::de::from_str(&clean_xml)
+            .map_err(|e| ApiError::ParseError(format!("Failed to parse RenderingControl XML: {e}")))
     }
 }
 

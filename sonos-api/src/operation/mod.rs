@@ -278,9 +278,7 @@ pub fn validate_channel(channel: &str) -> Result<(), ValidationError> {
         "Master" | "LF" | "RF" => Ok(()),
         other => Err(ValidationError::Custom {
             parameter: "channel".to_string(),
-            message: format!(
-                "Invalid channel '{other}'. Must be 'Master', 'LF', or 'RF'"
-            ),
+            message: format!("Invalid channel '{other}'. Must be 'Master', 'LF', or 'RF'"),
         }),
     }
 }

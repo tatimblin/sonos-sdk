@@ -765,9 +765,7 @@ pub fn validate_parameter_value(value: &str, param_type: &str) -> Result<()> {
         }
         _ => {
             // Unknown type - treat as string but warn
-            println!(
-                "Warning: Unknown parameter type '{param_type}', treating as string"
-            );
+            println!("Warning: Unknown parameter type '{param_type}', treating as string");
             Ok(())
         }
     }
@@ -1323,9 +1321,7 @@ async fn discover_devices_with_enhanced_error_handling() -> Result<Vec<Device>> 
     let mut attempt = 1;
 
     loop {
-        println!(
-            "🔍 Discovering Sonos devices... (attempt {attempt}/{MAX_RETRIES})"
-        );
+        println!("🔍 Discovering Sonos devices... (attempt {attempt}/{MAX_RETRIES})");
 
         match discover_devices().await {
             Ok(devices) => return Ok(devices),

@@ -547,7 +547,6 @@ mod tests {
         // Test subscribe_with_timeout function exists and has correct signature
         let _subscribe_timeout_fn =
             || subscribe_with_timeout(&client, "192.168.1.100", "http://callback.url", 3600);
-
     }
 
     #[test]

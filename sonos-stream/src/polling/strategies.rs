@@ -63,9 +63,7 @@ impl ServicePoller for AVTransportPoller {
     fn state_to_event_data(&self, json_state: &str) -> PollingResult<EventData> {
         let state: sonos_api::services::av_transport::state::AVTransportState =
             serde_json::from_str(json_state).map_err(|e| {
-                PollingError::StateParsing(format!(
-                    "Failed to deserialize AVTransport state: {e}"
-                ))
+                PollingError::StateParsing(format!("Failed to deserialize AVTransport state: {e}"))
             })?;
         Ok(EventData::AVTransport(state))
     }

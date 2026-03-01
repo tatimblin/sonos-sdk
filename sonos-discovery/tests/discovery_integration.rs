@@ -94,9 +94,7 @@ fn test_deduplication_logic() {
         }
     }
 
-    println!(
-        "Deduplication test: {total_events} unique device(s) found"
-    );
+    println!("Deduplication test: {total_events} unique device(s) found");
 }
 
 #[test]
