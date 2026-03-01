@@ -1,5 +1,5 @@
 [package]
-name = "callback-server"
+name = "sonos-sdk-callback-server"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 description = "Internal HTTP callback server for sonos-sdk UPnP event reception"
 readme = "README.md"
+
+[lib]
+name = "callback_server"
 
 [dependencies]
 tokio = { version = "1.0", features = ["full"] }

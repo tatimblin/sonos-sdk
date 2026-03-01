@@ -1,5 +1,5 @@
 [package]
-name = "sonos-event-manager"
+name = "sonos-sdk-event-manager"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,11 +8,14 @@ repository.workspace = true
 description = "Internal event subscription orchestration for sonos-sdk"
 readme = "README.md"
 
+[lib]
+name = "sonos_event_manager"
+
 [dependencies]
 # Local workspace dependencies
-sonos-api = { path = "../sonos-api" }
-sonos-stream = { path = "../sonos-stream" }
-sonos-discovery = { path = "../sonos-discovery" }
+sonos-api = { path = "../sonos-api", version = "0.1.0" }
+sonos-stream = { package = "sonos-sdk-stream", path = "../sonos-stream", version = "0.1.0" }
+sonos-discovery = { package = "sonos-sdk-discovery", path = "../sonos-discovery", version = "0.1.0" }
 
 # Async runtime and utilities
 tokio = { version = "1.0", features = ["full"] }
@@ -26,7 +29,7 @@ dashmap = "5.0"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
-sonos-state = { path = "../sonos-state" }
+sonos-state = { package = "sonos-sdk-state", path = "../sonos-state", version = "0.1.0" }
 chrono = "0.4"
 ctrlc = "3.4"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

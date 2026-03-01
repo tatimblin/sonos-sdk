@@ -1,5 +1,5 @@
 [package]
-name = "soap-client"
+name = "sonos-sdk-soap-client"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 description = "Internal SOAP client for sonos-sdk UPnP device communication"
 readme = "README.md"
+
+[lib]
+name = "soap_client"
 
 [dependencies]
 ureq = { version = "2.9", features = ["json"] }

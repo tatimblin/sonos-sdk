@@ -1,5 +1,5 @@
 [package]
-name = "sonos-stream"
+name = "sonos-sdk-stream"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,10 +8,13 @@ repository.workspace = true
 description = "Internal event streaming and subscription management for sonos-sdk"
 readme = "README.md"
 
+[lib]
+name = "sonos_stream"
+
 [dependencies]
 # Local workspace dependencies
-callback-server = { path = "../callback-server" }
-sonos-api = { path = "../sonos-api" }
+callback-server = { package = "sonos-sdk-callback-server", path = "../callback-server", version = "0.1.0" }
+sonos-api = { path = "../sonos-api", version = "0.1.0" }
 
 # Async runtime and utilities
 tokio = { version = "1.0", features = ["full"] }
@@ -43,7 +46,7 @@ dashmap = "5.0"  # Concurrent HashMap alternative
 crossbeam = "0.8"  # Lock-free data structures
 
 [dev-dependencies]
-sonos-discovery = { path = "../sonos-discovery" }
+sonos-discovery = { package = "sonos-sdk-discovery", path = "../sonos-discovery", version = "0.1.0" }
 rstest = "0.18"
 proptest = "1.0"
 tokio-test = "0.4"

@@ -1,5 +1,5 @@
 [package]
-name = "sonos-discovery"
+name = "sonos-sdk-discovery"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,6 +8,9 @@ repository.workspace = true
 description = "SSDP-based discovery of Sonos devices on local networks"
 readme = "README.md"
 exclude = ["tests/"]
+
+[lib]
+name = "sonos_discovery"
 
 [dependencies]
 reqwest = { version = "0.11", features = ["blocking"] }
