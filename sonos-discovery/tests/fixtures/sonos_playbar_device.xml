@@ -6,7 +6,7 @@
   </specVersion>
   <device>
     <deviceType>urn:schemas-upnp-org:device:ZonePlayer:1</deviceType>
-    <friendlyName>192.168.4.44 - Sonos Playbar - RINCON_5CAAFDAE58BD01400</friendlyName>
+    <friendlyName>192.168.1.105 - Sonos Playbar - RINCON_001122AABB0501400</friendlyName>
     <manufacturer>Sonos, Inc.</manufacturer>
     <manufacturerURL>http://www.sonos.com</manufacturerURL>
     <modelNumber>S9</modelNumber>
@@ -16,9 +16,9 @@
     <softwareVersion>85.0-64200</softwareVersion>
     <swGen>2</swGen>
     <hardwareVersion>1.16.4.1-2</hardwareVersion>
-    <serialNum>5C-AA-FD-AE-58-BD:7</serialNum>
-    <MACAddress>5C:AA:FD:AE:58:BD</MACAddress>
-    <UDN>uuid:RINCON_5CAAFDAE58BD01400</UDN>
+    <serialNum>00-11-22-AA-BB-05:7</serialNum>
+    <MACAddress>00:11:22:AA:BB:05</MACAddress>
+    <UDN>uuid:RINCON_001122AABB0501400</UDN>
     <iconList>
       <icon>
         <id>0</id>

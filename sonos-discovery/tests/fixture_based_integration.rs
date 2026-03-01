@@ -273,7 +273,7 @@ fn test_malformed_xml_handling() {
 
 /// Test device field extraction from various fixtures
 #[rstest]
-#[case("sonos_one_device.xml", "uuid:RINCON_7828CA0E1E1801400")]
+#[case("sonos_one_device.xml", "uuid:RINCON_001122AABB0101400")]
 #[case("minimal_sonos_device.xml", "uuid:RINCON_TEST123456")]
 fn test_device_id_extraction(#[case] fixture_file: &str, #[case] expected_id: &str) {
     let fixture = DeviceFixture::load(fixture_file, "192.168.1.100");

@@ -4,7 +4,7 @@ A generic UPnP callback server for receiving event notifications.
 
 ## Overview
 
-This is a **private workspace crate** used internally by other crates in this workspace. It is not intended for external use and is not published to crates.io.
+This is an internal implementation detail of [sonos-sdk](https://crates.io/crates/sonos-sdk). It is published to crates.io as a transitive dependency but is not intended for direct use.
 
 The callback-server crate provides a lightweight HTTP server for handling UPnP NOTIFY requests. It is completely generic and has no knowledge of device-specific protocols or implementations.
 

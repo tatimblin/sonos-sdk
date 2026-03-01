@@ -6,7 +6,7 @@
   </specVersion>
   <device>
     <deviceType>urn:schemas-upnp-org:device:ZonePlayer:1</deviceType>
-    <friendlyName>192.168.4.41 - Sonos Play:1 - RINCON_B8E9373C4F0601400</friendlyName>
+    <friendlyName>192.168.1.104 - Sonos Play:1 - RINCON_001122AABB0401400</friendlyName>
     <manufacturer>Sonos, Inc.</manufacturer>
     <manufacturerURL>http://www.sonos.com</manufacturerURL>
     <modelNumber>S1</modelNumber>
@@ -16,9 +16,9 @@
     <softwareVersion>85.0-64200</softwareVersion>
     <swGen>2</swGen>
     <hardwareVersion>1.20.1.6-2</hardwareVersion>
-    <serialNum>B8-E9-37-3C-4F-06:7</serialNum>
-    <MACAddress>B8:E9:37:3C:4F:06</MACAddress>
-    <UDN>uuid:RINCON_B8E9373C4F0601400</UDN>
+    <serialNum>00-11-22-AA-BB-04:7</serialNum>
+    <MACAddress>00:11:22:AA:BB:04</MACAddress>
+    <UDN>uuid:RINCON_001122AABB0401400</UDN>
     <iconList>
       <icon>
         <id>0</id>

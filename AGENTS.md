@@ -22,7 +22,7 @@ A multi-crate rust project to provide a sonos SDK capable of live updates and fu
 - **`/docs/SUMMARY.md`** - The entry point for the documentation.
 - **`/callback-server/`** - Internal rust crate used by sonos-stream providing a callback server for upnp NOTIFY events to be sent to.
 - **`/soap-client/`** - Internal rust crate for SOAP API utilities used by sonos-api providing an http client tailored to SOAP requests.
-- **`/sonos-discovery/`** - Public crate for discovering Sonos devices on a network.
+- **`/sonos-discovery/`** - Internal crate for discovering Sonos devices on a network (re-exported through sonos-sdk).
 - **`/sonos-stream/`** - Internal rust crate for creating and receiving streamed Sonos events.
 - **`/sonos-event-manager/`** - Internal rust crate that wraps sonos-event and manages subscription lifecycle.
 - **`/sonos-api/`** - Public rust crate that provides an Http client for interacting with the local Sonos api.

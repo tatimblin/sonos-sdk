@@ -1,3 +1,5 @@
+//! Internal implementation detail of [`sonos-sdk`](https://crates.io/crates/sonos-sdk). Not intended for direct use.
+//!
 //! Sonos device discovery library
 //!
 //! This crate provides a simple API for discovering Sonos devices on a local network

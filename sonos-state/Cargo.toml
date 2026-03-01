@@ -1,9 +1,13 @@
 [package]
 name = "sonos-state"
-version = "0.1.0"
-edition = "2021"
-description = "State management for Sonos devices"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Internal reactive state management for sonos-sdk"
+readme = "README.md"
+exclude = ["plans/"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -26,4 +30,3 @@ proptest = "1.4"
 # For ratatui example
 ratatui = "0.26"
 crossterm = "0.27"
-

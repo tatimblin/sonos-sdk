@@ -1,10 +1,12 @@
 [package]
 name = "sonos-event-manager"
-version = "0.1.0"
-edition = "2021"
-description = "High-level facade for intelligent Sonos event subscription management with reference counting"
-authors = ["Claude Code"]
-license = "MIT OR Apache-2.0"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Internal event subscription orchestration for sonos-sdk"
+readme = "README.md"
 
 [dependencies]
 # Local workspace dependencies

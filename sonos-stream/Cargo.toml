@@ -1,10 +1,12 @@
 [package]
 name = "sonos-stream"
-version = "0.1.0"
-edition = "2021"
-description = "Event streaming and subscription management for Sonos devices with transparent polling fallback"
-authors = ["Claude Code"]
-license = "MIT OR Apache-2.0"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Internal event streaming and subscription management for sonos-sdk"
+readme = "README.md"
 
 [dependencies]
 # Local workspace dependencies
@@ -75,4 +77,3 @@ required-features = ["firewall-detection"]
 name = "live_demo"
 path = "examples/live_demo.rs"
 required-features = ["firewall-detection"]
-

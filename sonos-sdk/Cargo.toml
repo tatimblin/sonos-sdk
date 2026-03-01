@@ -1,7 +1,14 @@
 [package]
 name = "sonos-sdk"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Sync-first, DOM-like SDK for controlling Sonos speakers via UPnP"
+readme = "README.md"
 
 [dependencies]
 sonos-state = { path = "../sonos-state" }

@@ -6,7 +6,7 @@
   </specVersion>
   <device>
     <deviceType>urn:schemas-upnp-org:device:ZonePlayer:1</deviceType>
-    <friendlyName>192.168.4.40 - Sonos One - RINCON_7828CA0E1E1801400</friendlyName>
+    <friendlyName>192.168.1.101 - Sonos One - RINCON_001122AABB0101400</friendlyName>
     <manufacturer>Sonos, Inc.</manufacturer>
     <manufacturerURL>http://www.sonos.com</manufacturerURL>
     <modelNumber>S18</modelNumber>
@@ -16,9 +16,9 @@
     <softwareVersion>85.0-64200</softwareVersion>
     <swGen>2</swGen>
     <hardwareVersion>1.24.1.19-1.2</hardwareVersion>
-    <serialNum>78-28-CA-0E-1E-18:9</serialNum>
-    <MACAddress>78:28:CA:0E:1E:18</MACAddress>
-    <UDN>uuid:RINCON_7828CA0E1E1801400</UDN>
+    <serialNum>00-11-22-AA-BB-01:9</serialNum>
+    <MACAddress>00:11:22:AA:BB:01</MACAddress>
+    <UDN>uuid:RINCON_001122AABB0101400</UDN>
     <iconList>
       <icon>
         <id>0</id>
@@ -84,15 +84,15 @@
     <deviceList>
       <device>
         <deviceType>urn:schemas-upnp-org:device:MediaServer:1</deviceType>
-        <friendlyName>192.168.4.40 - Sonos One Media Server</friendlyName>
+        <friendlyName>192.168.1.101 - Sonos One Media Server</friendlyName>
         <manufacturer>Sonos, Inc.</manufacturer>
-        <UDN>uuid:RINCON_7828CA0E1E1801400_MS</UDN>
+        <UDN>uuid:RINCON_001122AABB0101400_MS</UDN>
       </device>
       <device>
         <deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType>
         <friendlyName>Bedroom - Sonos One Media Renderer</friendlyName>
         <manufacturer>Sonos, Inc.</manufacturer>
-        <UDN>uuid:RINCON_7828CA0E1E1801400_MR</UDN>
+        <UDN>uuid:RINCON_001122AABB0101400_MR</UDN>
       </device>
     </deviceList>
   </device>

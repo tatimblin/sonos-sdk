@@ -1,3 +1,5 @@
+//! Internal implementation detail of [`sonos-sdk`](https://crates.io/crates/sonos-sdk). Not intended for direct use.
+//!
 //! # Sonos Event Manager
 //!
 //! A sync-first facade for intelligent Sonos event subscription management with automatic

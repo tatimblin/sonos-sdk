@@ -6,7 +6,7 @@
   </specVersion>
   <device>
     <deviceType>urn:schemas-upnp-org:device:ZonePlayer:1</deviceType>
-    <friendlyName>192.168.4.39 - Sonos Roam 2 - RINCON_C43875CA135801400</friendlyName>
+    <friendlyName>192.168.1.103 - Sonos Roam 2 - RINCON_001122AABB0301400</friendlyName>
     <manufacturer>Sonos, Inc.</manufacturer>
     <manufacturerURL>http://www.sonos.com</manufacturerURL>
     <modelNumber>S54</modelNumber>
@@ -16,9 +16,9 @@
     <softwareVersion>85.0-64200</softwareVersion>
     <swGen>2</swGen>
     <hardwareVersion>1.33.3.5-1.13</hardwareVersion>
-    <serialNum>C4-38-75-CA-13-58:1</serialNum>
-    <MACAddress>C4:38:75:CA:13:58</MACAddress>
-    <UDN>uuid:RINCON_C43875CA135801400</UDN>
+    <serialNum>00-11-22-AA-BB-03:1</serialNum>
+    <MACAddress>00:11:22:AA:BB:03</MACAddress>
+    <UDN>uuid:RINCON_001122AABB0301400</UDN>
     <iconList>
       <icon>
         <id>0</id>

@@ -1,3 +1,5 @@
+//! Internal implementation detail of [`sonos-sdk`](https://crates.io/crates/sonos-sdk). Not intended for direct use.
+//!
 //! Generic UPnP callback server for receiving event notifications.
 //!
 //! This crate provides a lightweight HTTP server for handling UPnP NOTIFY requests.
