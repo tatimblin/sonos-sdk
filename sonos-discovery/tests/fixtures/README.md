@@ -11,27 +11,27 @@ These fixtures were captured from actual Sonos devices on a network using the `c
 - **sonos_one_device.xml** - Sonos One speaker (Model S18)
   - Room: Bedroom
   - Features: Modern Sonos speaker with voice control support
-  - UDN: uuid:RINCON_7828CA0E1E1801400
+  - UDN: uuid:RINCON_001122AABB0101400
 
 - **sonos_play1_device.xml** - Sonos Play:1 speaker (Model S1)
-  - Room: Dining Room  
+  - Room: Dining Room
   - Features: Compact speaker, older generation
-  - UDN: uuid:RINCON_B8E9373C4F0601400
+  - UDN: uuid:RINCON_001122AABB0401400
 
 - **sonos_playbar_device.xml** - Sonos Playbar soundbar (Model S9)
   - Room: TV Room
   - Features: Home theater soundbar with HTControl service
-  - UDN: uuid:RINCON_5CAAFDAE58BD01400
+  - UDN: uuid:RINCON_001122AABB0501400
 
 - **sonos_amp_device.xml** - Sonos Amp (Model S16)
   - Room: Living Room
   - Features: Amplifier with AudioIn service for external sources
-  - UDN: uuid:RINCON_804AF2AA2FA201400
+  - UDN: uuid:RINCON_001122AABB0201400
 
 - **sonos_roam_device.xml** - Sonos Roam 2 portable speaker (Model S54)
   - Room: Roam / Office
   - Features: Portable battery-powered speaker
-  - UDN: uuid:RINCON_C43875CA135801400
+  - UDN: uuid:RINCON_001122AABB0301400
 
 ### Test-Only Fixtures
 
@@ -104,4 +104,4 @@ All Sonos device fixtures share these characteristics:
 
 ## Privacy Note
 
-The fixtures have been sanitized to use example IP addresses and MAC addresses where appropriate. Serial numbers and device IDs from real devices are preserved as they're needed for realistic testing.
+All MAC addresses, serial numbers, and RINCON device IDs in these fixtures are synthetic values. They follow realistic Sonos formatting patterns but do not correspond to real hardware.

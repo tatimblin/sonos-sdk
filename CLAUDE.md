@@ -82,17 +82,18 @@ cargo check
 
 #### Public-Facing Crates (User APIs)
 
+**sonos-sdk** - High-level SDK facade
+- Primary entry point for end users
+- Re-exports discovery, state management, and API types
+- Sync-first, DOM-like interface for controlling Sonos speakers
+
 **sonos-api** - High-level type-safe API layer (228 KB)
 - Implements the `SonosOperation` trait for all UPnP operations
 - Provides `SonosClient` for simplified operation execution
 - Supports AVTransport (30 ops), RenderingControl (11 ops: Get/Set Volume, Mute, Bass, Treble, Loudness + SetRelativeVolume), GroupRenderingControl (6 ops), GroupManagement (4 ops), ZoneGroupTopology, DeviceProperties, Events services
 - Stateless design - no connection or state management
 
-**sonos-discovery** - Network device discovery (40 KB)
-- SSDP-based discovery of Sonos devices on local network
-- Provides simple `get()` and `get_with_timeout()` functions
-- Iterator-based streaming API with `get_iter()`
-- Automatic device filtering and deduplication
+#### Internal Crates (Workspace-only)
 
 **sonos-state** - Reactive state management (148 KB)
 - High-level reactive API using `tokio::sync::watch` channels
@@ -101,7 +102,12 @@ cargo check
 - Supports Volume, Mute, Bass, Treble, Loudness, PlaybackState, Position, CurrentTrack, GroupMembership, Topology properties
 - Main entry point: `StateManager` with `watch_property<P>(speaker_id)` and `get_property<P>(speaker_id)` methods
 
-#### Internal Crates (Workspace-only)
+**sonos-discovery** - Network device discovery (40 KB)
+- SSDP-based discovery of Sonos devices on local network
+- Provides simple `get()` and `get_with_timeout()` functions
+- Iterator-based streaming API with `get_iter()`
+- Automatic device filtering and deduplication
+- Re-exported through `sonos-sdk` for end-user access
 
 **sonos-stream** - Event streaming and subscriptions (204 KB, largest crate)
 - Internal event streaming layer with transparent UPnP event/polling switching
@@ -313,5 +319,5 @@ sonos-state ──┬── sonos-api ──── soap-client
 - Device communication happens on port 1400 typically
 - Event subscriptions require firewall configuration for callbacks - automatic fallback to polling provided
 - The project uses standard Rust 2021 edition features
-- **User-Facing APIs**: Only sonos-api, sonos-discovery, and sonos-state are intended for direct use
-- **Internal Crates**: sonos-stream, sonos-event-manager, callback-server, soap-client are workspace implementation details
+- **User-Facing APIs**: Only sonos-sdk and sonos-api are intended for direct use
+- **Internal Crates**: sonos-state, sonos-discovery, sonos-stream, sonos-event-manager, callback-server, soap-client, state-store are workspace implementation details (published to crates.io as transitive dependencies)

@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Internal SOAP client for sonos-sdk UPnP device communication"
+readme = "README.md"
 
 [dependencies]
 ureq = { version = "2.9", features = ["json"] }

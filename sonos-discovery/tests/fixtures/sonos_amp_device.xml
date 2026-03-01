@@ -6,7 +6,7 @@
   </specVersion>
   <device>
     <deviceType>urn:schemas-upnp-org:device:ZonePlayer:1</deviceType>
-    <friendlyName>192.168.4.48 - Sonos Amp - RINCON_804AF2AA2FA201400</friendlyName>
+    <friendlyName>192.168.1.102 - Sonos Amp - RINCON_001122AABB0201400</friendlyName>
     <manufacturer>Sonos, Inc.</manufacturer>
     <manufacturerURL>http://www.sonos.com</manufacturerURL>
     <modelNumber>S16</modelNumber>
@@ -16,9 +16,9 @@
     <softwareVersion>85.0-65020</softwareVersion>
     <swGen>2</swGen>
     <hardwareVersion>1.24.1.19-1.2</hardwareVersion>
-    <serialNum>80-4A-F2-AA-2F-A2:9</serialNum>
-    <MACAddress>80:4A:F2:AA:2F:A2</MACAddress>
-    <UDN>uuid:RINCON_804AF2AA2FA201400</UDN>
+    <serialNum>00-11-22-AA-BB-02:9</serialNum>
+    <MACAddress>00:11:22:AA:BB:02</MACAddress>
+    <UDN>uuid:RINCON_001122AABB0201400</UDN>
     <iconList>
       <icon>
         <id>0</id>

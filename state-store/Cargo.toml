@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Generic, type-safe state management with change detection and blocking iteration"
+readme = "README.md"
 
 [dependencies]
 # Minimal dependencies - no Sonos-specific crates

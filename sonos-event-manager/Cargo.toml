@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Internal event subscription orchestration for sonos-sdk"
+readme = "README.md"
 
 [dependencies]
 # Local workspace dependencies
