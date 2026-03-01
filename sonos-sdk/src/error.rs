@@ -25,4 +25,7 @@ pub enum SdkError {
 
     #[error("Validation failed: {0}")]
     ValidationFailed(#[from] sonos_api::operation::ValidationError),
+
+    #[error("Invalid operation: {0}")]
+    InvalidOperation(String),
 }

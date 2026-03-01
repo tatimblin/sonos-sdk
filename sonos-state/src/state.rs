@@ -306,6 +306,7 @@ impl StateManager {
                 port: device.port,
                 model_name: device.model_name.clone(),
                 software_version: "unknown".to_string(),
+                boot_seq: 0,
                 satellites: vec![],
             };
 
@@ -365,6 +366,12 @@ impl StateManager {
     pub fn get_speaker_ip(&self, speaker_id: &SpeakerId) -> Option<IpAddr> {
         let store = self.store.read().ok()?;
         store.speaker(speaker_id).map(|s| s.ip_address)
+    }
+
+    /// Get boot_seq for a speaker (used by GroupManagement AddMember)
+    pub fn get_boot_seq(&self, speaker_id: &SpeakerId) -> Option<u32> {
+        let store = self.store.read().ok()?;
+        store.speaker(speaker_id).map(|s| s.boot_seq)
     }
 
     /// Create a blocking iterator over change events
@@ -1248,5 +1255,36 @@ mod tests {
         // All should return the same group
         assert_eq!(groups[0], by_id.unwrap());
         assert_eq!(groups[0], by_speaker.unwrap());
+    }
+
+    // ========================================================================
+    // boot_seq Tests
+    // ========================================================================
+
+    #[test]
+    fn test_get_boot_seq_returns_none_for_unknown_speaker() {
+        let manager = StateManager::new().unwrap();
+        let unknown = SpeakerId::new("RINCON_UNKNOWN");
+        assert!(manager.get_boot_seq(&unknown).is_none());
+    }
+
+    #[test]
+    fn test_boot_seq_defaults_to_zero_for_new_speaker() {
+        let manager = StateManager::new().unwrap();
+
+        let devices = vec![Device {
+            id: "RINCON_123".to_string(),
+            name: "Living Room".to_string(),
+            room_name: "Living Room".to_string(),
+            ip_address: "192.168.1.100".to_string(),
+            port: 1400,
+            model_name: "Sonos One".to_string(),
+        }];
+        manager.add_devices(devices).unwrap();
+
+        let speaker_id = SpeakerId::new("RINCON_123");
+
+        // Before any topology event, boot_seq should be 0
+        assert_eq!(manager.get_boot_seq(&speaker_id), Some(0));
     }
 }

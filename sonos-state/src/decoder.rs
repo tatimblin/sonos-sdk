@@ -36,6 +36,8 @@ pub struct TopologyChanges {
     pub groups: Vec<GroupInfo>,
     /// Updated speaker memberships: (speaker_id, membership)
     pub memberships: Vec<(SpeakerId, GroupMembership)>,
+    /// Boot sequence numbers per speaker (for GroupManagement AddMember)
+    pub boot_seqs: Vec<(SpeakerId, u32)>,
 }
 
 /// A single property change
@@ -282,6 +284,7 @@ fn decode_group_rendering_control(event: &GroupRenderingControlState) -> Vec<Pro
 pub fn decode_topology_event(event: &ZoneGroupTopologyState) -> TopologyChanges {
     let mut groups = Vec::new();
     let mut memberships = Vec::new();
+    let mut boot_seqs = Vec::new();
 
     for zone_group in &event.zone_groups {
         let group_id = GroupId::new(&zone_group.id);
@@ -302,16 +305,17 @@ pub fn decode_topology_event(event: &ZoneGroupTopologyState) -> TopologyChanges 
         );
         groups.push(group_info);
 
-        // Create GroupMembership for each member
+        // Create GroupMembership and extract boot_seq for each member
         for member in &zone_group.members {
             let speaker_id = SpeakerId::new(&member.uuid);
             let is_coordinator = speaker_id == coordinator_id;
             let membership = GroupMembership::new(group_id.clone(), is_coordinator);
-            memberships.push((speaker_id, membership));
+            memberships.push((speaker_id.clone(), membership));
+            boot_seqs.push((speaker_id, member.boot_seq));
         }
     }
 
-    TopologyChanges { groups, memberships }
+    TopologyChanges { groups, memberships, boot_seqs }
 }
 
 /// Parse duration string (HH:MM:SS or H:MM:SS) to milliseconds
@@ -586,11 +590,16 @@ mod tests {
 
     /// Helper to create a ZoneGroupMemberInfo for testing
     fn make_member(uuid: &str, zone_name: &str) -> ZoneGroupMemberInfo {
+        make_member_with_boot_seq(uuid, zone_name, 0)
+    }
+
+    fn make_member_with_boot_seq(uuid: &str, zone_name: &str, boot_seq: u32) -> ZoneGroupMemberInfo {
         ZoneGroupMemberInfo {
             uuid: uuid.to_string(),
             location: format!("http://192.168.1.100:1400/xml/device_description.xml"),
             zone_name: zone_name.to_string(),
             software_version: "79.1-56030".to_string(),
+            boot_seq,
             network_info: NetworkInfo {
                 wireless_mode: "0".to_string(),
                 wifi_enabled: "1".to_string(),
@@ -754,6 +763,57 @@ mod tests {
         assert!(result.groups.is_empty());
         assert!(result.memberships.is_empty());
     }
+
+    #[test]
+    fn test_decode_topology_extracts_boot_seq_values() {
+        let event = ZoneGroupTopologyState {
+            zone_groups: vec![ZoneGroupInfo {
+                coordinator: "RINCON_111111111111".to_string(),
+                id: "RINCON_111111111111:0".to_string(),
+                members: vec![
+                    make_member_with_boot_seq("RINCON_111111111111", "Living Room", 42),
+                    make_member_with_boot_seq("RINCON_222222222222", "Kitchen", 17),
+                ],
+            }],
+            vanished_devices: vec![],
+        };
+
+        let result = decode_topology_event(&event);
+
+        assert_eq!(result.boot_seqs.len(), 2);
+
+        let boot_seq_111 = result
+            .boot_seqs
+            .iter()
+            .find(|(id, _)| id.as_str() == "RINCON_111111111111")
+            .map(|(_, bs)| *bs);
+        assert_eq!(boot_seq_111, Some(42));
+
+        let boot_seq_222 = result
+            .boot_seqs
+            .iter()
+            .find(|(id, _)| id.as_str() == "RINCON_222222222222")
+            .map(|(_, bs)| *bs);
+        assert_eq!(boot_seq_222, Some(17));
+    }
+
+    #[test]
+    fn test_decode_topology_boot_seq_defaults_to_zero() {
+        // make_member() uses boot_seq: 0
+        let event = ZoneGroupTopologyState {
+            zone_groups: vec![ZoneGroupInfo {
+                coordinator: "RINCON_111111111111".to_string(),
+                id: "RINCON_111111111111:0".to_string(),
+                members: vec![make_member("RINCON_111111111111", "Living Room")],
+            }],
+            vanished_devices: vec![],
+        };
+
+        let result = decode_topology_event(&event);
+
+        assert_eq!(result.boot_seqs.len(), 1);
+        assert_eq!(result.boot_seqs[0].1, 0);
+    }
 }
 
 // ============================================================================
@@ -782,6 +842,7 @@ mod property_tests {
                 location: "http://192.168.1.100:1400/xml/device_description.xml".to_string(),
                 zone_name: zone_name.trim().to_string(),
                 software_version: "79.1-56030".to_string(),
+                boot_seq: 0,
                 network_info: NetworkInfo {
                     wireless_mode: "0".to_string(),
                     wifi_enabled: "1".to_string(),

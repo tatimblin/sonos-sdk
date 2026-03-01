@@ -356,7 +356,7 @@ impl Speaker {
 
 **Tasks — GroupManagement methods on Group (2) — DEFERRED to Phase 6:**
 
-- [ ] `add_member` / `remove_member` — deferred to Phase 6 where ergonomic `group.add_speaker(&speaker)` replaces raw UPnP calls
+- [x] `add_member` / `remove_member` — implemented in Phase 6 as ergonomic `group.add_speaker(&speaker)` and `group.remove_speaker(&speaker)`
 
 **Tasks — Testing:**
 
@@ -379,16 +379,16 @@ impl Speaker {
 
 **Tasks:**
 
-- [ ] **`speaker.join_group(group: &Group)`** — calls AddMemberOperation on the group coordinator
-- [ ] **`speaker.leave_group()`** — calls BecomeCoordinatorOfStandaloneGroupOperation (makes speaker standalone)
-- [ ] **`group.add_speaker(speaker: &Speaker)`** — calls AddMemberOperation on coordinator
-- [ ] **`group.remove_speaker(speaker: &Speaker)`** — calls RemoveMemberOperation on coordinator
-- [ ] **`system.create_group(coordinator: &Speaker, members: &[&Speaker])`** — adds each member to coordinator's group
-- [ ] **`group.dissolve()`** — removes all non-coordinator members, each becomes standalone
-- [ ] **Live topology updates** — verify that after group operations, ZoneGroupTopology events fire and the SDK's group list auto-updates
+- [x] **`speaker.join_group(group: &Group)`** — calls AddMemberOperation on the group coordinator
+- [x] **`speaker.leave_group()`** — calls BecomeCoordinatorOfStandaloneGroupOperation (makes speaker standalone)
+- [x] **`group.add_speaker(speaker: &Speaker)`** — calls AddMemberOperation on coordinator
+- [x] **`group.remove_speaker(speaker: &Speaker)`** — calls RemoveMemberOperation on coordinator
+- [x] **`system.create_group(coordinator: &Speaker, members: &[&Speaker])`** — adds each member to coordinator's group
+- [x] **`group.dissolve()`** — removes all non-coordinator members, each becomes standalone
+- [x] **Live topology updates** — verify that after group operations, ZoneGroupTopology events fire and the SDK's group list auto-updates
   - The event pipeline already handles this (ZoneGroupTopology → decoder → state store → topology)
   - Verify that `system.groups()` reflects changes after operations
-- [ ] Integration-style tests verifying group lifecycle operations compose correctly
+- [x] Integration-style tests verifying group lifecycle operations compose correctly
 
 **Success criteria:** Users can create groups, add/remove speakers, and dissolve groups. Topology auto-updates after mutations.
 

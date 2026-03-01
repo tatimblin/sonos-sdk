@@ -17,6 +17,8 @@ use sonos_api::SonosClient;
 use sonos_discovery::Device;
 use sonos_state::{Bass, Loudness, Mute, PlaybackState, SpeakerId, StateManager, Treble, Volume};
 
+use crate::Group;
+
 use sonos_api::operation::{ComposableOperation, UPnPOperation, ValidationError};
 use sonos_api::services::{
     av_transport::{
@@ -544,6 +546,24 @@ impl Speaker {
         Ok(())
     }
 
+    /// Join a group (convenience wrapper for `group.add_speaker(self)`)
+    ///
+    /// Adds this speaker to the specified group. After calling this,
+    /// re-fetch groups via `system.groups()` to see updated membership.
+    pub fn join_group(&self, group: &Group) -> Result<(), SdkError> {
+        group.add_speaker(self)
+    }
+
+    /// Leave current group and become a standalone player
+    ///
+    /// Semantic alias for [`become_standalone()`](Self::become_standalone).
+    /// After calling this, the speaker forms its own group of one.
+    pub fn leave_group(
+        &self,
+    ) -> Result<BecomeCoordinatorOfStandaloneGroupResponse, SdkError> {
+        self.become_standalone()
+    }
+
     // ========================================================================
     // RenderingControl — Volume and EQ
     // ========================================================================
@@ -705,5 +725,32 @@ mod tests {
         assert_void(speaker.set_bass(0));
         assert_void(speaker.set_treble(0));
         assert_void(speaker.set_loudness(true));
+
+        // Group convenience methods
+        let group = create_test_group_for_speaker(&speaker);
+        assert_void(speaker.join_group(&group));
+        assert_response::<BecomeCoordinatorOfStandaloneGroupResponse>(speaker.leave_group());
+    }
+
+    fn create_test_group_for_speaker(speaker: &Speaker) -> crate::Group {
+        use sonos_state::{GroupId, GroupInfo};
+        let state_manager = Arc::new(StateManager::new().unwrap());
+        let devices = vec![Device {
+            id: speaker.id.as_str().to_string(),
+            name: speaker.name.clone(),
+            room_name: speaker.name.clone(),
+            ip_address: speaker.ip.to_string(),
+            port: 1400,
+            model_name: speaker.model_name.clone(),
+        }];
+        state_manager.add_devices(devices).unwrap();
+
+        let group_info = GroupInfo::new(
+            GroupId::new(&format!("{}:1", speaker.id.as_str())),
+            speaker.id.clone(),
+            vec![speaker.id.clone()],
+        );
+
+        crate::Group::from_info(group_info, state_manager, SonosClient::new()).unwrap()
     }
 }

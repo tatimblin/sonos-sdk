@@ -57,8 +57,9 @@ impl crate::operation::UPnPOperation for AddMemberOperation {
     fn build_payload(request: &Self::Request) -> Result<String, crate::operation::ValidationError> {
         <Self::Request as Validate>::validate(request, crate::operation::ValidationLevel::Basic)?;
         Ok(format!(
-            "<MemberID>{}</MemberID><BootSeq>{}</BootSeq>",
-            request.member_id, request.boot_seq
+            "<InstanceID>0</InstanceID><MemberID>{}</MemberID><BootSeq>{}</BootSeq>",
+            crate::operation::xml_escape(&request.member_id),
+            request.boot_seq
         ))
     }
 
@@ -218,8 +219,22 @@ mod tests {
             boot_seq: 100,
         };
         let payload = AddMemberOperation::build_payload(&request).unwrap();
+        assert!(payload.contains("<InstanceID>0</InstanceID>"));
         assert!(payload.contains("<MemberID>RINCON_ABC123</MemberID>"));
         assert!(payload.contains("<BootSeq>100</BootSeq>"));
+    }
+
+    #[test]
+    fn test_add_member_payload_escapes_xml_special_chars() {
+        let request = AddMemberOperationRequest {
+            member_id: "RINCON_123</MemberID><BootSeq>999</BootSeq><Foo>bar".to_string(),
+            boot_seq: 42,
+        };
+        let payload = AddMemberOperation::build_payload(&request).unwrap();
+        // Should not contain unescaped injection
+        assert!(!payload.contains("</MemberID><BootSeq>999"));
+        assert!(payload.contains("&lt;/MemberID&gt;"));
+        assert!(payload.contains("<BootSeq>42</BootSeq>"));
     }
 
     #[test]

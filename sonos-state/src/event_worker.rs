@@ -151,10 +151,17 @@ fn apply_topology_changes(
             changed_memberships.push((speaker_id, changed));
         }
 
+        // 4. Update boot_seq for each speaker
+        for (speaker_id, boot_seq) in changes.boot_seqs {
+            if let Some(speaker) = store.speakers.get_mut(&speaker_id) {
+                speaker.boot_seq = boot_seq;
+            }
+        }
+
         changed_memberships
     };
 
-    // 4. Emit change events for watched properties (outside the write lock)
+    // 5. Emit change events for watched properties (outside the write lock)
     let watched_set = match watched.read() {
         Ok(w) => w,
         Err(_) => {
@@ -244,6 +251,7 @@ mod tests {
                 port: 1400,
                 model_name: "Test".to_string(),
                 software_version: "1.0".to_string(),
+                boot_seq: 0,
                 satellites: vec![],
             });
         }
@@ -284,6 +292,7 @@ mod tests {
                 port: 1400,
                 model_name: "Test".to_string(),
                 software_version: "1.0".to_string(),
+                boot_seq: 0,
                 satellites: vec![],
             });
         }
@@ -324,6 +333,7 @@ mod tests {
             port: 1400,
             model_name: "Test".to_string(),
             software_version: "1.0".to_string(),
+            boot_seq: 0,
             satellites: vec![],
         }
     }
@@ -419,6 +429,7 @@ mod tests {
                 (speaker1.clone(), GroupMembership::new(group_id.clone(), true)),
                 (speaker2.clone(), GroupMembership::new(group_id.clone(), false)),
             ],
+            boot_seqs: vec![],
         };
 
         // Apply topology changes
@@ -462,6 +473,7 @@ mod tests {
                 (speaker1.clone(), GroupMembership::new(group_id.clone(), true)),
                 (speaker2.clone(), GroupMembership::new(group_id.clone(), false)),
             ],
+            boot_seqs: vec![],
         };
 
         apply_topology_changes(&store, &watched, &tx, changes);
@@ -516,6 +528,7 @@ mod tests {
                 (speaker1.clone(), GroupMembership::new(group_id.clone(), true)),
                 (speaker2.clone(), GroupMembership::new(group_id.clone(), false)),
             ],
+            boot_seqs: vec![],
         };
 
         apply_topology_changes(&store, &watched, &tx, changes);
@@ -573,6 +586,7 @@ mod tests {
                 (speaker1.clone(), GroupMembership::new(new_group_id.clone(), false)),
                 (speaker2.clone(), GroupMembership::new(new_group_id.clone(), true)),
             ],
+            boot_seqs: vec![],
         };
 
         apply_topology_changes(&store, &watched, &tx, changes);
@@ -612,6 +626,7 @@ mod tests {
                 (speaker1.clone(), GroupMembership::new(group_id.clone(), true)),
                 (speaker2.clone(), GroupMembership::new(group_id.clone(), false)),
             ],
+            boot_seqs: vec![],
         };
 
         apply_topology_changes(&store, &watched, &tx, changes);
@@ -654,6 +669,7 @@ mod tests {
             memberships: vec![
                 (speaker1.clone(), GroupMembership::new(group_id.clone(), true)),
             ],
+            boot_seqs: vec![],
         };
 
         apply_topology_changes(&store, &watched, &tx, changes);

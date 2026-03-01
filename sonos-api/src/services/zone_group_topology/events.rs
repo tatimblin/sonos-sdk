@@ -152,6 +152,7 @@ pub struct ZoneGroupMemberInfo {
     pub location: String,
     pub zone_name: String,
     pub software_version: String,
+    pub boot_seq: u32,
     pub network_info: NetworkInfo,
     pub satellites: Vec<SatelliteInfo>,
 }
@@ -211,6 +212,9 @@ fn convert_zone_groups(zone_group_state: &ZoneGroupState) -> Vec<ZoneGroupInfo> 
                     location: member.location.clone(),
                     zone_name: member.zone_name.clone(),
                     software_version: member.software_version.clone().unwrap_or_default(),
+                    boot_seq: member.boot_seq.as_deref()
+                        .and_then(|s| s.parse::<u32>().ok())
+                        .unwrap_or(0),
                     network_info: NetworkInfo {
                         wireless_mode: member.wireless_mode.clone().unwrap_or_default(),
                         wifi_enabled: member.wifi_enabled.clone().unwrap_or_default(),
@@ -324,6 +328,7 @@ mod tests {
             location: "http://192.168.1.100:1400/xml/device_description.xml".to_string(),
             zone_name: "Living Room".to_string(),
             software_version: "56.0-76060".to_string(),
+            boot_seq: 0,
             network_info: NetworkInfo {
                 wireless_mode: "0".to_string(),
                 wifi_enabled: "1".to_string(),
