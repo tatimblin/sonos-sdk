@@ -286,7 +286,7 @@ echo "All crates published!"
 
 Add CI that runs on every PR and push to main.
 
-- [ ] **Create `.github/workflows/ci.yml`**:
+- [x] **Create `.github/workflows/ci.yml`**:
 
 ```yaml
 name: CI
@@ -348,7 +348,7 @@ jobs:
           RUSTDOCFLAGS: "-D warnings"
 ```
 
-- [ ] **Verify** — push a test branch, confirm all 4 jobs pass
+- [x] **Verify** — all 4 jobs pass locally (fmt, clippy, test, doc)
 
 #### Phase 6: First Publish to crates.io
 
