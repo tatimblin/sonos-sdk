@@ -249,7 +249,7 @@ pub struct StateManager {
     /// Channel for sending change events to iter()
     event_tx: mpsc::Sender<ChangeEvent>,
 
-    /// Receiver for iter() - wrapped in Arc<Mutex> for cloning
+    /// Receiver for iter() - wrapped in `Arc<Mutex>` for cloning
     event_rx: Arc<Mutex<mpsc::Receiver<ChangeEvent>>>,
 
     /// Background event processor handle (kept alive)

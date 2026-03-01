@@ -262,6 +262,12 @@ impl Speaker {
     /// Start or resume playback
     ///
     /// Updates the state cache to `PlaybackState::Playing` on success.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// speaker.play()?;
+    /// ```
     pub fn play(&self) -> Result<(), SdkError> {
         self.exec(av_transport::play("1".to_string()).build())?;
         self.context.state_manager.set_property(&self.context.speaker_id, PlaybackState::Playing);
@@ -550,6 +556,13 @@ impl Speaker {
     ///
     /// Adds this speaker to the specified group. After calling this,
     /// re-fetch groups via `system.groups()` to see updated membership.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let group = system.get_group_for_speaker(&coordinator.id).unwrap();
+    /// speaker.join_group(&group)?;
+    /// ```
     pub fn join_group(&self, group: &Group) -> Result<(), SdkError> {
         group.add_speaker(self)
     }
@@ -558,6 +571,12 @@ impl Speaker {
     ///
     /// Semantic alias for [`become_standalone()`](Self::become_standalone).
     /// After calling this, the speaker forms its own group of one.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// speaker.leave_group()?;
+    /// ```
     pub fn leave_group(
         &self,
     ) -> Result<BecomeCoordinatorOfStandaloneGroupResponse, SdkError> {
@@ -571,6 +590,12 @@ impl Speaker {
     /// Set speaker volume (0-100)
     ///
     /// Updates the state cache to the new `Volume` on success.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// speaker.set_volume(40)?;
+    /// ```
     pub fn set_volume(&self, volume: u8) -> Result<(), SdkError> {
         self.exec(rendering_control::set_volume("Master".to_string(), volume).build())?;
         self.context.state_manager.set_property(&self.context.speaker_id, Volume(volume));
@@ -589,6 +614,13 @@ impl Speaker {
     /// Set mute state
     ///
     /// Updates the state cache to the new `Mute` value on success.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// speaker.set_mute(true)?;   // Mute
+    /// speaker.set_mute(false)?;  // Unmute
+    /// ```
     pub fn set_mute(&self, muted: bool) -> Result<(), SdkError> {
         self.exec(rendering_control::set_mute("Master".to_string(), muted).build())?;
         self.context.state_manager.set_property(&self.context.speaker_id, Mute(muted));

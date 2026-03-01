@@ -34,6 +34,13 @@ fn main() -> Result<(), SdkError> {
 }
 ```
 
+## Installation
+
+```toml
+[dependencies]
+sonos-sdk = "0.1"
+```
+
 ## The Get/Fetch/Watch Pattern
 
 Every property on a speaker provides three methods:
@@ -176,6 +183,89 @@ if let Some(event) = system.iter().recv_timeout(Duration::from_secs(1)) {
 |----------|------|-------------|
 | `group_membership` | `GroupMembership` | Group ID and coordinator status |
 
+### Group Properties (GroupRenderingControl)
+
+Accessed on `Group` objects via `system.groups()`:
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `volume` | `GroupVolume` (u16) | Group volume (0-100) |
+| `mute` | `GroupMute` (bool) | Group mute state |
+| `volume_changeable` | `GroupVolumeChangeable` (bool) | Whether group volume can be changed |
+
+## Speaker Actions
+
+Control speakers with ergonomic methods:
+
+```rust
+// Playback
+speaker.play()?;
+speaker.pause()?;
+speaker.stop()?;
+speaker.next()?;
+speaker.previous()?;
+
+// Volume and EQ
+speaker.set_volume(50)?;
+speaker.set_mute(true)?;
+speaker.set_bass(5)?;
+speaker.set_treble(-3)?;
+speaker.set_loudness(true)?;
+
+// Seek
+use sonos_sdk::SeekTarget;
+speaker.seek(SeekTarget::Time("0:02:30".into()))?;
+speaker.seek(SeekTarget::Track(3))?;
+
+// Play mode
+use sonos_sdk::PlayMode;
+speaker.set_play_mode(PlayMode::Shuffle)?;
+speaker.set_crossfade_mode(true)?;
+
+// Sleep timer
+speaker.configure_sleep_timer("01:00:00")?;
+speaker.cancel_sleep_timer()?;
+
+// Queue
+speaker.add_uri_to_queue("x-rincon-mp3radio://...", "", 0, false)?;
+speaker.remove_all_tracks_from_queue()?;
+```
+
+## Group Management
+
+All speakers are always in a group — a single speaker forms a group of one.
+
+```rust
+// List all groups
+for group in system.groups() {
+    println!("Group: {} ({} members)", group.id, group.member_count());
+    if let Some(coordinator) = group.coordinator() {
+        println!("  Coordinator: {}", coordinator.name);
+    }
+}
+
+// Create a group
+let living_room = system.get_speaker_by_name("Living Room").unwrap();
+let kitchen = system.get_speaker_by_name("Kitchen").unwrap();
+let result = system.create_group(&living_room, &[&kitchen])?;
+
+// Join / leave
+speaker.join_group(&group)?;
+speaker.leave_group()?;
+
+// Dissolve a group (all members become standalone)
+let result = group.dissolve();
+if !result.is_success() {
+    for (id, err) in &result.failed {
+        eprintln!("Failed to remove {}: {}", id, err);
+    }
+}
+
+// Group volume and mute
+group.set_volume(60)?;
+group.set_mute(false)?;
+```
+
 ## Speaker Lookup
 
 ```rust
@@ -221,10 +311,9 @@ sonos-api (UPnP Operations)         sonos-stream (Event Processing)
 
 ## License
 
-MIT License
+Licensed under either of MIT or Apache-2.0 at your option. See [LICENSE-MIT](https://github.com/tatimblin/sonos-sdk/blob/main/LICENSE-MIT) and [LICENSE-APACHE](https://github.com/tatimblin/sonos-sdk/blob/main/LICENSE-APACHE).
 
 ## See Also
 
-- [`sonos-api`](../sonos-api) - Low-level UPnP operations
-- [`sonos-discovery`](../sonos-discovery) - Device discovery
-- [`sonos-stream`](../sonos-stream) - Event streaming
+- [`sonos-api`](https://crates.io/crates/sonos-api) - Low-level UPnP operations
+- [API Documentation](https://docs.rs/sonos-sdk) - Full API reference on docs.rs

@@ -1,7 +1,7 @@
-# sonos-stream
+# sonos-sdk-stream
 
-> ⚠️ **INTERNAL CRATE - NOT FOR DIRECT USE**
-> This crate is an **internal implementation detail** of the sonos-sdk workspace, specifically designed to be used exclusively by [`sonos-state`](../sonos-state). It is not intended for direct use by end-users and may change at any time without notice.
+> **Internal crate** — this is an implementation detail of [sonos-sdk](https://crates.io/crates/sonos-sdk).
+> Its API may change without notice between versions.
 
 ## Overview
 
@@ -161,6 +161,6 @@ MIT OR Apache-2.0
 
 ## See Also
 
-- **[`sonos-state`](../sonos-state)** - reactive state management
-- [`callback-server`](../callback-server) - UPnP event callback infrastructure
-- [`sonos-api`](../sonos-api) - Core Sonos UPnP API definitions
+- **[`sonos-sdk-state`](https://crates.io/crates/sonos-sdk-state)** - reactive state management
+- [`sonos-sdk-callback-server`](https://crates.io/crates/sonos-sdk-callback-server) - UPnP event callback infrastructure
+- [`sonos-api`](https://crates.io/crates/sonos-api) - Core Sonos UPnP API definitions

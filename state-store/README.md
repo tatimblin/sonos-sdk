@@ -1,4 +1,7 @@
-# state-store
+# sonos-sdk-state-store
+
+> **Internal crate** — this is an implementation detail of [sonos-sdk](https://crates.io/crates/sonos-sdk).
+> Its API may change without notice between versions.
 
 A generic, type-safe state management library with change detection and blocking iteration.
 

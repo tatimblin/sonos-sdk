@@ -1,8 +1,9 @@
-# sonos-state
+# sonos-sdk-state
+
+> **Internal crate** — this is an implementation detail of [sonos-sdk](https://crates.io/crates/sonos-sdk).
+> Its API may change without notice between versions.
 
 Internal state management crate for the Sonos SDK. Provides property storage, change detection, and event iteration.
-
-> **Note**: This is an internal crate. For the public API, use [`sonos-sdk`](../sonos-sdk) which provides a DOM-like interface for accessing speaker properties.
 
 ## Overview
 
@@ -133,6 +134,6 @@ MIT License
 
 ## See Also
 
-- [`sonos-sdk`](../sonos-sdk) - Public DOM-like API (use this for applications)
-- [`state-store`](../state-store) - Generic state management primitives
-- [`sonos-api`](../sonos-api) - Low-level UPnP operations
+- [`sonos-sdk`](https://crates.io/crates/sonos-sdk) - Public DOM-like API (use this for applications)
+- [`sonos-sdk-state-store`](https://crates.io/crates/sonos-sdk-state-store) - Generic state management primitives
+- [`sonos-api`](https://crates.io/crates/sonos-api) - Low-level UPnP operations
