@@ -12,9 +12,10 @@ use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, info, warn};
 
 /// Status of firewall detection for a device.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum FirewallStatus {
     /// Detection has not been performed yet
+    #[default]
     Unknown,
     /// Server can receive external requests from this device
     Accessible,
@@ -24,11 +25,6 @@ pub enum FirewallStatus {
     Error,
 }
 
-impl Default for FirewallStatus {
-    fn default() -> Self {
-        Self::Unknown
-    }
-}
 
 /// Configuration for firewall detection behavior.
 #[derive(Debug, Clone)]

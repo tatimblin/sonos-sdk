@@ -137,7 +137,7 @@ impl EventIterator {
     ///
     /// This is the recommended interface for maintaining local state from events.
     /// Use like: `for event in events.iter() { /* handle event */ }`
-    pub fn iter(&mut self) -> SyncEventIterator {
+    pub fn iter(&mut self) -> SyncEventIterator<'_> {
         SyncEventIterator::new(self)
     }
 
@@ -318,7 +318,7 @@ impl FilteredEventIterator {
     }
 
     /// Get sync iterator for the filtered events
-    pub fn iter(&mut self) -> FilteredSyncIterator {
+    pub fn iter(&mut self) -> FilteredSyncIterator<'_> {
         FilteredSyncIterator::new(self)
     }
 }
