@@ -504,32 +504,41 @@ mod tests {
     fn test_sync_iteration() {
         let rt = tokio::runtime::Runtime::new().unwrap();
 
-        rt.block_on(async {
+        // Create iterator inside runtime context to capture the handle
+        let (sender, mut iterator) = rt.block_on(async {
             let (sender, receiver) = mpsc::unbounded_channel();
-            let mut iterator = EventIterator::new(receiver);
-
-            // Send test events
-            for i in 1..=3 {
-                let event = create_test_event(RegistrationId::new(i));
-                sender.send(event).unwrap();
-            }
-            drop(sender); // Close channel after sending
-
-            // Use sync iterator
-            let events: Vec<_> = iterator.iter().collect();
-            assert_eq!(events.len(), 3);
-            assert_eq!(events[0].registration_id.as_u64(), 1);
-            assert_eq!(events[1].registration_id.as_u64(), 2);
-            assert_eq!(events[2].registration_id.as_u64(), 3);
+            let iterator = EventIterator::new(receiver);
+            (sender, iterator)
         });
+
+        // Send test events and sync-iterate OUTSIDE block_on(),
+        // so SyncEventIterator::block_on() doesn't nest runtimes
+        for i in 1..=3 {
+            let event = create_test_event(RegistrationId::new(i));
+            sender.send(event).unwrap();
+        }
+        drop(sender);
+
+        let events: Vec<_> = iterator.iter().collect();
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].registration_id.as_u64(), 1);
+        assert_eq!(events[1].registration_id.as_u64(), 2);
+        assert_eq!(events[2].registration_id.as_u64(), 3);
     }
 
-    #[tokio::test]
-    async fn test_filtered_iterator() {
-        let (sender, receiver) = mpsc::unbounded_channel();
-        let iterator = EventIterator::new(receiver);
+    #[test]
+    fn test_filtered_iterator() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
 
-        // Send events with different registration IDs
+        // Create iterator inside runtime context to capture the handle
+        let (sender, iterator) = rt.block_on(async {
+            let (sender, receiver) = mpsc::unbounded_channel();
+            let iterator = EventIterator::new(receiver);
+            (sender, iterator)
+        });
+
+        // Send events and sync-iterate OUTSIDE block_on(),
+        // so FilteredSyncIterator::block_on() doesn't nest runtimes
         let event1 = create_test_event(RegistrationId::new(1));
         let event2 = create_test_event(RegistrationId::new(2));
         let event3 = create_test_event(RegistrationId::new(1));
@@ -539,7 +548,6 @@ mod tests {
         sender.send(event3).unwrap();
         drop(sender);
 
-        // Filter for registration ID 1
         let mut filtered = iterator.filter_by_registration(RegistrationId::new(1));
 
         let events: Vec<_> = filtered.iter().collect();

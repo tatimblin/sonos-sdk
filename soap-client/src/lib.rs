@@ -66,7 +66,7 @@ impl SoapClient {
     /// **DEPRECATED**: Use `SoapClient::get()` instead for better resource efficiency.
     /// This method creates a separate HTTP agent instance, which wastes resources
     /// when multiple SOAP clients are used.
-    #[deprecated(since = "0.2.0", note = "Use SoapClient::get() for shared resources")]
+    #[deprecated(since = "0.1.0", note = "Use SoapClient::get() for shared resources")]
     pub fn new() -> Self {
         Self::with_agent(Arc::new(
             ureq::AgentBuilder::new()

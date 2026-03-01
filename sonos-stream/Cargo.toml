@@ -10,8 +10,6 @@ license = "MIT OR Apache-2.0"
 # Local workspace dependencies
 callback-server = { path = "../callback-server" }
 sonos-api = { path = "../sonos-api" }
-sonos-discovery = { path = "../sonos-discovery" }
-soap-client = { path = "../soap-client" }
 
 # Async runtime and utilities
 tokio = { version = "1.0", features = ["full"] }
@@ -43,6 +41,7 @@ dashmap = "5.0"  # Concurrent HashMap alternative
 crossbeam = "0.8"  # Lock-free data structures
 
 [dev-dependencies]
+sonos-discovery = { path = "../sonos-discovery" }
 rstest = "0.18"
 proptest = "1.0"
 tokio-test = "0.4"
