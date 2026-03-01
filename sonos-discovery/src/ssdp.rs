@@ -39,7 +39,7 @@ impl SsdpClient {
     }
 
     /// Send an M-SEARCH request and return an iterator of responses
-    pub fn search(&self, search_target: &str) -> Result<SsdpResponseIterator> {
+    pub fn search(&self, search_target: &str) -> Result<SsdpResponseIterator<'_>> {
         let request = format!(
             "M-SEARCH * HTTP/1.1\r\n\
              HOST: 239.255.255.250:1900\r\n\

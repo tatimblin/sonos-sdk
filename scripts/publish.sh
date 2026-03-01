@@ -66,7 +66,7 @@ done
 
 if [[ "$DRY_RUN" == true ]]; then
   echo ""
-  echo "Dry run complete — all 9 crates validated!"
+  echo "Dry run complete — all ${#ALL_CRATES[@]} crates validated!"
   echo "  Leaf crates:     full cargo publish --dry-run"
   echo "  Non-leaf crates: cargo package --list (deps not yet on crates.io)"
 else
