@@ -1,0 +1,67 @@
+[workspace]
+git_release_enable = false
+git_tag_name = "{{ package }}-v{{ version }}"
+
+# Internal crates: bump versions but don't publish or create releases
+[[package]]
+name = "sonos-sdk-soap-client"
+publish = false
+changelog_update = false
+git_release_enable = false
+
+[[package]]
+name = "sonos-sdk-callback-server"
+publish = false
+changelog_update = false
+git_release_enable = false
+
+[[package]]
+name = "sonos-sdk-discovery"
+publish = false
+changelog_update = false
+git_release_enable = false
+
+[[package]]
+name = "sonos-sdk-stream"
+publish = false
+changelog_update = false
+git_release_enable = false
+
+[[package]]
+name = "sonos-sdk-event-manager"
+publish = false
+changelog_update = false
+git_release_enable = false
+
+[[package]]
+name = "sonos-sdk-state"
+publish = false
+changelog_update = false
+git_release_enable = false
+
+[[package]]
+name = "sonos-sdk-state-store"
+publish = false
+changelog_update = false
+git_release_enable = false
+
+# Public crates: full release pipeline
+[[package]]
+name = "sonos-api"
+git_release_enable = true
+semver_check = true
+
+[[package]]
+name = "sonos-sdk"
+git_release_enable = true
+semver_check = true
+changelog_include = [
+  "sonos-api",
+  "sonos-sdk-state",
+  "sonos-sdk-discovery",
+  "sonos-sdk-stream",
+  "sonos-sdk-event-manager",
+  "sonos-sdk-callback-server",
+  "sonos-sdk-soap-client",
+  "sonos-sdk-state-store",
+]
