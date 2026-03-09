@@ -45,7 +45,7 @@ pub use error::{DiscoveryError, Result};
 /// Information about a discovered Sonos device.
 ///
 /// Contains all relevant metadata needed to identify and connect to a Sonos speaker.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Device {
     /// Unique device identifier (UDN), e.g., "uuid:RINCON_000E58A0123456"
     pub id: String,

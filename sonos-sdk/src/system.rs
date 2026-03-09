@@ -3,14 +3,16 @@
 //! Provides a sync-first, DOM-like API for controlling Sonos devices.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use sonos_api::SonosClient;
 use sonos_discovery::{self, Device};
 use sonos_event_manager::SonosEventManager;
 use sonos_state::{GroupId, SpeakerId, StateManager};
 
-use crate::{Group, SdkError, Speaker};
+use crate::{cache, Group, SdkError, Speaker};
 
 /// Main system entry point - provides DOM-like API
 ///
@@ -48,24 +50,58 @@ pub struct SonosSystem {
     /// Event manager for UPnP subscriptions (kept alive)
     _event_manager: Arc<SonosEventManager>,
 
-    /// API client for direct operations (kept for future use)
-    _api_client: SonosClient,
+    /// API client for direct operations
+    api_client: SonosClient,
 
     /// Speaker handles by name
     speakers: RwLock<HashMap<String, Speaker>>,
+
+    /// Prevents repeated SSDP scans within a single session
+    has_rediscovered: AtomicBool,
 }
 
 impl SonosSystem {
-    /// Create a new SonosSystem with automatic device discovery (sync)
+    /// Create a new SonosSystem with cache-first device discovery (sync)
     ///
-    /// This will:
-    /// 1. Discover Sonos devices on the network
-    /// 2. Create event manager for UPnP subscriptions
-    /// 3. Create state manager for property tracking
-    /// 4. Create speaker handles for each device
+    /// Discovery strategy:
+    /// 1. Try loading cached devices from disk (~/.cache/sonos/cache.json)
+    /// 2. If cache is fresh (< 24h), use cached devices
+    /// 3. If cache is stale, run SSDP; fall back to stale cache if SSDP finds nothing
+    /// 4. If no cache exists, run SSDP discovery
+    /// 5. If no devices found anywhere, return `Err(SdkError::DiscoveryFailed)`
     pub fn new() -> Result<Self, SdkError> {
-        // Discover devices first
-        let devices = sonos_discovery::get();
+        let devices = match cache::load() {
+            Some(cached) if !cache::is_stale(&cached) => {
+                // Fresh cache — use directly
+                cached.devices
+            }
+            Some(cached) => {
+                // Stale cache — try SSDP, fall back to stale data
+                let fresh = sonos_discovery::get_with_timeout(Duration::from_secs(3));
+                if fresh.is_empty() {
+                    tracing::warn!("Cache is stale and SSDP found no devices; using stale cache");
+                    cached.devices
+                } else {
+                    if let Err(e) = cache::save(&fresh) {
+                        tracing::warn!("Failed to save discovery cache: {}", e);
+                    }
+                    fresh
+                }
+            }
+            None => {
+                // No cache — full SSDP discovery
+                let fresh = sonos_discovery::get_with_timeout(Duration::from_secs(3));
+                if fresh.is_empty() {
+                    return Err(SdkError::DiscoveryFailed(
+                        "no Sonos devices found on the network".to_string(),
+                    ));
+                }
+                if let Err(e) = cache::save(&fresh) {
+                    tracing::warn!("Failed to save discovery cache: {}", e);
+                }
+                fresh
+            }
+        };
 
         Self::from_discovered_devices(devices)
     }
@@ -92,8 +128,23 @@ impl SonosSystem {
             .map_err(SdkError::StateError)?;
 
         let api_client = SonosClient::new();
+        let speakers = Self::build_speakers(&devices, &state_manager, &api_client)?;
 
-        // Create speaker handles
+        Ok(Self {
+            state_manager,
+            _event_manager: event_manager,
+            api_client,
+            speakers: RwLock::new(speakers),
+            has_rediscovered: AtomicBool::new(false),
+        })
+    }
+
+    /// Build Speaker handles from a list of devices.
+    fn build_speakers(
+        devices: &[Device],
+        state_manager: &Arc<StateManager>,
+        api_client: &SonosClient,
+    ) -> Result<HashMap<String, Speaker>, SdkError> {
         let mut speakers = HashMap::new();
         for device in devices {
             let speaker_id = SpeakerId::new(&device.id);
@@ -107,26 +158,64 @@ impl SonosSystem {
                 device.name.clone(),
                 ip,
                 device.model_name.clone(),
-                Arc::clone(&state_manager),
+                Arc::clone(state_manager),
                 api_client.clone(),
             );
 
-            speakers.insert(device.name, speaker);
+            speakers.insert(device.name.clone(), speaker);
         }
-
-        Ok(Self {
-            state_manager,
-            _event_manager: event_manager,
-            _api_client: api_client,
-            speakers: RwLock::new(speakers),
-        })
+        Ok(speakers)
     }
 
     /// Get speaker by name (sync)
     ///
-    /// Returns `None` if no speaker with that name exists.
+    /// If the speaker isn't in the current map, triggers a one-shot SSDP
+    /// rediscovery (once per session) before returning `None`.
     pub fn get_speaker_by_name(&self, name: &str) -> Option<Speaker> {
+        if let Some(speaker) = self.speakers.read().ok()?.get(name).cloned() {
+            return Some(speaker);
+        }
+        // Not found — try rediscovery once per session
+        self.try_rediscover();
         self.speakers.read().ok()?.get(name).cloned()
+    }
+
+    /// Run SSDP rediscovery once per session. Updates internal speaker map and cache.
+    fn try_rediscover(&self) {
+        if self.has_rediscovered.swap(true, Ordering::Relaxed) {
+            return; // Already rediscovered this session
+        }
+
+        // 1. SSDP runs WITHOUT holding any lock (3s)
+        let devices = sonos_discovery::get_with_timeout(Duration::from_secs(3));
+        if devices.is_empty() {
+            return;
+        }
+
+        // 2. Register devices with state manager (required for property tracking)
+        if let Err(e) = self.state_manager.add_devices(devices.clone()) {
+            tracing::warn!("Failed to register rediscovered devices: {}", e);
+            return;
+        }
+
+        // 3. Build new Speaker handles (no lock needed)
+        let new_speakers = match Self::build_speakers(&devices, &self.state_manager, &self.api_client) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("Failed to build speakers from rediscovery: {}", e);
+                return;
+            }
+        };
+
+        // 4. Acquire write lock BRIEFLY for map swap only
+        if let Ok(mut map) = self.speakers.write() {
+            *map = new_speakers;
+        }
+
+        // 5. Save cache (non-fatal on failure)
+        if let Err(e) = cache::save(&devices) {
+            tracing::warn!("Failed to save discovery cache: {}", e);
+        }
     }
 
     /// Get all speakers (sync)
@@ -203,7 +292,7 @@ impl SonosSystem {
                 Group::from_info(
                     info,
                     Arc::clone(&self.state_manager),
-                    self._api_client.clone(),
+                    self.api_client.clone(),
                 )
             })
             .collect()
@@ -225,7 +314,7 @@ impl SonosSystem {
         Group::from_info(
             info,
             Arc::clone(&self.state_manager),
-            self._api_client.clone(),
+            self.api_client.clone(),
         )
     }
 
@@ -250,7 +339,7 @@ impl SonosSystem {
         Group::from_info(
             info,
             Arc::clone(&self.state_manager),
-            self._api_client.clone(),
+            self.api_client.clone(),
         )
     }
 

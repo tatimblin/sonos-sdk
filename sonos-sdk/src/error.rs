@@ -28,4 +28,10 @@ pub enum SdkError {
 
     #[error("Invalid operation: {0}")]
     InvalidOperation(String),
+
+    #[error("discovery failed: {0}")]
+    DiscoveryFailed(String),
+
+    #[error("internal lock poisoned")]
+    LockPoisoned,
 }

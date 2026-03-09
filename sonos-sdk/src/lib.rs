@@ -96,6 +96,7 @@ pub use sonos_state::{
 };
 
 // Internal modules
+mod cache;
 mod error;
 mod group;
 pub mod property;
