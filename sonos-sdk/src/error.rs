@@ -2,31 +2,31 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum SdkError {
-    #[error("State management error: {0}")]
+    #[error("state management error: {0}")]
     StateError(#[from] sonos_state::StateError),
 
-    #[error("API error: {0}")]
+    #[error("api error: {0}")]
     ApiError(#[from] sonos_api::ApiError),
 
-    #[error("Event manager error: {0}")]
+    #[error("event manager error: {0}")]
     EventManager(String),
 
-    #[error("Speaker not found: {0}")]
+    #[error("speaker not found: {0}")]
     SpeakerNotFound(String),
 
-    #[error("Invalid IP address")]
+    #[error("invalid ip address")]
     InvalidIpAddress,
 
-    #[error("Property watcher closed")]
+    #[error("property watcher closed")]
     WatcherClosed,
 
-    #[error("Property fetch failed: {0}")]
+    #[error("property fetch failed: {0}")]
     FetchFailed(String),
 
-    #[error("Validation failed: {0}")]
+    #[error("validation failed: {0}")]
     ValidationFailed(#[from] sonos_api::operation::ValidationError),
 
-    #[error("Invalid operation: {0}")]
+    #[error("invalid operation: {0}")]
     InvalidOperation(String),
 
     #[error("discovery failed: {0}")]

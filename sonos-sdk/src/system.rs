@@ -3,14 +3,14 @@
 //! Provides a sync-first, DOM-like API for controlling Sonos devices.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use sonos_api::SonosClient;
 use sonos_discovery::{self, Device};
 use sonos_event_manager::SonosEventManager;
-use sonos_state::{GroupId, SpeakerId, StateManager};
+use sonos_state::{GroupId, SpeakerId, StateManager, Topology};
 
 use crate::{cache, Group, SdkError, Speaker};
 
@@ -56,9 +56,11 @@ pub struct SonosSystem {
     /// Speaker handles by name
     speakers: RwLock<HashMap<String, Speaker>>,
 
-    /// Prevents repeated SSDP scans within a single session
-    has_rediscovered: AtomicBool,
+    /// Timestamp of last rediscovery attempt (seconds since UNIX_EPOCH, 0 = never)
+    last_rediscovery: AtomicU64,
 }
+
+const REDISCOVERY_COOLDOWN_SECS: u64 = 30;
 
 impl SonosSystem {
     /// Create a new SonosSystem with cache-first device discovery (sync)
@@ -135,7 +137,7 @@ impl SonosSystem {
             _event_manager: event_manager,
             api_client,
             speakers: RwLock::new(speakers),
-            has_rediscovered: AtomicBool::new(false),
+            last_rediscovery: AtomicU64::new(0),
         })
     }
 
@@ -169,24 +171,31 @@ impl SonosSystem {
 
     /// Get speaker by name (sync)
     ///
-    /// If the speaker isn't in the current map, triggers a one-shot SSDP
-    /// rediscovery (once per session) before returning `None`.
+    /// If the speaker isn't in the current map, triggers an SSDP
+    /// rediscovery (rate-limited to once per 30s) before returning `None`.
     pub fn get_speaker_by_name(&self, name: &str) -> Option<Speaker> {
         if let Some(speaker) = self.speakers.read().ok()?.get(name).cloned() {
             return Some(speaker);
         }
-        // Not found — try rediscovery once per session
-        self.try_rediscover();
+        // Not found — try rediscovery (cooldown-limited)
+        self.try_rediscover(name);
         self.speakers.read().ok()?.get(name).cloned()
     }
 
-    /// Run SSDP rediscovery once per session. Updates internal speaker map and cache.
-    fn try_rediscover(&self) {
-        if self.has_rediscovered.swap(true, Ordering::Relaxed) {
-            return; // Already rediscovered this session
+    /// Run SSDP rediscovery with cooldown. Updates internal speaker map and cache.
+    fn try_rediscover(&self, name: &str) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let last = self.last_rediscovery.load(Ordering::Relaxed);
+        if last > 0 && now - last < REDISCOVERY_COOLDOWN_SECS {
+            return; // Cooldown period not elapsed
         }
+        self.last_rediscovery.store(now, Ordering::Relaxed);
 
         // 1. SSDP runs WITHOUT holding any lock (3s)
+        tracing::info!("speaker '{}' not found, running auto-rediscovery...", name);
         let devices = sonos_discovery::get_with_timeout(Duration::from_secs(3));
         if devices.is_empty() {
             return;
@@ -266,6 +275,62 @@ impl SonosSystem {
     }
 
     // ========================================================================
+    // Topology Fetch
+    // ========================================================================
+
+    /// Ensure group topology has been fetched.
+    ///
+    /// If the state manager has no groups (e.g., no ZoneGroupTopology subscription
+    /// events have been received yet), this method makes a direct GetZoneGroupState
+    /// call to the first available speaker and initializes the state manager with
+    /// the result. This is a one-shot operation: once groups are populated,
+    /// subsequent calls are a no-op.
+    fn ensure_topology(&self) {
+        // Fast path: groups already present
+        if self.state_manager.group_count() > 0 {
+            return;
+        }
+
+        // Pick the first speaker IP to query
+        let speaker_ip = {
+            let speakers = match self.speakers.read() {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            match speakers.values().next() {
+                Some(speaker) => speaker.ip.to_string(),
+                None => return,
+            }
+        };
+
+        // Call GetZoneGroupState on that speaker
+        let topology_state =
+            match sonos_api::services::zone_group_topology::state::poll(&self.api_client, &speaker_ip) {
+                Ok(state) => state,
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to fetch zone group topology from {}: {}",
+                        speaker_ip,
+                        e
+                    );
+                    return;
+                }
+            };
+
+        // Decode the API-level topology into state-level GroupInfo values
+        let topology_changes = sonos_state::decode_topology_event(&topology_state);
+
+        // Build a Topology with existing speaker data and the freshly fetched groups
+        let topology = Topology::new(self.state_manager.speaker_infos(), topology_changes.groups);
+        self.state_manager.initialize(topology);
+
+        tracing::debug!(
+            "Fetched zone group topology on-demand ({} groups)",
+            self.state_manager.group_count()
+        );
+    }
+
+    // ========================================================================
     // Group Methods
     // ========================================================================
 
@@ -285,6 +350,7 @@ impl SonosSystem {
     /// }
     /// ```
     pub fn groups(&self) -> Vec<Group> {
+        self.ensure_topology();
         self.state_manager
             .groups()
             .into_iter()
@@ -310,6 +376,7 @@ impl SonosSystem {
     /// }
     /// ```
     pub fn get_group_by_id(&self, group_id: &GroupId) -> Option<Group> {
+        self.ensure_topology();
         let info = self.state_manager.get_group(group_id)?;
         Group::from_info(
             info,
@@ -335,6 +402,7 @@ impl SonosSystem {
     /// }
     /// ```
     pub fn get_group_for_speaker(&self, speaker_id: &SpeakerId) -> Option<Group> {
+        self.ensure_topology();
         let info = self.state_manager.get_group_for_speaker(speaker_id)?;
         Group::from_info(
             info,

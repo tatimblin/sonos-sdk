@@ -10,7 +10,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fs, io};
 
 const CACHE_TTL_SECS: u64 = 24 * 3600;
-const MAX_CACHE_SIZE: u64 = 1_048_576; // 1MB
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct CachedDevices {
@@ -29,12 +35,12 @@ pub(crate) fn cache_dir() -> Option<PathBuf> {
 
 pub(crate) fn load() -> Option<CachedDevices> {
     let path = cache_dir()?.join("cache.json");
-    let meta = fs::metadata(&path).ok()?;
-    if meta.len() > MAX_CACHE_SIZE {
+    let contents = fs::read_to_string(&path).ok()?;
+    let cached: CachedDevices = serde_json::from_str(&contents).ok()?;
+    if cached.devices.len() > 256 {
         return None;
     }
-    let contents = fs::read_to_string(&path).ok()?;
-    serde_json::from_str(&contents).ok()
+    Some(cached)
 }
 
 pub(crate) fn save(devices: &[Device]) -> Result<(), io::Error> {
@@ -44,25 +50,22 @@ pub(crate) fn save(devices: &[Device]) -> Result<(), io::Error> {
 
     let cached = CachedDevices {
         devices: devices.to_vec(),
-        cached_at: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
+        cached_at: now_secs(),
     };
     let json =
         serde_json::to_string(&cached).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
     let temp_path = dir.join("cache.json.tmp");
     fs::write(&temp_path, &json)?;
-    fs::rename(&temp_path, dir.join("cache.json"))?;
+    fs::rename(&temp_path, dir.join("cache.json")).map_err(|e| {
+        let _ = fs::remove_file(&temp_path);
+        e
+    })?;
     Ok(())
 }
 
 pub(crate) fn is_stale(cached: &CachedDevices) -> bool {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let now = now_secs();
     // Reject future timestamps — treat as stale (forces rediscovery)
     if cached.cached_at > now {
         return true;
