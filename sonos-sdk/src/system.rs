@@ -47,8 +47,8 @@ pub struct SonosSystem {
     /// State manager for property values
     state_manager: Arc<StateManager>,
 
-    /// Event manager for UPnP subscriptions (kept alive)
-    _event_manager: Arc<SonosEventManager>,
+    /// Event manager for UPnP subscriptions (kept alive; None in test mode)
+    _event_manager: Option<Arc<SonosEventManager>>,
 
     /// API client for direct operations
     api_client: SonosClient,
@@ -110,8 +110,24 @@ impl SonosSystem {
 
     /// Create a new SonosSystem from pre-discovered devices (sync)
     ///
-    /// Use this when you already have a list of devices from `sonos_discovery::get()`.
+    /// Internal constructor used by `new()` and SDK unit tests.
+    /// Also available publicly when the `test-support` feature is enabled
+    /// (for integration tests and downstream test code).
+    #[cfg(not(feature = "test-support"))]
+    pub(crate) fn from_discovered_devices(devices: Vec<Device>) -> Result<Self, SdkError> {
+        Self::from_devices_inner(devices)
+    }
+
+    /// Create a new SonosSystem from pre-discovered devices (sync)
+    ///
+    /// Available publicly for integration tests when `test-support` is enabled.
+    /// Normal consumers should use [`SonosSystem::new()`] instead.
+    #[cfg(feature = "test-support")]
     pub fn from_discovered_devices(devices: Vec<Device>) -> Result<Self, SdkError> {
+        Self::from_devices_inner(devices)
+    }
+
+    fn from_devices_inner(devices: Vec<Device>) -> Result<Self, SdkError> {
         // Create event manager (sync)
         let event_manager =
             Arc::new(SonosEventManager::new().map_err(|e| SdkError::EventManager(e.to_string()))?);
@@ -134,11 +150,62 @@ impl SonosSystem {
 
         Ok(Self {
             state_manager,
-            _event_manager: event_manager,
+            _event_manager: Some(event_manager),
             api_client,
             speakers: RwLock::new(speakers),
             last_rediscovery: AtomicU64::new(0),
         })
+    }
+
+    /// Create a test SonosSystem with named speakers and no network access.
+    ///
+    /// Builds an in-memory system with synthetic speaker data. No SSDP discovery,
+    /// no event manager socket binding, no cache reads. Speakers get sequential
+    /// IPs starting at `192.168.1.100`.
+    ///
+    /// Only available when the `test-support` feature is enabled.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let system = SonosSystem::with_speakers(&["Kitchen", "Bedroom"]);
+    /// assert_eq!(system.speakers().len(), 2);
+    /// assert!(system.get_speaker_by_name("Kitchen").is_some());
+    /// ```
+    #[cfg(feature = "test-support")]
+    pub fn with_speakers(names: &[&str]) -> Self {
+        let devices: Vec<Device> = names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| Device {
+                id: format!("RINCON_{:03}", i),
+                name: name.to_string(),
+                room_name: name.to_string(),
+                ip_address: format!("192.168.1.{}", 100 + i),
+                port: 1400,
+                model_name: "Sonos One".to_string(),
+            })
+            .collect();
+
+        let state_manager = Arc::new(
+            StateManager::new().expect("StateManager::new() should not fail"),
+        );
+
+        state_manager
+            .add_devices(devices.clone())
+            .expect("add_devices should not fail with valid test data");
+
+        let api_client = SonosClient::new();
+        let speakers = Self::build_speakers(&devices, &state_manager, &api_client)
+            .expect("build_speakers should not fail with valid test data");
+
+        Self {
+            state_manager,
+            _event_manager: None,
+            api_client,
+            speakers: RwLock::new(speakers),
+            last_rediscovery: AtomicU64::new(0),
+        }
     }
 
     /// Build Speaker handles from a list of devices.
@@ -409,6 +476,40 @@ impl SonosSystem {
             Arc::clone(&self.state_manager),
             self.api_client.clone(),
         )
+    }
+
+    /// Get a group by its coordinator speaker name (sync)
+    ///
+    /// Sonos groups don't have independent names — they are identified by the
+    /// coordinator speaker's friendly name. This method matches groups by looking
+    /// up the coordinator's name in the state manager.
+    ///
+    /// Returns `None` if no group's coordinator matches the given name.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// if let Some(group) = system.get_group_by_name("Living Room") {
+    ///     println!("Found group with {} members", group.member_count());
+    /// }
+    /// ```
+    pub fn get_group_by_name(&self, name: &str) -> Option<Group> {
+        self.ensure_topology();
+        self.state_manager
+            .groups()
+            .into_iter()
+            .find(|info| {
+                self.state_manager
+                    .speaker_info(&info.coordinator_id)
+                    .map_or(false, |si| si.name == name)
+            })
+            .and_then(|info| {
+                Group::from_info(
+                    info,
+                    Arc::clone(&self.state_manager),
+                    self.api_client.clone(),
+                )
+            })
     }
 
     /// Create a new group with the specified coordinator and members
@@ -697,6 +798,58 @@ mod tests {
             groups[0].coordinator_id.as_str(),
             by_speaker.as_ref().unwrap().coordinator_id.as_str()
         );
+    }
+
+    #[test]
+    fn test_get_group_by_name_returns_correct_group() {
+        let devices = vec![
+            Device {
+                id: "RINCON_111".to_string(),
+                name: "Living Room".to_string(),
+                room_name: "Living Room".to_string(),
+                ip_address: "192.168.1.100".to_string(),
+                port: 1400,
+                model_name: "Sonos One".to_string(),
+            },
+            Device {
+                id: "RINCON_222".to_string(),
+                name: "Kitchen".to_string(),
+                room_name: "Kitchen".to_string(),
+                ip_address: "192.168.1.101".to_string(),
+                port: 1400,
+                model_name: "Sonos One".to_string(),
+            },
+        ];
+
+        let system = create_test_system(devices).unwrap();
+
+        let speaker1 = SpeakerId::new("RINCON_111");
+        let speaker2 = SpeakerId::new("RINCON_222");
+        let group1 = GroupInfo::new(
+            GroupId::new("RINCON_111:1"),
+            speaker1.clone(),
+            vec![speaker1.clone()],
+        );
+        let group2 = GroupInfo::new(
+            GroupId::new("RINCON_222:1"),
+            speaker2.clone(),
+            vec![speaker2.clone()],
+        );
+
+        let topology = Topology::new(system.state_manager.speaker_infos(), vec![group1, group2]);
+        system.state_manager.initialize(topology);
+
+        // Find by coordinator name
+        let found = system.get_group_by_name("Living Room");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().id.as_str(), "RINCON_111:1");
+
+        let found = system.get_group_by_name("Kitchen");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().id.as_str(), "RINCON_222:1");
+
+        // Unknown name returns None
+        assert!(system.get_group_by_name("Nonexistent").is_none());
     }
 
     #[test]
