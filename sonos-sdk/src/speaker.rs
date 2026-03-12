@@ -266,6 +266,35 @@ impl Speaker {
     }
 
     // ========================================================================
+    // Navigation
+    // ========================================================================
+
+    /// Get the group this speaker belongs to (sync, no network call)
+    ///
+    /// Reads from the state store's topology data. Returns `None` if
+    /// topology has not been loaded yet.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let kitchen = sonos.speaker("Kitchen").unwrap();
+    /// if let Some(group) = kitchen.group() {
+    ///     println!("Kitchen is in group {}", group.id);
+    /// }
+    /// ```
+    pub fn group(&self) -> Option<Group> {
+        let info = self
+            .context
+            .state_manager
+            .get_group_for_speaker(&self.context.speaker_id)?;
+        Group::from_info(
+            info,
+            Arc::clone(&self.context.state_manager),
+            self.context.api_client.clone(),
+        )
+    }
+
+    // ========================================================================
     // Private helpers
     // ========================================================================
 

@@ -28,7 +28,7 @@ use crate::{cache, Group, SdkError, Speaker};
 ///     let system = SonosSystem::new()?;
 ///
 ///     // Get speaker by name
-///     let speaker = system.get_speaker_by_name("Living Room")
+///     let speaker = system.speaker("Living Room")
 ///         .ok_or_else(|| sonos_sdk::SdkError::SpeakerNotFound("Living Room".to_string()))?;
 ///
 ///     // Three methods on each property:
@@ -192,7 +192,7 @@ impl SonosSystem {
     /// ```rust,ignore
     /// let system = SonosSystem::with_speakers(&["Kitchen", "Bedroom"]);
     /// assert_eq!(system.speakers().len(), 2);
-    /// assert!(system.get_speaker_by_name("Kitchen").is_some());
+    /// assert!(system.speaker("Kitchen").is_some());
     /// ```
     #[cfg(feature = "test-support")]
     pub fn with_speakers(names: &[&str]) -> Self {
@@ -267,13 +267,26 @@ impl SonosSystem {
     ///
     /// If the speaker isn't in the current map, triggers an SSDP
     /// rediscovery (rate-limited to once per 30s) before returning `None`.
-    pub fn get_speaker_by_name(&self, name: &str) -> Option<Speaker> {
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let kitchen = sonos.speaker("Kitchen").unwrap();
+    /// kitchen.play()?;
+    /// ```
+    pub fn speaker(&self, name: &str) -> Option<Speaker> {
         if let Some(speaker) = self.speakers.read().ok()?.get(name).cloned() {
             return Some(speaker);
         }
         // Not found — try rediscovery (cooldown-limited)
         self.try_rediscover(name);
         self.speakers.read().ok()?.get(name).cloned()
+    }
+
+    /// Get speaker by name (sync)
+    #[deprecated(since = "0.2.0", note = "renamed to `speaker()`")]
+    pub fn get_speaker_by_name(&self, name: &str) -> Option<Speaker> {
+        self.speaker(name)
     }
 
     /// Run SSDP rediscovery with cooldown. Updates internal speaker map and cache.
@@ -330,9 +343,15 @@ impl SonosSystem {
     }
 
     /// Get speaker by ID (sync)
-    pub fn get_speaker_by_id(&self, speaker_id: &SpeakerId) -> Option<Speaker> {
+    pub fn speaker_by_id(&self, speaker_id: &SpeakerId) -> Option<Speaker> {
         let speakers = self.speakers.read().ok()?;
         speakers.values().find(|s| s.id == *speaker_id).cloned()
+    }
+
+    /// Get speaker by ID (sync)
+    #[deprecated(since = "0.2.0", note = "renamed to `speaker_by_id()`")]
+    pub fn get_speaker_by_id(&self, speaker_id: &SpeakerId) -> Option<Speaker> {
+        self.speaker_by_id(speaker_id)
     }
 
     /// Get all speaker names (sync)
@@ -465,11 +484,11 @@ impl SonosSystem {
     /// # Example
     ///
     /// ```rust,ignore
-    /// if let Some(group) = system.get_group_by_id(&group_id) {
+    /// if let Some(group) = system.group_by_id(&group_id) {
     ///     println!("Found group with {} members", group.member_count());
     /// }
     /// ```
-    pub fn get_group_by_id(&self, group_id: &GroupId) -> Option<Group> {
+    pub fn group_by_id(&self, group_id: &GroupId) -> Option<Group> {
         self.ensure_topology();
         let info = self.state_manager.get_group(group_id)?;
         Group::from_info(
@@ -477,6 +496,12 @@ impl SonosSystem {
             Arc::clone(&self.state_manager),
             self.api_client.clone(),
         )
+    }
+
+    /// Get a specific group by ID (sync)
+    #[deprecated(since = "0.2.0", note = "renamed to `group_by_id()`")]
+    pub fn get_group_by_id(&self, group_id: &GroupId) -> Option<Group> {
+        self.group_by_id(group_id)
     }
 
     /// Get the group a speaker belongs to (sync)
@@ -488,14 +513,14 @@ impl SonosSystem {
     /// # Example
     ///
     /// ```rust,ignore
-    /// if let Some(speaker) = system.get_speaker_by_name("Living Room") {
-    ///     if let Some(group) = system.get_group_for_speaker(&speaker.id) {
+    /// if let Some(speaker) = system.speaker("Living Room") {
+    ///     if let Some(group) = system.group_for_speaker(&speaker.id) {
     ///         println!("{} is in a group with {} speakers",
     ///             speaker.name, group.member_count());
     ///     }
     /// }
     /// ```
-    pub fn get_group_for_speaker(&self, speaker_id: &SpeakerId) -> Option<Group> {
+    pub fn group_for_speaker(&self, speaker_id: &SpeakerId) -> Option<Group> {
         self.ensure_topology();
         let info = self.state_manager.get_group_for_speaker(speaker_id)?;
         Group::from_info(
@@ -503,6 +528,12 @@ impl SonosSystem {
             Arc::clone(&self.state_manager),
             self.api_client.clone(),
         )
+    }
+
+    /// Get the group a speaker belongs to (sync)
+    #[deprecated(since = "0.2.0", note = "use `speaker.group()` or `group_for_speaker()` instead")]
+    pub fn get_group_for_speaker(&self, speaker_id: &SpeakerId) -> Option<Group> {
+        self.group_for_speaker(speaker_id)
     }
 
     /// Get a group by its coordinator speaker name (sync)
@@ -516,11 +547,11 @@ impl SonosSystem {
     /// # Example
     ///
     /// ```rust,ignore
-    /// if let Some(group) = system.get_group_by_name("Living Room") {
+    /// if let Some(group) = system.group("Living Room") {
     ///     println!("Found group with {} members", group.member_count());
     /// }
     /// ```
-    pub fn get_group_by_name(&self, name: &str) -> Option<Group> {
+    pub fn group(&self, name: &str) -> Option<Group> {
         self.ensure_topology();
         self.state_manager
             .groups()
@@ -539,6 +570,12 @@ impl SonosSystem {
             })
     }
 
+    /// Get a group by its coordinator speaker name (sync)
+    #[deprecated(since = "0.2.0", note = "renamed to `group()`")]
+    pub fn get_group_by_name(&self, name: &str) -> Option<Group> {
+        self.group(name)
+    }
+
     /// Create a new group with the specified coordinator and members
     ///
     /// Adds each member speaker to the coordinator's current group.
@@ -548,9 +585,9 @@ impl SonosSystem {
     /// # Example
     ///
     /// ```rust,ignore
-    /// let living_room = system.get_speaker_by_name("Living Room").unwrap();
-    /// let kitchen = system.get_speaker_by_name("Kitchen").unwrap();
-    /// let bedroom = system.get_speaker_by_name("Bedroom").unwrap();
+    /// let living_room = system.speaker("Living Room").unwrap();
+    /// let kitchen = system.speaker("Kitchen").unwrap();
+    /// let bedroom = system.speaker("Bedroom").unwrap();
     ///
     /// let result = system.create_group(&living_room, &[&kitchen, &bedroom])?;
     /// if !result.is_success() {
@@ -565,7 +602,7 @@ impl SonosSystem {
         members: &[&Speaker],
     ) -> Result<crate::group::GroupChangeResult, SdkError> {
         let coord_group = self
-            .get_group_for_speaker(&coordinator.id)
+            .group_for_speaker(&coordinator.id)
             .ok_or_else(|| SdkError::SpeakerNotFound(coordinator.id.as_str().to_string()))?;
 
         let mut succeeded = Vec::new();
@@ -664,7 +701,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_group_by_id_returns_correct_group() {
+    fn test_group_by_id_returns_correct_group() {
         let devices = vec![Device {
             id: "RINCON_111".to_string(),
             name: "Living Room".to_string(),
@@ -684,8 +721,8 @@ mod tests {
         let topology = Topology::new(system.state_manager.speaker_infos(), vec![group]);
         system.state_manager.initialize(topology);
 
-        // Verify get_group_by_id returns the correct group
-        let found = system.get_group_by_id(&group_id);
+        // Verify group_by_id returns the correct group
+        let found = system.group_by_id(&group_id);
         assert!(found.is_some());
         let found = found.unwrap();
         assert_eq!(found.id.as_str(), "RINCON_111:1");
@@ -694,7 +731,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_group_by_id_returns_none_for_unknown() {
+    fn test_group_by_id_returns_none_for_unknown() {
         let devices = vec![Device {
             id: "RINCON_111".to_string(),
             name: "Living Room".to_string(),
@@ -708,12 +745,12 @@ mod tests {
 
         // No groups initialized
         let unknown_id = GroupId::new("RINCON_UNKNOWN:1");
-        let found = system.get_group_by_id(&unknown_id);
+        let found = system.group_by_id(&unknown_id);
         assert!(found.is_none());
     }
 
     #[test]
-    fn test_get_group_for_speaker_returns_correct_group() {
+    fn test_group_for_speaker_returns_correct_group() {
         let devices = vec![
             Device {
                 id: "RINCON_111".to_string(),
@@ -747,14 +784,14 @@ mod tests {
         let topology = Topology::new(system.state_manager.speaker_infos(), vec![group]);
         system.state_manager.initialize(topology);
 
-        // Verify get_group_for_speaker returns the correct group for both speakers
-        let found1 = system.get_group_for_speaker(&speaker1);
+        // Verify group_for_speaker returns the correct group for both speakers
+        let found1 = system.group_for_speaker(&speaker1);
         assert!(found1.is_some());
         let found1 = found1.unwrap();
         assert_eq!(found1.id.as_str(), "RINCON_111:1");
         assert_eq!(found1.member_ids.len(), 2);
 
-        let found2 = system.get_group_for_speaker(&speaker2);
+        let found2 = system.group_for_speaker(&speaker2);
         assert!(found2.is_some());
         let found2 = found2.unwrap();
         assert_eq!(found2.id.as_str(), "RINCON_111:1");
@@ -762,7 +799,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_group_for_speaker_returns_none_for_unknown() {
+    fn test_group_for_speaker_returns_none_for_unknown() {
         let devices = vec![Device {
             id: "RINCON_111".to_string(),
             name: "Living Room".to_string(),
@@ -776,7 +813,7 @@ mod tests {
 
         // No groups initialized
         let unknown_speaker = SpeakerId::new("RINCON_UNKNOWN");
-        let found = system.get_group_for_speaker(&unknown_speaker);
+        let found = system.group_for_speaker(&unknown_speaker);
         assert!(found.is_none());
     }
 
@@ -805,10 +842,10 @@ mod tests {
         let groups = system.groups();
         assert_eq!(groups.len(), 1);
 
-        let by_id = system.get_group_by_id(&group_id);
+        let by_id = system.group_by_id(&group_id);
         assert!(by_id.is_some());
 
-        let by_speaker = system.get_group_for_speaker(&speaker);
+        let by_speaker = system.group_for_speaker(&speaker);
         assert!(by_speaker.is_some());
 
         // All should return the same group
@@ -828,7 +865,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_group_by_name_returns_correct_group() {
+    fn test_group_by_name_returns_correct_group() {
         let devices = vec![
             Device {
                 id: "RINCON_111".to_string(),
@@ -867,16 +904,16 @@ mod tests {
         system.state_manager.initialize(topology);
 
         // Find by coordinator name
-        let found = system.get_group_by_name("Living Room");
+        let found = system.group("Living Room");
         assert!(found.is_some());
         assert_eq!(found.unwrap().id.as_str(), "RINCON_111:1");
 
-        let found = system.get_group_by_name("Kitchen");
+        let found = system.group("Kitchen");
         assert!(found.is_some());
         assert_eq!(found.unwrap().id.as_str(), "RINCON_222:1");
 
         // Unknown name returns None
-        assert!(system.get_group_by_name("Nonexistent").is_none());
+        assert!(system.group("Nonexistent").is_none());
     }
 
     #[test]
@@ -905,7 +942,7 @@ mod tests {
 
         let system = create_test_system(devices).unwrap();
 
-        // Initialize topology so get_group_for_speaker works
+        // Initialize topology so group_for_speaker works
         let speaker1 = SpeakerId::new("RINCON_111");
         let speaker2 = SpeakerId::new("RINCON_222");
         let group = GroupInfo::new(
@@ -916,8 +953,8 @@ mod tests {
         let topology = Topology::new(system.state_manager.speaker_infos(), vec![group]);
         system.state_manager.initialize(topology);
 
-        let coordinator = system.get_speaker_by_id(&speaker1).unwrap();
-        let member = system.get_speaker_by_id(&speaker2).unwrap();
+        let coordinator = system.speaker_by_id(&speaker1).unwrap();
+        let member = system.speaker_by_id(&speaker2).unwrap();
 
         // Will fail at network level but proves signature compiles
         assert_change_result(system.create_group(&coordinator, &[&member]));
