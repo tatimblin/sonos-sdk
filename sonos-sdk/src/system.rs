@@ -48,7 +48,10 @@ pub struct SonosSystem {
     /// State manager for property values
     state_manager: Arc<StateManager>,
 
-    /// Event manager for UPnP subscriptions (lazily initialized on first watch())
+    /// Event manager for UPnP subscriptions (lazily initialized on first watch()).
+    /// Kept alive here to prevent the Arc from being dropped; the StateManager
+    /// holds its own reference via OnceLock for use by watch()/unwatch().
+    #[allow(dead_code)]
     event_manager: Mutex<Option<Arc<SonosEventManager>>>,
 
     /// API client for direct operations
@@ -559,7 +562,7 @@ impl SonosSystem {
             .find(|info| {
                 self.state_manager
                     .speaker_info(&info.coordinator_id)
-                    .map_or(false, |si| si.name == name)
+                    .is_some_and(|si| si.name == name)
             })
             .and_then(|info| {
                 Group::from_info(
