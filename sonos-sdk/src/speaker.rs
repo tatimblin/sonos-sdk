@@ -98,7 +98,7 @@ impl std::fmt::Display for PlayMode {
 }
 
 use crate::property::{
-    BassHandle, CurrentTrackHandle, GroupMembershipHandle, LoudnessHandle, MuteHandle,
+    BassHandle, CurrentTrackHandle, EventInitFn, GroupMembershipHandle, LoudnessHandle, MuteHandle,
     PlaybackStateHandle, PositionHandle, PropertyHandle, SpeakerContext, TrebleHandle,
     VolumeHandle,
 };
@@ -216,7 +216,32 @@ impl Speaker {
         state_manager: Arc<StateManager>,
         api_client: SonosClient,
     ) -> Self {
-        let context = SpeakerContext::new(id.clone(), ip, state_manager, api_client);
+        Self::new_with_event_init(id, name, ip, model_name, state_manager, api_client, None)
+    }
+
+    /// Create a new Speaker handle with an optional event init closure
+    ///
+    /// When `event_init` is provided, calling `watch()` on any property will
+    /// trigger lazy event manager initialization on first use.
+    pub(crate) fn new_with_event_init(
+        id: SpeakerId,
+        name: String,
+        ip: IpAddr,
+        model_name: String,
+        state_manager: Arc<StateManager>,
+        api_client: SonosClient,
+        event_init: Option<EventInitFn>,
+    ) -> Self {
+        let context = match event_init {
+            Some(init) => SpeakerContext::with_event_init(
+                id.clone(),
+                ip,
+                state_manager,
+                api_client,
+                init,
+            ),
+            None => SpeakerContext::new(id.clone(), ip, state_manager, api_client),
+        };
 
         Self {
             id,

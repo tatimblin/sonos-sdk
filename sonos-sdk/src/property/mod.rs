@@ -6,7 +6,7 @@
 mod handles;
 
 // Re-export the generic PropertyHandle, SpeakerContext, and Fetchable traits
-pub use handles::{Fetchable, FetchableWithContext, PropertyHandle, SpeakerContext};
+pub use handles::{EventInitFn, Fetchable, FetchableWithContext, PropertyHandle, SpeakerContext};
 
 // Re-export group property handle types
 pub use handles::{GroupContext, GroupFetchable, GroupPropertyHandle};
