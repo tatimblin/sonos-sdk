@@ -89,6 +89,11 @@ pub use sonos_api::services::av_transport::{
 pub use sonos_api::services::group_rendering_control::SetRelativeGroupVolumeResponse;
 pub use sonos_api::services::rendering_control::SetRelativeVolumeResponse;
 
+// sonos_discovery is internal — consumers use SonosSystem::new()
+// Re-exported under test-support for integration tests that need Device
+#[cfg(feature = "test-support")]
+pub use sonos_discovery;
+
 // Re-export commonly used types from sonos-state
 pub use sonos_state::{
     ChangeEvent, ChangeIterator, GroupId, GroupMute, GroupVolume, GroupVolumeChangeable,
@@ -96,6 +101,7 @@ pub use sonos_state::{
 };
 
 // Internal modules
+mod cache;
 mod error;
 mod group;
 pub mod property;
