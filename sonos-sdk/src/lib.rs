@@ -100,6 +100,9 @@ pub use sonos_state::{
     PlaybackState, SpeakerId, Volume,
 };
 
+// Public modules
+pub mod prelude;
+
 // Internal modules
 mod cache;
 mod error;
