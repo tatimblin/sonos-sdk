@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
+#[non_exhaustive]
 pub enum SdkError {
     #[error("state management error: {0}")]
     StateError(#[from] sonos_state::StateError),

@@ -6,28 +6,24 @@
 //! ## Quick Start
 //!
 //! ```rust,ignore
-//! use sonos_sdk::SonosSystem;
+//! use sonos_sdk::prelude::*;
 //!
-//! fn main() -> Result<(), sonos_sdk::SdkError> {
-//!     // Create system with automatic device discovery (sync)
-//!     let system = SonosSystem::new()?;
+//! fn main() -> Result<(), SdkError> {
+//!     let sonos = SonosSystem::new()?;
 //!
-//!     // Get speaker by name
-//!     let speaker = system.get_speaker_by_name("Living Room")
-//!         .ok_or_else(|| sonos_sdk::SdkError::SpeakerNotFound("Living Room".to_string()))?;
+//!     // Direct SOAP calls — no event infrastructure created
+//!     let kitchen = sonos.speaker("Kitchen").unwrap();
+//!     kitchen.play()?;
+//!     let vol = kitchen.volume.fetch()?;
 //!
-//!     // Three methods on each property:
-//!     let volume = speaker.volume.get();             // Get cached value
-//!     let fresh_volume = speaker.volume.fetch()?;    // API call + update cache
-//!     let current = speaker.volume.watch()?;         // Start watching for changes
+//!     // Fluent navigation
+//!     let group = kitchen.group().unwrap();
+//!     println!("Kitchen is in group {}", group.id);
 //!
-//!     // Iterate over changes (blocking)
-//!     for event in system.iter() {
+//!     // ONLY NOW does the event manager lazily initialize
+//!     kitchen.volume.watch()?;
+//!     for event in sonos.iter() {
 //!         println!("Changed: {} on {}", event.property_key, event.speaker_id);
-//!         if event.property_key == "volume" {
-//!             let new_vol = speaker.volume.get();
-//!             println!("New volume: {:?}", new_vol);
-//!         }
 //!     }
 //!
 //!     Ok(())
@@ -37,9 +33,10 @@
 //! ## Key Features
 //!
 //! - **Sync-First API**: All methods are synchronous - no async/await required
+//! - **Cheap constructor**: `SonosSystem::new()` does discovery only — event infrastructure is lazy
 //! - **DOM-like API**: Access properties directly on speaker objects
 //! - **Three access patterns**: `get()` for cached, `fetch()` for fresh, `watch()` for reactive
-//! - **Automatic event management**: UPnP subscriptions managed automatically via watch/unwatch
+//! - **Fluent navigation**: `speaker.group()`, `group.speaker("name")`
 //! - **Type safety**: All properties are strongly typed
 //! - **Resource efficiency**: Shared state management and HTTP connections
 //!
@@ -99,6 +96,9 @@ pub use sonos_state::{
     ChangeEvent, ChangeIterator, GroupId, GroupMute, GroupVolume, GroupVolumeChangeable,
     PlaybackState, SpeakerId, Volume,
 };
+
+// Public modules
+pub mod prelude;
 
 // Internal modules
 mod cache;

@@ -28,7 +28,7 @@
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
-use std::sync::{mpsc, Arc, Mutex, RwLock};
+use std::sync::{mpsc, Arc, Mutex, OnceLock, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -252,8 +252,8 @@ pub struct StateManager {
     /// IP to speaker ID mapping (for event worker)
     ip_to_speaker: Arc<RwLock<HashMap<IpAddr, SpeakerId>>>,
 
-    /// Event manager (optional - enables live events)
-    event_manager: Option<Arc<SonosEventManager>>,
+    /// Event manager (set-once via OnceLock — enables live events)
+    event_manager: OnceLock<Arc<SonosEventManager>>,
 
     /// Channel for sending change events to iter()
     event_tx: mpsc::Sender<ChangeEvent>,
@@ -261,8 +261,8 @@ pub struct StateManager {
     /// Receiver for iter() - wrapped in `Arc<Mutex>` for cloning
     event_rx: Arc<Mutex<mpsc::Receiver<ChangeEvent>>>,
 
-    /// Background event processor handle (kept alive)
-    _worker: Option<JoinHandle<()>>,
+    /// Background event processor handle (lazily spawned)
+    _worker: Mutex<Option<JoinHandle<()>>>,
 
     /// Cleanup timeout for subscriptions
     cleanup_timeout: Duration,
@@ -334,7 +334,7 @@ impl StateManager {
         drop(store);
         drop(ip_map);
 
-        if let Some(em) = &self.event_manager {
+        if let Some(em) = self.event_manager.get() {
             let devices_for_em: Vec<_> = self
                 .speaker_infos()
                 .iter()
@@ -484,7 +484,7 @@ impl StateManager {
         self.register_watch(speaker_id, P::KEY);
 
         // Subscribe via event manager if available
-        if let Some(em) = &self.event_manager {
+        if let Some(em) = self.event_manager.get() {
             // Get speaker IP from store
             if let Some(ip) = self.get_speaker_ip(speaker_id) {
                 if let Err(e) = em.ensure_service_subscribed(ip, P::SERVICE) {
@@ -507,7 +507,7 @@ impl StateManager {
         self.unregister_watch(speaker_id, P::KEY);
 
         // Release subscription via event manager if available
-        if let Some(em) = &self.event_manager {
+        if let Some(em) = self.event_manager.get() {
             if let Some(ip) = self.get_speaker_ip(speaker_id) {
                 if let Err(e) = em.release_service_subscription(ip, P::SERVICE) {
                     tracing::warn!(
@@ -606,21 +606,69 @@ impl StateManager {
     /// This allows PropertyHandle::watch() to trigger UPnP subscriptions
     /// via the event manager's ensure_service_subscribed() method.
     pub fn event_manager(&self) -> Option<&Arc<SonosEventManager>> {
-        self.event_manager.as_ref()
+        self.event_manager.get()
+    }
+
+    /// Wire an event manager into this StateManager after construction.
+    ///
+    /// Spawns the event worker thread and registers all known devices.
+    /// Can only be called once — subsequent calls are no-ops.
+    pub fn set_event_manager(&self, em: Arc<SonosEventManager>) -> Result<()> {
+        if self.event_manager.set(Arc::clone(&em)).is_err() {
+            return Ok(()); // Already set — no-op
+        }
+
+        // Register all known devices with the event manager
+        let devices_for_em: Vec<_> = self
+            .speaker_infos()
+            .iter()
+            .map(|info| sonos_discovery::Device {
+                id: info.id.as_str().to_string(),
+                name: info.name.clone(),
+                room_name: info.room_name.clone(),
+                ip_address: info.ip_address.to_string(),
+                port: info.port,
+                model_name: info.model_name.clone(),
+            })
+            .collect();
+
+        if let Err(e) = em.add_devices(devices_for_em) {
+            tracing::warn!("Failed to add devices to event manager during lazy init: {}", e);
+        }
+
+        // Spawn event worker thread
+        let worker = spawn_state_event_worker(
+            em,
+            Arc::clone(&self.store),
+            Arc::clone(&self.watched),
+            self.event_tx.clone(),
+            Arc::clone(&self.ip_to_speaker),
+        );
+        info!("StateManager event worker started (lazy init)");
+
+        if let Ok(mut w) = self._worker.lock() {
+            *w = Some(worker);
+        }
+
+        Ok(())
     }
 }
 
 impl Clone for StateManager {
     fn clone(&self) -> Self {
+        let event_manager = OnceLock::new();
+        if let Some(em) = self.event_manager.get() {
+            let _ = event_manager.set(Arc::clone(em));
+        }
         Self {
             store: Arc::clone(&self.store),
             watched: Arc::clone(&self.watched),
             subscriptions: Arc::clone(&self.subscriptions),
             ip_to_speaker: Arc::clone(&self.ip_to_speaker),
-            event_manager: self.event_manager.clone(),
+            event_manager,
             event_tx: self.event_tx.clone(),
             event_rx: Arc::clone(&self.event_rx),
-            _worker: None,
+            _worker: Mutex::new(None),
             cleanup_timeout: self.cleanup_timeout,
         }
     }
@@ -671,30 +719,32 @@ impl StateManagerBuilder {
         let watched = Arc::new(RwLock::new(HashSet::new()));
         let ip_to_speaker = Arc::new(RwLock::new(HashMap::new()));
 
-        // Spawn event worker if event_manager provided
-        let worker = if let Some(ref em) = self.event_manager {
+        let event_manager_lock = OnceLock::new();
+        let mut worker = None;
+
+        // If event_manager provided at build time, wire it up eagerly
+        if let Some(em) = self.event_manager {
+            let _ = event_manager_lock.set(Arc::clone(&em));
             let worker_handle = spawn_state_event_worker(
-                Arc::clone(em),
+                em,
                 Arc::clone(&store),
                 Arc::clone(&watched),
                 event_tx.clone(),
                 Arc::clone(&ip_to_speaker),
             );
             info!("StateManager event worker started");
-            Some(worker_handle)
-        } else {
-            None
-        };
+            worker = Some(worker_handle);
+        }
 
         let manager = StateManager {
             store,
             watched,
             subscriptions: Arc::new(RwLock::new(HashMap::new())),
             ip_to_speaker,
-            event_manager: self.event_manager,
+            event_manager: event_manager_lock,
             event_tx,
             event_rx: Arc::new(Mutex::new(event_rx)),
-            _worker: worker,
+            _worker: Mutex::new(worker),
             cleanup_timeout: self.cleanup_timeout,
         };
 

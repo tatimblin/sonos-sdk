@@ -95,12 +95,15 @@ Without this crate, developers face a fragmented API surface where simple operat
 ```
 sonos-sdk/src/
 ├── lib.rs              # Public API surface, re-exports, module documentation
+├── prelude.rs          # Convenience re-exports (SonosSystem, Speaker, etc.)
 ├── system.rs           # SonosSystem entry point with discovery and speaker registry
-├── speaker.rs          # Speaker struct with property handles
-├── error.rs            # SdkError enum
+├── speaker.rs          # Speaker struct with property handles + fluent navigation
+├── group.rs            # Group handle with member access + fluent navigation
+├── error.rs            # SdkError enum (#[non_exhaustive])
+├── cache.rs            # Discovery cache management
 └── property/           # Property handle implementations
-    ├── mod.rs          # Re-exports VolumeHandle, PlaybackStateHandle
-    └── handles.rs      # Macro-generated property handles
+    ├── mod.rs          # Re-exports VolumeHandle, PlaybackStateHandle, etc.
+    └── handles.rs      # Generic PropertyHandle + GroupPropertyHandle
 ```
 
 | Module | Responsibility | Visibility |
@@ -118,17 +121,18 @@ sonos-sdk/src/
 ```rust
 pub struct SonosSystem {
     state_manager: Arc<StateManager>,    // Shared reactive state management
+    event_manager: Mutex<Option<Arc<SonosEventManager>>>,  // Lazily initialized
     api_client: SonosClient,             // Shared SOAP client
-    speakers: Arc<RwLock<HashMap<String, Speaker>>>,  // Name -> Speaker registry
+    speakers: RwLock<HashMap<String, Speaker>>,  // Name -> Speaker registry
 }
 ```
 
-**Purpose**: Main entry point that initializes the entire SDK, discovers devices, and provides access to speakers.
+**Purpose**: Main entry point that initializes the entire SDK, discovers devices, and provides access to speakers. The constructor is cheap — event infrastructure is lazily created on first `watch()` call.
 
 **Invariants**:
 - After construction, all discovered speakers are registered in the map
 - StateManager is initialized with all discovered devices
-- The speakers map is never empty if discovery found devices
+- Event manager is `None` until first `watch()` call triggers lazy initialization
 
 **Ownership**: Created once per application; owns the StateManager and speaker registry.
 
@@ -288,16 +292,20 @@ This pattern was chosen to:
 
 ```rust
 // Get speaker and access properties directly
-let speaker = system.get_speaker_by_name("Living Room").await?;
+let speaker = system.speaker("Living Room").unwrap();
 
 // Cached read (instant, no network)
 let volume = speaker.volume.get();
 
 // Fresh API call (network, updates cache)
-let fresh_volume = speaker.volume.fetch().await?;
+let fresh_volume = speaker.volume.fetch()?;
 
-// Reactive subscription (UPnP events)
-let mut watcher = speaker.volume.watch().await?;
+// Reactive subscription (triggers lazy event init on first call)
+let status = speaker.volume.watch()?;
+
+// Fluent navigation
+let group = speaker.group().unwrap();
+let kitchen = group.speaker("Kitchen");
 ```
 
 #### Trade-offs
@@ -671,12 +679,18 @@ None required.
 
 **Policy**: Pre-1.0, breaking changes may occur in minor versions. Post-1.0, semantic versioning will be followed.
 
-**Current deprecations**: None
+**Current deprecations (0.2.0)**:
+- `get_speaker_by_name()` → `speaker()`
+- `get_speaker_by_id()` → `speaker_by_id()`
+- `get_group_by_name()` → `group()`
+- `get_group_by_id()` → `group_by_id()`
+- `get_group_for_speaker()` → `group_for_speaker()` (or use `speaker.group()`)
 
 ### 13.3 Version History
 
 | Version | Changes | Migration Guide |
 |---------|---------|-----------------|
+| `0.2.0` | Lazy event init, method renames, fluent navigation, prelude, `#[non_exhaustive]` | Replace `get_` prefixed methods with short names; use `sonos_sdk::prelude::*` |
 | `0.1.0` | Initial release | N/A |
 
 ---
@@ -743,4 +757,5 @@ None required.
 
 | Date | Author | Change |
 |------|--------|--------|
+| 2026-03-11 | Claude Opus 4.6 | Updated for v0.2.0: lazy event init, method renames, fluent navigation, prelude, #[non_exhaustive] |
 | 2026-01-14 | Claude Opus 4.5 | Initial specification created |

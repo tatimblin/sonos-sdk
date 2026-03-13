@@ -17,6 +17,13 @@ use sonos_state::{property::SonosProperty, SpeakerId, StateManager};
 
 use crate::SdkError;
 
+/// Closure type for lazy event manager initialization.
+///
+/// Called by `PropertyHandle::watch()` to trigger event manager creation
+/// on first use. Captures shared `Arc`s to the system's `Mutex` and
+/// `StateManager`, avoiding a direct reference to `SonosSystem`.
+pub type EventInitFn = Arc<dyn Fn() -> Result<(), SdkError> + Send + Sync>;
+
 /// Shared context for all property handles on a speaker
 ///
 /// This struct holds the common data needed by all PropertyHandles,
@@ -27,6 +34,9 @@ pub struct SpeakerContext {
     pub(crate) speaker_ip: IpAddr,
     pub(crate) state_manager: Arc<StateManager>,
     pub(crate) api_client: SonosClient,
+    /// Optional closure to trigger lazy event manager initialization.
+    /// `None` in test mode (no event infrastructure).
+    pub(crate) event_init: Option<EventInitFn>,
 }
 
 impl SpeakerContext {
@@ -42,6 +52,24 @@ impl SpeakerContext {
             speaker_ip,
             state_manager,
             api_client,
+            event_init: None,
+        })
+    }
+
+    /// Create a new SpeakerContext with an event init closure
+    pub fn with_event_init(
+        speaker_id: SpeakerId,
+        speaker_ip: IpAddr,
+        state_manager: Arc<StateManager>,
+        api_client: SonosClient,
+        event_init: EventInitFn,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            speaker_id,
+            speaker_ip,
+            state_manager,
+            api_client,
+            event_init: Some(event_init),
         })
     }
 }
@@ -268,6 +296,13 @@ impl<P: SonosProperty> PropertyHandle<P> {
         self.context
             .state_manager
             .register_watch(&self.context.speaker_id, P::KEY);
+
+        // Trigger lazy event manager init if needed
+        if self.context.state_manager.event_manager().is_none() {
+            if let Some(ref init) = self.context.event_init {
+                init()?;
+            }
+        }
 
         // Determine watch mode based on event manager status
         let mode = if let Some(em) = self.context.state_manager.event_manager() {

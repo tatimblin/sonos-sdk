@@ -186,6 +186,22 @@ impl Group {
             .collect()
     }
 
+    /// Get a member speaker by name
+    ///
+    /// Returns `None` if no member with that name exists in this group.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let group = sonos.group("Living Room").unwrap();
+    /// if let Some(kitchen) = group.speaker("Kitchen") {
+    ///     println!("Kitchen is in the Living Room group");
+    /// }
+    /// ```
+    pub fn speaker(&self, name: &str) -> Option<Speaker> {
+        self.members().into_iter().find(|s| s.name == name)
+    }
+
     /// Check if a speaker is the coordinator of this group
     ///
     /// # Example

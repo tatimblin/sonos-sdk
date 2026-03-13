@@ -98,7 +98,7 @@ impl std::fmt::Display for PlayMode {
 }
 
 use crate::property::{
-    BassHandle, CurrentTrackHandle, GroupMembershipHandle, LoudnessHandle, MuteHandle,
+    BassHandle, CurrentTrackHandle, EventInitFn, GroupMembershipHandle, LoudnessHandle, MuteHandle,
     PlaybackStateHandle, PositionHandle, PropertyHandle, SpeakerContext, TrebleHandle,
     VolumeHandle,
 };
@@ -216,7 +216,32 @@ impl Speaker {
         state_manager: Arc<StateManager>,
         api_client: SonosClient,
     ) -> Self {
-        let context = SpeakerContext::new(id.clone(), ip, state_manager, api_client);
+        Self::new_with_event_init(id, name, ip, model_name, state_manager, api_client, None)
+    }
+
+    /// Create a new Speaker handle with an optional event init closure
+    ///
+    /// When `event_init` is provided, calling `watch()` on any property will
+    /// trigger lazy event manager initialization on first use.
+    pub(crate) fn new_with_event_init(
+        id: SpeakerId,
+        name: String,
+        ip: IpAddr,
+        model_name: String,
+        state_manager: Arc<StateManager>,
+        api_client: SonosClient,
+        event_init: Option<EventInitFn>,
+    ) -> Self {
+        let context = match event_init {
+            Some(init) => SpeakerContext::with_event_init(
+                id.clone(),
+                ip,
+                state_manager,
+                api_client,
+                init,
+            ),
+            None => SpeakerContext::new(id.clone(), ip, state_manager, api_client),
+        };
 
         Self {
             id,
@@ -238,6 +263,35 @@ impl Speaker {
             // Internal
             context,
         }
+    }
+
+    // ========================================================================
+    // Navigation
+    // ========================================================================
+
+    /// Get the group this speaker belongs to (sync, no network call)
+    ///
+    /// Reads from the state store's topology data. Returns `None` if
+    /// topology has not been loaded yet.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let kitchen = sonos.speaker("Kitchen").unwrap();
+    /// if let Some(group) = kitchen.group() {
+    ///     println!("Kitchen is in group {}", group.id);
+    /// }
+    /// ```
+    pub fn group(&self) -> Option<Group> {
+        let info = self
+            .context
+            .state_manager
+            .get_group_for_speaker(&self.context.speaker_id)?;
+        Group::from_info(
+            info,
+            Arc::clone(&self.context.state_manager),
+            self.context.api_client.clone(),
+        )
     }
 
     // ========================================================================
