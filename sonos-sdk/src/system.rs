@@ -203,7 +203,7 @@ impl SonosSystem {
             .iter()
             .enumerate()
             .map(|(i, name)| Device {
-                id: format!("RINCON_{:03}", i),
+                id: format!("RINCON_{i:03}"),
                 name: name.to_string(),
                 room_name: name.to_string(),
                 ip_address: format!("192.168.1.{}", 100 + i),
@@ -212,9 +212,8 @@ impl SonosSystem {
             })
             .collect();
 
-        let state_manager = Arc::new(
-            StateManager::new().expect("StateManager::new() should not fail"),
-        );
+        let state_manager =
+            Arc::new(StateManager::new().expect("StateManager::new() should not fail"));
 
         state_manager
             .add_devices(devices.clone())
@@ -420,18 +419,20 @@ impl SonosSystem {
         };
 
         // Call GetZoneGroupState on that speaker
-        let topology_state =
-            match sonos_api::services::zone_group_topology::state::poll(&self.api_client, &speaker_ip) {
-                Ok(state) => state,
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to fetch zone group topology from {}: {}",
-                        speaker_ip,
-                        e
-                    );
-                    return;
-                }
-            };
+        let topology_state = match sonos_api::services::zone_group_topology::state::poll(
+            &self.api_client,
+            &speaker_ip,
+        ) {
+            Ok(state) => state,
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to fetch zone group topology from {}: {}",
+                    speaker_ip,
+                    e
+                );
+                return;
+            }
+        };
 
         // Decode the API-level topology into state-level GroupInfo values
         let topology_changes = sonos_state::decode_topology_event(&topology_state);

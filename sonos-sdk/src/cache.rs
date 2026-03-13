@@ -52,14 +52,13 @@ pub(crate) fn save(devices: &[Device]) -> Result<(), io::Error> {
         devices: devices.to_vec(),
         cached_at: now_secs(),
     };
-    let json =
-        serde_json::to_string(&cached).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let json = serde_json::to_string(&cached)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
     let temp_path = dir.join("cache.json.tmp");
     fs::write(&temp_path, &json)?;
-    fs::rename(&temp_path, dir.join("cache.json")).map_err(|e| {
+    fs::rename(&temp_path, dir.join("cache.json")).inspect_err(|_| {
         let _ = fs::remove_file(&temp_path);
-        e
     })?;
     Ok(())
 }
