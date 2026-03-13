@@ -133,16 +133,13 @@ impl SonosSystem {
 
     fn from_devices_inner(devices: Vec<Device>) -> Result<Self, SdkError> {
         // 1. Create shared state FIRST — no event manager yet (lazy init)
-        let state_manager = Arc::new(
-            StateManager::new().map_err(SdkError::StateError)?,
-        );
+        let state_manager = Arc::new(StateManager::new().map_err(SdkError::StateError)?);
         state_manager
             .add_devices(devices.clone())
             .map_err(SdkError::StateError)?;
 
         let api_client = SonosClient::new();
-        let event_manager: Arc<Mutex<Option<Arc<SonosEventManager>>>> =
-            Arc::new(Mutex::new(None));
+        let event_manager: Arc<Mutex<Option<Arc<SonosEventManager>>>> = Arc::new(Mutex::new(None));
 
         // 2. Build init closure from the shared Arcs
         let init_fn: EventInitFn = {
@@ -154,8 +151,7 @@ impl SonosSystem {
                     return Ok(());
                 }
                 let em = Arc::new(
-                    SonosEventManager::new()
-                        .map_err(|e| SdkError::EventManager(e.to_string()))?,
+                    SonosEventManager::new().map_err(|e| SdkError::EventManager(e.to_string()))?,
                 );
                 sm.set_event_manager(Arc::clone(&em))
                     .map_err(SdkError::StateError)?;
@@ -171,11 +167,10 @@ impl SonosSystem {
         // 4. Assemble struct from the SAME Arcs
         Ok(Self {
             state_manager,
-            event_manager: Arc::try_unwrap(event_manager)
-                .unwrap_or_else(|arc| {
-                    let inner = arc.lock().unwrap().clone();
-                    Mutex::new(inner)
-                }),
+            event_manager: Arc::try_unwrap(event_manager).unwrap_or_else(|arc| {
+                let inner = arc.lock().unwrap().clone();
+                Mutex::new(inner)
+            }),
             api_client,
             speakers: RwLock::new(speakers),
             last_rediscovery: AtomicU64::new(0),
@@ -203,7 +198,7 @@ impl SonosSystem {
             .iter()
             .enumerate()
             .map(|(i, name)| Device {
-                id: format!("RINCON_{:03}", i),
+                id: format!("RINCON_{i:03}"),
                 name: name.to_string(),
                 room_name: name.to_string(),
                 ip_address: format!("192.168.1.{}", 100 + i),
@@ -212,9 +207,8 @@ impl SonosSystem {
             })
             .collect();
 
-        let state_manager = Arc::new(
-            StateManager::new().expect("StateManager::new() should not fail"),
-        );
+        let state_manager =
+            Arc::new(StateManager::new().expect("StateManager::new() should not fail"));
 
         state_manager
             .add_devices(devices.clone())
@@ -318,7 +312,12 @@ impl SonosSystem {
         }
 
         // 3. Build new Speaker handles (no lock needed)
-        let new_speakers = match Self::build_speakers_with_init(&devices, &self.state_manager, &self.api_client, None) {
+        let new_speakers = match Self::build_speakers_with_init(
+            &devices,
+            &self.state_manager,
+            &self.api_client,
+            None,
+        ) {
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!("Failed to build speakers from rediscovery: {}", e);
@@ -420,18 +419,20 @@ impl SonosSystem {
         };
 
         // Call GetZoneGroupState on that speaker
-        let topology_state =
-            match sonos_api::services::zone_group_topology::state::poll(&self.api_client, &speaker_ip) {
-                Ok(state) => state,
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to fetch zone group topology from {}: {}",
-                        speaker_ip,
-                        e
-                    );
-                    return;
-                }
-            };
+        let topology_state = match sonos_api::services::zone_group_topology::state::poll(
+            &self.api_client,
+            &speaker_ip,
+        ) {
+            Ok(state) => state,
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to fetch zone group topology from {}: {}",
+                    speaker_ip,
+                    e
+                );
+                return;
+            }
+        };
 
         // Decode the API-level topology into state-level GroupInfo values
         let topology_changes = sonos_state::decode_topology_event(&topology_state);
@@ -534,7 +535,10 @@ impl SonosSystem {
     }
 
     /// Get the group a speaker belongs to (sync)
-    #[deprecated(since = "0.2.0", note = "use `speaker.group()` or `group_for_speaker()` instead")]
+    #[deprecated(
+        since = "0.2.0",
+        note = "use `speaker.group()` or `group_for_speaker()` instead"
+    )]
     pub fn get_group_for_speaker(&self, speaker_id: &SpeakerId) -> Option<Group> {
         self.group_for_speaker(speaker_id)
     }

@@ -643,10 +643,10 @@ fn speaker_name_strategy() -> impl Strategy<Value = String> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(100))]
 
-    /// *For any* speaker added to the system, calling `system.get_speaker_by_name(speaker.name)`
+    /// *For any* speaker added to the system, calling `system.speaker(speaker.name)`
     /// SHALL return a speaker with the same ID as the original.
     #[test]
-    fn prop_get_speaker_by_name_round_trip(
+    fn prop_speaker_round_trip(
         speaker_id in speaker_id_strategy(),
         speaker_name in speaker_name_strategy(),
         ip in ip_strategy(),
@@ -663,7 +663,7 @@ proptest! {
         let system = SonosSystem::from_discovered_devices(devices).unwrap();
 
         // Look up by name
-        let found_speaker = system.get_speaker_by_name(&speaker_name);
+        let found_speaker = system.speaker(&speaker_name);
 
         prop_assert!(
             found_speaker.is_some(),
@@ -681,9 +681,9 @@ proptest! {
     }
 
 
-    /// *For any* name that was not added to the system, `get_speaker_by_name()` SHALL return None.
+    /// *For any* name that was not added to the system, `speaker()` SHALL return None.
     #[test]
-    fn prop_get_speaker_by_name_returns_none_for_unknown(
+    fn prop_speaker_returns_none_for_unknown(
         speaker_id in speaker_id_strategy(),
         speaker_name in speaker_name_strategy(),
         unknown_name in speaker_name_strategy(),
@@ -704,7 +704,7 @@ proptest! {
         let system = SonosSystem::from_discovered_devices(devices).unwrap();
 
         // Look up by unknown name
-        let found_speaker = system.get_speaker_by_name(&unknown_name);
+        let found_speaker = system.speaker(&unknown_name);
 
         prop_assert!(
             found_speaker.is_none(),
@@ -721,10 +721,10 @@ proptest! {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(100))]
 
-    /// *For any* speaker added to the system, calling `system.get_speaker_by_id(&speaker.id)`
+    /// *For any* speaker added to the system, calling `system.speaker_by_id(&speaker.id)`
     /// SHALL return a speaker with the same name as the original.
     #[test]
-    fn prop_get_speaker_by_id_round_trip(
+    fn prop_speaker_by_id_round_trip(
         speaker_id in speaker_id_strategy(),
         speaker_name in speaker_name_strategy(),
         ip in ip_strategy(),
@@ -742,7 +742,7 @@ proptest! {
 
         // Look up by ID
         let lookup_id = SpeakerId::new(&speaker_id);
-        let found_speaker = system.get_speaker_by_id(&lookup_id);
+        let found_speaker = system.speaker_by_id(&lookup_id);
 
         prop_assert!(
             found_speaker.is_some(),
@@ -759,9 +759,9 @@ proptest! {
     }
 
 
-    /// *For any* ID that was not added to the system, `get_speaker_by_id()` SHALL return None.
+    /// *For any* ID that was not added to the system, `speaker_by_id()` SHALL return None.
     #[test]
-    fn prop_get_speaker_by_id_returns_none_for_unknown(
+    fn prop_speaker_by_id_returns_none_for_unknown(
         speaker_id in speaker_id_strategy(),
         unknown_id in speaker_id_strategy(),
         speaker_name in speaker_name_strategy(),
@@ -783,7 +783,7 @@ proptest! {
 
         // Look up by unknown ID
         let lookup_id = SpeakerId::new(&unknown_id);
-        let found_speaker = system.get_speaker_by_id(&lookup_id);
+        let found_speaker = system.speaker_by_id(&lookup_id);
 
         prop_assert!(
             found_speaker.is_none(),
@@ -848,7 +848,7 @@ proptest! {
 
 
     /// *For any* set of devices added to the system, every device should be accessible
-    /// via both `get_speaker_by_name()` and `get_speaker_by_id()`.
+    /// via both `speaker()` and `speaker_by_id()`.
     #[test]
     fn prop_all_speakers_accessible(
         device_count in 1usize..5,
@@ -869,14 +869,14 @@ proptest! {
 
         // Verify each device is accessible by both name and ID
         for device in &devices {
-            let by_name = system.get_speaker_by_name(&device.name);
+            let by_name = system.speaker(&device.name);
             prop_assert!(
                 by_name.is_some(),
                 "Device '{}' should be accessible by name", device.name
             );
 
             let speaker_id = SpeakerId::new(&device.id);
-            let by_id = system.get_speaker_by_id(&speaker_id);
+            let by_id = system.speaker_by_id(&speaker_id);
             prop_assert!(
                 by_id.is_some(),
                 "Device '{}' should be accessible by ID", device.id

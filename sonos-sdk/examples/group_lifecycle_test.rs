@@ -22,7 +22,7 @@ fn main() -> Result<(), SdkError> {
 
     // Bootstrap topology by watching group_membership on any speaker
     println!("Bootstrapping topology...");
-    if let Some(first_speaker) = system.get_speaker_by_name(&speaker_names[0]) {
+    if let Some(first_speaker) = system.speaker(&speaker_names[0]) {
         let _ = first_speaker.group_membership.watch();
     }
 
@@ -112,7 +112,7 @@ fn main() -> Result<(), SdkError> {
     // ===== TEST 1: add_speaker =====
     println!("=== TEST 1: group.add_speaker(&member) ===");
     let coord_group = system
-        .get_group_for_speaker(&coordinator.id)
+        .group_for_speaker(&coordinator.id)
         .ok_or_else(|| SdkError::SpeakerNotFound(coordinator.id.as_str().to_string()))?;
 
     match coord_group.add_speaker(&member) {
@@ -158,7 +158,7 @@ fn main() -> Result<(), SdkError> {
     println!("=== TEST 2: group.remove_speaker(&member) ===");
     // Re-fetch the group to get updated membership
     let coord_group = system
-        .get_group_for_speaker(&coordinator.id)
+        .group_for_speaker(&coordinator.id)
         .ok_or_else(|| SdkError::SpeakerNotFound(coordinator.id.as_str().to_string()))?;
 
     match coord_group.remove_speaker(&member) {
@@ -198,7 +198,7 @@ fn main() -> Result<(), SdkError> {
     // ===== TEST 3: speaker.join_group =====
     println!("=== TEST 3: member.join_group(&coord_group) ===");
     let coord_group = system
-        .get_group_for_speaker(&coordinator.id)
+        .group_for_speaker(&coordinator.id)
         .ok_or_else(|| SdkError::SpeakerNotFound(coordinator.id.as_str().to_string()))?;
 
     match member.join_group(&coord_group) {
@@ -244,7 +244,7 @@ fn main() -> Result<(), SdkError> {
     // ===== TEST 6: group.dissolve =====
     println!("=== TEST 6: group.dissolve() ===");
     let coord_group = system
-        .get_group_for_speaker(&coordinator.id)
+        .group_for_speaker(&coordinator.id)
         .ok_or_else(|| SdkError::SpeakerNotFound(coordinator.id.as_str().to_string()))?;
 
     let result = coord_group.dissolve();

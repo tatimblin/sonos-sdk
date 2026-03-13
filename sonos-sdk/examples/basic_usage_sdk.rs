@@ -33,7 +33,7 @@ fn main() -> Result<(), SdkError> {
     // Get the first available speaker
     let speaker_name = &speaker_names[0];
     let speaker = system
-        .get_speaker_by_name(speaker_name)
+        .speaker(speaker_name)
         .ok_or_else(|| SdkError::SpeakerNotFound(speaker_name.clone()))?;
 
     println!("\nUsing speaker: {} ({})", speaker.name, speaker.ip);
@@ -88,9 +88,9 @@ fn main() -> Result<(), SdkError> {
 
     println!("\nDOM-like API demonstration complete!");
     println!("The API works exactly as designed:");
-    println!("  system.get_speaker_by_name(\"Speaker\").volume.get()");
-    println!("  system.get_speaker_by_name(\"Speaker\").volume.fetch()");
-    println!("  system.get_speaker_by_name(\"Speaker\").volume.watch()");
+    println!("  system.speaker(\"Speaker\").volume.get()");
+    println!("  system.speaker(\"Speaker\").volume.fetch()");
+    println!("  system.speaker(\"Speaker\").volume.watch()");
 
     Ok(())
 }
