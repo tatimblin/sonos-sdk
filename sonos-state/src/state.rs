@@ -307,10 +307,16 @@ impl StateManager {
                 .parse()
                 .map_err(|_| StateError::InvalidIpAddress(device.ip_address.clone()))?;
 
+            let friendly_name = if device.room_name.is_empty() || device.room_name == "Unknown" {
+                device.name.clone()
+            } else {
+                device.room_name.clone()
+            };
+
             let info = SpeakerInfo {
                 id: speaker_id.clone(),
-                name: device.name.clone(),
-                room_name: device.name.clone(),
+                name: friendly_name,
+                room_name: device.room_name.clone(),
                 ip_address: ip,
                 port: device.port,
                 model_name: device.model_name.clone(),
