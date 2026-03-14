@@ -11,6 +11,8 @@ use sonos_api::SonosClient;
 use sonos_discovery::{self, Device};
 use sonos_event_manager::SonosEventManager;
 use sonos_state::{GroupId, SpeakerId, StateManager, Topology};
+#[cfg(feature = "test-support")]
+use sonos_state::GroupInfo;
 
 use crate::property::EventInitFn;
 use crate::{cache, Group, SdkError, Speaker};
@@ -256,6 +258,38 @@ impl SonosSystem {
             speakers: RwLock::new(speakers),
             last_rediscovery: AtomicU64::new(0),
         }
+    }
+
+    /// Create a test SonosSystem with speakers AND group topology.
+    ///
+    /// Each speaker gets a standalone group (coordinator = self, members = [self]).
+    /// This makes `system.groups()` and `system.group("name")` work in tests.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let system = SonosSystem::with_groups(&["Kitchen", "Bedroom"]);
+    /// assert_eq!(system.groups().len(), 2);
+    /// assert!(system.group("Kitchen").is_some());
+    /// ```
+    #[cfg(feature = "test-support")]
+    pub fn with_groups(names: &[&str]) -> Self {
+        let system = Self::with_speakers(names);
+
+        let groups: Vec<GroupInfo> = names
+            .iter()
+            .enumerate()
+            .map(|(i, _name)| {
+                let speaker_id = SpeakerId::new(format!("RINCON_{i:03}"));
+                let group_id = GroupId::new(format!("RINCON_{i:03}:1"));
+                GroupInfo::new(group_id, speaker_id.clone(), vec![speaker_id])
+            })
+            .collect();
+
+        let topology = Topology::new(system.state_manager.speaker_infos(), groups);
+        system.state_manager.initialize(topology);
+
+        system
     }
 
     /// Build Speaker handles from a list of devices.
@@ -660,7 +694,7 @@ impl SonosSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sonos_state::{GroupInfo, Topology};
+    use sonos_state::GroupInfo;
 
     /// Create a test SonosSystem with the given devices
     ///
