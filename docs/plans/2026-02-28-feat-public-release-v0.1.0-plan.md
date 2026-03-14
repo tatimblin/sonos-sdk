@@ -354,17 +354,17 @@ jobs:
 
 The actual v0.1.0 release.
 
-- [ ] **Ensure `CARGO_REGISTRY_TOKEN` is available** — get from [crates.io/settings/tokens](https://crates.io/settings/tokens) with `publish-new` and `publish-update` scopes
-- [ ] **Run the publish script** — `./scripts/publish.sh`
-- [ ] **Verify on crates.io** — check that all 9 crates appear, READMEs render correctly, dependency links work
+- [x] **Ensure `CARGO_REGISTRY_TOKEN` is available** — get from [crates.io/settings/tokens](https://crates.io/settings/tokens) with `publish-new` and `publish-update` scopes
+- [x] **Run the publish script** — `./scripts/publish.sh`
+- [x] **Verify on crates.io** — check that all 9 crates appear, READMEs render correctly, dependency links work
 - [ ] **Verify on docs.rs** — check that `sonos-sdk` and `sonos-api` documentation builds (may take 15-30 minutes)
-- [ ] **Create GitHub Release** — tag `v0.1.0` on the publish commit, write release notes summarizing the initial release
+- [x] **Create GitHub Release** — tag `v0.1.0` on the publish commit, write release notes summarizing the initial release
 
 #### Phase 7: release-plz Setup
 
 Configure automated releases for future versions. This runs AFTER v0.1.0 is live.
 
-- [ ] **Create `release-plz.toml`** at workspace root:
+- [x] **Create `release-plz.toml`** at workspace root:
 
 ```toml
 [workspace]
@@ -436,7 +436,7 @@ changelog_include = [
 ]
 ```
 
-- [ ] **Create `.github/workflows/release-plz.yml`**:
+- [x] **Create `.github/workflows/release-plz.yml`**:
 
 ```yaml
 name: Release-plz
