@@ -199,7 +199,7 @@ impl Group {
     /// }
     /// ```
     pub fn speaker(&self, name: &str) -> Option<Speaker> {
-        self.members().into_iter().find(|s| s.name == name)
+        self.members().into_iter().find(|s| s.name.eq_ignore_ascii_case(name))
     }
 
     /// Check if a speaker is the coordinator of this group

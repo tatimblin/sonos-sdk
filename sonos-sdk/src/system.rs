@@ -15,6 +15,32 @@ use sonos_state::{GroupId, SpeakerId, StateManager, Topology};
 use crate::property::EventInitFn;
 use crate::{cache, Group, SdkError, Speaker};
 
+/// Compute the display name for a device.
+///
+/// Prefers `room_name` (user-assigned in the Sonos app, e.g., "Kitchen").
+/// Falls back to `name` (UPnP `friendlyName`) when `room_name` is absent or unknown.
+fn display_name(device: &Device) -> String {
+    if device.room_name.is_empty() || device.room_name == "Unknown" {
+        device.name.clone()
+    } else {
+        device.room_name.clone()
+    }
+}
+
+/// Find a speaker by name with case-insensitive fallback.
+///
+/// Tries an exact O(1) HashMap lookup first, then falls back to
+/// case-insensitive iteration (O(n), typically n < 50).
+fn find_speaker_by_name(speakers: &HashMap<String, Speaker>, name: &str) -> Option<Speaker> {
+    if let Some(speaker) = speakers.get(name) {
+        return Some(speaker.clone());
+    }
+    speakers
+        .values()
+        .find(|s| s.name.eq_ignore_ascii_case(name))
+        .cloned()
+}
+
 /// Main system entry point - provides DOM-like API
 ///
 /// SonosSystem is fully synchronous - no async/await required.
@@ -250,9 +276,10 @@ impl SonosSystem {
                 .parse()
                 .map_err(|_| SdkError::InvalidIpAddress)?;
 
+            let name = display_name(device);
             let speaker = Speaker::new_with_event_init(
                 speaker_id,
-                device.name.clone(),
+                name.clone(),
                 ip,
                 device.model_name.clone(),
                 Arc::clone(state_manager),
@@ -260,7 +287,10 @@ impl SonosSystem {
                 event_init.cloned(),
             );
 
-            speakers.insert(device.name.clone(), speaker);
+            if speakers.contains_key(&name) {
+                tracing::warn!("duplicate speaker name \"{}\", keeping last discovered", name);
+            }
+            speakers.insert(name, speaker);
         }
         Ok(speakers)
     }
@@ -277,12 +307,16 @@ impl SonosSystem {
     /// kitchen.play()?;
     /// ```
     pub fn speaker(&self, name: &str) -> Option<Speaker> {
-        if let Some(speaker) = self.speakers.read().ok()?.get(name).cloned() {
-            return Some(speaker);
+        {
+            let speakers = self.speakers.read().ok()?;
+            if let Some(speaker) = find_speaker_by_name(&speakers, name) {
+                return Some(speaker);
+            }
         }
         // Not found — try rediscovery (cooldown-limited)
         self.try_rediscover(name);
-        self.speakers.read().ok()?.get(name).cloned()
+        let speakers = self.speakers.read().ok()?;
+        find_speaker_by_name(&speakers, name)
     }
 
     /// Get speaker by name (sync)
@@ -563,7 +597,7 @@ impl SonosSystem {
             .find(|info| {
                 self.state_manager
                     .speaker_info(&info.coordinator_id)
-                    .is_some_and(|si| si.name == name)
+                    .is_some_and(|si| si.name.eq_ignore_ascii_case(name))
             })
             .and_then(|info| {
                 Group::from_info(
@@ -962,5 +996,110 @@ mod tests {
 
         // Will fail at network level but proves signature compiles
         assert_change_result(system.create_group(&coordinator, &[&member]));
+    }
+
+    #[test]
+    fn test_display_name_prefers_room_name() {
+        let device = Device {
+            id: "RINCON_111".to_string(),
+            name: "192.168.1.100 - Sonos One - RINCON_111".to_string(),
+            room_name: "Kitchen".to_string(),
+            ip_address: "192.168.1.100".to_string(),
+            port: 1400,
+            model_name: "Sonos One".to_string(),
+        };
+        assert_eq!(display_name(&device), "Kitchen");
+    }
+
+    #[test]
+    fn test_display_name_falls_back_to_friendly_name() {
+        let device = Device {
+            id: "RINCON_111".to_string(),
+            name: "192.168.1.100 - Sonos One - RINCON_111".to_string(),
+            room_name: "Unknown".to_string(),
+            ip_address: "192.168.1.100".to_string(),
+            port: 1400,
+            model_name: "Sonos One".to_string(),
+        };
+        assert_eq!(
+            display_name(&device),
+            "192.168.1.100 - Sonos One - RINCON_111"
+        );
+
+        let device_empty = Device {
+            id: "RINCON_222".to_string(),
+            name: "192.168.1.101 - Sonos One".to_string(),
+            room_name: "".to_string(),
+            ip_address: "192.168.1.101".to_string(),
+            port: 1400,
+            model_name: "Sonos One".to_string(),
+        };
+        assert_eq!(display_name(&device_empty), "192.168.1.101 - Sonos One");
+    }
+
+    #[test]
+    fn test_speaker_lookup_case_insensitive() {
+        let devices = vec![Device {
+            id: "RINCON_111".to_string(),
+            name: "Kitchen".to_string(),
+            room_name: "Kitchen".to_string(),
+            ip_address: "192.168.1.100".to_string(),
+            port: 1400,
+            model_name: "Sonos One".to_string(),
+        }];
+        let system = create_test_system(devices).unwrap();
+        assert!(system.speaker("Kitchen").is_some());
+        assert!(system.speaker("kitchen").is_some());
+        assert!(system.speaker("KITCHEN").is_some());
+        assert!(system.speaker("Nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_speaker_uses_room_name() {
+        let devices = vec![Device {
+            id: "RINCON_111".to_string(),
+            name: "192.168.1.100 - Sonos One - RINCON_111".to_string(),
+            room_name: "Kitchen".to_string(),
+            ip_address: "192.168.1.100".to_string(),
+            port: 1400,
+            model_name: "Sonos One".to_string(),
+        }];
+
+        let system = create_test_system(devices).unwrap();
+        let spk = system.speaker("Kitchen");
+        assert!(spk.is_some());
+        assert_eq!(spk.unwrap().name, "Kitchen");
+
+        // Verbose friendlyName should NOT match
+        assert!(system.speaker("192.168.1.100 - Sonos One - RINCON_111").is_none());
+    }
+
+    #[test]
+    fn test_group_lookup_case_insensitive() {
+        let devices = vec![Device {
+            id: "RINCON_111".to_string(),
+            name: "Living Room".to_string(),
+            room_name: "Living Room".to_string(),
+            ip_address: "192.168.1.100".to_string(),
+            port: 1400,
+            model_name: "Sonos One".to_string(),
+        }];
+
+        let system = create_test_system(devices).unwrap();
+
+        let speaker = SpeakerId::new("RINCON_111");
+        let group = GroupInfo::new(
+            GroupId::new("RINCON_111:1"),
+            speaker.clone(),
+            vec![speaker.clone()],
+        );
+
+        let topology = Topology::new(system.state_manager.speaker_infos(), vec![group]);
+        system.state_manager.initialize(topology);
+
+        assert!(system.group("Living Room").is_some());
+        assert!(system.group("living room").is_some());
+        assert!(system.group("LIVING ROOM").is_some());
+        assert!(system.group("Nonexistent").is_none());
     }
 }

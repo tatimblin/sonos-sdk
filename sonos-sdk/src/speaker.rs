@@ -194,9 +194,15 @@ impl Speaker {
             .parse()
             .map_err(|_| SdkError::InvalidIpAddress)?;
 
+        let name = if device.room_name.is_empty() || device.room_name == "Unknown" {
+            device.name.clone()
+        } else {
+            device.room_name.clone()
+        };
+
         Ok(Self::new(
             SpeakerId::new(&device.id),
-            device.name.clone(),
+            name,
             ip,
             device.model_name.clone(),
             state_manager,
