@@ -654,7 +654,7 @@ proptest! {
         let devices = vec![Device {
             id: speaker_id.clone(),
             name: speaker_name.clone(),
-            room_name: "Test Room".to_string(),
+            room_name: speaker_name.clone(),
             ip_address: ip.clone(),
             port: 1400,
             model_name: "Sonos One".to_string(),
@@ -662,7 +662,7 @@ proptest! {
 
         let system = SonosSystem::from_discovered_devices(devices).unwrap();
 
-        // Look up by name
+        // Look up by room name (display_name prefers room_name)
         let found_speaker = system.speaker(&speaker_name);
 
         prop_assert!(
@@ -695,7 +695,7 @@ proptest! {
         let devices = vec![Device {
             id: speaker_id.clone(),
             name: speaker_name.clone(),
-            room_name: "Test Room".to_string(),
+            room_name: speaker_name.clone(),
             ip_address: ip.clone(),
             port: 1400,
             model_name: "Sonos One".to_string(),
@@ -732,7 +732,7 @@ proptest! {
         let devices = vec![Device {
             id: speaker_id.clone(),
             name: speaker_name.clone(),
-            room_name: "Test Room".to_string(),
+            room_name: speaker_name.clone(),
             ip_address: ip.clone(),
             port: 1400,
             model_name: "Sonos One".to_string(),
@@ -773,7 +773,7 @@ proptest! {
         let devices = vec![Device {
             id: speaker_id.clone(),
             name: speaker_name.clone(),
-            room_name: "Test Room".to_string(),
+            room_name: speaker_name.clone(),
             ip_address: ip.clone(),
             port: 1400,
             model_name: "Sonos One".to_string(),
@@ -867,12 +867,12 @@ proptest! {
 
         let system = SonosSystem::from_discovered_devices(devices.clone()).unwrap();
 
-        // Verify each device is accessible by both name and ID
+        // Verify each device is accessible by both room name and ID
         for device in &devices {
-            let by_name = system.speaker(&device.name);
+            let by_name = system.speaker(&device.room_name);
             prop_assert!(
                 by_name.is_some(),
-                "Device '{}' should be accessible by name", device.name
+                "Device '{}' should be accessible by room name", device.room_name
             );
 
             let speaker_id = SpeakerId::new(&device.id);
