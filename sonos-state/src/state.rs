@@ -639,7 +639,10 @@ impl StateManager {
             .collect();
 
         if let Err(e) = em.add_devices(devices_for_em) {
-            tracing::warn!("Failed to add devices to event manager during lazy init: {}", e);
+            tracing::warn!(
+                "Failed to add devices to event manager during lazy init: {}",
+                e
+            );
         }
 
         // Spawn event worker thread

@@ -10,9 +10,9 @@ use std::time::Duration;
 use sonos_api::SonosClient;
 use sonos_discovery::{self, Device};
 use sonos_event_manager::SonosEventManager;
-use sonos_state::{GroupId, SpeakerId, StateManager, Topology};
 #[cfg(feature = "test-support")]
 use sonos_state::GroupInfo;
+use sonos_state::{GroupId, SpeakerId, StateManager, Topology};
 
 use crate::property::EventInitFn;
 use crate::{cache, Group, SdkError, Speaker};
@@ -161,16 +161,13 @@ impl SonosSystem {
 
     fn from_devices_inner(devices: Vec<Device>) -> Result<Self, SdkError> {
         // 1. Create shared state FIRST — no event manager yet (lazy init)
-        let state_manager = Arc::new(
-            StateManager::new().map_err(SdkError::StateError)?,
-        );
+        let state_manager = Arc::new(StateManager::new().map_err(SdkError::StateError)?);
         state_manager
             .add_devices(devices.clone())
             .map_err(SdkError::StateError)?;
 
         let api_client = SonosClient::new();
-        let event_manager: Arc<Mutex<Option<Arc<SonosEventManager>>>> =
-            Arc::new(Mutex::new(None));
+        let event_manager: Arc<Mutex<Option<Arc<SonosEventManager>>>> = Arc::new(Mutex::new(None));
 
         // 2. Build init closure from the shared Arcs
         let init_fn: EventInitFn = {
@@ -182,8 +179,7 @@ impl SonosSystem {
                     return Ok(());
                 }
                 let em = Arc::new(
-                    SonosEventManager::new()
-                        .map_err(|e| SdkError::EventManager(e.to_string()))?,
+                    SonosEventManager::new().map_err(|e| SdkError::EventManager(e.to_string()))?,
                 );
                 sm.set_event_manager(Arc::clone(&em))
                     .map_err(SdkError::StateError)?;
@@ -199,11 +195,10 @@ impl SonosSystem {
         // 4. Assemble struct from the SAME Arcs
         Ok(Self {
             state_manager,
-            event_manager: Arc::try_unwrap(event_manager)
-                .unwrap_or_else(|arc| {
-                    let inner = arc.lock().unwrap().clone();
-                    Mutex::new(inner)
-                }),
+            event_manager: Arc::try_unwrap(event_manager).unwrap_or_else(|arc| {
+                let inner = arc.lock().unwrap().clone();
+                Mutex::new(inner)
+            }),
             api_client,
             speakers: RwLock::new(speakers),
             last_rediscovery: AtomicU64::new(0),
@@ -322,7 +317,10 @@ impl SonosSystem {
             );
 
             if speakers.contains_key(&name) {
-                tracing::warn!("duplicate speaker name \"{}\", keeping last discovered", name);
+                tracing::warn!(
+                    "duplicate speaker name \"{}\", keeping last discovered",
+                    name
+                );
             }
             speakers.insert(name, speaker);
         }
@@ -385,7 +383,12 @@ impl SonosSystem {
         }
 
         // 3. Build new Speaker handles (no lock needed)
-        let new_speakers = match Self::build_speakers_with_init(&devices, &self.state_manager, &self.api_client, None) {
+        let new_speakers = match Self::build_speakers_with_init(
+            &devices,
+            &self.state_manager,
+            &self.api_client,
+            None,
+        ) {
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!("Failed to build speakers from rediscovery: {}", e);
@@ -603,7 +606,10 @@ impl SonosSystem {
     }
 
     /// Get the group a speaker belongs to (sync)
-    #[deprecated(since = "0.2.0", note = "use `speaker.group()` or `group_for_speaker()` instead")]
+    #[deprecated(
+        since = "0.2.0",
+        note = "use `speaker.group()` or `group_for_speaker()` instead"
+    )]
     pub fn get_group_for_speaker(&self, speaker_id: &SpeakerId) -> Option<Group> {
         self.group_for_speaker(speaker_id)
     }
@@ -1105,7 +1111,9 @@ mod tests {
         assert_eq!(spk.unwrap().name, "Kitchen");
 
         // Verbose friendlyName should NOT match
-        assert!(system.speaker("192.168.1.100 - Sonos One - RINCON_111").is_none());
+        assert!(system
+            .speaker("192.168.1.100 - Sonos One - RINCON_111")
+            .is_none());
     }
 
     #[test]

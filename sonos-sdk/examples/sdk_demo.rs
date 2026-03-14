@@ -57,9 +57,8 @@ fn main() -> Result<(), SdkError> {
         }
     }
 
-    let speaker = speaker.ok_or_else(|| {
-        SdkError::DiscoveryFailed("no reachable speakers found".to_string())
-    })?;
+    let speaker = speaker
+        .ok_or_else(|| SdkError::DiscoveryFailed("no reachable speakers found".to_string()))?;
     println!();
 
     // =========================================================================

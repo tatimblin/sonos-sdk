@@ -239,13 +239,9 @@ impl Speaker {
         event_init: Option<EventInitFn>,
     ) -> Self {
         let context = match event_init {
-            Some(init) => SpeakerContext::with_event_init(
-                id.clone(),
-                ip,
-                state_manager,
-                api_client,
-                init,
-            ),
+            Some(init) => {
+                SpeakerContext::with_event_init(id.clone(), ip, state_manager, api_client, init)
+            }
             None => SpeakerContext::new(id.clone(), ip, state_manager, api_client),
         };
 
