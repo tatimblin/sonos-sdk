@@ -2,46 +2,40 @@
 git_release_enable = false
 git_tag_name = "{{ package }}-v{{ version }}"
 
-# Internal crates: bump versions but don't publish or create releases
+# Internal crates: published to crates.io (required by public crates)
+# but no GitHub releases or changelogs
 [[package]]
 name = "sonos-sdk-soap-client"
-publish = false
 changelog_update = false
 git_release_enable = false
 
 [[package]]
 name = "sonos-sdk-callback-server"
-publish = false
 changelog_update = false
 git_release_enable = false
 
 [[package]]
 name = "sonos-sdk-discovery"
-publish = false
 changelog_update = false
 git_release_enable = false
 
 [[package]]
 name = "sonos-sdk-stream"
-publish = false
 changelog_update = false
 git_release_enable = false
 
 [[package]]
 name = "sonos-sdk-event-manager"
-publish = false
 changelog_update = false
 git_release_enable = false
 
 [[package]]
 name = "sonos-sdk-state"
-publish = false
 changelog_update = false
 git_release_enable = false
 
 [[package]]
 name = "sonos-sdk-state-store"
-publish = false
 changelog_update = false
 git_release_enable = false
 
