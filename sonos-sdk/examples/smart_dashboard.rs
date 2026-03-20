@@ -6,7 +6,7 @@
 //! - Automatic UPnP subscription management
 //! - Property-driven reactive updates via iter()
 //!
-//! Run with: cargo run -p sonos-event-manager --example smart_dashboard
+//! Run with: cargo run -p sonos-sdk --example smart_dashboard
 
 use std::sync::Arc;
 use std::thread;
