@@ -2283,7 +2283,9 @@ dependencies = [
 name = "sonos-sdk"
 version = "0.2.0"
 dependencies = [
+ "chrono",
  "crossterm 0.27.0",
+ "ctrlc",
  "dirs",
  "proptest",
  "ratatui 0.26.3",
@@ -2295,6 +2297,7 @@ dependencies = [
  "sonos-sdk-state",
  "thiserror",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -2331,17 +2334,13 @@ dependencies = [
 name = "sonos-sdk-event-manager"
 version = "0.2.0"
 dependencies = [
- "chrono",
- "ctrlc",
  "dashmap",
  "sonos-api",
  "sonos-sdk-discovery",
- "sonos-sdk-state",
  "sonos-sdk-stream",
  "thiserror",
  "tokio",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

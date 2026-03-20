@@ -28,3 +28,10 @@ test-support = []
 ratatui = "0.26"
 crossterm = "0.27"
 proptest = "1.4"
+chrono = "0.4"
+ctrlc = "3.4"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[[example]]
+name = "smart_dashboard"
+path = "examples/smart_dashboard.rs"
