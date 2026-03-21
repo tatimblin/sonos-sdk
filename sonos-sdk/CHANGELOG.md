@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/tatimblin/sonos-sdk/compare/sonos-sdk-v0.2.0...sonos-sdk-v0.2.1) - 2026-03-20
+
+### Other
+
+- move smart_dashboard example to sonos-sdk crate ([#58](https://github.com/tatimblin/sonos-sdk/pull/58))
+- release v0.2.0 ([#56](https://github.com/tatimblin/sonos-sdk/pull/56))
+
 ## [0.2.0](https://github.com/tatimblin/sonos-sdk/compare/sonos-sdk-v0.1.0...sonos-sdk-v0.2.0) - 2026-03-15
 
 ### Added

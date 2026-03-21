@@ -13,8 +13,8 @@ name = "sonos_stream"
 
 [dependencies]
 # Local workspace dependencies
-callback-server = { package = "sonos-sdk-callback-server", path = "../callback-server", version = "0.2.0" }
-sonos-api = { path = "../sonos-api", version = "0.2.0" }
+callback-server = { package = "sonos-sdk-callback-server", path = "../callback-server", version = "0.2.1" }
+sonos-api = { path = "../sonos-api", version = "0.2.1" }
 
 # Async runtime and utilities
 tokio = { version = "1.0", features = ["full"] }
@@ -46,7 +46,7 @@ dashmap = "5.0"  # Concurrent HashMap alternative
 crossbeam = "0.8"  # Lock-free data structures
 
 [dev-dependencies]
-sonos-discovery = { package = "sonos-sdk-discovery", path = "../sonos-discovery", version = "0.2.0" }
+sonos-discovery = { package = "sonos-sdk-discovery", path = "../sonos-discovery", version = "0.2.1" }
 rstest = "0.18"
 proptest = "1.0"
 tokio-test = "0.4"

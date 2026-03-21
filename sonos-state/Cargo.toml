@@ -17,16 +17,16 @@ serde = { version = "1.0", features = ["derive"] }
 tracing = "0.1"
 
 # Workspace dependencies
-sonos-api = { path = "../sonos-api", version = "0.2.0" }
-sonos-stream = { package = "sonos-sdk-stream", path = "../sonos-stream", version = "0.2.0" }
-sonos-event-manager = { package = "sonos-sdk-event-manager", path = "../sonos-event-manager", version = "0.2.0" }
-sonos-discovery = { package = "sonos-sdk-discovery", path = "../sonos-discovery", version = "0.2.0" }
-state-store = { package = "sonos-sdk-state-store", path = "../state-store", version = "0.2.0" }
+sonos-api = { path = "../sonos-api", version = "0.2.1" }
+sonos-stream = { package = "sonos-sdk-stream", path = "../sonos-stream", version = "0.2.1" }
+sonos-event-manager = { package = "sonos-sdk-event-manager", path = "../sonos-event-manager", version = "0.2.1" }
+sonos-discovery = { package = "sonos-sdk-discovery", path = "../sonos-discovery", version = "0.2.1" }
+state-store = { package = "sonos-sdk-state-store", path = "../state-store", version = "0.2.1" }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
-sonos-discovery = { package = "sonos-sdk-discovery", path = "../sonos-discovery", version = "0.2.0" }
-sonos-event-manager = { package = "sonos-sdk-event-manager", path = "../sonos-event-manager", version = "0.2.0" }
+sonos-discovery = { package = "sonos-sdk-discovery", path = "../sonos-discovery", version = "0.2.1" }
+sonos-event-manager = { package = "sonos-sdk-event-manager", path = "../sonos-event-manager", version = "0.2.1" }
 chrono = "0.4"
 ctrlc = "3.4"
 proptest = "1.4"
