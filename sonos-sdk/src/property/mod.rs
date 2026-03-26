@@ -11,8 +11,8 @@ pub use handles::{EventInitFn, Fetchable, FetchableWithContext, PropertyHandle, 
 // Re-export group property handle types
 pub use handles::{GroupContext, GroupFetchable, GroupPropertyHandle};
 
-// Re-export watch status types
-pub use handles::{WatchMode, WatchStatus};
+// Re-export watch handle types
+pub use handles::{WatchHandle, WatchMode};
 
 // Re-export type aliases for all property handles
 pub use handles::{

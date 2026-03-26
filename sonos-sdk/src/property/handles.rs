@@ -3,16 +3,17 @@
 //! Provides a consistent pattern for accessing any property on a speaker:
 //! - `get()` - Get cached value (instant, no network)
 //! - `fetch()` - Fetch fresh value from device (blocking API call)
-//! - `watch()` - Register for change notifications
-//! - `unwatch()` - Unregister from change notifications
+//! - `watch()` - Returns a `WatchHandle` that keeps the subscription alive
 
 use std::fmt;
 use std::marker::PhantomData;
 use std::net::IpAddr;
+use std::ops::Deref;
 use std::sync::Arc;
 
-use sonos_api::operation::{ComposableOperation, UPnPOperation};
 use sonos_api::SonosClient;
+use sonos_api::operation::{ComposableOperation, UPnPOperation};
+use sonos_event_manager::WatchGuard;
 use sonos_state::{property::SonosProperty, SpeakerId, StateManager};
 
 use crate::SdkError;
@@ -114,34 +115,103 @@ impl fmt::Display for WatchMode {
     }
 }
 
-/// Result of a `watch()` operation
+/// RAII handle returned by `watch()`. Holds a snapshot of the current value
+/// along with a subscription guard. Dropping the handle starts the grace
+/// period — the UPnP subscription persists for 50ms so it can be reacquired
+/// cheaply on the next frame.
 ///
-/// Contains both the current cached value (if any) and information about
-/// how future updates will be delivered.
-#[derive(Debug, Clone)]
-pub struct WatchStatus<P> {
-    /// Current cached value of the property (if any)
-    pub current: Option<P>,
-
-    /// How updates will be delivered
-    ///
-    /// Check this to understand whether real-time events are working:
-    /// - `Events`: Full real-time support
-    /// - `Polling`: Degraded but functional
-    /// - `CacheOnly`: Manual refresh only
-    pub mode: WatchMode,
+/// Not `Clone` — each handle is one subscription hold.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// // Watch returns a handle — hold it to keep the subscription alive
+/// let volume = speaker.volume.watch()?;
+///
+/// // Deref to Option<P> for ergonomic access
+/// if let Some(v) = &*volume {
+///     println!("Volume: {}%", v.value());
+/// }
+///
+/// // Or use the value() convenience method
+/// if let Some(v) = volume.value() {
+///     println!("Volume: {}%", v.value());
+/// }
+///
+/// // Dropping the handle starts the 50ms grace period
+/// drop(volume);
+/// ```
+#[must_use = "dropping the handle starts the grace period — hold it to keep the subscription alive"]
+pub struct WatchHandle<P> {
+    value: Option<P>,
+    mode: WatchMode,
+    _cleanup: WatchCleanup,
 }
 
-impl<P> WatchStatus<P> {
-    /// Create a new WatchStatus
-    pub fn new(current: Option<P>, mode: WatchMode) -> Self {
-        Self { current, mode }
+impl<P> Deref for WatchHandle<P> {
+    type Target = Option<P>;
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
+
+impl<P> WatchHandle<P> {
+    /// Returns the watch mode (Events, Polling, or CacheOnly).
+    pub fn mode(&self) -> WatchMode {
+        self.mode
     }
 
-    /// Check if real-time events are active
-    #[must_use]
+    /// Convenience: returns a reference to the inner value, if available.
+    /// Equivalent to `(*handle).as_ref()` but more ergonomic.
+    pub fn value(&self) -> Option<&P> {
+        self.value.as_ref()
+    }
+
+    /// Returns true if a value has been received from the device.
+    pub fn has_value(&self) -> bool {
+        self.value.is_some()
+    }
+
+    /// Returns true if real-time UPnP events are active.
     pub fn has_realtime_events(&self) -> bool {
         self.mode == WatchMode::Events
+    }
+}
+
+impl<P: fmt::Debug> fmt::Debug for WatchHandle<P> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WatchHandle")
+            .field("value", &self.value)
+            .field("mode", &self.mode)
+            .finish()
+    }
+}
+
+/// Internal cleanup strategy for WatchHandle.
+///
+/// - `Guard`: Event manager is active — WatchGuard handles the subscription
+///   lifecycle (ref counting, grace period, unsubscribe).
+/// - `CacheOnly`: No event manager — just unregisters from the watched set.
+///
+/// Fields are never read — they exist solely for their Drop behavior.
+#[allow(dead_code)]
+enum WatchCleanup {
+    Guard(WatchGuard),
+    CacheOnly(CacheOnlyGuard),
+}
+
+/// Cleanup guard for CacheOnly mode (no event manager).
+/// Unregisters the property from the watched set on drop.
+struct CacheOnlyGuard {
+    state_manager: Arc<StateManager>,
+    speaker_id: SpeakerId,
+    property_key: &'static str,
+}
+
+impl Drop for CacheOnlyGuard {
+    fn drop(&mut self) {
+        self.state_manager
+            .unregister_watch(&self.speaker_id, self.property_key);
     }
 }
 
@@ -219,11 +289,10 @@ pub trait FetchableWithContext: SonosProperty {
 /// // Fetch fresh value from device (blocking API call)
 /// let fresh_volume = speaker.volume.fetch()?;
 ///
-/// // Watch for changes (registers for notifications)
-/// let current = speaker.volume.watch()?;
-///
-/// // Stop watching
-/// speaker.volume.unwatch();
+/// // Watch for changes — hold the handle to keep the subscription alive
+/// let handle = speaker.volume.watch()?;
+/// println!("Volume: {:?}", handle.value());
+/// // Dropping handle starts 50ms grace period
 /// ```
 #[derive(Clone)]
 pub struct PropertyHandle<P: SonosProperty> {
@@ -261,42 +330,29 @@ impl<P: SonosProperty> PropertyHandle<P> {
 
     /// Start watching this property for changes (sync)
     ///
-    /// Registers this property for change notifications. After calling
-    /// `watch()`, changes to this property will appear in `system.iter()`.
-    ///
-    /// When an event manager is configured, this will automatically
-    /// subscribe to the UPnP service for this property.
-    ///
-    /// Returns a [`WatchStatus`] containing:
-    /// - `current`: The current cached value (if any)
-    /// - `mode`: How updates will be delivered (Events, Polling, or CacheOnly)
+    /// Returns a [`WatchHandle`] that keeps the subscription alive. Hold
+    /// the handle for as long as you need updates — dropping it starts a
+    /// 50ms grace period before the UPnP subscription is torn down.
     ///
     /// # Example
     ///
     /// ```rust,ignore
-    /// // Start watching volume changes
-    /// let status = speaker.volume.watch()?;
+    /// // Watch returns a handle — hold it to keep the subscription alive
+    /// let volume = speaker.volume.watch()?;
     ///
-    /// // Check if real-time events are working
-    /// if !status.has_realtime_events() {
-    ///     println!("Warning: Running in {} mode", status.mode);
+    /// // Access the current value via Deref
+    /// if let Some(v) = &*volume {
+    ///     println!("Volume: {}%", v.value());
     /// }
     ///
-    /// // Now changes will appear in system.iter()
+    /// // Changes will appear in system.iter() while the handle is alive
     /// for event in system.iter() {
-    ///     if event.property_key == "volume" {
-    ///         let new_vol = speaker.volume.get();
-    ///         println!("Volume changed to: {:?}", new_vol);
-    ///     }
+    ///     // Re-watch each frame to refresh the snapshot
+    ///     let volume = speaker.volume.watch()?;
+    ///     println!("Volume: {:?}", volume.value());
     /// }
     /// ```
-    #[must_use = "returns watch status including the delivery mode"]
-    pub fn watch(&self) -> Result<WatchStatus<P>, SdkError> {
-        // Register for changes via state manager
-        self.context
-            .state_manager
-            .register_watch(&self.context.speaker_id, P::KEY);
-
+    pub fn watch(&self) -> Result<WatchHandle<P>, SdkError> {
         // Trigger lazy event manager init if needed
         if self.context.state_manager.event_manager().is_none() {
             if let Some(ref init) = self.context.event_init {
@@ -304,10 +360,14 @@ impl<P: SonosProperty> PropertyHandle<P> {
             }
         }
 
-        // Determine watch mode based on event manager status
-        let mode = if let Some(em) = self.context.state_manager.event_manager() {
-            match em.ensure_service_subscribed(self.context.speaker_ip, P::SERVICE) {
-                Ok(()) => WatchMode::Events,
+        let (mode, cleanup) = if let Some(em) = self.context.state_manager.event_manager() {
+            match em.acquire_watch(
+                &self.context.speaker_id,
+                P::KEY,
+                self.context.speaker_ip,
+                P::SERVICE,
+            ) {
+                Ok(guard) => (WatchMode::Events, WatchCleanup::Guard(guard)),
                 Err(e) => {
                     tracing::warn!(
                         "Failed to subscribe to {:?} for {}: {} - falling back to polling",
@@ -315,60 +375,55 @@ impl<P: SonosProperty> PropertyHandle<P> {
                         self.context.speaker_id.as_str(),
                         e
                     );
-                    WatchMode::Polling
+                    // Register directly for polling fallback
+                    self.context
+                        .state_manager
+                        .register_watch(&self.context.speaker_id, P::KEY);
+                    (
+                        WatchMode::Polling,
+                        WatchCleanup::CacheOnly(CacheOnlyGuard {
+                            state_manager: Arc::clone(&self.context.state_manager),
+                            speaker_id: self.context.speaker_id.clone(),
+                            property_key: P::KEY,
+                        }),
+                    )
                 }
             }
         } else {
-            WatchMode::CacheOnly
+            // No event manager — cache-only mode
+            self.context
+                .state_manager
+                .register_watch(&self.context.speaker_id, P::KEY);
+            (
+                WatchMode::CacheOnly,
+                WatchCleanup::CacheOnly(CacheOnlyGuard {
+                    state_manager: Arc::clone(&self.context.state_manager),
+                    speaker_id: self.context.speaker_id.clone(),
+                    property_key: P::KEY,
+                }),
+            )
         };
 
-        // Return status with current cached value
-        Ok(WatchStatus::new(self.get(), mode))
-    }
-
-    /// Stop watching this property (sync)
-    ///
-    /// Unregisters this property from change notifications.
-    /// When an event manager is configured, this will release
-    /// the UPnP service subscription if no other watchers remain.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// // Stop watching volume changes
-    /// speaker.volume.unwatch();
-    /// ```
-    pub fn unwatch(&self) {
-        self.context
-            .state_manager
-            .unregister_watch(&self.context.speaker_id, P::KEY);
-
-        // Release UPnP service subscription via event manager if configured
-        if let Some(em) = self.context.state_manager.event_manager() {
-            if let Err(e) = em.release_service_subscription(self.context.speaker_ip, P::SERVICE) {
-                tracing::warn!(
-                    "Failed to release subscription for {:?} on {}: {}",
-                    P::SERVICE,
-                    self.context.speaker_id.as_str(),
-                    e
-                );
-            }
-        }
+        Ok(WatchHandle {
+            value: self.get(),
+            mode,
+            _cleanup: cleanup,
+        })
     }
 
     /// Check if this property is currently being watched
     ///
-    /// Returns `true` if `watch()` has been called and `unwatch()` has not
-    /// been called since.
+    /// Returns `true` while a `WatchHandle` for this property is alive,
+    /// or during the grace period after the last handle was dropped.
     ///
     /// # Example
     ///
     /// ```rust,ignore
-    /// speaker.volume.watch()?;
+    /// let handle = speaker.volume.watch()?;
     /// assert!(speaker.volume.is_watched());
     ///
-    /// speaker.volume.unwatch();
-    /// assert!(!speaker.volume.is_watched());
+    /// drop(handle); // starts 50ms grace period
+    /// // is_watched() remains true during grace period
     /// ```
     #[must_use = "returns whether the property is being watched"]
     pub fn is_watched(&self) -> bool {
@@ -786,19 +841,17 @@ impl<P: SonosProperty> GroupPropertyHandle<P> {
 
     /// Start watching this group property for changes (sync)
     ///
-    /// Registers using the coordinator's speaker ID so the event worker
-    /// correctly routes events through to `system.iter()`.
-    #[must_use = "returns watch status including the delivery mode"]
-    pub fn watch(&self) -> Result<WatchStatus<P>, SdkError> {
-        // Register for changes using the coordinator's speaker ID and property key
-        self.context
-            .state_manager
-            .register_watch(&self.context.coordinator_id, P::KEY);
-
-        // Subscribe to the coordinator's UPnP service
-        let mode = if let Some(em) = self.context.state_manager.event_manager() {
-            match em.ensure_service_subscribed(self.context.coordinator_ip, P::SERVICE) {
-                Ok(()) => WatchMode::Events,
+    /// Returns a [`WatchHandle`] scoped to the group coordinator.
+    /// Hold the handle to keep the subscription alive.
+    pub fn watch(&self) -> Result<WatchHandle<P>, SdkError> {
+        let (mode, cleanup) = if let Some(em) = self.context.state_manager.event_manager() {
+            match em.acquire_watch(
+                &self.context.coordinator_id,
+                P::KEY,
+                self.context.coordinator_ip,
+                P::SERVICE,
+            ) {
+                Ok(guard) => (WatchMode::Events, WatchCleanup::Guard(guard)),
                 Err(e) => {
                     tracing::warn!(
                         "Failed to subscribe to {:?} for group {}: {} - falling back to polling",
@@ -806,33 +859,38 @@ impl<P: SonosProperty> GroupPropertyHandle<P> {
                         self.context.group_id.as_str(),
                         e
                     );
-                    WatchMode::Polling
+                    self.context
+                        .state_manager
+                        .register_watch(&self.context.coordinator_id, P::KEY);
+                    (
+                        WatchMode::Polling,
+                        WatchCleanup::CacheOnly(CacheOnlyGuard {
+                            state_manager: Arc::clone(&self.context.state_manager),
+                            speaker_id: self.context.coordinator_id.clone(),
+                            property_key: P::KEY,
+                        }),
+                    )
                 }
             }
         } else {
-            WatchMode::CacheOnly
+            self.context
+                .state_manager
+                .register_watch(&self.context.coordinator_id, P::KEY);
+            (
+                WatchMode::CacheOnly,
+                WatchCleanup::CacheOnly(CacheOnlyGuard {
+                    state_manager: Arc::clone(&self.context.state_manager),
+                    speaker_id: self.context.coordinator_id.clone(),
+                    property_key: P::KEY,
+                }),
+            )
         };
 
-        Ok(WatchStatus::new(self.get(), mode))
-    }
-
-    /// Stop watching this group property (sync)
-    pub fn unwatch(&self) {
-        self.context
-            .state_manager
-            .unregister_watch(&self.context.coordinator_id, P::KEY);
-
-        if let Some(em) = self.context.state_manager.event_manager() {
-            if let Err(e) = em.release_service_subscription(self.context.coordinator_ip, P::SERVICE)
-            {
-                tracing::warn!(
-                    "Failed to release subscription for {:?} on group {}: {}",
-                    P::SERVICE,
-                    self.context.group_id.as_str(),
-                    e
-                );
-            }
-        }
+        Ok(WatchHandle {
+            value: self.get(),
+            mode,
+            _cleanup: cleanup,
+        })
     }
 
     /// Check if this group property is currently being watched
@@ -999,21 +1057,21 @@ mod tests {
         let handle: VolumeHandle = PropertyHandle::new(context);
 
         assert!(!handle.is_watched());
-        handle.watch().unwrap();
+        let _wh = handle.watch().unwrap();
         assert!(handle.is_watched());
     }
 
     #[test]
-    fn test_unwatch_unregisters_property() {
+    fn test_drop_watch_handle_unregisters_property() {
         let state_manager = create_test_state_manager();
         let context = create_test_context(Arc::clone(&state_manager));
 
         let handle: VolumeHandle = PropertyHandle::new(context);
 
-        handle.watch().unwrap();
+        let wh = handle.watch().unwrap();
         assert!(handle.is_watched());
 
-        handle.unwatch();
+        drop(wh);
         assert!(!handle.is_watched());
     }
 
@@ -1027,10 +1085,32 @@ mod tests {
         let context = create_test_context(Arc::clone(&state_manager));
         let handle: VolumeHandle = PropertyHandle::new(context);
 
-        let status = handle.watch().unwrap();
-        assert_eq!(status.current, Some(Volume::new(50)));
+        let wh = handle.watch().unwrap();
+        assert_eq!(*wh, Some(Volume::new(50)));
+        assert_eq!(wh.value(), Some(&Volume::new(50)));
         // No event manager configured, so should be CacheOnly mode
-        assert_eq!(status.mode, WatchMode::CacheOnly);
+        assert_eq!(wh.mode(), WatchMode::CacheOnly);
+    }
+
+    #[test]
+    fn test_watch_handle_deref() {
+        let state_manager = create_test_state_manager();
+        let speaker_id = SpeakerId::new("RINCON_TEST123");
+
+        state_manager.set_property(&speaker_id, Volume::new(75));
+
+        let context = create_test_context(Arc::clone(&state_manager));
+        let handle: VolumeHandle = PropertyHandle::new(context);
+
+        let wh = handle.watch().unwrap();
+        // Deref<Target = Option<P>>
+        assert!(wh.has_value());
+        assert!(!wh.has_realtime_events());
+        if let Some(v) = &*wh {
+            assert_eq!(v.value(), 75);
+        } else {
+            panic!("Expected Some value");
+        }
     }
 
     #[test]
@@ -1088,17 +1168,17 @@ mod tests {
     }
 
     #[test]
-    fn test_group_property_handle_watch_unwatch() {
+    fn test_group_property_handle_watch_and_drop() {
         let state_manager = create_test_state_manager();
         let context = create_test_group_context(Arc::clone(&state_manager));
 
         let handle: GroupVolumeHandle = GroupPropertyHandle::new(context);
 
         assert!(!handle.is_watched());
-        handle.watch().unwrap();
+        let wh = handle.watch().unwrap();
         assert!(handle.is_watched());
 
-        handle.unwatch();
+        drop(wh);
         assert!(!handle.is_watched());
     }
 

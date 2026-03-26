@@ -86,24 +86,24 @@ proptest! {
         // Initially not watched
         prop_assert!(!handle.is_watched(), "Property should not be watched initially");
 
-        // After watch(), should be watched
-        handle.watch().unwrap();
+        // After watch(), should be watched while handle is alive
+        let _wh = handle.watch().unwrap();
         prop_assert!(handle.is_watched(), "Property should be watched after watch() is called");
     }
 }
 
 // ============================================================================
-// Property 4: Unwatch Unregisters Property
+// Property 4: Dropping WatchHandle Unregisters Property
 // ============================================================================
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(100))]
 
     /// *For any* speaker and any property type that is currently watched,
-    /// after calling `property_handle.unwatch()`, the property SHALL no longer
+    /// dropping the `WatchHandle` SHALL cause the property to no longer
     /// be marked as watched (i.e., `property_handle.is_watched()` returns false).
     #[test]
-    fn prop_unwatch_unregisters_property(
+    fn prop_drop_watch_handle_unregisters_property(
         speaker_id in speaker_id_strategy(),
         ip in ip_strategy(),
     ) {
@@ -113,18 +113,18 @@ proptest! {
         let handle: PropertyHandle<Volume> = PropertyHandle::new(context);
 
         // Watch first
-        handle.watch().unwrap();
+        let wh = handle.watch().unwrap();
         prop_assert!(handle.is_watched(), "Property should be watched after watch()");
 
-        // After unwatch(), should not be watched
-        handle.unwatch();
-        prop_assert!(!handle.is_watched(), "Property should not be watched after unwatch()");
+        // After dropping the WatchHandle, should not be watched
+        drop(wh);
+        prop_assert!(!handle.is_watched(), "Property should not be watched after dropping WatchHandle");
     }
 
-    /// *For any* speaker and property, multiple watch/unwatch cycles should
+    /// *For any* speaker and property, multiple watch/drop cycles should
     /// correctly toggle the watched state.
     #[test]
-    fn prop_watch_unwatch_round_trip(
+    fn prop_watch_drop_round_trip(
         speaker_id in speaker_id_strategy(),
         ip in ip_strategy(),
         cycles in 1usize..5,
@@ -139,12 +139,12 @@ proptest! {
 
         for i in 0..cycles {
             // Watch
-            handle.watch().unwrap();
+            let wh = handle.watch().unwrap();
             prop_assert!(handle.is_watched(), "Cycle {}: should be watched after watch()", i);
 
-            // Unwatch
-            handle.unwatch();
-            prop_assert!(!handle.is_watched(), "Cycle {}: should not be watched after unwatch()", i);
+            // Drop handle
+            drop(wh);
+            prop_assert!(!handle.is_watched(), "Cycle {}: should not be watched after drop", i);
         }
     }
 }

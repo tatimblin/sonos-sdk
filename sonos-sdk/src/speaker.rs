@@ -117,11 +117,8 @@ use crate::property::{
 /// // Fetch fresh volume from device
 /// let fresh_volume = speaker.volume.fetch()?;
 ///
-/// // Watch for volume changes
-/// speaker.volume.watch()?;
-///
-/// // Stop watching
-/// speaker.volume.unwatch();
+/// // Watch for volume changes — hold the handle to keep the subscription alive
+/// let _vol = speaker.volume.watch()?;
 /// ```
 #[derive(Clone)]
 pub struct Speaker {
