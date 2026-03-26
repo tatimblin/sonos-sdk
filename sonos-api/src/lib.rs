@@ -161,6 +161,10 @@ pub mod operation; // Enhanced operation framework
 pub mod service;
 pub mod services; // Enhanced services
 pub mod subscription; // New event handling framework
+pub mod types;
+
+// Common types shared across the workspace
+pub use types::{GroupId, SpeakerId};
 
 // Legacy exports for backward compatibility
 pub use client::SonosClient;
