@@ -72,7 +72,7 @@ pub mod worker;
 // Re-export main types for convenience
 pub use error::{EventManagerError, Result};
 pub use iter::EventManagerIterator;
-pub use manager::SonosEventManager;
+pub use manager::{SonosEventManager, WatchGuard, WatchRegistry};
 
 // Re-export commonly used types from dependencies
 pub use sonos_api::Service;
