@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{mpsc, Arc, Mutex, RwLock};
 use std::thread::JoinHandle;
+use tokio::sync::mpsc as tokio_mpsc;
 
 use sonos_api::Service;
 use sonos_discovery::Device;
@@ -45,8 +46,8 @@ use crate::worker::{spawn_event_worker, Command};
 /// }
 /// ```
 pub struct SonosEventManager {
-    /// Send commands to background worker
-    command_tx: mpsc::Sender<Command>,
+    /// Send commands to background worker (tokio unbounded — send() is sync)
+    command_tx: tokio_mpsc::UnboundedSender<Command>,
 
     /// Receive events from background worker
     event_rx: Arc<Mutex<mpsc::Receiver<EnrichedEvent>>>,
@@ -74,7 +75,7 @@ impl SonosEventManager {
     /// This is a synchronous operation - no `.await` required.
     pub fn with_config(config: BrokerConfig) -> Result<Self> {
         // Create channels for command/event communication
-        let (command_tx, command_rx) = mpsc::channel();
+        let (command_tx, command_rx) = tokio_mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::channel();
 
         // Spawn background worker with its own tokio runtime

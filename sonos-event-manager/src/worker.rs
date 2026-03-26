@@ -7,12 +7,12 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
 
 use sonos_api::Service;
 use sonos_stream::events::EnrichedEvent;
 use sonos_stream::registry::RegistrationId;
 use sonos_stream::{BrokerConfig, EventBroker};
+use tokio::sync::mpsc as tokio_mpsc;
 
 /// Commands sent from the sync SonosEventManager to the background worker
 #[derive(Debug)]
@@ -33,7 +33,7 @@ pub enum Command {
 /// - Event forwarding to sync channels
 pub fn spawn_event_worker(
     config: BrokerConfig,
-    command_rx: mpsc::Receiver<Command>,
+    command_rx: tokio_mpsc::UnboundedReceiver<Command>,
     event_tx: mpsc::Sender<EnrichedEvent>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
@@ -58,7 +58,7 @@ pub fn spawn_event_worker(
 /// Main event loop running inside the tokio runtime
 async fn run_event_loop(
     config: BrokerConfig,
-    command_rx: mpsc::Receiver<Command>,
+    mut command_rx: tokio_mpsc::UnboundedReceiver<Command>,
     event_tx: mpsc::Sender<EnrichedEvent>,
 ) {
     // Create EventBroker (async)
@@ -86,6 +86,56 @@ async fn run_event_loop(
 
     loop {
         tokio::select! {
+            biased;
+
+            // Process commands first (deterministic priority)
+            cmd = command_rx.recv() => {
+                match cmd {
+                    Some(Command::Subscribe { ip, service }) => {
+                        tracing::debug!("Worker: Subscribing to {}:{:?}", ip, service);
+                        match broker.register_speaker_service(ip, service).await {
+                            Ok(result) => {
+                                registration_ids.insert((ip, service), result.registration_id);
+                                tracing::debug!(
+                                    "Registered speaker service {}:{:?} with ID {}",
+                                    ip, service, result.registration_id
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Failed to register speaker service {}:{:?}: {}",
+                                    ip, service, e
+                                );
+                            }
+                        }
+                    }
+                    Some(Command::Unsubscribe { ip, service }) => {
+                        tracing::debug!("Worker: Unsubscribing from {}:{:?}", ip, service);
+                        if let Some(reg_id) = registration_ids.remove(&(ip, service)) {
+                            if let Err(e) = broker.unregister_speaker_service(reg_id).await {
+                                tracing::warn!(
+                                    "Failed to unregister speaker service {}:{:?}: {}",
+                                    ip, service, e
+                                );
+                            }
+                        } else {
+                            tracing::warn!(
+                                "No registration ID found for {}:{:?}",
+                                ip, service
+                            );
+                        }
+                    }
+                    Some(Command::Shutdown) => {
+                        tracing::info!("Worker received shutdown command");
+                        return;
+                    }
+                    None => {
+                        tracing::debug!("Command channel closed, shutting down worker");
+                        return;
+                    }
+                }
+            }
+
             // Forward events to sync channel
             event = events.next_async() => {
                 match event {
@@ -98,53 +148,6 @@ async fn run_event_loop(
                     None => {
                         tracing::info!("Event stream ended, shutting down worker");
                         break;
-                    }
-                }
-            }
-
-            // Process commands (poll periodically)
-            _ = tokio::time::sleep(Duration::from_millis(10)) => {
-                // Process all pending commands
-                while let Ok(cmd) = command_rx.try_recv() {
-                    match cmd {
-                        Command::Subscribe { ip, service } => {
-                            tracing::debug!("Worker: Subscribing to {}:{:?}", ip, service);
-                            match broker.register_speaker_service(ip, service).await {
-                                Ok(result) => {
-                                    registration_ids.insert((ip, service), result.registration_id);
-                                    tracing::debug!(
-                                        "Registered speaker service {}:{:?} with ID {}",
-                                        ip, service, result.registration_id
-                                    );
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "Failed to register speaker service {}:{:?}: {}",
-                                        ip, service, e
-                                    );
-                                }
-                            }
-                        }
-                        Command::Unsubscribe { ip, service } => {
-                            tracing::debug!("Worker: Unsubscribing from {}:{:?}", ip, service);
-                            if let Some(reg_id) = registration_ids.remove(&(ip, service)) {
-                                if let Err(e) = broker.unregister_speaker_service(reg_id).await {
-                                    tracing::warn!(
-                                        "Failed to unregister speaker service {}:{:?}: {}",
-                                        ip, service, e
-                                    );
-                                }
-                            } else {
-                                tracing::warn!(
-                                    "No registration ID found for {}:{:?}",
-                                    ip, service
-                                );
-                            }
-                        }
-                        Command::Shutdown => {
-                            tracing::info!("Worker received shutdown command");
-                            return;
-                        }
                     }
                 }
             }
