@@ -5,8 +5,10 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::{mpsc, Arc, Mutex, RwLock};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
+
+use parking_lot::RwLock;
 use tokio::sync::mpsc as tokio_mpsc;
 
 use sonos_api::Service;
@@ -95,10 +97,7 @@ impl SonosEventManager {
     /// Stores device information for later lookup. Does not automatically
     /// subscribe to any services.
     pub fn add_devices(&self, devices: Vec<Device>) -> Result<()> {
-        let mut device_map = self
-            .devices
-            .write()
-            .map_err(|_| EventManagerError::LockPoisoned)?;
+        let mut device_map = self.devices.write();
 
         for device in devices {
             let ip: IpAddr = device
@@ -114,15 +113,12 @@ impl SonosEventManager {
 
     /// Get all available devices (sync)
     pub fn devices(&self) -> Vec<Device> {
-        self.devices
-            .read()
-            .map(|d| d.values().cloned().collect())
-            .unwrap_or_default()
+        self.devices.read().values().cloned().collect()
     }
 
     /// Get a specific device by IP address (sync)
     pub fn device_by_ip(&self, ip: IpAddr) -> Option<Device> {
-        self.devices.read().ok()?.get(&ip).cloned()
+        self.devices.read().get(&ip).cloned()
     }
 
     /// Ensure a service is subscribed for a device (sync, ref-counted)
@@ -131,10 +127,7 @@ impl SonosEventManager {
     /// If this is the first reference, triggers a subscription via the background worker.
     pub fn ensure_service_subscribed(&self, device_ip: IpAddr, service: Service) -> Result<()> {
         let should_subscribe = {
-            let mut refs = self
-                .service_refs
-                .write()
-                .map_err(|_| EventManagerError::LockPoisoned)?;
+            let mut refs = self.service_refs.write();
 
             let count = refs.entry((device_ip, service)).or_insert(0);
             let was_zero = *count == 0;
@@ -169,10 +162,7 @@ impl SonosEventManager {
     /// If this reaches zero, triggers an unsubscription via the background worker.
     pub fn release_service_subscription(&self, device_ip: IpAddr, service: Service) -> Result<()> {
         let should_unsubscribe = {
-            let mut refs = self
-                .service_refs
-                .write()
-                .map_err(|_| EventManagerError::LockPoisoned)?;
+            let mut refs = self.service_refs.write();
 
             if let Some(count) = refs.get_mut(&(device_ip, service)) {
                 let old_count = *count;
@@ -239,25 +229,23 @@ impl SonosEventManager {
 
     /// Get current service subscription statistics (sync)
     pub fn service_subscription_stats(&self) -> HashMap<(IpAddr, Service), usize> {
-        self.service_refs
-            .read()
-            .map(|refs| refs.clone())
-            .unwrap_or_default()
+        self.service_refs.read().clone()
     }
 
     /// Check if a service is currently subscribed for a device (sync)
     pub fn is_service_subscribed(&self, device_ip: IpAddr, service: Service) -> bool {
         self.service_refs
             .read()
-            .map(|refs| refs.get(&(device_ip, service)).is_some_and(|&c| c > 0))
-            .unwrap_or(false)
+            .get(&(device_ip, service))
+            .is_some_and(|&c| c > 0)
     }
 
     /// Get the current reference count for a service subscription
     pub fn service_ref_count(&self, device_ip: IpAddr, service: Service) -> usize {
         self.service_refs
             .read()
-            .map(|refs| refs.get(&(device_ip, service)).copied().unwrap_or(0))
+            .get(&(device_ip, service))
+            .copied()
             .unwrap_or(0)
     }
 
@@ -273,7 +261,7 @@ impl Drop for SonosEventManager {
     fn drop(&mut self) {
         tracing::debug!(
             "SonosEventManager dropping, {} active service subscriptions",
-            self.service_refs.read().map(|r| r.len()).unwrap_or(0)
+            self.service_refs.read().len()
         );
 
         // Send shutdown command to worker

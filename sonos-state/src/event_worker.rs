@@ -5,8 +5,10 @@
 
 use std::collections::HashSet;
 use std::net::IpAddr;
-use std::sync::{mpsc, Arc, RwLock};
+use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
+
+use parking_lot::RwLock;
 
 use sonos_api::Service;
 use sonos_event_manager::SonosEventManager;
@@ -52,13 +54,7 @@ pub(crate) fn spawn_state_event_worker(
 
             // Look up speaker_id from IP for non-topology events
             let speaker_id = {
-                let ip_map = match ip_to_speaker.read() {
-                    Ok(m) => m,
-                    Err(_) => {
-                        tracing::warn!("Failed to acquire ip_to_speaker lock");
-                        continue;
-                    }
-                };
+                let ip_map = ip_to_speaker.read();
 
                 tracing::debug!(
                     "ip_to_speaker map has {} entries: {:?}",
@@ -123,13 +119,7 @@ fn apply_topology_changes(
 
     // Apply all changes within a single write lock
     let membership_changes: Vec<(SpeakerId, bool)> = {
-        let mut store = match store.write() {
-            Ok(s) => s,
-            Err(_) => {
-                tracing::warn!("Failed to acquire store write lock for topology changes");
-                return;
-            }
-        };
+        let mut store = store.write();
 
         // 1. Clear existing groups
         store.clear_groups();
@@ -162,13 +152,7 @@ fn apply_topology_changes(
     };
 
     // 5. Emit change events for watched properties (outside the write lock)
-    let watched_set = match watched.read() {
-        Ok(w) => w,
-        Err(_) => {
-            tracing::warn!("Failed to acquire watched lock");
-            return;
-        }
-    };
+    let watched_set = watched.read();
 
     for (speaker_id, changed) in membership_changes {
         if changed && watched_set.contains(&(speaker_id.clone(), GroupMembership::KEY)) {
@@ -197,22 +181,12 @@ fn apply_property_change(
     let service = change.service();
 
     let changed = {
-        let mut store = match store.write() {
-            Ok(s) => s,
-            Err(_) => {
-                tracing::warn!("Failed to acquire store write lock");
-                return;
-            }
-        };
-
+        let mut store = store.write();
         change.apply(&mut store, speaker_id)
     };
 
     if changed {
-        let is_watched = watched
-            .read()
-            .map(|w| w.contains(&(speaker_id.clone(), key)))
-            .unwrap_or(false);
+        let is_watched = watched.read().contains(&(speaker_id.clone(), key));
 
         if is_watched {
             tracing::debug!(
@@ -242,7 +216,7 @@ mod tests {
 
         // Add speaker to store first
         {
-            let mut s = store.write().unwrap();
+            let mut s = store.write();
             s.add_speaker(crate::model::SpeakerInfo {
                 id: speaker_id.clone(),
                 name: "Test".to_string(),
@@ -269,7 +243,7 @@ mod tests {
         assert!(rx.try_recv().is_err());
 
         // Verify value was stored
-        let stored: Option<Volume> = store.read().unwrap().get(&speaker_id);
+        let stored: Option<Volume> = store.read().get(&speaker_id);
         assert_eq!(stored, Some(Volume(50)));
     }
 
@@ -283,7 +257,7 @@ mod tests {
 
         // Add speaker to store
         {
-            let mut s = store.write().unwrap();
+            let mut s = store.write();
             s.add_speaker(crate::model::SpeakerInfo {
                 id: speaker_id.clone(),
                 name: "Test".to_string(),
@@ -299,7 +273,7 @@ mod tests {
 
         // Register watch
         {
-            let mut w = watched.write().unwrap();
+            let mut w = watched.write();
             w.insert((speaker_id.clone(), Volume::KEY));
         }
 
@@ -349,7 +323,7 @@ mod tests {
 
         // Add speaker and group to store
         {
-            let mut s = store.write().unwrap();
+            let mut s = store.write();
             s.add_speaker(make_speaker_info(
                 "RINCON_111",
                 "Living Room",
@@ -372,7 +346,7 @@ mod tests {
         );
 
         // Verify value was stored in group_props
-        let s = store.read().unwrap();
+        let s = store.read();
         let stored: Option<crate::property::GroupVolume> = s.get_group(&group_id);
         assert_eq!(stored, Some(crate::property::GroupVolume(75)));
     }
@@ -387,7 +361,7 @@ mod tests {
 
         // Add speaker but no group
         {
-            let mut s = store.write().unwrap();
+            let mut s = store.write();
             s.add_speaker(make_speaker_info(
                 "RINCON_111",
                 "Living Room",
@@ -405,7 +379,7 @@ mod tests {
         );
 
         // No crash, no stored value
-        let s = store.read().unwrap();
+        let s = store.read();
         assert!(s.group_props.is_empty());
     }
 
@@ -417,7 +391,7 @@ mod tests {
 
         // Add speakers to store
         {
-            let mut s = store.write().unwrap();
+            let mut s = store.write();
             s.add_speaker(make_speaker_info(
                 "RINCON_111",
                 "Living Room",
@@ -454,7 +428,7 @@ mod tests {
         apply_topology_changes(&store, &watched, &tx, changes);
 
         // Verify groups are updated
-        let s = store.read().unwrap();
+        let s = store.read();
         assert_eq!(s.groups.len(), 1);
 
         let group = s.groups.get(&group_id).unwrap();
@@ -472,7 +446,7 @@ mod tests {
 
         // Add speakers to store
         {
-            let mut s = store.write().unwrap();
+            let mut s = store.write();
             s.add_speaker(make_speaker_info(
                 "RINCON_111",
                 "Living Room",
@@ -507,7 +481,7 @@ mod tests {
         apply_topology_changes(&store, &watched, &tx, changes);
 
         // Verify GroupMembership is updated for each speaker
-        let s = store.read().unwrap();
+        let s = store.read();
 
         let membership1: Option<GroupMembership> = s.get(&speaker1);
         assert!(membership1.is_some());
@@ -533,7 +507,7 @@ mod tests {
 
         // Add speakers to store
         {
-            let mut s = store.write().unwrap();
+            let mut s = store.write();
             s.add_speaker(make_speaker_info(
                 "RINCON_111",
                 "Living Room",
@@ -544,7 +518,7 @@ mod tests {
 
         // Watch GroupMembership for speaker1 only
         {
-            let mut w = watched.write().unwrap();
+            let mut w = watched.write();
             w.insert((speaker1.clone(), GroupMembership::KEY));
         }
 
@@ -592,7 +566,7 @@ mod tests {
 
         // Add speakers and an initial group
         {
-            let mut s = store.write().unwrap();
+            let mut s = store.write();
             s.add_speaker(make_speaker_info(
                 "RINCON_111",
                 "Living Room",
@@ -611,7 +585,7 @@ mod tests {
 
         // Verify old group exists
         {
-            let s = store.read().unwrap();
+            let s = store.read();
             assert_eq!(s.groups.len(), 1);
             assert!(s.groups.contains_key(&GroupId::new("OLD_GROUP:1")));
         }
@@ -640,7 +614,7 @@ mod tests {
         apply_topology_changes(&store, &watched, &tx, changes);
 
         // Verify old group is gone, new group exists
-        let s = store.read().unwrap();
+        let s = store.read();
         assert_eq!(s.groups.len(), 1);
         assert!(!s.groups.contains_key(&GroupId::new("OLD_GROUP:1")));
         assert!(s.groups.contains_key(&new_group_id));
@@ -657,7 +631,7 @@ mod tests {
 
         // Add speakers
         {
-            let mut s = store.write().unwrap();
+            let mut s = store.write();
             s.add_speaker(make_speaker_info(
                 "RINCON_111",
                 "Living Room",
@@ -690,7 +664,7 @@ mod tests {
         apply_topology_changes(&store, &watched, &tx, changes);
 
         // Verify speaker_to_group mapping is updated
-        let s = store.read().unwrap();
+        let s = store.read();
         assert_eq!(s.speaker_to_group.get(&speaker1), Some(&group_id));
         assert_eq!(s.speaker_to_group.get(&speaker2), Some(&group_id));
     }
@@ -706,7 +680,7 @@ mod tests {
 
         // Add speaker and set initial membership
         {
-            let mut s = store.write().unwrap();
+            let mut s = store.write();
             s.add_speaker(make_speaker_info(
                 "RINCON_111",
                 "Living Room",
@@ -717,7 +691,7 @@ mod tests {
 
         // Watch the property
         {
-            let mut w = watched.write().unwrap();
+            let mut w = watched.write();
             w.insert((speaker1.clone(), GroupMembership::KEY));
         }
 

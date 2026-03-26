@@ -28,9 +28,11 @@
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
-use std::sync::{mpsc, Arc, Mutex, OnceLock, RwLock};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+
+use parking_lot::RwLock;
 
 use sonos_api::Service;
 use sonos_discovery::Device;
@@ -294,11 +296,8 @@ impl StateManager {
     /// manager.add_devices(devices)?;
     /// ```
     pub fn add_devices(&self, devices: Vec<Device>) -> Result<()> {
-        let mut store = self.store.write().map_err(|_| StateError::LockPoisoned)?;
-        let mut ip_map = self
-            .ip_to_speaker
-            .write()
-            .map_err(|_| StateError::LockPoisoned)?;
+        let mut store = self.store.write();
+        let mut ip_map = self.ip_to_speaker.write();
 
         for device in devices {
             let speaker_id = SpeakerId::new(&device.id);
@@ -364,29 +363,22 @@ impl StateManager {
 
     /// Get all speaker info
     pub fn speaker_infos(&self) -> Vec<SpeakerInfo> {
-        let store = match self.store.read() {
-            Ok(s) => s,
-            Err(_) => return vec![],
-        };
-        store.speakers()
+        self.store.read().speakers()
     }
 
     /// Get a specific speaker info by ID
     pub fn speaker_info(&self, speaker_id: &SpeakerId) -> Option<SpeakerInfo> {
-        let store = self.store.read().ok()?;
-        store.speaker(speaker_id).cloned()
+        self.store.read().speaker(speaker_id).cloned()
     }
 
     /// Get speaker IP by ID
     pub fn get_speaker_ip(&self, speaker_id: &SpeakerId) -> Option<IpAddr> {
-        let store = self.store.read().ok()?;
-        store.speaker(speaker_id).map(|s| s.ip_address)
+        self.store.read().speaker(speaker_id).map(|s| s.ip_address)
     }
 
     /// Get boot_seq for a speaker (used by GroupManagement AddMember)
     pub fn get_boot_seq(&self, speaker_id: &SpeakerId) -> Option<u32> {
-        let store = self.store.read().ok()?;
-        store.speaker(speaker_id).map(|s| s.boot_seq)
+        self.store.read().speaker(speaker_id).map(|s| s.boot_seq)
     }
 
     /// Create a blocking iterator over change events
@@ -410,14 +402,12 @@ impl StateManager {
 
     /// Get current property value (sync, no subscription)
     pub fn get_property<P: Property>(&self, speaker_id: &SpeakerId) -> Option<P> {
-        let store = self.store.read().ok()?;
-        store.get::<P>(speaker_id)
+        self.store.read().get::<P>(speaker_id)
     }
 
     /// Get current group property value (sync, no subscription)
     pub fn get_group_property<P: Property>(&self, group_id: &GroupId) -> Option<P> {
-        let store = self.store.read().ok()?;
-        store.get_group::<P>(group_id)
+        self.store.read().get_group::<P>(group_id)
     }
 
     /// Set a property value
@@ -426,10 +416,7 @@ impl StateManager {
     /// if the property is being watched.
     pub fn set_property<P: SonosProperty>(&self, speaker_id: &SpeakerId, value: P) {
         let changed = {
-            let mut store = match self.store.write() {
-                Ok(s) => s,
-                Err(_) => return,
-            };
+            let mut store = self.store.write();
             store.set::<P>(speaker_id, value)
         };
 
@@ -445,10 +432,7 @@ impl StateManager {
     /// Used by the SDK layer to store group-scoped values fetched via API calls.
     pub fn set_group_property<P: SonosProperty>(&self, group_id: &GroupId, value: P) {
         let coordinator_id = {
-            let mut store = match self.store.write() {
-                Ok(s) => s,
-                Err(_) => return,
-            };
+            let mut store = self.store.write();
             let changed = store.set_group::<P>(group_id, value);
             if !changed {
                 return;
@@ -463,16 +447,16 @@ impl StateManager {
 
     /// Register a property as watched (called by PropertyHandle::watch)
     pub fn register_watch(&self, speaker_id: &SpeakerId, property_key: &'static str) {
-        if let Ok(mut watched) = self.watched.write() {
-            watched.insert((speaker_id.clone(), property_key));
-        }
+        self.watched
+            .write()
+            .insert((speaker_id.clone(), property_key));
     }
 
     /// Unregister a property watch
     pub fn unregister_watch(&self, speaker_id: &SpeakerId, property_key: &'static str) {
-        if let Ok(mut watched) = self.watched.write() {
-            watched.remove(&(speaker_id.clone(), property_key));
-        }
+        self.watched
+            .write()
+            .remove(&(speaker_id.clone(), property_key));
     }
 
     /// Watch a property with automatic UPnP subscription (recommended API)
@@ -531,8 +515,7 @@ impl StateManager {
     pub fn is_watched(&self, speaker_id: &SpeakerId, property_key: &'static str) -> bool {
         self.watched
             .read()
-            .map(|w| w.contains(&(speaker_id.clone(), property_key)))
-            .unwrap_or(false)
+            .contains(&(speaker_id.clone(), property_key))
     }
 
     /// Emit a change event if the property is being watched
@@ -545,8 +528,7 @@ impl StateManager {
         let is_watched = self
             .watched
             .read()
-            .map(|w| w.contains(&(speaker_id.clone(), property_key)))
-            .unwrap_or(false);
+            .contains(&(speaker_id.clone(), property_key));
 
         if is_watched {
             let event = ChangeEvent::new(speaker_id.clone(), property_key, service);
@@ -556,30 +538,29 @@ impl StateManager {
 
     /// Initialize from topology data
     pub fn initialize(&self, topology: Topology) {
-        if let Ok(mut store) = self.store.write() {
-            for speaker in &topology.speakers {
-                store.add_speaker(speaker.clone());
-            }
-            for group in &topology.groups {
-                store.add_group(group.clone());
-            }
-            store.set_system(topology);
+        let mut store = self.store.write();
+        for speaker in &topology.speakers {
+            store.add_speaker(speaker.clone());
         }
+        for group in &topology.groups {
+            store.add_group(group.clone());
+        }
+        store.set_system(topology);
     }
 
     /// Check if initialized with any speakers
     pub fn is_initialized(&self) -> bool {
-        self.store.read().map(|s| !s.is_empty()).unwrap_or(false)
+        !self.store.read().is_empty()
     }
 
     /// Get number of speakers
     pub fn speaker_count(&self) -> usize {
-        self.store.read().map(|s| s.speaker_count()).unwrap_or(0)
+        self.store.read().speaker_count()
     }
 
     /// Get number of groups
     pub fn group_count(&self) -> usize {
-        self.store.read().map(|s| s.group_count()).unwrap_or(0)
+        self.store.read().group_count()
     }
 
     /// Get all current groups
@@ -587,22 +568,19 @@ impl StateManager {
     /// Returns all groups in the system. Every speaker is always in a group,
     /// so a single speaker forms a group of one.
     pub fn groups(&self) -> Vec<GroupInfo> {
-        self.store
-            .read()
-            .map(|s| s.groups.values().cloned().collect())
-            .unwrap_or_default()
+        self.store.read().groups.values().cloned().collect()
     }
 
     /// Get a specific group by ID
     pub fn get_group(&self, group_id: &GroupId) -> Option<GroupInfo> {
-        self.store.read().ok()?.groups.get(group_id).cloned()
+        self.store.read().groups.get(group_id).cloned()
     }
 
     /// Get the group a speaker belongs to
     ///
     /// Uses the speaker_to_group mapping for quick lookup.
     pub fn get_group_for_speaker(&self, speaker_id: &SpeakerId) -> Option<GroupInfo> {
-        let store = self.store.read().ok()?;
+        let store = self.store.read();
         let group_id = store.speaker_to_group.get(speaker_id)?;
         store.groups.get(group_id).cloned()
     }
@@ -897,7 +875,8 @@ mod tests {
         let group_id = GroupId::new("RINCON_123:1");
 
         // Add group so coordinator lookup works
-        if let Ok(mut store) = manager.store.write() {
+        {
+            let mut store = manager.store.write();
             store.add_group(GroupInfo::new(
                 group_id.clone(),
                 speaker_id.clone(),
@@ -939,7 +918,8 @@ mod tests {
         let speaker_id = SpeakerId::new("RINCON_123");
         let group_id = GroupId::new("RINCON_123:1");
 
-        if let Ok(mut store) = manager.store.write() {
+        {
+            let mut store = manager.store.write();
             store.add_group(GroupInfo::new(
                 group_id.clone(),
                 speaker_id.clone(),
