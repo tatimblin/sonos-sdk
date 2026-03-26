@@ -248,9 +248,6 @@ pub struct StateManager {
     /// Watched properties for iter() filtering
     watched: Arc<RwLock<HashSet<(SpeakerId, &'static str)>>>,
 
-    /// Service subscription ref counts: (speaker_ip, service) -> count
-    subscriptions: Arc<RwLock<HashMap<(IpAddr, Service), usize>>>,
-
     /// IP to speaker ID mapping (for event worker)
     ip_to_speaker: Arc<RwLock<HashMap<IpAddr, SpeakerId>>>,
 
@@ -650,7 +647,6 @@ impl Clone for StateManager {
         Self {
             store: Arc::clone(&self.store),
             watched: Arc::clone(&self.watched),
-            subscriptions: Arc::clone(&self.subscriptions),
             ip_to_speaker: Arc::clone(&self.ip_to_speaker),
             event_manager,
             event_tx: self.event_tx.clone(),
@@ -726,7 +722,6 @@ impl StateManagerBuilder {
         let manager = StateManager {
             store,
             watched,
-            subscriptions: Arc::new(RwLock::new(HashMap::new())),
             ip_to_speaker,
             event_manager: event_manager_lock,
             event_tx,
