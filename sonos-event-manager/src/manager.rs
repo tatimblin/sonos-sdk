@@ -36,7 +36,7 @@ const GRACE_PERIOD: Duration = Duration::from_millis(50);
 /// Bridges the two crates without circular dependencies.
 pub trait WatchRegistry: Send + Sync + 'static {
     /// Register a property as watched (called during acquire_watch)
-    fn register_watch(&self, speaker_id: &SpeakerId, key: &'static str);
+    fn register_watch(&self, speaker_id: &SpeakerId, key: &'static str, service: Service);
 
     /// Unregister all watched properties for a given service on a device.
     /// Called when the grace period expires and the subscription is actually torn down.
@@ -209,7 +209,7 @@ impl SonosEventManager {
     ) -> Result<WatchGuard> {
         // 1. Register in watched set via WatchRegistry
         if let Some(registry) = self.watch_registry.get() {
-            registry.register_watch(speaker_id, property_key);
+            registry.register_watch(speaker_id, property_key, service);
         }
 
         // 2. Increment ref count + check if we need to subscribe
@@ -578,7 +578,7 @@ mod tests {
     }
 
     impl WatchRegistry for MockRegistry {
-        fn register_watch(&self, _speaker_id: &SpeakerId, _key: &'static str) {
+        fn register_watch(&self, _speaker_id: &SpeakerId, _key: &'static str, _service: Service) {
             self.register_count.fetch_add(1, Ordering::SeqCst);
         }
 

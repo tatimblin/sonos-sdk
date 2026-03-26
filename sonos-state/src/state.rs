@@ -36,7 +36,7 @@ use parking_lot::RwLock;
 
 use sonos_api::Service;
 use sonos_discovery::Device;
-use sonos_event_manager::SonosEventManager;
+use sonos_event_manager::{SonosEventManager, WatchRegistry};
 use tracing::info;
 
 use crate::event_worker::spawn_state_event_worker;
@@ -265,6 +265,61 @@ pub struct StateManager {
 
     /// Cleanup timeout for subscriptions
     cleanup_timeout: Duration,
+
+    /// Maps property key → Service for WatchRegistry's unregister_watches_for_service.
+    /// Shared with StateWatchRegistry via Arc.
+    key_to_service: Arc<RwLock<HashMap<&'static str, Service>>>,
+}
+
+// ============================================================================
+// StateWatchRegistry - WatchRegistry impl for SonosEventManager
+// ============================================================================
+
+/// Lightweight WatchRegistry implementation wired into the event manager.
+///
+/// Separated from StateManager because `mpsc::Sender` is `!Sync`,
+/// preventing StateManager itself from satisfying `WatchRegistry: Sync`.
+/// This struct holds only the Arc-wrapped fields needed for watch management.
+struct StateWatchRegistry {
+    watched: Arc<RwLock<HashSet<(SpeakerId, &'static str)>>>,
+    ip_to_speaker: Arc<RwLock<HashMap<IpAddr, SpeakerId>>>,
+    key_to_service: Arc<RwLock<HashMap<&'static str, Service>>>,
+}
+
+impl WatchRegistry for StateWatchRegistry {
+    fn register_watch(&self, speaker_id: &SpeakerId, key: &'static str, service: Service) {
+        self.watched.write().insert((speaker_id.clone(), key));
+        self.key_to_service.write().insert(key, service);
+    }
+
+    fn unregister_watches_for_service(&self, ip: IpAddr, service: Service) {
+        // 1. Resolve IP → SpeakerId
+        let speaker_id = match self.ip_to_speaker.read().get(&ip).cloned() {
+            Some(id) => id,
+            None => {
+                tracing::warn!(
+                    "unregister_watches_for_service: no speaker found for IP {}",
+                    ip
+                );
+                return;
+            }
+        };
+
+        // 2. Find property keys belonging to this service
+        let service_keys: Vec<&'static str> = self
+            .key_to_service
+            .read()
+            .iter()
+            .filter(|(_, &svc)| svc == service)
+            .map(|(&key, _)| key)
+            .collect();
+
+        // 3. Remove matching (speaker_id, key) entries from watched set
+        let mut watched = self.watched.write();
+        for key in service_keys {
+            watched.remove(&(speaker_id.clone(), key));
+        }
+    }
 }
 
 impl StateManager {
@@ -599,6 +654,13 @@ impl StateManager {
             return Ok(()); // Already set — no-op
         }
 
+        // Wire this StateManager as the WatchRegistry
+        em.set_watch_registry(Arc::new(StateWatchRegistry {
+            watched: Arc::clone(&self.watched),
+            ip_to_speaker: Arc::clone(&self.ip_to_speaker),
+            key_to_service: Arc::clone(&self.key_to_service),
+        }));
+
         // Register all known devices with the event manager
         let devices_for_em: Vec<_> = self
             .speaker_infos()
@@ -653,6 +715,7 @@ impl Clone for StateManager {
             event_rx: Arc::clone(&self.event_rx),
             _worker: Mutex::new(None),
             cleanup_timeout: self.cleanup_timeout,
+            key_to_service: Arc::clone(&self.key_to_service),
         }
     }
 }
@@ -701,6 +764,7 @@ impl StateManagerBuilder {
         let store = Arc::new(RwLock::new(StateStore::new()));
         let watched = Arc::new(RwLock::new(HashSet::new()));
         let ip_to_speaker = Arc::new(RwLock::new(HashMap::new()));
+        let key_to_service = Arc::new(RwLock::new(HashMap::new()));
 
         let event_manager_lock = OnceLock::new();
         let mut worker = None;
@@ -708,6 +772,14 @@ impl StateManagerBuilder {
         // If event_manager provided at build time, wire it up eagerly
         if let Some(em) = self.event_manager {
             let _ = event_manager_lock.set(Arc::clone(&em));
+
+            // Wire WatchRegistry
+            em.set_watch_registry(Arc::new(StateWatchRegistry {
+                watched: Arc::clone(&watched),
+                ip_to_speaker: Arc::clone(&ip_to_speaker),
+                key_to_service: Arc::clone(&key_to_service),
+            }));
+
             let worker_handle = spawn_state_event_worker(
                 em,
                 Arc::clone(&store),
@@ -728,6 +800,7 @@ impl StateManagerBuilder {
             event_rx: Arc::new(Mutex::new(event_rx)),
             _worker: Mutex::new(worker),
             cleanup_timeout: self.cleanup_timeout,
+            key_to_service,
         };
 
         info!("StateManager created (sync-first mode)");
@@ -1300,5 +1373,104 @@ mod tests {
 
         // Before any topology event, boot_seq should be 0
         assert_eq!(manager.get_boot_seq(&speaker_id), Some(0));
+    }
+
+    // ========================================================================
+    // StateWatchRegistry Tests
+    // ========================================================================
+
+    #[test]
+    fn test_state_watch_registry_register_and_unregister() {
+        let watched = Arc::new(RwLock::new(HashSet::new()));
+        let ip_to_speaker = Arc::new(RwLock::new(HashMap::new()));
+        let key_to_service = Arc::new(RwLock::new(HashMap::new()));
+
+        let ip: IpAddr = "192.168.1.100".parse().unwrap();
+        let speaker_id = SpeakerId::new("RINCON_123");
+        ip_to_speaker.write().insert(ip, speaker_id.clone());
+
+        let registry = StateWatchRegistry {
+            watched: Arc::clone(&watched),
+            ip_to_speaker: Arc::clone(&ip_to_speaker),
+            key_to_service: Arc::clone(&key_to_service),
+        };
+
+        // Register watches on two services
+        registry.register_watch(&speaker_id, "volume", Service::RenderingControl);
+        registry.register_watch(&speaker_id, "mute", Service::RenderingControl);
+        registry.register_watch(&speaker_id, "playback_state", Service::AVTransport);
+
+        assert_eq!(watched.read().len(), 3);
+
+        // Unregister RenderingControl — should remove volume + mute, keep playback_state
+        registry.unregister_watches_for_service(ip, Service::RenderingControl);
+
+        let w = watched.read();
+        assert_eq!(w.len(), 1);
+        assert!(w.contains(&(speaker_id.clone(), "playback_state")));
+        assert!(!w.contains(&(speaker_id.clone(), "volume")));
+        assert!(!w.contains(&(speaker_id.clone(), "mute")));
+    }
+
+    #[test]
+    fn test_state_watch_registry_unknown_ip_is_noop() {
+        let watched = Arc::new(RwLock::new(HashSet::new()));
+        let ip_to_speaker = Arc::new(RwLock::new(HashMap::new()));
+        let key_to_service = Arc::new(RwLock::new(HashMap::new()));
+
+        let speaker_id = SpeakerId::new("RINCON_123");
+
+        let registry = StateWatchRegistry {
+            watched: Arc::clone(&watched),
+            ip_to_speaker,
+            key_to_service: Arc::clone(&key_to_service),
+        };
+
+        // Register a watch (simulating direct add to shared set)
+        watched.write().insert((speaker_id.clone(), "volume"));
+        key_to_service
+            .write()
+            .insert("volume", Service::RenderingControl);
+
+        // Unregister for an unknown IP — should be a no-op
+        let unknown_ip: IpAddr = "10.0.0.1".parse().unwrap();
+        registry.unregister_watches_for_service(unknown_ip, Service::RenderingControl);
+
+        // Watch should still be there
+        assert_eq!(watched.read().len(), 1);
+    }
+
+    #[test]
+    fn test_state_watch_registry_only_removes_matching_speaker() {
+        let watched = Arc::new(RwLock::new(HashSet::new()));
+        let ip_to_speaker = Arc::new(RwLock::new(HashMap::new()));
+        let key_to_service = Arc::new(RwLock::new(HashMap::new()));
+
+        let ip1: IpAddr = "192.168.1.100".parse().unwrap();
+        let ip2: IpAddr = "192.168.1.101".parse().unwrap();
+        let speaker1 = SpeakerId::new("RINCON_111");
+        let speaker2 = SpeakerId::new("RINCON_222");
+
+        ip_to_speaker.write().insert(ip1, speaker1.clone());
+        ip_to_speaker.write().insert(ip2, speaker2.clone());
+
+        let registry = StateWatchRegistry {
+            watched: Arc::clone(&watched),
+            ip_to_speaker,
+            key_to_service: Arc::clone(&key_to_service),
+        };
+
+        // Both speakers watch volume
+        registry.register_watch(&speaker1, "volume", Service::RenderingControl);
+        registry.register_watch(&speaker2, "volume", Service::RenderingControl);
+        assert_eq!(watched.read().len(), 2);
+
+        // Unregister only speaker1's IP
+        registry.unregister_watches_for_service(ip1, Service::RenderingControl);
+
+        let w = watched.read();
+        assert_eq!(w.len(), 1);
+        assert!(w.contains(&(speaker2.clone(), "volume")));
+        assert!(!w.contains(&(speaker1.clone(), "volume")));
     }
 }
