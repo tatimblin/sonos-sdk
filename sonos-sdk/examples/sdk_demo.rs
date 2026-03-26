@@ -185,17 +185,17 @@ fn main() -> Result<(), SdkError> {
     // 7. Lazy event manager — watch() triggers init
     // =========================================================================
     step("Starting watch() — lazy event manager initializes now...");
-    let watch_status = speaker.volume.watch()?;
+    let vol_handle = speaker.volume.watch()?;
     println!(
         "  volume.watch()          => mode: {}, current: {}%",
-        watch_status.mode,
-        watch_status
-            .current
+        vol_handle.mode(),
+        vol_handle
+            .value()
             .map(|v| v.0.to_string())
             .unwrap_or_else(|| "?".to_string())
     );
 
-    speaker.playback_state.watch()?;
+    let _playback_handle = speaker.playback_state.watch()?;
     println!("  playback_state.watch()  => OK");
     println!();
 
@@ -262,13 +262,11 @@ fn main() -> Result<(), SdkError> {
     println!();
 
     // =========================================================================
-    // 9. Cleanup
+    // 9. Cleanup (automatic — dropping WatchHandles starts grace period)
     // =========================================================================
-    step("Cleaning up watches...");
-    speaker.volume.unwatch();
-    speaker.playback_state.unwatch();
-    println!("  volume.unwatch()        => OK");
-    println!("  playback_state.unwatch()=> OK");
+    step("Cleaning up watches (dropping handles)...");
+    drop(vol_handle);
+    println!("  volume handle dropped   => OK (grace period started)");
 
     println!();
     println!("  Demo complete.");

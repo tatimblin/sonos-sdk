@@ -57,15 +57,19 @@ fn main() -> Result<(), SdkError> {
         Err(e) => println!("   Error fetching volume: {e}"),
     }
 
-    // Method 3: watch() - Register for change notifications (sync)
+    // Method 3: watch() - Returns a WatchHandle that keeps the subscription alive (sync)
     println!("watch() - Register for changes:");
     match speaker.volume.watch() {
-        Ok(status) => {
-            println!("   Started watching volume changes (mode: {})", status.mode);
-            if let Some(vol) = status.current {
+        Ok(handle) => {
+            println!(
+                "   Started watching volume changes (mode: {})",
+                handle.mode()
+            );
+            if let Some(vol) = handle.value() {
                 println!("   Current volume: {}%", vol.0);
             }
-            println!("   (Changes will appear in system.iter())");
+            println!("   (Changes will appear in system.iter() while handle is alive)");
+            // handle is dropped here — starts 50ms grace period
         }
         Err(e) => println!("   Error starting volume watcher: {e}"),
     }

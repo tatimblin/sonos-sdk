@@ -65,7 +65,7 @@ Without this crate, developers face a fragmented API surface where simple operat
 │  PropertyHandle<P>                          │ (macro-generated)     │
 │    ├── get()   → Option<P>          [cached value from StateStore]  │
 │    ├── fetch() → Result<P>          [API call + state update]       │
-│    └── watch() → PropertyWatcher<P> [UPnP event subscription]       │
+│    └── watch() → WatchHandle<P>     [RAII subscription guard]        │
 └─────────────────────────────────────────────────────────────────────┘
                                 │
                                 ▼
@@ -235,26 +235,28 @@ pub struct VolumeHandle {
 5. **State update** (`src/property/handles.rs:68`): Updates StateManager, triggering any active watchers
 6. **Return** (`src/property/handles.rs:70`): Returns the fresh property value
 
-### 3.3 Secondary Flow: Property Watch (UPnP Event Subscription)
+### 3.3 Secondary Flow: Property Watch (RAII WatchHandle)
 
 ```
 ┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐
-│  speaker.volume  │────▶│  StateManager::  │────▶│  PropertyWatcher │
-│  .watch()        │     │  watch_property  │     │  returned        │
+│  speaker.volume  │────▶│  SonosEvent      │────▶│  WatchHandle<P>  │
+│  .watch()        │     │  Manager::       │     │  returned        │
+│                  │     │  acquire_watch() │     │  (holds guard)   │
 └──────────────────┘     └──────────────────┘     └──────────────────┘
        │                         │                        │
        ▼                         ▼                        ▼
-   handles.rs:74        ensures subscription      async event stream
-                        via event manager
+   handles.rs            increments ref count      RAII guard + value
+                         (0→1 subscribes)          snapshot
 ```
 
 **Step-by-step**:
 
-1. **Entry** (`src/property/handles.rs:74`): `watch()` is called on a property handle
-2. **Delegation** (`src/property/handles.rs:75-78`): Calls `StateManager::watch_property()` with speaker ID
-3. **Subscription management**: StateManager ensures UPnP subscription exists (reference counted)
-4. **Watcher creation**: Returns `PropertyWatcher<P>` wrapping a `tokio::sync::watch` receiver
-5. **Usage**: Caller uses `watcher.changed().await` and `watcher.current()` for reactive updates
+1. **Entry**: `watch()` is called on a property handle
+2. **Lazy init**: If no event manager exists, triggers lazy initialization via `EventInitFn`
+3. **Acquire**: Calls `SonosEventManager::acquire_watch()` which increments the (ip, service) ref count
+4. **Guard creation**: Returns `WatchGuard` (RAII guard) holding one ref count
+5. **WatchHandle**: Wraps the guard + cached value snapshot + watch mode into `WatchHandle<P>`
+6. **Drop**: When `WatchHandle` is dropped, `WatchGuard::Drop` calls `release_watch()`, starting a 50ms grace period if ref count hits zero
 
 ### 3.4 Error Flow
 
@@ -301,7 +303,8 @@ let volume = speaker.volume.get();
 let fresh_volume = speaker.volume.fetch()?;
 
 // Reactive subscription (triggers lazy event init on first call)
-let status = speaker.volume.watch()?;
+// Hold the WatchHandle to keep the subscription alive
+let _watch = speaker.volume.watch()?;
 
 // Fluent navigation
 let group = speaker.group().unwrap();
@@ -690,6 +693,7 @@ None required.
 
 | Version | Changes | Migration Guide |
 |---------|---------|-----------------|
+| `0.3.0` | RAII `WatchHandle`, remove `unwatch()`, 50ms grace period, `WatchGuard` | Replace `watch()` result handling: hold `WatchHandle`, drop to unsubscribe instead of calling `unwatch()` |
 | `0.2.0` | Lazy event init, method renames, fluent navigation, prelude, `#[non_exhaustive]` | Replace `get_` prefixed methods with short names; use `sonos_sdk::prelude::*` |
 | `0.1.0` | Initial release | N/A |
 

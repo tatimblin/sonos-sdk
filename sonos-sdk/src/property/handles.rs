@@ -11,8 +11,8 @@ use std::net::IpAddr;
 use std::ops::Deref;
 use std::sync::Arc;
 
-use sonos_api::SonosClient;
 use sonos_api::operation::{ComposableOperation, UPnPOperation};
+use sonos_api::SonosClient;
 use sonos_event_manager::WatchGuard;
 use sonos_state::{property::SonosProperty, SpeakerId, StateManager};
 

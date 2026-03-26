@@ -906,6 +906,7 @@ None. All configuration is programmatic.
 
 | Version | Changes | Migration Guide |
 |---------|---------|-----------------|
+| 0.2.1 | `StateWatchRegistry` implementing `WatchRegistry` trait, `parking_lot::RwLock`, removed redundant `subscriptions` field | Wire registry via `set_event_manager()` or builder `build()` |
 | 0.1.0 | Initial release | N/A |
 
 ---

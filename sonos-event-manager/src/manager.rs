@@ -298,11 +298,7 @@ impl SonosEventManager {
                     false
                 }
             } else {
-                tracing::warn!(
-                    "release_watch: no ref count for {}:{:?}",
-                    ip,
-                    service
-                );
+                tracing::warn!("release_watch: no ref count for {}:{:?}", ip, service);
                 false
             }
         };
@@ -706,7 +702,10 @@ mod tests {
         drop(guard);
 
         // Verify grace timer is pending
-        assert!(manager.pending_unsubscribes.lock().contains_key(&(ip, Service::RenderingControl)));
+        assert!(manager
+            .pending_unsubscribes
+            .lock()
+            .contains_key(&(ip, Service::RenderingControl)));
 
         // Re-acquire within grace period — should cancel the timer
         let _guard2 = manager
@@ -714,7 +713,10 @@ mod tests {
             .unwrap();
 
         // Pending should be cleared
-        assert!(!manager.pending_unsubscribes.lock().contains_key(&(ip, Service::RenderingControl)));
+        assert!(!manager
+            .pending_unsubscribes
+            .lock()
+            .contains_key(&(ip, Service::RenderingControl)));
 
         // Registry should NOT have unregistered (grace period was cancelled)
         assert_eq!(registry.unregisters(), 0);
@@ -793,8 +795,14 @@ mod tests {
 
         // Drop RC — starts grace period for RenderingControl only
         drop(guard_rc);
-        assert!(manager.pending_unsubscribes.lock().contains_key(&(ip, Service::RenderingControl)));
-        assert!(!manager.pending_unsubscribes.lock().contains_key(&(ip, Service::AVTransport)));
+        assert!(manager
+            .pending_unsubscribes
+            .lock()
+            .contains_key(&(ip, Service::RenderingControl)));
+        assert!(!manager
+            .pending_unsubscribes
+            .lock()
+            .contains_key(&(ip, Service::AVTransport)));
 
         // AVTransport still has ref count 1
         assert_eq!(manager.service_ref_count(ip, Service::AVTransport), 1);
@@ -818,7 +826,10 @@ mod tests {
         drop(guard);
 
         // Grace timer should be pending
-        assert!(manager.pending_unsubscribes.lock().contains_key(&(ip, Service::RenderingControl)));
+        assert!(manager
+            .pending_unsubscribes
+            .lock()
+            .contains_key(&(ip, Service::RenderingControl)));
 
         // Shutdown should drain and cancel pending timers
         manager.shutdown();

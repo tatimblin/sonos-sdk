@@ -6,15 +6,14 @@ The sonos-sdk provides a DOM-like API for accessing speaker properties through `
 
 - `get()` - Get cached value (instant, no network)
 - `fetch()` - Fetch fresh value from device (if Fetchable)
-- `watch()` - Register for change notifications
-- `unwatch()` - Unregister from change notifications
+- `watch()` - Returns a `WatchHandle` that keeps the subscription alive (RAII)
 
 ## Core Types
 
 ### PropertyHandle<P>
 
 ```rust
-/// Generic property handle providing get/fetch/watch/unwatch pattern
+/// Generic property handle providing get/fetch/watch pattern
 #[derive(Clone)]
 pub struct PropertyHandle<P: SonosProperty> {
     context: Arc<SpeakerContext>,
@@ -29,10 +28,9 @@ impl<P: SonosProperty> PropertyHandle<P> {
     pub fn get(&self) -> Option<P>;
 
     /// Start watching this property for changes (sync)
-    pub fn watch(&self) -> Result<WatchStatus<P>, SdkError>;
-
-    /// Stop watching this property (sync)
-    pub fn unwatch(&self);
+    /// Returns a WatchHandle that keeps the subscription alive.
+    /// Dropping the handle starts a 50ms grace period before unsubscribing.
+    pub fn watch(&self) -> Result<WatchHandle<P>, SdkError>;
 
     /// Check if this property is currently being watched
     pub fn is_watched(&self) -> bool;
@@ -68,17 +66,35 @@ impl SpeakerContext {
 }
 ```
 
-### WatchStatus<P>
+### WatchHandle<P>
 
-Result of watch() operation:
+Result of watch() operation. RAII guard — dropping starts the 50ms grace period:
 
 ```rust
-pub struct WatchStatus<P> {
-    /// Current cached value of the property (if any)
-    pub current: Option<P>,
+#[must_use = "dropping the handle starts the grace period — hold it to keep the subscription alive"]
+pub struct WatchHandle<P> {
+    value: Option<P>,
+    mode: WatchMode,
+    _cleanup: WatchCleanup,  // Guard(WatchGuard) or CacheOnly(CacheOnlyGuard)
+}
 
-    /// How updates will be delivered
-    pub mode: WatchMode,
+impl<P> Deref for WatchHandle<P> {
+    type Target = Option<P>;
+    fn deref(&self) -> &Self::Target { &self.value }
+}
+
+impl<P> WatchHandle<P> {
+    /// Returns the watch mode (Events, Polling, or CacheOnly)
+    pub fn mode(&self) -> WatchMode;
+
+    /// Returns a reference to the inner value, if available
+    pub fn value(&self) -> Option<&P>;
+
+    /// Returns true if a value has been received from the device
+    pub fn has_value(&self) -> bool;
+
+    /// Returns true if real-time UPnP events are active
+    pub fn has_realtime_events(&self) -> bool;
 }
 
 pub enum WatchMode {
@@ -322,6 +338,7 @@ impl Speaker {
 use std::fmt;
 use std::marker::PhantomData;
 use std::net::IpAddr;
+use std::ops::Deref;
 use std::sync::Arc;
 
 use sonos_api::operation::{ComposableOperation, UPnPOperation};
@@ -331,6 +348,7 @@ use sonos_api::services::{
     rendering_control::{self, GetVolumeOperation},
     // Add new service imports here
 };
+use sonos_event_manager::WatchGuard;
 use sonos_state::{property::SonosProperty, SpeakerId, StateManager};
 use sonos_state::{
     Bass, CurrentTrack, GroupMembership, Loudness, Mute,
@@ -415,7 +433,7 @@ fn test_new_property_get_cached() {
 }
 ```
 
-### Test watch() Registers Property
+### Test watch() Returns WatchHandle
 
 ```rust
 #[test]
@@ -426,8 +444,15 @@ fn test_new_property_watch() {
     let handle: NewPropertyHandle = PropertyHandle::new(context);
 
     assert!(!handle.is_watched());
-    handle.watch().unwrap();
+
+    // watch() returns a WatchHandle — hold it to keep the subscription alive
+    let watch_handle = handle.watch().unwrap();
     assert!(handle.is_watched());
+    assert_eq!(watch_handle.mode(), WatchMode::CacheOnly);
+
+    // Dropping the watch handle unregisters the watch
+    drop(watch_handle);
+    assert!(!handle.is_watched());
 }
 ```
 

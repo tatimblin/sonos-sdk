@@ -122,6 +122,37 @@ pub struct SonosEventManager {
 
 **Ownership**: Created once per application, typically owned by `sonos-state::StateManager`. Wrapped in `Arc<RwLock<>>` for shared access.
 
+#### `WatchRegistry` Trait
+
+```rust
+pub trait WatchRegistry: Send + Sync + 'static {
+    fn register_watch(&self, speaker_id: &SpeakerId, key: &'static str, service: Service);
+    fn unregister_watches_for_service(&self, ip: IpAddr, service: Service);
+}
+```
+
+**Purpose**: Bridges the event-manager and state-manager for watched-property set management. Defined in sonos-event-manager, implemented by `StateWatchRegistry` in sonos-state. Enables the grace period to clean up watched entries when unsubscribing.
+
+#### `WatchGuard`
+
+```rust
+#[must_use = "dropping the guard immediately starts the grace period"]
+pub struct WatchGuard {
+    event_manager: Arc<SonosEventManager>,
+    speaker_id: SpeakerId,
+    property_key: &'static str,
+    ip: IpAddr,
+    service: Service,
+}
+```
+
+**Purpose**: RAII guard returned by `acquire_watch()`. Each instance holds one ref count on the (ip, service) subscription. `Drop` calls `release_watch()` which never panics. Not `Clone`, not `Copy` — each guard is exactly one subscription hold.
+
+**Invariants**:
+- Dropping a WatchGuard decrements the service ref count
+- When the ref count reaches zero, a 50ms grace period thread is spawned
+- If `acquire_watch()` is called within 50ms, the grace timer is cancelled via AtomicBool
+
 #### `EventManagerError`
 
 ```rust
@@ -250,7 +281,41 @@ manager.release_service_subscription(device_ip, Service::RenderingControl).await
 | `DashMap` for key storage | `Mutex<HashMap>` | Fine-grained locking per entry instead of global lock |
 | `SeqCst` ordering | `Relaxed` | Correctness over performance; subscription lifecycle must be strictly ordered |
 
-### 4.2 Feature: Device Registry
+### 4.2 Feature: RAII Watch Guards with Grace Period
+
+#### What
+
+`acquire_watch()` returns a `WatchGuard` that holds one ref count. When dropped, a 50ms grace period prevents unnecessary unsubscribe/resubscribe churn. Re-acquiring within 50ms cancels the pending unsubscribe.
+
+#### Why
+
+TUI frameworks like ratatui reconstruct widgets every frame. Calling `watch()` in `draw()` methods would cause subscription churn without a grace period. The RAII pattern ensures subscriptions are tied to scope lifetime.
+
+#### How
+
+```rust
+// acquire_watch() increments ref count, returns WatchGuard
+let guard = event_manager.acquire_watch(&speaker_id, "volume", ip, Service::RenderingControl)?;
+
+// ... use guard ...
+
+// WatchGuard::Drop calls release_watch()
+// If ref count hits 0:
+//   - Spawns thread with 50ms sleep + AtomicBool cancellation
+//   - If not cancelled: sends Command::Unsubscribe + cleans watched set via WatchRegistry
+//   - If cancelled (re-acquired within 50ms): thread exits, subscription persists
+```
+
+#### Trade-offs
+
+| Decision | Alternative Considered | Why We Chose This |
+|----------|----------------------|-------------------|
+| `std::thread::spawn` for grace timer | `tokio::time::sleep` in worker | Zero worker changes, ~20 lines vs ~150 |
+| `AtomicBool` for cancellation | Channel-based cancel | Simpler, zero allocation, SeqCst ordering |
+| `parking_lot::RwLock` | `std::sync::RwLock` | Non-poisoning, safe in Drop during panic unwinding |
+| `release_watch()` returns `()` | Returns `Result` | Must never panic in Drop; errors logged internally |
+
+### 4.3 Feature: Device Registry
 
 #### What
 
@@ -659,7 +724,9 @@ let manager = SonosEventManager::with_config(config).await?;
 |-----|-----------|-------|
 | `SonosEventManager::new()` | Unstable | Internal crate; may change |
 | `ensure_service_subscribed()` | Unstable | Core API but internal |
-| `release_service_subscription()` | Unstable | May be replaced with RAII guard |
+| `release_service_subscription()` | Deprecated | Replaced by RAII `WatchGuard` in v0.2.0 |
+| `acquire_watch()` | Unstable | Returns `WatchGuard`; RAII subscription management |
+| `release_watch()` | Unstable | Called from `WatchGuard::Drop`; must never panic |
 | `get_event_iterator()` | Unstable | Single-use; may change to repeated access |
 
 ### 13.2 Breaking Changes
@@ -672,6 +739,7 @@ let manager = SonosEventManager::with_config(config).await?;
 
 | Version | Changes | Migration Guide |
 |---------|---------|-----------------|
+| `0.2.1` | RAII WatchGuard, WatchRegistry trait, 50ms grace period, parking_lot::RwLock, tokio::sync::mpsc commands | Replace `ensure_service_subscribed()`/`release_service_subscription()` with `acquire_watch()`/`release_watch()` via WatchGuard |
 | `0.1.0` | Initial release | N/A |
 
 ---
