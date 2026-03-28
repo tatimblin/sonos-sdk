@@ -67,11 +67,9 @@ pub struct WatchGuard {
 }
 
 // Compile-time assertion: WatchGuard must be Send
-const _: () = {
+const _: fn() = || {
     fn assert_send<T: Send>() {}
-    fn _check() {
-        assert_send::<WatchGuard>();
-    }
+    assert_send::<WatchGuard>();
 };
 
 impl fmt::Debug for WatchGuard {
