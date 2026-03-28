@@ -7,7 +7,7 @@ A sync-first, DOM-like SDK for controlling Sonos speakers. Access properties dir
 - **Sync-First API**: All methods are synchronous - no async/await required
 - **DOM-like Access**: Properties accessed directly on speaker objects (`speaker.volume.get()`)
 - **Three Access Patterns**: `get()` for cached, `fetch()` for fresh, `watch()` for reactive
-- **Automatic Subscriptions**: UPnP subscriptions managed automatically via watch/unwatch
+- **RAII Subscriptions**: UPnP subscriptions managed automatically via `WatchHandle` (drop to unsubscribe)
 - **Type Safety**: All properties are strongly typed
 - **Blocking Iteration**: Event loop pattern for reactive applications
 
@@ -70,17 +70,23 @@ println!("Fresh state: {:?}", state);
 
 ### `watch()` - Reactive Updates
 
-Registers for change notifications. Changes appear in `system.iter()`.
+Returns a `WatchHandle` that keeps the subscription alive. Changes appear in `system.iter()`.
+Dropping the handle starts a 50ms grace period before unsubscribing.
 
 ```rust
-// Start watching volume changes
-speaker.volume.watch()?;
+// Start watching volume — hold the handle to keep the subscription alive
+let vol_handle = speaker.volume.watch()?;
 
 // Start watching playback state
-speaker.playback_state.watch()?;
+let _playback_handle = speaker.playback_state.watch()?;
 
-// Stop watching when done
-speaker.volume.unwatch();
+// Access the current value via the handle
+if let Some(vol) = vol_handle.value() {
+    println!("Volume: {}%", vol.0);
+}
+
+// Dropping the handle starts the grace period; subscription persists for 50ms
+drop(vol_handle);
 ```
 
 ## Event Loop Pattern
@@ -98,10 +104,10 @@ fn main() -> Result<(), SdkError> {
     let speaker = system.get_speaker_by_name("Living Room")
         .ok_or_else(|| SdkError::SpeakerNotFound("Living Room".to_string()))?;
 
-    // Watch properties of interest
-    speaker.volume.watch()?;
-    speaker.playback_state.watch()?;
-    speaker.current_track.watch()?;
+    // Watch properties of interest — hold handles to keep subscriptions alive
+    let _vol = speaker.volume.watch()?;
+    let _playback = speaker.playback_state.watch()?;
+    let _track = speaker.current_track.watch()?;
 
     println!("Listening for changes... (Ctrl+C to exit)");
 

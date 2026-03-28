@@ -27,5 +27,8 @@ tracing = "0.1"
 # Concurrent data structures for reference counting
 dashmap = "5.0"
 
+# Non-poisoning locks for Drop safety
+parking_lot = "0.12"
+
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

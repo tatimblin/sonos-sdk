@@ -28,13 +28,15 @@
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
-use std::sync::{mpsc, Arc, Mutex, OnceLock, RwLock};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use parking_lot::RwLock;
+
 use sonos_api::Service;
 use sonos_discovery::Device;
-use sonos_event_manager::SonosEventManager;
+use sonos_event_manager::{SonosEventManager, WatchRegistry};
 use tracing::info;
 
 use crate::event_worker::spawn_state_event_worker;
@@ -246,9 +248,6 @@ pub struct StateManager {
     /// Watched properties for iter() filtering
     watched: Arc<RwLock<HashSet<(SpeakerId, &'static str)>>>,
 
-    /// Service subscription ref counts: (speaker_ip, service) -> count
-    subscriptions: Arc<RwLock<HashMap<(IpAddr, Service), usize>>>,
-
     /// IP to speaker ID mapping (for event worker)
     ip_to_speaker: Arc<RwLock<HashMap<IpAddr, SpeakerId>>>,
 
@@ -266,6 +265,61 @@ pub struct StateManager {
 
     /// Cleanup timeout for subscriptions
     cleanup_timeout: Duration,
+
+    /// Maps property key → Service for WatchRegistry's unregister_watches_for_service.
+    /// Shared with StateWatchRegistry via Arc.
+    key_to_service: Arc<RwLock<HashMap<&'static str, Service>>>,
+}
+
+// ============================================================================
+// StateWatchRegistry - WatchRegistry impl for SonosEventManager
+// ============================================================================
+
+/// Lightweight WatchRegistry implementation wired into the event manager.
+///
+/// Separated from StateManager because `mpsc::Sender` is `!Sync`,
+/// preventing StateManager itself from satisfying `WatchRegistry: Sync`.
+/// This struct holds only the Arc-wrapped fields needed for watch management.
+struct StateWatchRegistry {
+    watched: Arc<RwLock<HashSet<(SpeakerId, &'static str)>>>,
+    ip_to_speaker: Arc<RwLock<HashMap<IpAddr, SpeakerId>>>,
+    key_to_service: Arc<RwLock<HashMap<&'static str, Service>>>,
+}
+
+impl WatchRegistry for StateWatchRegistry {
+    fn register_watch(&self, speaker_id: &SpeakerId, key: &'static str, service: Service) {
+        self.watched.write().insert((speaker_id.clone(), key));
+        self.key_to_service.write().insert(key, service);
+    }
+
+    fn unregister_watches_for_service(&self, ip: IpAddr, service: Service) {
+        // 1. Resolve IP → SpeakerId
+        let speaker_id = match self.ip_to_speaker.read().get(&ip).cloned() {
+            Some(id) => id,
+            None => {
+                tracing::warn!(
+                    "unregister_watches_for_service: no speaker found for IP {}",
+                    ip
+                );
+                return;
+            }
+        };
+
+        // 2. Find property keys belonging to this service
+        let service_keys: Vec<&'static str> = self
+            .key_to_service
+            .read()
+            .iter()
+            .filter(|(_, &svc)| svc == service)
+            .map(|(&key, _)| key)
+            .collect();
+
+        // 3. Remove matching (speaker_id, key) entries from watched set
+        let mut watched = self.watched.write();
+        for key in service_keys {
+            watched.remove(&(speaker_id.clone(), key));
+        }
+    }
 }
 
 impl StateManager {
@@ -294,11 +348,8 @@ impl StateManager {
     /// manager.add_devices(devices)?;
     /// ```
     pub fn add_devices(&self, devices: Vec<Device>) -> Result<()> {
-        let mut store = self.store.write().map_err(|_| StateError::LockPoisoned)?;
-        let mut ip_map = self
-            .ip_to_speaker
-            .write()
-            .map_err(|_| StateError::LockPoisoned)?;
+        let mut store = self.store.write();
+        let mut ip_map = self.ip_to_speaker.write();
 
         for device in devices {
             let speaker_id = SpeakerId::new(&device.id);
@@ -364,29 +415,22 @@ impl StateManager {
 
     /// Get all speaker info
     pub fn speaker_infos(&self) -> Vec<SpeakerInfo> {
-        let store = match self.store.read() {
-            Ok(s) => s,
-            Err(_) => return vec![],
-        };
-        store.speakers()
+        self.store.read().speakers()
     }
 
     /// Get a specific speaker info by ID
     pub fn speaker_info(&self, speaker_id: &SpeakerId) -> Option<SpeakerInfo> {
-        let store = self.store.read().ok()?;
-        store.speaker(speaker_id).cloned()
+        self.store.read().speaker(speaker_id).cloned()
     }
 
     /// Get speaker IP by ID
     pub fn get_speaker_ip(&self, speaker_id: &SpeakerId) -> Option<IpAddr> {
-        let store = self.store.read().ok()?;
-        store.speaker(speaker_id).map(|s| s.ip_address)
+        self.store.read().speaker(speaker_id).map(|s| s.ip_address)
     }
 
     /// Get boot_seq for a speaker (used by GroupManagement AddMember)
     pub fn get_boot_seq(&self, speaker_id: &SpeakerId) -> Option<u32> {
-        let store = self.store.read().ok()?;
-        store.speaker(speaker_id).map(|s| s.boot_seq)
+        self.store.read().speaker(speaker_id).map(|s| s.boot_seq)
     }
 
     /// Create a blocking iterator over change events
@@ -410,14 +454,12 @@ impl StateManager {
 
     /// Get current property value (sync, no subscription)
     pub fn get_property<P: Property>(&self, speaker_id: &SpeakerId) -> Option<P> {
-        let store = self.store.read().ok()?;
-        store.get::<P>(speaker_id)
+        self.store.read().get::<P>(speaker_id)
     }
 
     /// Get current group property value (sync, no subscription)
     pub fn get_group_property<P: Property>(&self, group_id: &GroupId) -> Option<P> {
-        let store = self.store.read().ok()?;
-        store.get_group::<P>(group_id)
+        self.store.read().get_group::<P>(group_id)
     }
 
     /// Set a property value
@@ -426,10 +468,7 @@ impl StateManager {
     /// if the property is being watched.
     pub fn set_property<P: SonosProperty>(&self, speaker_id: &SpeakerId, value: P) {
         let changed = {
-            let mut store = match self.store.write() {
-                Ok(s) => s,
-                Err(_) => return,
-            };
+            let mut store = self.store.write();
             store.set::<P>(speaker_id, value)
         };
 
@@ -445,10 +484,7 @@ impl StateManager {
     /// Used by the SDK layer to store group-scoped values fetched via API calls.
     pub fn set_group_property<P: SonosProperty>(&self, group_id: &GroupId, value: P) {
         let coordinator_id = {
-            let mut store = match self.store.write() {
-                Ok(s) => s,
-                Err(_) => return,
-            };
+            let mut store = self.store.write();
             let changed = store.set_group::<P>(group_id, value);
             if !changed {
                 return;
@@ -463,16 +499,16 @@ impl StateManager {
 
     /// Register a property as watched (called by PropertyHandle::watch)
     pub fn register_watch(&self, speaker_id: &SpeakerId, property_key: &'static str) {
-        if let Ok(mut watched) = self.watched.write() {
-            watched.insert((speaker_id.clone(), property_key));
-        }
+        self.watched
+            .write()
+            .insert((speaker_id.clone(), property_key));
     }
 
     /// Unregister a property watch
     pub fn unregister_watch(&self, speaker_id: &SpeakerId, property_key: &'static str) {
-        if let Ok(mut watched) = self.watched.write() {
-            watched.remove(&(speaker_id.clone(), property_key));
-        }
+        self.watched
+            .write()
+            .remove(&(speaker_id.clone(), property_key));
     }
 
     /// Watch a property with automatic UPnP subscription (recommended API)
@@ -531,8 +567,7 @@ impl StateManager {
     pub fn is_watched(&self, speaker_id: &SpeakerId, property_key: &'static str) -> bool {
         self.watched
             .read()
-            .map(|w| w.contains(&(speaker_id.clone(), property_key)))
-            .unwrap_or(false)
+            .contains(&(speaker_id.clone(), property_key))
     }
 
     /// Emit a change event if the property is being watched
@@ -545,8 +580,7 @@ impl StateManager {
         let is_watched = self
             .watched
             .read()
-            .map(|w| w.contains(&(speaker_id.clone(), property_key)))
-            .unwrap_or(false);
+            .contains(&(speaker_id.clone(), property_key));
 
         if is_watched {
             let event = ChangeEvent::new(speaker_id.clone(), property_key, service);
@@ -556,30 +590,29 @@ impl StateManager {
 
     /// Initialize from topology data
     pub fn initialize(&self, topology: Topology) {
-        if let Ok(mut store) = self.store.write() {
-            for speaker in &topology.speakers {
-                store.add_speaker(speaker.clone());
-            }
-            for group in &topology.groups {
-                store.add_group(group.clone());
-            }
-            store.set_system(topology);
+        let mut store = self.store.write();
+        for speaker in &topology.speakers {
+            store.add_speaker(speaker.clone());
         }
+        for group in &topology.groups {
+            store.add_group(group.clone());
+        }
+        store.set_system(topology);
     }
 
     /// Check if initialized with any speakers
     pub fn is_initialized(&self) -> bool {
-        self.store.read().map(|s| !s.is_empty()).unwrap_or(false)
+        !self.store.read().is_empty()
     }
 
     /// Get number of speakers
     pub fn speaker_count(&self) -> usize {
-        self.store.read().map(|s| s.speaker_count()).unwrap_or(0)
+        self.store.read().speaker_count()
     }
 
     /// Get number of groups
     pub fn group_count(&self) -> usize {
-        self.store.read().map(|s| s.group_count()).unwrap_or(0)
+        self.store.read().group_count()
     }
 
     /// Get all current groups
@@ -587,22 +620,19 @@ impl StateManager {
     /// Returns all groups in the system. Every speaker is always in a group,
     /// so a single speaker forms a group of one.
     pub fn groups(&self) -> Vec<GroupInfo> {
-        self.store
-            .read()
-            .map(|s| s.groups.values().cloned().collect())
-            .unwrap_or_default()
+        self.store.read().groups.values().cloned().collect()
     }
 
     /// Get a specific group by ID
     pub fn get_group(&self, group_id: &GroupId) -> Option<GroupInfo> {
-        self.store.read().ok()?.groups.get(group_id).cloned()
+        self.store.read().groups.get(group_id).cloned()
     }
 
     /// Get the group a speaker belongs to
     ///
     /// Uses the speaker_to_group mapping for quick lookup.
     pub fn get_group_for_speaker(&self, speaker_id: &SpeakerId) -> Option<GroupInfo> {
-        let store = self.store.read().ok()?;
+        let store = self.store.read();
         let group_id = store.speaker_to_group.get(speaker_id)?;
         store.groups.get(group_id).cloned()
     }
@@ -623,6 +653,13 @@ impl StateManager {
         if self.event_manager.set(Arc::clone(&em)).is_err() {
             return Ok(()); // Already set — no-op
         }
+
+        // Wire this StateManager as the WatchRegistry
+        em.set_watch_registry(Arc::new(StateWatchRegistry {
+            watched: Arc::clone(&self.watched),
+            ip_to_speaker: Arc::clone(&self.ip_to_speaker),
+            key_to_service: Arc::clone(&self.key_to_service),
+        }));
 
         // Register all known devices with the event manager
         let devices_for_em: Vec<_> = self
@@ -672,13 +709,13 @@ impl Clone for StateManager {
         Self {
             store: Arc::clone(&self.store),
             watched: Arc::clone(&self.watched),
-            subscriptions: Arc::clone(&self.subscriptions),
             ip_to_speaker: Arc::clone(&self.ip_to_speaker),
             event_manager,
             event_tx: self.event_tx.clone(),
             event_rx: Arc::clone(&self.event_rx),
             _worker: Mutex::new(None),
             cleanup_timeout: self.cleanup_timeout,
+            key_to_service: Arc::clone(&self.key_to_service),
         }
     }
 }
@@ -727,6 +764,7 @@ impl StateManagerBuilder {
         let store = Arc::new(RwLock::new(StateStore::new()));
         let watched = Arc::new(RwLock::new(HashSet::new()));
         let ip_to_speaker = Arc::new(RwLock::new(HashMap::new()));
+        let key_to_service = Arc::new(RwLock::new(HashMap::new()));
 
         let event_manager_lock = OnceLock::new();
         let mut worker = None;
@@ -734,6 +772,14 @@ impl StateManagerBuilder {
         // If event_manager provided at build time, wire it up eagerly
         if let Some(em) = self.event_manager {
             let _ = event_manager_lock.set(Arc::clone(&em));
+
+            // Wire WatchRegistry
+            em.set_watch_registry(Arc::new(StateWatchRegistry {
+                watched: Arc::clone(&watched),
+                ip_to_speaker: Arc::clone(&ip_to_speaker),
+                key_to_service: Arc::clone(&key_to_service),
+            }));
+
             let worker_handle = spawn_state_event_worker(
                 em,
                 Arc::clone(&store),
@@ -748,13 +794,13 @@ impl StateManagerBuilder {
         let manager = StateManager {
             store,
             watched,
-            subscriptions: Arc::new(RwLock::new(HashMap::new())),
             ip_to_speaker,
             event_manager: event_manager_lock,
             event_tx,
             event_rx: Arc::new(Mutex::new(event_rx)),
             _worker: Mutex::new(worker),
             cleanup_timeout: self.cleanup_timeout,
+            key_to_service,
         };
 
         info!("StateManager created (sync-first mode)");
@@ -897,7 +943,8 @@ mod tests {
         let group_id = GroupId::new("RINCON_123:1");
 
         // Add group so coordinator lookup works
-        if let Ok(mut store) = manager.store.write() {
+        {
+            let mut store = manager.store.write();
             store.add_group(GroupInfo::new(
                 group_id.clone(),
                 speaker_id.clone(),
@@ -939,7 +986,8 @@ mod tests {
         let speaker_id = SpeakerId::new("RINCON_123");
         let group_id = GroupId::new("RINCON_123:1");
 
-        if let Ok(mut store) = manager.store.write() {
+        {
+            let mut store = manager.store.write();
             store.add_group(GroupInfo::new(
                 group_id.clone(),
                 speaker_id.clone(),
@@ -1325,5 +1373,104 @@ mod tests {
 
         // Before any topology event, boot_seq should be 0
         assert_eq!(manager.get_boot_seq(&speaker_id), Some(0));
+    }
+
+    // ========================================================================
+    // StateWatchRegistry Tests
+    // ========================================================================
+
+    #[test]
+    fn test_state_watch_registry_register_and_unregister() {
+        let watched = Arc::new(RwLock::new(HashSet::new()));
+        let ip_to_speaker = Arc::new(RwLock::new(HashMap::new()));
+        let key_to_service = Arc::new(RwLock::new(HashMap::new()));
+
+        let ip: IpAddr = "192.168.1.100".parse().unwrap();
+        let speaker_id = SpeakerId::new("RINCON_123");
+        ip_to_speaker.write().insert(ip, speaker_id.clone());
+
+        let registry = StateWatchRegistry {
+            watched: Arc::clone(&watched),
+            ip_to_speaker: Arc::clone(&ip_to_speaker),
+            key_to_service: Arc::clone(&key_to_service),
+        };
+
+        // Register watches on two services
+        registry.register_watch(&speaker_id, "volume", Service::RenderingControl);
+        registry.register_watch(&speaker_id, "mute", Service::RenderingControl);
+        registry.register_watch(&speaker_id, "playback_state", Service::AVTransport);
+
+        assert_eq!(watched.read().len(), 3);
+
+        // Unregister RenderingControl — should remove volume + mute, keep playback_state
+        registry.unregister_watches_for_service(ip, Service::RenderingControl);
+
+        let w = watched.read();
+        assert_eq!(w.len(), 1);
+        assert!(w.contains(&(speaker_id.clone(), "playback_state")));
+        assert!(!w.contains(&(speaker_id.clone(), "volume")));
+        assert!(!w.contains(&(speaker_id.clone(), "mute")));
+    }
+
+    #[test]
+    fn test_state_watch_registry_unknown_ip_is_noop() {
+        let watched = Arc::new(RwLock::new(HashSet::new()));
+        let ip_to_speaker = Arc::new(RwLock::new(HashMap::new()));
+        let key_to_service = Arc::new(RwLock::new(HashMap::new()));
+
+        let speaker_id = SpeakerId::new("RINCON_123");
+
+        let registry = StateWatchRegistry {
+            watched: Arc::clone(&watched),
+            ip_to_speaker,
+            key_to_service: Arc::clone(&key_to_service),
+        };
+
+        // Register a watch (simulating direct add to shared set)
+        watched.write().insert((speaker_id.clone(), "volume"));
+        key_to_service
+            .write()
+            .insert("volume", Service::RenderingControl);
+
+        // Unregister for an unknown IP — should be a no-op
+        let unknown_ip: IpAddr = "10.0.0.1".parse().unwrap();
+        registry.unregister_watches_for_service(unknown_ip, Service::RenderingControl);
+
+        // Watch should still be there
+        assert_eq!(watched.read().len(), 1);
+    }
+
+    #[test]
+    fn test_state_watch_registry_only_removes_matching_speaker() {
+        let watched = Arc::new(RwLock::new(HashSet::new()));
+        let ip_to_speaker = Arc::new(RwLock::new(HashMap::new()));
+        let key_to_service = Arc::new(RwLock::new(HashMap::new()));
+
+        let ip1: IpAddr = "192.168.1.100".parse().unwrap();
+        let ip2: IpAddr = "192.168.1.101".parse().unwrap();
+        let speaker1 = SpeakerId::new("RINCON_111");
+        let speaker2 = SpeakerId::new("RINCON_222");
+
+        ip_to_speaker.write().insert(ip1, speaker1.clone());
+        ip_to_speaker.write().insert(ip2, speaker2.clone());
+
+        let registry = StateWatchRegistry {
+            watched: Arc::clone(&watched),
+            ip_to_speaker,
+            key_to_service: Arc::clone(&key_to_service),
+        };
+
+        // Both speakers watch volume
+        registry.register_watch(&speaker1, "volume", Service::RenderingControl);
+        registry.register_watch(&speaker2, "volume", Service::RenderingControl);
+        assert_eq!(watched.read().len(), 2);
+
+        // Unregister only speaker1's IP
+        registry.unregister_watches_for_service(ip1, Service::RenderingControl);
+
+        let w = watched.read();
+        assert_eq!(w.len(), 1);
+        assert!(w.contains(&(speaker2.clone(), "volume")));
+        assert!(!w.contains(&(speaker1.clone(), "volume")));
     }
 }

@@ -22,9 +22,9 @@ fn main() -> Result<(), SdkError> {
 
     // Bootstrap topology by watching group_membership on any speaker
     println!("Bootstrapping topology...");
-    if let Some(first_speaker) = system.speaker(&speaker_names[0]) {
-        let _ = first_speaker.group_membership.watch();
-    }
+    let _topology_handle = system
+        .speaker(&speaker_names[0])
+        .and_then(|s| s.group_membership.watch().ok());
 
     // Wait for topology event
     for i in 1..=10 {

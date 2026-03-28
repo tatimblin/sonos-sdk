@@ -21,7 +21,7 @@
 //!     println!("Kitchen is in group {}", group.id);
 //!
 //!     // ONLY NOW does the event manager lazily initialize
-//!     kitchen.volume.watch()?;
+//!     let _vol = kitchen.volume.watch()?;
 //!     for event in sonos.iter() {
 //!         println!("Changed: {} on {}", event.property_key, event.speaker_id);
 //!     }
@@ -67,7 +67,7 @@ pub use speaker::{PlayMode, SeekTarget, Speaker};
 pub use system::SonosSystem;
 
 // Re-export the generic PropertyHandle, SpeakerContext, and watch types
-pub use property::{PropertyHandle, SpeakerContext, WatchMode, WatchStatus};
+pub use property::{PropertyHandle, SpeakerContext, WatchHandle, WatchMode};
 
 // Re-export group property handle types
 pub use property::{
