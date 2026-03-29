@@ -304,10 +304,7 @@ async fn test_dynamic_subscription_management() {
         .expect("Timeout waiting for replayed notification")
         .expect("No replayed notification received");
 
-    assert_eq!(
-        replayed.subscription_id,
-        format!("uuid:{subscription_id}")
-    );
+    assert_eq!(replayed.subscription_id, format!("uuid:{subscription_id}"));
     assert!(replayed.event_xml.contains("before_register"));
 
     // Now send another event — should be routed directly
@@ -476,10 +473,7 @@ async fn test_notify_before_register_is_replayed() {
     // 1. Send NOTIFY *before* registering the SID
     let notify_url = format!("{base_url}/notify/race-test");
     let resp = client
-        .request(
-            reqwest::Method::from_bytes(b"NOTIFY").unwrap(),
-            &notify_url,
-        )
+        .request(reqwest::Method::from_bytes(b"NOTIFY").unwrap(), &notify_url)
         .header("SID", sub_id)
         .header("NT", "upnp:event")
         .header("NTS", "upnp:propchange")

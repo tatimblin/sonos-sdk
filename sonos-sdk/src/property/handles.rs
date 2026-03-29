@@ -18,13 +18,6 @@ use sonos_state::{property::SonosProperty, SpeakerId, StateManager};
 
 use crate::SdkError;
 
-/// Closure type for lazy event manager initialization.
-///
-/// Called by `PropertyHandle::watch()` to trigger event manager creation
-/// on first use. Captures shared `Arc`s to the system's `Mutex` and
-/// `StateManager`, avoiding a direct reference to `SonosSystem`.
-pub type EventInitFn = Arc<dyn Fn() -> Result<(), SdkError> + Send + Sync>;
-
 /// Shared context for all property handles on a speaker
 ///
 /// This struct holds the common data needed by all PropertyHandles,
@@ -35,9 +28,6 @@ pub struct SpeakerContext {
     pub(crate) speaker_ip: IpAddr,
     pub(crate) state_manager: Arc<StateManager>,
     pub(crate) api_client: SonosClient,
-    /// Optional closure to trigger lazy event manager initialization.
-    /// `None` in test mode (no event infrastructure).
-    pub(crate) event_init: Option<EventInitFn>,
 }
 
 impl SpeakerContext {
@@ -53,24 +43,6 @@ impl SpeakerContext {
             speaker_ip,
             state_manager,
             api_client,
-            event_init: None,
-        })
-    }
-
-    /// Create a new SpeakerContext with an event init closure
-    pub fn with_event_init(
-        speaker_id: SpeakerId,
-        speaker_ip: IpAddr,
-        state_manager: Arc<StateManager>,
-        api_client: SonosClient,
-        event_init: EventInitFn,
-    ) -> Arc<Self> {
-        Arc::new(Self {
-            speaker_id,
-            speaker_ip,
-            state_manager,
-            api_client,
-            event_init: Some(event_init),
         })
     }
 }
@@ -353,10 +325,26 @@ impl<P: SonosProperty> PropertyHandle<P> {
     /// }
     /// ```
     pub fn watch(&self) -> Result<WatchHandle<P>, SdkError> {
+        tracing::trace!(
+            "watch() called for {:?} on {}",
+            P::SERVICE,
+            self.context.speaker_id.as_str()
+        );
+
         // Trigger lazy event manager init if needed
         if self.context.state_manager.event_manager().is_none() {
-            if let Some(ref init) = self.context.event_init {
-                init()?;
+            if let Some(init) = self.context.state_manager.event_init() {
+                tracing::debug!(
+                    "Event manager not initialized, triggering lazy init for {:?} on {}",
+                    P::SERVICE,
+                    self.context.speaker_id.as_str()
+                );
+                init().map_err(|e| SdkError::EventManager(e.to_string()))?;
+            } else {
+                tracing::debug!(
+                    "No event_init closure available (test mode?) for {}",
+                    self.context.speaker_id.as_str()
+                );
             }
         }
 
@@ -391,6 +379,10 @@ impl<P: SonosProperty> PropertyHandle<P> {
             }
         } else {
             // No event manager — cache-only mode
+            tracing::warn!(
+                "No event manager available for {} — falling back to cache-only mode",
+                self.context.speaker_id.as_str()
+            );
             self.context
                 .state_manager
                 .register_watch(&self.context.speaker_id, P::KEY);
@@ -403,6 +395,13 @@ impl<P: SonosProperty> PropertyHandle<P> {
                 }),
             )
         };
+
+        tracing::debug!(
+            "watch() resolved to {:?} for {} on {}",
+            mode,
+            P::KEY,
+            self.context.speaker_id.as_str()
+        );
 
         Ok(WatchHandle {
             value: self.get(),
@@ -844,6 +843,23 @@ impl<P: SonosProperty> GroupPropertyHandle<P> {
     /// Returns a [`WatchHandle`] scoped to the group coordinator.
     /// Hold the handle to keep the subscription alive.
     pub fn watch(&self) -> Result<WatchHandle<P>, SdkError> {
+        // Trigger lazy event manager init if needed
+        if self.context.state_manager.event_manager().is_none() {
+            if let Some(init) = self.context.state_manager.event_init() {
+                tracing::debug!(
+                    "Event manager not initialized, triggering lazy init for group {:?} on {}",
+                    P::SERVICE,
+                    self.context.group_id.as_str()
+                );
+                init().map_err(|e| SdkError::EventManager(e.to_string()))?;
+            } else {
+                tracing::debug!(
+                    "No event_init closure available (test mode?) for group {}",
+                    self.context.group_id.as_str()
+                );
+            }
+        }
+
         let (mode, cleanup) = if let Some(em) = self.context.state_manager.event_manager() {
             match em.acquire_watch(
                 &self.context.coordinator_id,
