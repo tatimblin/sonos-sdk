@@ -98,13 +98,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             None => continue,
         };
 
-        // Probe reachability
-        if speaker.volume.fetch().is_err() {
-            eprintln!("  Skipping {name} (unreachable)");
-            continue;
-        }
-
         let sid = speaker.id.as_str().to_string();
+
+        // Volume watch serves as reachability probe — skip speaker if it fails
+        let volume_handle = match speaker.volume.watch() {
+            Ok(handle) => handle,
+            Err(_) => {
+                eprintln!("  Skipping {name} (unreachable)");
+                continue;
+            }
+        };
+
         speaker_display.insert(sid.clone(), name.clone());
 
         println!("Setting up watches for {name}...");
@@ -114,15 +118,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // ================================================================
 
         // Volume
-        if let Ok(handle) = speaker.volume.watch() {
-            let mode = handle.mode().to_string();
+        {
+            let mode = volume_handle.mode().to_string();
             let val = speaker
                 .volume
                 .get()
                 .map(|v| format!("{}", v.0))
                 .unwrap_or_else(|| "-".into());
             observations.insert(format!("{sid}|volume"), PropertyObservation::new(val, mode));
-            _watch_handles.push(Box::new(handle));
+            _watch_handles.push(Box::new(volume_handle));
         }
 
         // Mute
