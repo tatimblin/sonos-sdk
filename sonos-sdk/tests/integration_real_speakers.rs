@@ -74,8 +74,8 @@
 //! - Grace period validation: < 50ms subscription reuse timing
 
 use sonos_sdk::prelude::*;
-use std::time::Duration;
 use std::thread;
+use std::time::Duration;
 
 /// Helper function to ensure real speakers are available for testing
 fn require_real_speakers() -> Result<SonosSystem, Box<dyn std::error::Error>> {
@@ -102,9 +102,13 @@ fn find_reachable_speaker(system: &SonosSystem) -> Result<Speaker, Box<dyn std::
 
 /// Find standalone speakers (not bonded pairs) that are compatible with group operations
 /// Filters out home theater devices (Playbar, Beam, Arc, Sub) that may have restrictions
-fn find_standalone_speakers(system: &SonosSystem, min_count: usize) -> Result<Vec<Speaker>, Box<dyn std::error::Error>> {
+fn find_standalone_speakers(
+    system: &SonosSystem,
+    min_count: usize,
+) -> Result<Vec<Speaker>, Box<dyn std::error::Error>> {
     let groups = system.groups();
-    let standalone_speakers: Vec<_> = groups.iter()
+    let standalone_speakers: Vec<_> = groups
+        .iter()
         .filter(|g| g.member_count() == 1)
         .filter_map(|g| g.coordinator())
         .filter(|speaker| {
@@ -117,7 +121,12 @@ fn find_standalone_speakers(system: &SonosSystem, min_count: usize) -> Result<Ve
         .collect();
 
     if standalone_speakers.len() < min_count {
-        return Err(format!("Found {} standalone speakers, need {}", standalone_speakers.len(), min_count).into());
+        return Err(format!(
+            "Found {} standalone speakers, need {}",
+            standalone_speakers.len(),
+            min_count
+        )
+        .into());
     }
 
     Ok(standalone_speakers)
@@ -140,7 +149,11 @@ fn test_api_operations() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     speaker.set_volume(test_volume)?;
-    assert_eq!(speaker.volume.fetch()?.0, test_volume, "Volume should match set value");
+    assert_eq!(
+        speaker.volume.fetch()?.0,
+        test_volume,
+        "Volume should match set value"
+    );
     speaker.set_volume(original_volume)?; // restore original
 
     // Test playback state (read-only, no state changes)
@@ -178,7 +191,10 @@ fn test_event_streaming() -> Result<(), Box<dyn std::error::Error>> {
     if elapsed < Duration::from_millis(50) {
         eprintln!("Grace period active: subscription reused at {:?}", elapsed);
     } else {
-        eprintln!("Grace period expired: new subscription created at {:?}", elapsed);
+        eprintln!(
+            "Grace period expired: new subscription created at {:?}",
+            elapsed
+        );
     }
 
     // Test event iteration (brief test to avoid long delays)
@@ -206,7 +222,10 @@ fn test_event_streaming() -> Result<(), Box<dyn std::error::Error>> {
     speaker.set_volume(original_volume)?;
 
     eprintln!("Events received: {}", event_count);
-    assert!(event_count > 0, "Should receive at least one event after volume change");
+    assert!(
+        event_count > 0,
+        "Should receive at least one event after volume change"
+    );
 
     eprintln!("✅ Event streaming test completed successfully");
     Ok(())
@@ -247,18 +266,26 @@ fn test_group_lifecycle() -> Result<(), Box<dyn std::error::Error>> {
     let speaker_a = &standalone_speakers[0];
     let speaker_b = &standalone_speakers[1];
 
-    eprintln!("Testing group operations with speakers: {} and {}", speaker_a.name, speaker_b.name);
+    eprintln!(
+        "Testing group operations with speakers: {} and {}",
+        speaker_a.name, speaker_b.name
+    );
 
     // Test group creation (coordinator, members)
     let result = system.create_group(speaker_a, &[speaker_b])?;
-    eprintln!("Group created: {} succeeded, {} failed", result.succeeded.len(), result.failed.len());
+    eprintln!(
+        "Group created: {} succeeded, {} failed",
+        result.succeeded.len(),
+        result.failed.len()
+    );
 
     // Wait for topology update
     thread::sleep(Duration::from_millis(500));
 
     // Verify group membership
     let updated_groups = system.groups();
-    let our_group = updated_groups.iter()
+    let our_group = updated_groups
+        .iter()
         .find(|g| g.member_count() == 2)
         .ok_or("Group not found after creation")?;
 
@@ -272,8 +299,14 @@ fn test_group_lifecycle() -> Result<(), Box<dyn std::error::Error>> {
     let final_groups = system.groups();
 
     // Should have standalone speakers again
-    let standalone_count = final_groups.iter().filter(|g| g.member_count() == 1).count();
-    assert!(standalone_count >= 2, "Speakers should be standalone after leave_group");
+    let standalone_count = final_groups
+        .iter()
+        .filter(|g| g.member_count() == 1)
+        .count();
+    assert!(
+        standalone_count >= 2,
+        "Speakers should be standalone after leave_group"
+    );
 
     eprintln!("✅ Group lifecycle test completed successfully");
     Ok(())
@@ -292,13 +325,22 @@ fn test_property_watching() -> Result<(), Box<dyn std::error::Error>> {
 
     // Test fetch() updates cache
     let fetched_volume = speaker.volume.fetch()?;
-    let cached_volume = speaker.volume.get().expect("get() should return Some after fetch()");
-    assert_eq!(fetched_volume.0, cached_volume.0, "fetch() should update cache");
+    let cached_volume = speaker
+        .volume
+        .get()
+        .expect("get() should return Some after fetch()");
+    assert_eq!(
+        fetched_volume.0, cached_volume.0,
+        "fetch() should update cache"
+    );
 
     // Test watch() returns current value
     let watch_handle = speaker.volume.watch()?;
     if let Some(watched_volume) = watch_handle.value() {
-        assert_eq!(watched_volume.0, cached_volume.0, "watch() should return cached value");
+        assert_eq!(
+            watched_volume.0, cached_volume.0,
+            "watch() should return cached value"
+        );
     }
 
     eprintln!("Watch mode: {}", watch_handle.mode());
@@ -308,7 +350,11 @@ fn test_property_watching() -> Result<(), Box<dyn std::error::Error>> {
     let handle2 = speaker.volume.watch()?;
 
     // Both should have same value and mode
-    assert_eq!(handle1.mode(), handle2.mode(), "Concurrent watches should share mode");
+    assert_eq!(
+        handle1.mode(),
+        handle2.mode(),
+        "Concurrent watches should share mode"
+    );
 
     if let (Some(vol1), Some(vol2)) = (handle1.value(), handle2.value()) {
         assert_eq!(vol1.0, vol2.0, "Concurrent watches should have same value");
@@ -358,21 +404,35 @@ fn test_event_integration() -> Result<(), Box<dyn std::error::Error>> {
 
     while std::time::Instant::now() < deadline {
         if let Some(event) = iter.recv_timeout(Duration::from_millis(100)) {
-            eprintln!("📡 Received event: {} for speaker {}", event.property_key, event.speaker_id);
+            eprintln!(
+                "📡 Received event: {} for speaker {}",
+                event.property_key, event.speaker_id
+            );
             if event.property_key == "volume" {
                 volume_event_received = true;
-                eprintln!("✅ Volume event received via system.iter(): {}", event.property_key);
+                eprintln!(
+                    "✅ Volume event received via system.iter(): {}",
+                    event.property_key
+                );
                 break;
             }
         }
     }
 
-    assert!(volume_event_received, "No volume event received after API change");
+    assert!(
+        volume_event_received,
+        "No volume event received after API change"
+    );
 
     // Verify the volume actually changed and is cached
-    let final_volume = speaker.volume.get()
+    let final_volume = speaker
+        .volume
+        .get()
         .ok_or("Volume should be cached after events")?;
-    assert_eq!(final_volume.0, new_volume, "Cached volume should match API change");
+    assert_eq!(
+        final_volume.0, new_volume,
+        "Cached volume should match API change"
+    );
 
     // Restore original volume and verify it also generates an event
     speaker.set_volume(current_volume)?;
@@ -386,13 +446,19 @@ fn test_event_integration() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(event) = iter.recv_timeout(Duration::from_millis(100)) {
             if event.property_key == "volume" {
                 restore_event_received = true;
-                eprintln!("✅ Restore event received via system.iter(): {}", event.property_key);
+                eprintln!(
+                    "✅ Restore event received via system.iter(): {}",
+                    event.property_key
+                );
                 break;
             }
         }
     }
 
-    assert!(restore_event_received, "No volume event received after restore");
+    assert!(
+        restore_event_received,
+        "No volume event received after restore"
+    );
 
     eprintln!("✅ Event integration validated: property watching -> API changes -> events via system.iter()");
     Ok(())

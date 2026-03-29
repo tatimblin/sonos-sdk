@@ -70,7 +70,9 @@ fn find_reachable_speaker(system: &SonosSystem, names: &[String]) -> Result<Spea
         }
     }
 
-    Err(SdkError::DiscoveryFailed("No reachable speakers found".to_string()))
+    Err(SdkError::DiscoveryFailed(
+        "No reachable speakers found".to_string(),
+    ))
 }
 
 fn demo_normal_usage(speaker: &Speaker) -> Result<(), SdkError> {
@@ -120,7 +122,10 @@ fn demo_tui_pattern(speaker: &Speaker) -> Result<(), SdkError> {
             "Volume: ?".to_string()
         };
 
-        println!("   🖼️  Frame {frame:2}: {volume_text} | Handle mode: {}", handle.mode());
+        println!(
+            "   🖼️  Frame {frame:2}: {volume_text} | Handle mode: {}",
+            handle.mode()
+        );
 
         // Handle automatically drops at end of scope
         // Grace period prevents unsubscribe churn
@@ -156,7 +161,10 @@ fn demo_grace_period_timing(speaker: &Speaker) -> Result<(), SdkError> {
     println!("   🗑️  Dropping handle 1...");
     let drop_time = Instant::now();
     drop(handle1);
-    println!("      ⏱️  Grace period started at {:?}", drop_time.elapsed());
+    println!(
+        "      ⏱️  Grace period started at {:?}",
+        drop_time.elapsed()
+    );
 
     // Wait 25ms (within grace period)
     thread::sleep(Duration::from_millis(25));
@@ -165,7 +173,10 @@ fn demo_grace_period_timing(speaker: &Speaker) -> Result<(), SdkError> {
     // Create new handle (should reuse subscription)
     let handle2 = speaker.volume.watch()?;
     let reuse_time = drop_time.elapsed();
-    println!("   ♻️  New handle created at {:?} - subscription reused!", reuse_time);
+    println!(
+        "   ♻️  New handle created at {:?} - subscription reused!",
+        reuse_time
+    );
 
     if let Some(vol) = handle2.value() {
         println!("      📊 Volume still available: {}%", vol.0);
@@ -197,7 +208,10 @@ fn demo_subscription_persistence(speaker: &Speaker) -> Result<(), SdkError> {
     // Create second watch (should share subscription)
     println!("   📝 Creating volume watch 2...");
     let vol_handle2 = speaker.volume.watch()?;
-    println!("      ✅ Watch 2 active - mode: {} (shares subscription)", vol_handle2.mode());
+    println!(
+        "      ✅ Watch 2 active - mode: {} (shares subscription)",
+        vol_handle2.mode()
+    );
 
     // Create watch for different property
     println!("   📝 Creating mute watch...");
@@ -206,8 +220,11 @@ fn demo_subscription_persistence(speaker: &Speaker) -> Result<(), SdkError> {
 
     // Show current values
     if let (Some(vol), Some(mute)) = (vol_handle1.value(), mute_handle.value()) {
-        println!("      📊 Current state: Volume {}%, Mute {}",
-                vol.0, if mute.0 { "ON" } else { "OFF" });
+        println!(
+            "      📊 Current state: Volume {}%, Mute {}",
+            vol.0,
+            if mute.0 { "ON" } else { "OFF" }
+        );
     }
 
     // Drop one volume watch (subscription should persist due to second watch)
