@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/tatimblin/sonos-sdk/compare/sonos-sdk-v0.3.0...sonos-sdk-v0.4.0) - 2026-03-29
+
+### Added
+
+- Integration test suite for real speaker validation ([#61](https://github.com/tatimblin/sonos-sdk/pull/61))
+
+### Fixed
+
+- *(callback-server)* buffer + replay events for unregistered SIDs ([#63](https://github.com/tatimblin/sonos-sdk/pull/63))
+
 ## [0.3.0](https://github.com/tatimblin/sonos-sdk/compare/sonos-sdk-v0.2.1...sonos-sdk-v0.3.0) - 2026-03-28
 
 ### Added
