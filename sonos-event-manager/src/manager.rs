@@ -248,6 +248,11 @@ impl SonosEventManager {
                 );
             } else {
                 // No pending grace period — actually subscribe
+                tracing::debug!(
+                    "acquire_watch: sending Subscribe command for {}:{:?}",
+                    ip,
+                    service
+                );
                 self.command_tx
                     .send(Command::Subscribe { ip, service })
                     .map_err(|_| EventManagerError::WorkerDisconnected)?;

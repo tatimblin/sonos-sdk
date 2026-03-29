@@ -45,6 +45,15 @@ use crate::model::{GroupId, SpeakerId, SpeakerInfo};
 use crate::property::{GroupInfo, Property, SonosProperty, Topology};
 use crate::{Result, StateError};
 
+/// Closure type for lazy event manager initialization.
+///
+/// Stored on `StateManager` as the single source of truth. Called by
+/// `PropertyHandle::watch()` to trigger event manager creation on first use.
+/// Uses `Box<dyn Error>` to avoid circular dependency on `sonos-sdk` error types.
+pub type EventInitFn = Arc<
+    dyn Fn() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> + Send + Sync,
+>;
+
 // ============================================================================
 // ChangeEvent - for iter()
 // ============================================================================
@@ -269,6 +278,10 @@ pub struct StateManager {
     /// Maps property key → Service for WatchRegistry's unregister_watches_for_service.
     /// Shared with StateWatchRegistry via Arc.
     key_to_service: Arc<RwLock<HashMap<&'static str, Service>>>,
+
+    /// Lazy event manager initialization closure (set-once).
+    /// Called by watch() to trigger event manager creation on first use.
+    event_init: OnceLock<EventInitFn>,
 }
 
 // ============================================================================
@@ -650,7 +663,9 @@ impl StateManager {
     /// Spawns the event worker thread and registers all known devices.
     /// Can only be called once — subsequent calls are no-ops.
     pub fn set_event_manager(&self, em: Arc<SonosEventManager>) -> Result<()> {
+        tracing::debug!("StateManager::set_event_manager called");
         if self.event_manager.set(Arc::clone(&em)).is_err() {
+            tracing::debug!("Event manager already set — no-op");
             return Ok(()); // Already set — no-op
         }
 
@@ -698,6 +713,22 @@ impl StateManager {
 
         Ok(())
     }
+
+    /// Set the lazy event manager initialization closure.
+    ///
+    /// Called once by `SonosSystem::from_devices_inner()` after construction.
+    /// Subsequent calls are no-ops (OnceLock semantics).
+    pub fn set_event_init(&self, f: EventInitFn) {
+        let _ = self.event_init.set(f);
+    }
+
+    /// Get the event init closure (if set).
+    ///
+    /// Used by `PropertyHandle::watch()` and `GroupPropertyHandle::watch()`
+    /// to trigger lazy event manager creation on first use.
+    pub fn event_init(&self) -> Option<&EventInitFn> {
+        self.event_init.get()
+    }
 }
 
 impl Clone for StateManager {
@@ -705,6 +736,10 @@ impl Clone for StateManager {
         let event_manager = OnceLock::new();
         if let Some(em) = self.event_manager.get() {
             let _ = event_manager.set(Arc::clone(em));
+        }
+        let event_init = OnceLock::new();
+        if let Some(f) = self.event_init.get() {
+            let _ = event_init.set(Arc::clone(f));
         }
         Self {
             store: Arc::clone(&self.store),
@@ -716,6 +751,7 @@ impl Clone for StateManager {
             _worker: Mutex::new(None),
             cleanup_timeout: self.cleanup_timeout,
             key_to_service: Arc::clone(&self.key_to_service),
+            event_init,
         }
     }
 }
@@ -801,6 +837,7 @@ impl StateManagerBuilder {
             _worker: Mutex::new(worker),
             cleanup_timeout: self.cleanup_timeout,
             key_to_service,
+            event_init: OnceLock::new(),
         };
 
         info!("StateManager created (sync-first mode)");

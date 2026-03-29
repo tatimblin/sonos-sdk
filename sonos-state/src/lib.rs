@@ -79,7 +79,7 @@ pub mod error;
 // ============================================================================
 
 // State manager
-pub use state::{ChangeEvent, StateManager, StateManagerBuilder};
+pub use state::{ChangeEvent, EventInitFn, StateManager, StateManagerBuilder};
 
 // Change iterator
 pub use iter::ChangeIterator;

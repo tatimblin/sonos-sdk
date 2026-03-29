@@ -211,13 +211,11 @@ mod tests {
         let router = EventRouter::new(tx);
 
         let sub_id = "uuid:late-register".to_string();
-        let event_xml = "<e:propertyset><CurrentPlayMode>NORMAL</CurrentPlayMode></e:propertyset>"
-            .to_string();
+        let event_xml =
+            "<e:propertyset><CurrentPlayMode>NORMAL</CurrentPlayMode></e:propertyset>".to_string();
 
         // 1. Event arrives BEFORE register (the race condition)
-        router
-            .route_event(sub_id.clone(), event_xml.clone())
-            .await;
+        router.route_event(sub_id.clone(), event_xml.clone()).await;
 
         // 2. Register happens moments later
         router.register(sub_id.clone()).await;

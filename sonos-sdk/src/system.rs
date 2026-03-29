@@ -12,9 +12,8 @@ use sonos_discovery::{self, Device};
 use sonos_event_manager::SonosEventManager;
 #[cfg(feature = "test-support")]
 use sonos_state::GroupInfo;
-use sonos_state::{GroupId, SpeakerId, StateManager, Topology};
+use sonos_state::{EventInitFn, GroupId, SpeakerId, StateManager, Topology};
 
-use crate::property::EventInitFn;
 use crate::{cache, Group, SdkError, Speaker};
 
 /// Compute the display name for a device.
@@ -169,28 +168,37 @@ impl SonosSystem {
         let api_client = SonosClient::new();
         let event_manager: Arc<Mutex<Option<Arc<SonosEventManager>>>> = Arc::new(Mutex::new(None));
 
-        // 2. Build init closure from the shared Arcs
+        // 2. Build init closure and store on StateManager (single source of truth)
         let init_fn: EventInitFn = {
             let em_mutex = Arc::clone(&event_manager);
             let sm = Arc::clone(&state_manager);
-            Arc::new(move || {
-                let mut guard = em_mutex.lock().map_err(|_| SdkError::LockPoisoned)?;
-                if guard.is_some() {
-                    return Ok(());
-                }
-                let em = Arc::new(
-                    SonosEventManager::new().map_err(|e| SdkError::EventManager(e.to_string()))?,
-                );
-                sm.set_event_manager(Arc::clone(&em))
-                    .map_err(SdkError::StateError)?;
-                *guard = Some(em);
-                Ok(())
-            })
+            Arc::new(
+                move || -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                    let mut guard = em_mutex.lock().map_err(|_| SdkError::LockPoisoned)?;
+                    if guard.is_some() {
+                        tracing::trace!(
+                            "Event manager init closure called but already initialized"
+                        );
+                        return Ok(());
+                    }
+                    tracing::info!("Lazy-initializing event manager (first watch() call)");
+                    let em = Arc::new(SonosEventManager::new().map_err(|e| {
+                        tracing::error!("Failed to create SonosEventManager: {}", e);
+                        SdkError::EventManager(e.to_string())
+                    })?);
+                    tracing::debug!("SonosEventManager created, wiring into StateManager");
+                    sm.set_event_manager(Arc::clone(&em))
+                        .map_err(SdkError::StateError)?;
+                    *guard = Some(em);
+                    tracing::info!("Event manager initialization complete");
+                    Ok(())
+                },
+            )
         };
+        state_manager.set_event_init(init_fn);
 
-        // 3. Build speakers WITH the init closure
-        let speakers =
-            Self::build_speakers_with_init(&devices, &state_manager, &api_client, Some(&init_fn))?;
+        // 3. Build speakers (init fn is on StateManager — no per-speaker threading needed)
+        let speakers = Self::build_speakers(&devices, &state_manager, &api_client)?;
 
         // 4. Assemble struct from the SAME Arcs
         Ok(Self {
@@ -243,7 +251,7 @@ impl SonosSystem {
             .expect("add_devices should not fail with valid test data");
 
         let api_client = SonosClient::new();
-        let speakers = Self::build_speakers_with_init(&devices, &state_manager, &api_client, None)
+        let speakers = Self::build_speakers(&devices, &state_manager, &api_client)
             .expect("build_speakers should not fail with valid test data");
 
         Self {
@@ -288,14 +296,10 @@ impl SonosSystem {
     }
 
     /// Build Speaker handles from a list of devices.
-    ///
-    /// If `event_init` is provided, speakers will trigger lazy event manager
-    /// initialization on first `watch()` call.
-    fn build_speakers_with_init(
+    fn build_speakers(
         devices: &[Device],
         state_manager: &Arc<StateManager>,
         api_client: &SonosClient,
-        event_init: Option<&EventInitFn>,
     ) -> Result<HashMap<String, Speaker>, SdkError> {
         let mut speakers = HashMap::new();
         for device in devices {
@@ -306,14 +310,13 @@ impl SonosSystem {
                 .map_err(|_| SdkError::InvalidIpAddress)?;
 
             let name = display_name(device);
-            let speaker = Speaker::new_with_event_init(
+            let speaker = Speaker::new(
                 speaker_id,
                 name.clone(),
                 ip,
                 device.model_name.clone(),
                 Arc::clone(state_manager),
                 api_client.clone(),
-                event_init.cloned(),
             );
 
             if speakers.contains_key(&name) {
@@ -383,18 +386,14 @@ impl SonosSystem {
         }
 
         // 3. Build new Speaker handles (no lock needed)
-        let new_speakers = match Self::build_speakers_with_init(
-            &devices,
-            &self.state_manager,
-            &self.api_client,
-            None,
-        ) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!("Failed to build speakers from rediscovery: {}", e);
-                return;
-            }
-        };
+        let new_speakers =
+            match Self::build_speakers(&devices, &self.state_manager, &self.api_client) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("Failed to build speakers from rediscovery: {}", e);
+                    return;
+                }
+            };
 
         // 4. Acquire write lock BRIEFLY for map swap only
         if let Ok(mut map) = self.speakers.write() {

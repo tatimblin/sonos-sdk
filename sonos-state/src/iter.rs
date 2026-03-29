@@ -50,21 +50,45 @@ impl ChangeIterator {
     ///
     /// Returns `None` if the channel is closed.
     pub fn recv(&self) -> Option<ChangeEvent> {
-        self.rx.lock().ok()?.recv().ok()
+        let event = self.rx.lock().ok()?.recv().ok();
+        if let Some(ref e) = event {
+            tracing::trace!(
+                "ChangeIterator::recv yielded {} for {}",
+                e.property_key,
+                e.speaker_id.as_str()
+            );
+        }
+        event
     }
 
     /// Block until the next event or timeout expires
     ///
     /// Returns `None` if the timeout expires or channel is closed.
     pub fn recv_timeout(&self, timeout: Duration) -> Option<ChangeEvent> {
-        self.rx.lock().ok()?.recv_timeout(timeout).ok()
+        let event = self.rx.lock().ok()?.recv_timeout(timeout).ok();
+        if let Some(ref e) = event {
+            tracing::trace!(
+                "ChangeIterator::recv_timeout yielded {} for {}",
+                e.property_key,
+                e.speaker_id.as_str()
+            );
+        }
+        event
     }
 
     /// Try to receive an event without blocking
     ///
     /// Returns `None` if no event is currently available.
     pub fn try_recv(&self) -> Option<ChangeEvent> {
-        self.rx.lock().ok()?.try_recv().ok()
+        let event = self.rx.lock().ok()?.try_recv().ok();
+        if let Some(ref e) = event {
+            tracing::trace!(
+                "ChangeIterator::try_recv yielded {} for {}",
+                e.property_key,
+                e.speaker_id.as_str()
+            );
+        }
+        event
     }
 
     /// Get a non-blocking iterator over currently available events
