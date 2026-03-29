@@ -13,9 +13,9 @@ name = "sonos_event_manager"
 
 [dependencies]
 # Local workspace dependencies
-sonos-api = { path = "../sonos-api", version = "0.4.0" }
-sonos-stream = { package = "sonos-sdk-stream", path = "../sonos-stream", version = "0.4.0" }
-sonos-discovery = { package = "sonos-sdk-discovery", path = "../sonos-discovery", version = "0.4.0" }
+sonos-api = { path = "../sonos-api", version = "0.4.1" }
+sonos-stream = { package = "sonos-sdk-stream", path = "../sonos-stream", version = "0.4.1" }
+sonos-discovery = { package = "sonos-sdk-discovery", path = "../sonos-discovery", version = "0.4.1" }
 
 # Async runtime and utilities
 tokio = { version = "1.0", features = ["full"] }
