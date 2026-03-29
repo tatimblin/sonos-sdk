@@ -583,7 +583,8 @@ mod tests {
 
     #[test]
     fn test_device_management() {
-        let manager = SonosEventManager::new().unwrap();
+        let config = BrokerConfig::default().with_callback_ports(4100, 4200);
+        let manager = SonosEventManager::with_config(config).unwrap();
 
         // Initially no devices
         assert!(manager.devices().is_empty());
@@ -612,7 +613,8 @@ mod tests {
 
     #[test]
     fn test_reference_counting() {
-        let manager = SonosEventManager::new().unwrap();
+        let config = BrokerConfig::default().with_callback_ports(4200, 4300);
+        let manager = SonosEventManager::with_config(config).unwrap();
         let device_ip: IpAddr = "192.168.1.100".parse().unwrap();
         let service = Service::RenderingControl;
 
@@ -650,7 +652,8 @@ mod tests {
 
     #[test]
     fn test_stats() {
-        let manager = SonosEventManager::new().unwrap();
+        let config = BrokerConfig::default().with_callback_ports(4300, 4400);
+        let manager = SonosEventManager::with_config(config).unwrap();
 
         // Initially empty stats
         let stats = manager.service_subscription_stats();
@@ -659,7 +662,8 @@ mod tests {
 
     #[test]
     fn test_acquire_release_watch_ref_counting() {
-        let manager = Arc::new(SonosEventManager::new().unwrap());
+        let config = BrokerConfig::default().with_callback_ports(4400, 4500);
+        let manager = Arc::new(SonosEventManager::with_config(config).unwrap());
         let ip: IpAddr = "192.168.1.100".parse().unwrap();
         let speaker_id = SpeakerId::new("RINCON_123");
 
@@ -686,7 +690,8 @@ mod tests {
 
     #[test]
     fn test_grace_period_cancelled_by_reacquire() {
-        let manager = Arc::new(SonosEventManager::new().unwrap());
+        let config = BrokerConfig::default().with_callback_ports(4500, 4600);
+        let manager = Arc::new(SonosEventManager::with_config(config).unwrap());
         let registry = MockRegistry::new();
         manager.set_watch_registry(registry.clone());
 
@@ -722,7 +727,8 @@ mod tests {
 
     #[test]
     fn test_grace_period_fires_after_timeout() {
-        let manager = Arc::new(SonosEventManager::new().unwrap());
+        let config = BrokerConfig::default().with_callback_ports(4600, 4700);
+        let manager = Arc::new(SonosEventManager::with_config(config).unwrap());
         let registry = MockRegistry::new();
         manager.set_watch_registry(registry.clone());
 
@@ -745,7 +751,8 @@ mod tests {
 
     #[test]
     fn test_watch_registry_integration() {
-        let manager = Arc::new(SonosEventManager::new().unwrap());
+        let config = BrokerConfig::default().with_callback_ports(4700, 4800);
+        let manager = Arc::new(SonosEventManager::with_config(config).unwrap());
         let registry = MockRegistry::new();
         manager.set_watch_registry(registry.clone());
 
@@ -762,7 +769,8 @@ mod tests {
 
     #[test]
     fn test_guard_drop_with_disconnected_worker() {
-        let manager = Arc::new(SonosEventManager::new().unwrap());
+        let config = BrokerConfig::default().with_callback_ports(4800, 4900);
+        let manager = Arc::new(SonosEventManager::with_config(config).unwrap());
         let ip: IpAddr = "192.168.1.100".parse().unwrap();
         let speaker_id = SpeakerId::new("RINCON_123");
 
@@ -779,7 +787,9 @@ mod tests {
 
     #[test]
     fn test_multiple_services_independent_grace_periods() {
-        let manager = Arc::new(SonosEventManager::new().unwrap());
+        // Use a different port range to avoid conflicts with other concurrent tests
+        let config = BrokerConfig::default().with_callback_ports(4000, 4100);
+        let manager = Arc::new(SonosEventManager::with_config(config).unwrap());
         let ip: IpAddr = "192.168.1.100".parse().unwrap();
         let speaker_id = SpeakerId::new("RINCON_123");
 
@@ -810,7 +820,8 @@ mod tests {
 
     #[test]
     fn test_shutdown_drains_pending_grace_timers() {
-        let manager = Arc::new(SonosEventManager::new().unwrap());
+        let config = BrokerConfig::default().with_callback_ports(4900, 5000);
+        let manager = Arc::new(SonosEventManager::with_config(config).unwrap());
         let registry = MockRegistry::new();
         manager.set_watch_registry(registry.clone());
 
