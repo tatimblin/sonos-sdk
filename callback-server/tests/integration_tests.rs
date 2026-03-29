@@ -102,7 +102,7 @@ async fn test_callback_server_end_to_end() {
     assert!(notification2.event_xml.contains("Volume"));
     assert!(notification2.event_xml.contains("50"));
 
-    // Test 3: Send event for unregistered subscription (should get 404)
+    // Test 3: Send event for unregistered subscription (buffered, returns 200)
     let unregistered_url = format!("{base_url}/notify/unregistered-sub");
 
     let response3 = client
@@ -117,13 +117,15 @@ async fn test_callback_server_end_to_end() {
         .await
         .expect("Failed to send third HTTP request");
 
-    assert_eq!(response3.status(), 404);
+    // Events for unregistered SIDs are buffered (not rejected) to handle
+    // the SUBSCRIBE/NOTIFY race condition.
+    assert_eq!(response3.status(), 200);
 
-    // Verify no notification was received for unregistered subscription
+    // No immediate notification — event is buffered, not routed
     let no_notification = timeout(Duration::from_millis(100), rx.recv()).await;
     assert!(
         no_notification.is_err(),
-        "Should not receive notification for unregistered subscription"
+        "Should not receive notification for unregistered subscription (buffered only)"
     );
 
     // Test 4: Send invalid request (missing SID header)
@@ -279,7 +281,7 @@ async fn test_dynamic_subscription_management() {
     let subscription_id = "dynamic-subscription".to_string();
     let notify_url = format!("{base_url}/notify/{subscription_id}");
 
-    // Initially, subscription is not registered - should get 404
+    // Initially, subscription is not registered — event is buffered (200), not rejected (404)
     let response1 = client
         .request(reqwest::Method::from_bytes(b"NOTIFY").unwrap(), &notify_url)
         .header("SID", format!("uuid:{subscription_id}"))
@@ -288,15 +290,27 @@ async fn test_dynamic_subscription_management() {
         .await
         .expect("Failed to send HTTP request");
 
-    assert_eq!(response1.status(), 404);
+    assert_eq!(response1.status(), 200);
 
-    // Register the subscription
+    // Register the subscription — this replays the buffered "before_register" event
     server
         .router()
         .register(format!("uuid:{subscription_id}"))
         .await;
 
-    // Now the same request should succeed
+    // The buffered event should have been replayed on register
+    let replayed = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("Timeout waiting for replayed notification")
+        .expect("No replayed notification received");
+
+    assert_eq!(
+        replayed.subscription_id,
+        format!("uuid:{subscription_id}")
+    );
+    assert!(replayed.event_xml.contains("before_register"));
+
+    // Now send another event — should be routed directly
     let response2 = client
         .request(reqwest::Method::from_bytes(b"NOTIFY").unwrap(), &notify_url)
         .header("SID", format!("uuid:{subscription_id}"))
@@ -307,7 +321,7 @@ async fn test_dynamic_subscription_management() {
 
     assert_eq!(response2.status(), 200);
 
-    // Verify notification was received
+    // Verify the directly-routed notification
     let notification = timeout(Duration::from_secs(1), rx.recv())
         .await
         .expect("Timeout waiting for notification")
@@ -325,7 +339,7 @@ async fn test_dynamic_subscription_management() {
         .unregister(&format!("uuid:{subscription_id}"))
         .await;
 
-    // Request should now fail again
+    // After unregister, events are buffered (200), not rejected
     let response3 = client
         .request(reqwest::Method::from_bytes(b"NOTIFY").unwrap(), &notify_url)
         .header("SID", format!("uuid:{subscription_id}"))
@@ -334,13 +348,13 @@ async fn test_dynamic_subscription_management() {
         .await
         .expect("Failed to send HTTP request");
 
-    assert_eq!(response3.status(), 404);
+    assert_eq!(response3.status(), 200);
 
-    // Verify no notification was received
+    // No notification — event is buffered, not routed
     let no_notification = timeout(Duration::from_millis(100), rx.recv()).await;
     assert!(
         no_notification.is_err(),
-        "Should not receive notification after unregistration"
+        "Should not receive notification after unregistration (buffered only)"
     );
 
     server.shutdown().await.expect("Failed to shutdown server");
@@ -442,6 +456,59 @@ async fn test_error_handling() {
         no_notification.is_err(),
         "Should not receive notifications for malformed requests"
     );
+
+    server.shutdown().await.expect("Failed to shutdown server");
+}
+
+/// Test the SUBSCRIBE/NOTIFY race: event arrives before register, gets replayed.
+#[tokio::test]
+async fn test_notify_before_register_is_replayed() {
+    let (tx, mut rx) = mpsc::unbounded_channel::<NotificationPayload>();
+    let server = CallbackServer::new((51200, 51300), tx)
+        .await
+        .expect("Failed to create callback server");
+
+    let base_url = server.base_url().to_string();
+    let client = reqwest::Client::new();
+
+    let sub_id = "uuid:race-integration";
+
+    // 1. Send NOTIFY *before* registering the SID
+    let notify_url = format!("{base_url}/notify/race-test");
+    let resp = client
+        .request(
+            reqwest::Method::from_bytes(b"NOTIFY").unwrap(),
+            &notify_url,
+        )
+        .header("SID", sub_id)
+        .header("NT", "upnp:event")
+        .header("NTS", "upnp:propchange")
+        .body("<event>initial-state</event>")
+        .send()
+        .await
+        .expect("Failed to send NOTIFY");
+
+    // Should return 200 (buffered), not 404 (dropped)
+    assert_eq!(resp.status(), 200);
+
+    // No immediate notification — event is buffered
+    let no_notification = timeout(Duration::from_millis(100), rx.recv()).await;
+    assert!(
+        no_notification.is_err(),
+        "Event should be buffered, not delivered immediately"
+    );
+
+    // 2. Now register the SID
+    server.router().register(sub_id.to_string()).await;
+
+    // 3. Buffered event should be replayed
+    let payload = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("Timeout waiting for replayed event")
+        .expect("No replayed event received");
+
+    assert_eq!(payload.subscription_id, sub_id);
+    assert!(payload.event_xml.contains("initial-state"));
 
     server.shutdown().await.expect("Failed to shutdown server");
 }

@@ -3,7 +3,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, trace};
 use warp::Filter;
 
 use super::router::{EventRouter, NotificationPayload};
@@ -314,25 +314,21 @@ impl CallbackServer {
                                 warp::reject::custom(InvalidUpnpHeaders)
                             })?;
 
-                            // Route the event through the unified event stream
-                            let routed = router.route_event(sub_id.clone(), event_xml).await;
+                            // Route the event through the unified event stream.
+                            // Events are either delivered immediately (registered SID)
+                            // or buffered for replay when register() is called.
+                            router.route_event(sub_id.clone(), event_xml).await;
 
-                            if routed {
-                                debug!(
-                                    subscription_id = %sub_id,
-                                    "UPnP event routed successfully"
-                                );
-                                Ok::<_, warp::Rejection>(warp::reply::with_status(
-                                    "",
-                                    warp::http::StatusCode::OK,
-                                ))
-                            } else {
-                                warn!(
-                                    subscription_id = %sub_id,
-                                    "UPnP event routing failed - subscription not found"
-                                );
-                                Err(warp::reject::not_found())
-                            }
+                            debug!(
+                                subscription_id = %sub_id,
+                                "UPnP event accepted"
+                            );
+                            // Always 200 OK — event is either routed or buffered.
+                            // Returning 404 could cause the speaker to cancel the subscription.
+                            Ok::<_, warp::Rejection>(warp::reply::with_status(
+                                "",
+                                warp::http::StatusCode::OK,
+                            ))
                         }
                     }
                 });

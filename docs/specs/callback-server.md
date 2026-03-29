@@ -149,8 +149,10 @@ pub struct EventRouter {
 **Purpose**: Routes incoming events to the unified event stream based on subscription registration.
 
 **Invariants**:
-- Only events for registered subscription IDs are forwarded
-- Unregistered subscription IDs result in routing failure (returns false)
+- Events for registered subscription IDs are forwarded immediately
+- Events for unregistered subscription IDs are buffered and replayed when `register()` is called
+- Buffered events expire after 5 seconds (BUFFER_TTL)
+- `unregister()` drains buffered events to prevent stale replays
 - Thread-safe for concurrent registration/routing
 
 **Ownership**: Owned by `CallbackServer` via `Arc`, accessible to consumers for registration management.
@@ -218,13 +220,13 @@ pub struct FirewallDetectionCoordinator {
    - SID header must be present
    - If NT and NTS are present, they must be `upnp:event` and `upnp:propchange`
 
-4. **Event Routing** (`src/router.rs:157-172`): The router checks if the subscription ID is registered:
-   - If registered: creates `NotificationPayload` and sends to channel, returns true
-   - If not registered: returns false, server responds with 404
+4. **Event Routing** (`src/router.rs`): The router checks if the subscription ID is registered:
+   - If registered: creates `NotificationPayload` and sends to channel immediately
+   - If not registered: buffers event for replay when `register()` is called
 
-5. **Channel Delivery** (`src/router.rs:167`): The payload is sent via `event_sender.send()`. Errors are ignored (receiver may have dropped).
+5. **Channel Delivery**: The payload is sent via `event_sender.send()`. Errors are ignored (receiver may have dropped).
 
-6. **HTTP Response** (`src/server.rs:326-334`): Returns 200 OK on success, 404 if subscription not found.
+6. **HTTP Response**: Always returns 200 OK for valid NOTIFY requests. Events are either routed immediately or buffered for replay — returning 404 could cause speakers to cancel subscriptions.
 
 ### 3.2 Secondary Flow: Server Initialization
 
@@ -300,10 +302,10 @@ firewall_detection.rs:150   firewall_detection.rs:232   firewall_detection.rs:25
                                           ▼
                                    handle_rejection (server.rs:393-411)
 
-[Unknown subscription] ──▶ [router.route_event returns false] ──▶ [404 Not Found]
+[Unknown subscription] ──▶ [router.route_event buffers event] ──▶ [200 OK]
                                           │
                                           ▼
-                                   warp::reject::not_found()
+                                   Buffered for replay on register()
 
 [Channel dropped]      ──▶ [event_sender.send() error ignored] ──▶ [No visible error]
 ```
@@ -611,7 +613,7 @@ pub struct DeviceFirewallState {
 
 **Body**: UPnP propertyset XML containing changed property values
 
-**Error handling**: Invalid requests receive HTTP 400 or 404. Network errors on the device side are not our responsibility.
+**Error handling**: Invalid requests receive HTTP 400. Valid NOTIFY requests always receive 200 OK (events are buffered if the SID is not yet registered). Network errors on the device side are not our responsibility.
 
 **Retry strategy**: None. UPnP devices do not expect or handle retry from callback servers.
 
@@ -644,7 +646,7 @@ impl warp::reject::Reject for InvalidUpnpHeaders {}
 |-----------|---------------|-----------|
 | Fail fast on startup | Port/IP detection errors abort server creation | Better to fail clearly than run in broken state |
 | Graceful degradation at runtime | Channel send errors ignored | Receiver dropping is valid shutdown; no need to propagate |
-| HTTP-appropriate responses | 400 for bad headers, 404 for unknown subscription | Standard HTTP semantics for API consumers |
+| HTTP-appropriate responses | 400 for bad headers, 200 for all valid NOTIFY (buffered if unregistered) | Always 200 OK for valid events to prevent speakers from cancelling subscriptions |
 
 ### 7.3 Error Recovery
 
