@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 
 use parking_lot::RwLock;
 
-use sonos_api::Service;
+use sonos_api::{Service, ServiceScope};
 use sonos_discovery::Device;
 use sonos_event_manager::{SonosEventManager, WatchRegistry};
 use tracing::info;
@@ -42,7 +42,7 @@ use tracing::info;
 use crate::event_worker::spawn_state_event_worker;
 use crate::iter::ChangeIterator;
 use crate::model::{GroupId, SpeakerId, SpeakerInfo};
-use crate::property::{GroupInfo, Property, SonosProperty, Topology};
+use crate::property::{GroupInfo, Property, Scope, SonosProperty, Topology};
 use crate::{Result, StateError};
 
 /// Closure type for lazy event manager initialization.
@@ -161,6 +161,37 @@ impl StateStore {
         self.speaker_to_group.clear();
     }
 
+    /// Resolve the coordinator speaker for the given speaker.
+    ///
+    /// Looks up `speaker_to_group → groups → coordinator_id`.
+    /// Returns the speaker's own ID if no group info exists (safe default).
+    pub(crate) fn resolve_coordinator(&self, speaker_id: &SpeakerId) -> SpeakerId {
+        self.speaker_to_group
+            .get(speaker_id)
+            .and_then(|gid| self.groups.get(gid))
+            .map(|group| group.coordinator_id.clone())
+            .unwrap_or_else(|| speaker_id.clone())
+    }
+
+    /// Get a property value with coordinator resolution for PerCoordinator services.
+    ///
+    /// If the property's service is PerCoordinator AND the property scope is Speaker,
+    /// reads from the coordinator's speaker_props. Otherwise reads from the
+    /// speaker's own props.
+    ///
+    /// Group-scoped properties (e.g. GroupVolume) come from a PerCoordinator service
+    /// but are stored in `group_props`, not `speaker_props`, so they are not resolved
+    /// through the coordinator's speaker_props.
+    pub(crate) fn get_resolved<P: SonosProperty>(&self, speaker_id: &SpeakerId) -> Option<P> {
+        if P::SERVICE.scope() == ServiceScope::PerCoordinator && P::SCOPE == Scope::Speaker {
+            let coordinator_id = self.resolve_coordinator(speaker_id);
+            self.speaker_props.get(&coordinator_id)?.get::<P>()
+        } else {
+            self.speaker_props.get(speaker_id)?.get::<P>()
+        }
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn get<P: Property>(&self, speaker_id: &SpeakerId) -> Option<P> {
         self.speaker_props.get(speaker_id)?.get::<P>()
     }
@@ -466,8 +497,11 @@ impl StateManager {
     }
 
     /// Get current property value (sync, no subscription)
-    pub fn get_property<P: Property>(&self, speaker_id: &SpeakerId) -> Option<P> {
-        self.store.read().get::<P>(speaker_id)
+    ///
+    /// For PerCoordinator speaker-scoped properties, this transparently reads
+    /// from the coordinator's store, so group members see the coordinator's value.
+    pub fn get_property<P: SonosProperty>(&self, speaker_id: &SpeakerId) -> Option<P> {
+        self.store.read().get_resolved::<P>(speaker_id)
     }
 
     /// Get current group property value (sync, no subscription)
@@ -648,6 +682,36 @@ impl StateManager {
         let store = self.store.read();
         let group_id = store.speaker_to_group.get(speaker_id)?;
         store.groups.get(group_id).cloned()
+    }
+
+    /// Resolve the subscription target for a PerCoordinator service.
+    ///
+    /// For PerCoordinator services, returns the coordinator's `(SpeakerId, IpAddr)`
+    /// so the SDK can route UPnP subscriptions to the coordinator speaker.
+    /// Falls back to the speaker itself if no group data exists.
+    ///
+    /// For non-PerCoordinator services, returns the speaker's own identity.
+    pub fn resolve_subscription_target(
+        &self,
+        speaker_id: &SpeakerId,
+        speaker_ip: IpAddr,
+        service: Service,
+    ) -> (SpeakerId, IpAddr) {
+        if service.scope() == ServiceScope::PerCoordinator {
+            let store = self.store.read();
+            let coordinator_id = store.resolve_coordinator(speaker_id);
+            if coordinator_id == *speaker_id {
+                (speaker_id.clone(), speaker_ip)
+            } else {
+                let coord_ip = store
+                    .speaker(&coordinator_id)
+                    .map(|s| s.ip_address)
+                    .unwrap_or(speaker_ip);
+                (coordinator_id, coord_ip)
+            }
+        } else {
+            (speaker_id.clone(), speaker_ip)
+        }
     }
 
     /// Get access to the event manager (if configured)
@@ -848,7 +912,7 @@ impl StateManagerBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::property::{GroupVolume, Volume};
+    use crate::property::{GroupVolume, PlaybackState, Volume};
     use sonos_api::Service;
 
     #[test]
@@ -1509,5 +1573,167 @@ mod tests {
         assert_eq!(w.len(), 1);
         assert!(w.contains(&(speaker2.clone(), "volume")));
         assert!(!w.contains(&(speaker1.clone(), "volume")));
+    }
+
+    // ========================================================================
+    // resolve_coordinator Tests
+    // ========================================================================
+
+    #[test]
+    fn test_resolve_coordinator_for_standalone_speaker() {
+        let mut store = StateStore::new();
+
+        let speaker = SpeakerId::new("RINCON_111");
+        let group_id = GroupId::new("RINCON_111:1");
+
+        store.add_speaker(SpeakerInfo {
+            id: speaker.clone(),
+            name: "Living Room".to_string(),
+            room_name: "Living Room".to_string(),
+            ip_address: "192.168.1.100".parse().unwrap(),
+            port: 1400,
+            model_name: "Test".to_string(),
+            software_version: "1.0".to_string(),
+            boot_seq: 0,
+            satellites: vec![],
+        });
+        store.add_group(GroupInfo::new(
+            group_id,
+            speaker.clone(),
+            vec![speaker.clone()],
+        ));
+
+        // Standalone speaker is its own coordinator
+        assert_eq!(store.resolve_coordinator(&speaker), speaker);
+    }
+
+    #[test]
+    fn test_resolve_coordinator_for_group_member() {
+        let mut store = StateStore::new();
+
+        let coordinator = SpeakerId::new("RINCON_COORD");
+        let member = SpeakerId::new("RINCON_MEMBER");
+        let group_id = GroupId::new("RINCON_COORD:1");
+
+        store.add_group(GroupInfo::new(
+            group_id,
+            coordinator.clone(),
+            vec![coordinator.clone(), member.clone()],
+        ));
+
+        // Member resolves to the coordinator
+        assert_eq!(store.resolve_coordinator(&member), coordinator);
+        // Coordinator resolves to itself
+        assert_eq!(store.resolve_coordinator(&coordinator), coordinator);
+    }
+
+    #[test]
+    fn test_resolve_coordinator_no_group_data() {
+        let store = StateStore::new();
+
+        let speaker = SpeakerId::new("RINCON_UNKNOWN");
+
+        // No group data — falls back to speaker's own ID
+        assert_eq!(store.resolve_coordinator(&speaker), speaker);
+    }
+
+    // ========================================================================
+    // get_resolved Tests
+    // ========================================================================
+
+    #[test]
+    fn test_get_resolved_per_coordinator_reads_from_coordinator() {
+        let mut store = StateStore::new();
+
+        let coordinator = SpeakerId::new("RINCON_COORD");
+        let member = SpeakerId::new("RINCON_MEMBER");
+        let group_id = GroupId::new("RINCON_COORD:1");
+
+        store.add_speaker(SpeakerInfo {
+            id: coordinator.clone(),
+            name: "Coord".to_string(),
+            room_name: "Coord".to_string(),
+            ip_address: "192.168.1.100".parse().unwrap(),
+            port: 1400,
+            model_name: "Test".to_string(),
+            software_version: "1.0".to_string(),
+            boot_seq: 0,
+            satellites: vec![],
+        });
+        store.add_speaker(SpeakerInfo {
+            id: member.clone(),
+            name: "Member".to_string(),
+            room_name: "Member".to_string(),
+            ip_address: "192.168.1.101".parse().unwrap(),
+            port: 1400,
+            model_name: "Test".to_string(),
+            software_version: "1.0".to_string(),
+            boot_seq: 0,
+            satellites: vec![],
+        });
+        store.add_group(GroupInfo::new(
+            group_id,
+            coordinator.clone(),
+            vec![coordinator.clone(), member.clone()],
+        ));
+
+        // Set PlaybackState only on coordinator
+        store.set(&coordinator, PlaybackState::Playing);
+
+        // get_resolved on member should return coordinator's value (PerCoordinator + Speaker scope)
+        let resolved: Option<PlaybackState> = store.get_resolved(&member);
+        assert_eq!(resolved, Some(PlaybackState::Playing));
+
+        // Direct get on member should return None (no data copied)
+        let direct: Option<PlaybackState> = store.get(&member);
+        assert_eq!(direct, None);
+    }
+
+    #[test]
+    fn test_get_resolved_per_speaker_reads_own_props() {
+        let mut store = StateStore::new();
+
+        let coordinator = SpeakerId::new("RINCON_COORD");
+        let member = SpeakerId::new("RINCON_MEMBER");
+        let group_id = GroupId::new("RINCON_COORD:1");
+
+        store.add_speaker(SpeakerInfo {
+            id: coordinator.clone(),
+            name: "Coord".to_string(),
+            room_name: "Coord".to_string(),
+            ip_address: "192.168.1.100".parse().unwrap(),
+            port: 1400,
+            model_name: "Test".to_string(),
+            software_version: "1.0".to_string(),
+            boot_seq: 0,
+            satellites: vec![],
+        });
+        store.add_speaker(SpeakerInfo {
+            id: member.clone(),
+            name: "Member".to_string(),
+            room_name: "Member".to_string(),
+            ip_address: "192.168.1.101".parse().unwrap(),
+            port: 1400,
+            model_name: "Test".to_string(),
+            software_version: "1.0".to_string(),
+            boot_seq: 0,
+            satellites: vec![],
+        });
+        store.add_group(GroupInfo::new(
+            group_id,
+            coordinator.clone(),
+            vec![coordinator.clone(), member.clone()],
+        ));
+
+        // Set Volume on coordinator only (PerSpeaker service)
+        store.set(&coordinator, Volume::new(80));
+
+        // get_resolved on member should NOT resolve to coordinator for PerSpeaker
+        let resolved: Option<Volume> = store.get_resolved(&member);
+        assert_eq!(resolved, None);
+
+        // get_resolved on coordinator returns its own value
+        let coord_resolved: Option<Volume> = store.get_resolved(&coordinator);
+        assert_eq!(coord_resolved, Some(Volume::new(80)));
     }
 }

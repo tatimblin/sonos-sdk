@@ -120,6 +120,25 @@ impl PropertyChange {
         }
     }
 
+    /// Get the scope of this property
+    pub fn scope(&self) -> crate::property::Scope {
+        use crate::property::SonosProperty;
+        match self {
+            PropertyChange::Volume(_) => Volume::SCOPE,
+            PropertyChange::Mute(_) => Mute::SCOPE,
+            PropertyChange::Bass(_) => Bass::SCOPE,
+            PropertyChange::Treble(_) => Treble::SCOPE,
+            PropertyChange::Loudness(_) => Loudness::SCOPE,
+            PropertyChange::PlaybackState(_) => PlaybackState::SCOPE,
+            PropertyChange::Position(_) => Position::SCOPE,
+            PropertyChange::CurrentTrack(_) => CurrentTrack::SCOPE,
+            PropertyChange::GroupMembership(_) => GroupMembership::SCOPE,
+            PropertyChange::GroupVolume(_) => GroupVolume::SCOPE,
+            PropertyChange::GroupMute(_) => GroupMute::SCOPE,
+            PropertyChange::GroupVolumeChangeable(_) => GroupVolumeChangeable::SCOPE,
+        }
+    }
+
     /// Get the service this property belongs to
     pub fn service(&self) -> Service {
         use crate::property::SonosProperty;
@@ -596,6 +615,25 @@ mod tests {
             true,
         ));
         assert_eq!(gm_change.service(), GroupMembership::SERVICE);
+    }
+
+    #[test]
+    fn test_property_change_scope() {
+        use crate::property::Scope;
+
+        // Speaker-scoped properties
+        let vol_change = PropertyChange::Volume(Volume(50));
+        assert_eq!(vol_change.scope(), Scope::Speaker);
+
+        let ps_change = PropertyChange::PlaybackState(PlaybackState::Playing);
+        assert_eq!(ps_change.scope(), Scope::Speaker);
+
+        // Group-scoped properties
+        let gv_change = PropertyChange::GroupVolume(GroupVolume(50));
+        assert_eq!(gv_change.scope(), Scope::Group);
+
+        let gm_change = PropertyChange::GroupMute(GroupMute(false));
+        assert_eq!(gm_change.scope(), Scope::Group);
     }
 
     // ========================================================================
