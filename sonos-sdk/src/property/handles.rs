@@ -164,12 +164,19 @@ impl<P: fmt::Debug> fmt::Debug for WatchHandle<P> {
 /// - `Guard`: Event manager is active — WatchGuard handles the subscription
 ///   lifecycle (ref counting, grace period, unsubscribe).
 /// - `CacheOnly`: No event manager — just unregisters from the watched set.
+/// - `CoordinatorGuard`: PerCoordinator service routed to coordinator —
+///   WatchGuard manages the coordinator's subscription, CacheOnlyGuard cleans
+///   up the member's watched-set entry on drop.
 ///
 /// Fields are never read — they exist solely for their Drop behavior.
 #[allow(dead_code)]
 enum WatchCleanup {
     Guard(WatchGuard),
     CacheOnly(CacheOnlyGuard),
+    CoordinatorGuard {
+        _guard: WatchGuard,
+        _member_cleanup: CacheOnlyGuard,
+    },
 }
 
 /// Cleanup guard for CacheOnly mode (no event manager).
@@ -348,14 +355,37 @@ impl<P: SonosProperty> PropertyHandle<P> {
             }
         }
 
+        // Resolve subscription target: for PerCoordinator services, route to coordinator
+        let (sub_id, sub_ip) = self.context.state_manager.resolve_subscription_target(
+            &self.context.speaker_id,
+            self.context.speaker_ip,
+            P::SERVICE,
+        );
+        let routed_to_coordinator = sub_id != self.context.speaker_id;
+
         let (mode, cleanup) = if let Some(em) = self.context.state_manager.event_manager() {
-            match em.acquire_watch(
-                &self.context.speaker_id,
-                P::KEY,
-                self.context.speaker_ip,
-                P::SERVICE,
-            ) {
-                Ok(guard) => (WatchMode::Events, WatchCleanup::Guard(guard)),
+            match em.acquire_watch(&sub_id, P::KEY, sub_ip, P::SERVICE) {
+                Ok(guard) => {
+                    if routed_to_coordinator {
+                        // Register the member's watch for notification forwarding
+                        self.context
+                            .state_manager
+                            .register_watch(&self.context.speaker_id, P::KEY);
+                        (
+                            WatchMode::Events,
+                            WatchCleanup::CoordinatorGuard {
+                                _guard: guard,
+                                _member_cleanup: CacheOnlyGuard {
+                                    state_manager: Arc::clone(&self.context.state_manager),
+                                    speaker_id: self.context.speaker_id.clone(),
+                                    property_key: P::KEY,
+                                },
+                            },
+                        )
+                    } else {
+                        (WatchMode::Events, WatchCleanup::Guard(guard))
+                    }
+                }
                 Err(e) => {
                     tracing::warn!(
                         "Failed to subscribe to {:?} for {}: {} - falling back to polling",
@@ -467,7 +497,9 @@ impl<P: Fetchable> PropertyHandle<P> {
         // 1. Build operation using the Fetchable trait
         let operation = P::build_operation()?;
 
-        // 2. Execute operation using enhanced API (sync call)
+        // 2. Execute operation against this speaker's IP.
+        //    Coordinator routing for PerCoordinator services is handled by
+        //    the state layer (event_worker), not the SDK.
         let response = self
             .context
             .api_client

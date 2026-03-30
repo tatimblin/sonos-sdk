@@ -14,9 +14,11 @@ use sonos_api::Service;
 use sonos_event_manager::SonosEventManager;
 use sonos_stream::events::EventData;
 
+use sonos_api::ServiceScope;
+
 use crate::decoder::{decode_event, decode_topology_event, PropertyChange, TopologyChanges};
 use crate::model::SpeakerId;
-use crate::property::{GroupMembership, Property};
+use crate::property::{GroupMembership, Property, Scope};
 use crate::state::{ChangeEvent, StateStore};
 
 /// Spawns the state event worker thread
@@ -80,6 +82,31 @@ pub(crate) fn spawn_state_event_worker(
                 speaker_id.as_str()
             );
 
+            // For PerCoordinator services (e.g. AVTransport), skip events from
+            // non-coordinator speakers. Their events carry empty/default values
+            // because the coordinator owns playback state for the whole group.
+            // The coordinator's events will be propagated to members below.
+            if event.service.scope() == ServiceScope::PerCoordinator {
+                let is_coordinator = {
+                    let s = store.read();
+                    // If no group info exists yet, treat as coordinator (safe default)
+                    s.speaker_to_group
+                        .get(&speaker_id)
+                        .and_then(|gid| s.groups.get(gid))
+                        .map(|group| group.coordinator_id == speaker_id)
+                        .unwrap_or(true)
+                };
+
+                if !is_coordinator {
+                    tracing::debug!(
+                        "Skipping PerCoordinator {:?} event from non-coordinator {}",
+                        event.service,
+                        speaker_id.as_str()
+                    );
+                    continue;
+                }
+            }
+
             // Decode event
             let decoded = decode_event(&event, speaker_id.clone());
             tracing::debug!(
@@ -87,10 +114,23 @@ pub(crate) fn spawn_state_event_worker(
                 decoded.changes.len()
             );
 
-            // Apply changes
-            for change in decoded.changes {
+            // Apply changes to the originating speaker (coordinator)
+            for change in &decoded.changes {
                 tracing::debug!("Applying change: {:?}", change);
                 apply_property_change(&store, &watched, &event_tx, &speaker_id, change);
+            }
+
+            // For PerCoordinator services, notify group members who are watching
+            // these properties. No data is copied — members read the coordinator's
+            // value at read time via get_resolved().
+            if event.service.scope() == ServiceScope::PerCoordinator {
+                let members = {
+                    let s = store.read();
+                    resolve_group_members(&s, &speaker_id)
+                };
+                if !members.is_empty() {
+                    notify_group_members(&watched, &event_tx, &members, &decoded.changes);
+                }
             }
         }
 
@@ -169,13 +209,64 @@ fn apply_topology_changes(
     }
 }
 
+/// Resolve the non-coordinator group members for the given coordinator speaker.
+///
+/// Returns an empty Vec if:
+/// - The speaker is not in any group
+/// - The speaker is not the coordinator of its group
+/// - The group has only one member (standalone speaker)
+fn resolve_group_members(store: &StateStore, speaker_id: &SpeakerId) -> Vec<SpeakerId> {
+    store
+        .speaker_to_group
+        .get(speaker_id)
+        .and_then(|gid| store.groups.get(gid))
+        .filter(|group| group.coordinator_id == *speaker_id && group.member_ids.len() > 1)
+        .map(|group| {
+            group
+                .member_ids
+                .iter()
+                .filter(|id| *id != speaker_id)
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Notify group members who are watching speaker-scoped properties that changed
+/// on the coordinator. Only emits ChangeEvents — no data is copied. Members
+/// read the coordinator's value at read time via `StateStore::get_resolved()`.
+fn notify_group_members(
+    watched: &Arc<RwLock<HashSet<(SpeakerId, &'static str)>>>,
+    event_tx: &mpsc::Sender<ChangeEvent>,
+    members: &[SpeakerId],
+    changes: &[PropertyChange],
+) {
+    let watched_set = watched.read();
+    for member_id in members {
+        for change in changes {
+            if change.scope() == Scope::Speaker {
+                let key = change.key();
+                if watched_set.contains(&(member_id.clone(), key)) {
+                    tracing::debug!(
+                        "Notifying member {} of coordinator change for {}",
+                        member_id.as_str(),
+                        key
+                    );
+                    let _ =
+                        event_tx.send(ChangeEvent::new(member_id.clone(), key, change.service()));
+                }
+            }
+        }
+    }
+}
+
 /// Apply a single property change to the store
 fn apply_property_change(
     store: &Arc<RwLock<StateStore>>,
     watched: &Arc<RwLock<HashSet<(SpeakerId, &'static str)>>>,
     event_tx: &mpsc::Sender<ChangeEvent>,
     speaker_id: &SpeakerId,
-    change: PropertyChange,
+    change: &PropertyChange,
 ) {
     let key = change.key();
     let service = change.service();
@@ -236,7 +327,7 @@ mod tests {
             &watched,
             &tx,
             &speaker_id,
-            PropertyChange::Volume(Volume(50)),
+            &PropertyChange::Volume(Volume(50)),
         );
 
         // No event should be emitted (not watched)
@@ -283,7 +374,7 @@ mod tests {
             &watched,
             &tx,
             &speaker_id,
-            PropertyChange::Volume(Volume(75)),
+            &PropertyChange::Volume(Volume(75)),
         );
 
         // Event should be emitted
@@ -342,7 +433,7 @@ mod tests {
             &watched,
             &tx,
             &speaker_id,
-            PropertyChange::GroupVolume(crate::property::GroupVolume(75)),
+            &PropertyChange::GroupVolume(crate::property::GroupVolume(75)),
         );
 
         // Verify value was stored in group_props
@@ -375,7 +466,7 @@ mod tests {
             &watched,
             &tx,
             &speaker_id,
-            PropertyChange::GroupVolume(crate::property::GroupVolume(50)),
+            &PropertyChange::GroupVolume(crate::property::GroupVolume(50)),
         );
 
         // No crash, no stored value
@@ -712,6 +803,268 @@ mod tests {
         apply_topology_changes(&store, &watched, &tx, changes);
 
         // No event should be emitted since membership didn't change
+        assert!(rx.try_recv().is_err());
+    }
+
+    // ========================================================================
+    // PerCoordinator Read-Time Resolution Tests
+    // ========================================================================
+
+    #[test]
+    fn test_per_coordinator_notifies_members_without_data_copy() {
+        use crate::property::PlaybackState;
+
+        let store = Arc::new(RwLock::new(StateStore::new()));
+        let watched = Arc::new(RwLock::new(HashSet::new()));
+        let (tx, rx) = mpsc::channel();
+
+        let coordinator = SpeakerId::new("RINCON_COORD");
+        let member = SpeakerId::new("RINCON_MEMBER");
+        let group_id = GroupId::new("RINCON_COORD:1");
+
+        // Add speakers and group
+        {
+            let mut s = store.write();
+            s.add_speaker(make_speaker_info(
+                "RINCON_COORD",
+                "Bedroom",
+                "192.168.1.101",
+            ));
+            s.add_speaker(make_speaker_info(
+                "RINCON_MEMBER",
+                "Kitchen",
+                "192.168.1.102",
+            ));
+            s.add_group(GroupInfo::new(
+                group_id.clone(),
+                coordinator.clone(),
+                vec![coordinator.clone(), member.clone()],
+            ));
+        }
+
+        // Watch PlaybackState on both speakers
+        {
+            let mut w = watched.write();
+            w.insert((coordinator.clone(), PlaybackState::KEY));
+            w.insert((member.clone(), PlaybackState::KEY));
+        }
+
+        // Simulate what event_worker does: apply changes to coordinator, then notify members
+        let changes = vec![PropertyChange::PlaybackState(PlaybackState::Playing)];
+
+        // Apply to coordinator only
+        for change in &changes {
+            apply_property_change(&store, &watched, &tx, &coordinator, change);
+        }
+
+        // Notify group members (notification only, no data copy)
+        let members = {
+            let s = store.read();
+            resolve_group_members(&s, &coordinator)
+        };
+        notify_group_members(&watched, &tx, &members, &changes);
+
+        // Both coordinator and member should have received ChangeEvents
+        let event1 = rx.try_recv().unwrap();
+        assert_eq!(event1.speaker_id, coordinator);
+        assert_eq!(event1.property_key, PlaybackState::KEY);
+
+        let event2 = rx.try_recv().unwrap();
+        assert_eq!(event2.speaker_id, member);
+        assert_eq!(event2.property_key, PlaybackState::KEY);
+
+        // No more events
+        assert!(rx.try_recv().is_err());
+
+        // Coordinator has the value in its own props
+        let s = store.read();
+        let coord_state: Option<PlaybackState> = s.get(&coordinator);
+        assert_eq!(coord_state, Some(PlaybackState::Playing));
+
+        // Member does NOT have the value in its own props (no data copy)
+        let member_state: Option<PlaybackState> = s.get(&member);
+        assert_eq!(member_state, None);
+
+        // But get_resolved on member returns the coordinator's value
+        let resolved_state: Option<PlaybackState> = s.get_resolved(&member);
+        assert_eq!(resolved_state, Some(PlaybackState::Playing));
+    }
+
+    #[test]
+    fn test_per_coordinator_no_notification_for_standalone() {
+        use crate::property::PlaybackState;
+
+        let store = Arc::new(RwLock::new(StateStore::new()));
+        let watched = Arc::new(RwLock::new(HashSet::new()));
+        let (tx, rx) = mpsc::channel();
+
+        let speaker = SpeakerId::new("RINCON_STANDALONE");
+        let group_id = GroupId::new("RINCON_STANDALONE:1");
+
+        // Add standalone speaker (single-member group)
+        {
+            let mut s = store.write();
+            s.add_speaker(make_speaker_info(
+                "RINCON_STANDALONE",
+                "Bedroom",
+                "192.168.1.101",
+            ));
+            s.add_group(GroupInfo::new(
+                group_id.clone(),
+                speaker.clone(),
+                vec![speaker.clone()],
+            ));
+        }
+
+        // Watch PlaybackState
+        {
+            let mut w = watched.write();
+            w.insert((speaker.clone(), PlaybackState::KEY));
+        }
+
+        // Apply change to the standalone speaker
+        let changes = vec![PropertyChange::PlaybackState(PlaybackState::Playing)];
+        for change in &changes {
+            apply_property_change(&store, &watched, &tx, &speaker, change);
+        }
+
+        // resolve_group_members should return empty for standalone
+        let members = {
+            let s = store.read();
+            resolve_group_members(&s, &speaker)
+        };
+        assert!(members.is_empty());
+
+        // Only one event (from the coordinator itself), no extra fan-out
+        let event = rx.try_recv().unwrap();
+        assert_eq!(event.speaker_id, speaker);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_per_speaker_service_not_notified() {
+        // RenderingControl is PerSpeaker — changes on the coordinator should NOT
+        // notify group members even when a group exists.
+        let store = Arc::new(RwLock::new(StateStore::new()));
+        let watched = Arc::new(RwLock::new(HashSet::new()));
+        let (tx, rx) = mpsc::channel();
+
+        let coordinator = SpeakerId::new("RINCON_COORD");
+        let member = SpeakerId::new("RINCON_MEMBER");
+        let group_id = GroupId::new("RINCON_COORD:1");
+
+        // Add speakers and group
+        {
+            let mut s = store.write();
+            s.add_speaker(make_speaker_info(
+                "RINCON_COORD",
+                "Bedroom",
+                "192.168.1.101",
+            ));
+            s.add_speaker(make_speaker_info(
+                "RINCON_MEMBER",
+                "Kitchen",
+                "192.168.1.102",
+            ));
+            s.add_group(GroupInfo::new(
+                group_id.clone(),
+                coordinator.clone(),
+                vec![coordinator.clone(), member.clone()],
+            ));
+        }
+
+        // Watch Volume on both speakers
+        {
+            let mut w = watched.write();
+            w.insert((coordinator.clone(), Volume::KEY));
+            w.insert((member.clone(), Volume::KEY));
+        }
+
+        // Apply Volume change only to coordinator (PerSpeaker service — no notification)
+        apply_property_change(
+            &store,
+            &watched,
+            &tx,
+            &coordinator,
+            &PropertyChange::Volume(Volume(80)),
+        );
+
+        // RenderingControl is PerSpeaker, so we do NOT notify members.
+        // Only the coordinator gets the event.
+        let event = rx.try_recv().unwrap();
+        assert_eq!(event.speaker_id, coordinator);
+        assert_eq!(event.property_key, Volume::KEY);
+
+        // No event for the member
+        assert!(rx.try_recv().is_err());
+
+        // Verify member does NOT have the volume value
+        let s = store.read();
+        let coord_vol: Option<Volume> = s.get(&coordinator);
+        let member_vol: Option<Volume> = s.get(&member);
+        assert_eq!(coord_vol, Some(Volume(80)));
+        assert_eq!(member_vol, None);
+    }
+
+    #[test]
+    fn test_resolve_group_members_empty_for_non_coordinator() {
+        // resolve_group_members should return empty when called with
+        // a non-coordinator speaker.
+        let mut store = StateStore::new();
+
+        let coordinator = SpeakerId::new("RINCON_COORD");
+        let member = SpeakerId::new("RINCON_MEMBER");
+        let group_id = GroupId::new("RINCON_COORD:1");
+
+        store.add_speaker(make_speaker_info(
+            "RINCON_COORD",
+            "Bedroom",
+            "192.168.1.101",
+        ));
+        store.add_speaker(make_speaker_info(
+            "RINCON_MEMBER",
+            "Kitchen",
+            "192.168.1.102",
+        ));
+        store.add_group(GroupInfo::new(
+            group_id,
+            coordinator,
+            vec![SpeakerId::new("RINCON_COORD"), member.clone()],
+        ));
+
+        // Non-coordinator should never resolve group members
+        let members = resolve_group_members(&store, &member);
+        assert!(members.is_empty());
+    }
+
+    #[test]
+    fn test_notify_group_members_only_notifies_watched() {
+        use crate::property::PlaybackState;
+
+        let watched = Arc::new(RwLock::new(HashSet::new()));
+        let (tx, rx) = mpsc::channel();
+
+        let member_watched = SpeakerId::new("RINCON_WATCHED");
+        let member_unwatched = SpeakerId::new("RINCON_UNWATCHED");
+
+        // Only watch PlaybackState on one member
+        {
+            let mut w = watched.write();
+            w.insert((member_watched.clone(), PlaybackState::KEY));
+            // member_unwatched is NOT in the watched set
+        }
+
+        let changes = vec![PropertyChange::PlaybackState(PlaybackState::Playing)];
+        let members = vec![member_watched.clone(), member_unwatched.clone()];
+
+        notify_group_members(&watched, &tx, &members, &changes);
+
+        // Only the watched member should get a notification
+        let event = rx.try_recv().unwrap();
+        assert_eq!(event.speaker_id, member_watched);
+        assert_eq!(event.property_key, PlaybackState::KEY);
+
+        // No event for the unwatched member
         assert!(rx.try_recv().is_err());
     }
 }
