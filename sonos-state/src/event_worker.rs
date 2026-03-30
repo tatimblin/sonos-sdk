@@ -129,12 +129,7 @@ pub(crate) fn spawn_state_event_worker(
                     resolve_group_members(&s, &speaker_id)
                 };
                 if !members.is_empty() {
-                    notify_group_members(
-                        &watched,
-                        &event_tx,
-                        &members,
-                        &decoded.changes,
-                    );
+                    notify_group_members(&watched, &event_tx, &members, &decoded.changes);
                 }
             }
         }
@@ -212,7 +207,6 @@ fn apply_topology_changes(
             ));
         }
     }
-
 }
 
 /// Resolve the non-coordinator group members for the given coordinator speaker.
@@ -258,11 +252,8 @@ fn notify_group_members(
                         member_id.as_str(),
                         key
                     );
-                    let _ = event_tx.send(ChangeEvent::new(
-                        member_id.clone(),
-                        key,
-                        change.service(),
-                    ));
+                    let _ =
+                        event_tx.send(ChangeEvent::new(member_id.clone(), key, change.service()));
                 }
             }
         }
@@ -834,8 +825,16 @@ mod tests {
         // Add speakers and group
         {
             let mut s = store.write();
-            s.add_speaker(make_speaker_info("RINCON_COORD", "Bedroom", "192.168.1.101"));
-            s.add_speaker(make_speaker_info("RINCON_MEMBER", "Kitchen", "192.168.1.102"));
+            s.add_speaker(make_speaker_info(
+                "RINCON_COORD",
+                "Bedroom",
+                "192.168.1.101",
+            ));
+            s.add_speaker(make_speaker_info(
+                "RINCON_MEMBER",
+                "Kitchen",
+                "192.168.1.102",
+            ));
             s.add_group(GroupInfo::new(
                 group_id.clone(),
                 coordinator.clone(),
@@ -957,8 +956,16 @@ mod tests {
         // Add speakers and group
         {
             let mut s = store.write();
-            s.add_speaker(make_speaker_info("RINCON_COORD", "Bedroom", "192.168.1.101"));
-            s.add_speaker(make_speaker_info("RINCON_MEMBER", "Kitchen", "192.168.1.102"));
+            s.add_speaker(make_speaker_info(
+                "RINCON_COORD",
+                "Bedroom",
+                "192.168.1.101",
+            ));
+            s.add_speaker(make_speaker_info(
+                "RINCON_MEMBER",
+                "Kitchen",
+                "192.168.1.102",
+            ));
             s.add_group(GroupInfo::new(
                 group_id.clone(),
                 coordinator.clone(),
@@ -1009,8 +1016,16 @@ mod tests {
         let member = SpeakerId::new("RINCON_MEMBER");
         let group_id = GroupId::new("RINCON_COORD:1");
 
-        store.add_speaker(make_speaker_info("RINCON_COORD", "Bedroom", "192.168.1.101"));
-        store.add_speaker(make_speaker_info("RINCON_MEMBER", "Kitchen", "192.168.1.102"));
+        store.add_speaker(make_speaker_info(
+            "RINCON_COORD",
+            "Bedroom",
+            "192.168.1.101",
+        ));
+        store.add_speaker(make_speaker_info(
+            "RINCON_MEMBER",
+            "Kitchen",
+            "192.168.1.102",
+        ));
         store.add_group(GroupInfo::new(
             group_id,
             coordinator,
@@ -1052,5 +1067,4 @@ mod tests {
         // No event for the unwatched member
         assert!(rx.try_recv().is_err());
     }
-
 }
