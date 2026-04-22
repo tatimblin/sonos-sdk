@@ -35,3 +35,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [[example]]
 name = "smart_dashboard"
 path = "examples/smart_dashboard.rs"
+
+[[example]]
+name = "property_observer"
+path = "examples/property_observer.rs"

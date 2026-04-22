@@ -201,7 +201,7 @@ impl SonosSystem {
         let speakers = Self::build_speakers(&devices, &state_manager, &api_client)?;
 
         // 4. Assemble struct from the SAME Arcs
-        Ok(Self {
+        let system = Self {
             state_manager,
             event_manager: Arc::try_unwrap(event_manager).unwrap_or_else(|arc| {
                 let inner = arc.lock().unwrap().clone();
@@ -210,7 +210,15 @@ impl SonosSystem {
             api_client,
             speakers: RwLock::new(speakers),
             last_rediscovery: AtomicU64::new(0),
-        })
+        };
+
+        // 5. Prefetch topology before any subscriptions can start.
+        //    This ensures group structure is known when the first AVTransport
+        //    events arrive, so PerCoordinator suppression/propagation works
+        //    from the very first event.
+        system.ensure_topology();
+
+        Ok(system)
     }
 
     /// Create a test SonosSystem with named speakers and no network access.

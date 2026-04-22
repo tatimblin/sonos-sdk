@@ -100,7 +100,7 @@ impl Service {
     /// per-network, or per-coordinator subscriptions
     pub fn scope(&self) -> ServiceScope {
         match self {
-            Service::AVTransport => ServiceScope::PerSpeaker,
+            Service::AVTransport => ServiceScope::PerCoordinator,
             Service::RenderingControl => ServiceScope::PerSpeaker,
             Service::GroupRenderingControl => ServiceScope::PerCoordinator,
             Service::ZoneGroupTopology => ServiceScope::PerNetwork,
@@ -115,7 +115,7 @@ mod scope_tests {
 
     #[test]
     fn test_service_scopes() {
-        assert_eq!(Service::AVTransport.scope(), ServiceScope::PerSpeaker);
+        assert_eq!(Service::AVTransport.scope(), ServiceScope::PerCoordinator);
         assert_eq!(Service::RenderingControl.scope(), ServiceScope::PerSpeaker);
         assert_eq!(
             Service::GroupRenderingControl.scope(),
