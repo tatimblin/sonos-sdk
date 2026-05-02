@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/tatimblin/sonos-sdk/compare/sonos-sdk-v0.4.0...sonos-sdk-v0.5.0) - 2026-05-02
+
+### Added
+
+- read-time coordinator resolution for PerCoordinator properties ([#68](https://github.com/tatimblin/sonos-sdk/pull/68))
+
+### Fixed
+
+- data freshness — topology overhaul + fetch coordinator routing ([#69](https://github.com/tatimblin/sonos-sdk/pull/69))
+
+### Other
+
+- release v0.4.0 ([#66](https://github.com/tatimblin/sonos-sdk/pull/66))
+
 ## [0.4.0](https://github.com/tatimblin/sonos-sdk/compare/sonos-sdk-v0.3.0...sonos-sdk-v0.4.0) - 2026-03-29
 
 ### Added
