@@ -512,8 +512,7 @@ mod tests {
     #[test]
     fn test_decode_topology_extracts_ips_and_satellites() {
         use sonos_stream::events::{
-            NetworkInfo, SatelliteInfo, ZoneGroupInfo, ZoneGroupMemberInfo,
-            ZoneGroupTopologyState,
+            NetworkInfo, SatelliteInfo, ZoneGroupInfo, ZoneGroupMemberInfo, ZoneGroupTopologyState,
         };
 
         let event = ZoneGroupTopologyState {

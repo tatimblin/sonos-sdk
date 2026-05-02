@@ -1840,10 +1840,7 @@ mod tests {
 
         assert!(manager.get_satellite_ids().is_empty());
 
-        let ids = vec![
-            SpeakerId::new("RINCON_SAT1"),
-            SpeakerId::new("RINCON_SAT2"),
-        ];
+        let ids = vec![SpeakerId::new("RINCON_SAT1"), SpeakerId::new("RINCON_SAT2")];
         manager.set_satellite_ids(ids.clone());
 
         let stored = manager.get_satellite_ids();

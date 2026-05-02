@@ -50,7 +50,13 @@ pub(crate) fn spawn_state_event_worker(
             if let EventData::ZoneGroupTopology(ref zgt_event) = event.event_data {
                 tracing::debug!("Processing ZoneGroupTopology event");
                 let topology_changes = decode_topology_event(zgt_event);
-                apply_topology_changes(&store, &watched, &event_tx, &ip_to_speaker, topology_changes);
+                apply_topology_changes(
+                    &store,
+                    &watched,
+                    &event_tx,
+                    &ip_to_speaker,
+                    topology_changes,
+                );
                 continue;
             }
 
@@ -160,7 +166,7 @@ fn apply_topology_changes(
     );
 
     // Apply all changes within a single write lock
-    let (membership_changes, ip_updates): (Vec<(SpeakerId, bool)>, Vec<(IpAddr, IpAddr, SpeakerId)>) = {
+    let (membership_changes, ip_updates) = {
         let mut store = store.write();
 
         // 1. Clear existing groups
