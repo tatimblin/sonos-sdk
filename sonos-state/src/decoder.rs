@@ -9,6 +9,8 @@ use sonos_stream::events::{
     ZoneGroupTopologyState,
 };
 
+use std::net::IpAddr;
+
 use crate::model::{GroupId, SpeakerId};
 use crate::property::{
     Bass, CurrentTrack, GroupInfo, GroupMembership, GroupMute, GroupVolume, GroupVolumeChangeable,
@@ -38,6 +40,10 @@ pub struct TopologyChanges {
     pub memberships: Vec<(SpeakerId, GroupMembership)>,
     /// Boot sequence numbers per speaker (for GroupManagement AddMember)
     pub boot_seqs: Vec<(SpeakerId, u32)>,
+    /// Current IPs extracted from topology location URLs
+    pub speaker_ips: Vec<(SpeakerId, IpAddr)>,
+    /// Speakers marked Invisible="1" (satellites: surrounds, subs)
+    pub satellite_ids: Vec<SpeakerId>,
 }
 
 /// A single property change
@@ -309,6 +315,8 @@ pub fn decode_topology_event(event: &ZoneGroupTopologyState) -> TopologyChanges 
     let mut groups = Vec::new();
     let mut memberships = Vec::new();
     let mut boot_seqs = Vec::new();
+    let mut speaker_ips = Vec::new();
+    let mut satellite_ids = Vec::new();
 
     for zone_group in &event.zone_groups {
         let group_id = GroupId::new(&zone_group.id);
@@ -332,7 +340,21 @@ pub fn decode_topology_event(event: &ZoneGroupTopologyState) -> TopologyChanges 
             let is_coordinator = speaker_id == coordinator_id;
             let membership = GroupMembership::new(group_id.clone(), is_coordinator);
             memberships.push((speaker_id.clone(), membership));
-            boot_seqs.push((speaker_id, member.boot_seq));
+            boot_seqs.push((speaker_id.clone(), member.boot_seq));
+
+            if let Some(ip) = extract_ip_from_location(&member.location) {
+                speaker_ips.push((speaker_id, ip));
+            }
+
+            for sat in &member.satellites {
+                if sat.invisible == "1" {
+                    let sat_id = SpeakerId::new(&sat.uuid);
+                    satellite_ids.push(sat_id.clone());
+                    if let Some(ip) = extract_ip_from_location(&sat.location) {
+                        speaker_ips.push((sat_id, ip));
+                    }
+                }
+            }
         }
     }
 
@@ -340,7 +362,16 @@ pub fn decode_topology_event(event: &ZoneGroupTopologyState) -> TopologyChanges 
         groups,
         memberships,
         boot_seqs,
+        speaker_ips,
+        satellite_ids,
     }
+}
+
+fn extract_ip_from_location(location: &str) -> Option<IpAddr> {
+    let url_part = location.strip_prefix("http://")?;
+    let host_port = url_part.split('/').next()?;
+    let host = host_port.split(':').next()?;
+    host.parse().ok()
 }
 
 /// Parse duration string (HH:MM:SS or H:MM:SS) to milliseconds
@@ -449,6 +480,85 @@ mod tests {
             Some("Artist Name".to_string())
         );
         assert_eq!(extract_xml_element(xml, "upnp:album"), None);
+    }
+
+    #[test]
+    fn test_extract_ip_from_location_valid() {
+        let ip = extract_ip_from_location("http://192.168.4.200:1400/xml/device_description.xml");
+        assert_eq!(ip, Some("192.168.4.200".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_extract_ip_from_location_no_path() {
+        let ip = extract_ip_from_location("http://10.0.0.1:1400");
+        assert_eq!(ip, Some("10.0.0.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_extract_ip_from_location_missing_prefix() {
+        assert_eq!(extract_ip_from_location("192.168.1.1:1400/xml"), None);
+    }
+
+    #[test]
+    fn test_extract_ip_from_location_empty() {
+        assert_eq!(extract_ip_from_location(""), None);
+    }
+
+    #[test]
+    fn test_extract_ip_from_location_malformed() {
+        assert_eq!(extract_ip_from_location("http://not-an-ip:1400/xml"), None);
+    }
+
+    #[test]
+    fn test_decode_topology_extracts_ips_and_satellites() {
+        use sonos_stream::events::{
+            NetworkInfo, SatelliteInfo, ZoneGroupInfo, ZoneGroupMemberInfo, ZoneGroupTopologyState,
+        };
+
+        let event = ZoneGroupTopologyState {
+            zone_groups: vec![ZoneGroupInfo {
+                coordinator: "RINCON_MAIN".to_string(),
+                id: "RINCON_MAIN:1".to_string(),
+                members: vec![ZoneGroupMemberInfo {
+                    uuid: "RINCON_MAIN".to_string(),
+                    location: "http://192.168.4.100:1400/xml/device_description.xml".to_string(),
+                    zone_name: "Living Room".to_string(),
+                    software_version: "56.0".to_string(),
+                    boot_seq: 42,
+                    network_info: NetworkInfo::default(),
+                    satellites: vec![SatelliteInfo {
+                        uuid: "RINCON_SAT".to_string(),
+                        location: "http://192.168.4.101:1400/xml/device_description.xml"
+                            .to_string(),
+                        zone_name: "Living Room".to_string(),
+                        ht_sat_chan_map_set: "".to_string(),
+                        invisible: "1".to_string(),
+                    }],
+                }],
+            }],
+            vanished_devices: vec![],
+        };
+
+        let changes = decode_topology_event(&event);
+
+        assert_eq!(changes.speaker_ips.len(), 2);
+        assert_eq!(
+            changes.speaker_ips[0],
+            (
+                SpeakerId::new("RINCON_MAIN"),
+                "192.168.4.100".parse().unwrap()
+            )
+        );
+        assert_eq!(
+            changes.speaker_ips[1],
+            (
+                SpeakerId::new("RINCON_SAT"),
+                "192.168.4.101".parse().unwrap()
+            )
+        );
+
+        assert_eq!(changes.satellite_ids.len(), 1);
+        assert_eq!(changes.satellite_ids[0], SpeakerId::new("RINCON_SAT"));
     }
 
     #[test]

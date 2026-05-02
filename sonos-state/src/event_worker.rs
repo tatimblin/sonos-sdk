@@ -50,7 +50,13 @@ pub(crate) fn spawn_state_event_worker(
             if let EventData::ZoneGroupTopology(ref zgt_event) = event.event_data {
                 tracing::debug!("Processing ZoneGroupTopology event");
                 let topology_changes = decode_topology_event(zgt_event);
-                apply_topology_changes(&store, &watched, &event_tx, topology_changes);
+                apply_topology_changes(
+                    &store,
+                    &watched,
+                    &event_tx,
+                    &ip_to_speaker,
+                    topology_changes,
+                );
                 continue;
             }
 
@@ -144,11 +150,13 @@ pub(crate) fn spawn_state_event_worker(
 /// 1. Clears existing groups from the store
 /// 2. Adds new groups from the TopologyChanges
 /// 3. Updates GroupMembership for each speaker
-/// 4. Emits change events for watched GroupMembership properties
+/// 4. Updates boot_seq, speaker IPs, and satellite IDs
+/// 5. Emits change events for watched GroupMembership properties
 fn apply_topology_changes(
     store: &Arc<RwLock<StateStore>>,
     watched: &Arc<RwLock<HashSet<(SpeakerId, &'static str)>>>,
     event_tx: &mpsc::Sender<ChangeEvent>,
+    ip_to_speaker: &Arc<RwLock<std::collections::HashMap<IpAddr, SpeakerId>>>,
     changes: TopologyChanges,
 ) {
     tracing::debug!(
@@ -158,7 +166,7 @@ fn apply_topology_changes(
     );
 
     // Apply all changes within a single write lock
-    let membership_changes: Vec<(SpeakerId, bool)> = {
+    let (membership_changes, ip_updates) = {
         let mut store = store.write();
 
         // 1. Clear existing groups
@@ -188,10 +196,36 @@ fn apply_topology_changes(
             }
         }
 
-        changed_memberships
+        // 5. Apply IP updates from topology location URLs
+        let mut changed_ips = Vec::new();
+        for (speaker_id, new_ip) in &changes.speaker_ips {
+            if let Some(old_ip) = store.update_speaker_ip_address(speaker_id, *new_ip) {
+                tracing::info!(
+                    "Speaker {} IP changed: {} -> {}",
+                    speaker_id.as_str(),
+                    old_ip,
+                    new_ip
+                );
+                changed_ips.push((old_ip, *new_ip, speaker_id.clone()));
+            }
+        }
+
+        // 6. Store satellite IDs
+        store.satellite_ids = changes.satellite_ids.into_iter().collect();
+
+        (changed_memberships, changed_ips)
     };
 
-    // 5. Emit change events for watched properties (outside the write lock)
+    // Update ip_to_speaker reverse map (outside store lock)
+    if !ip_updates.is_empty() {
+        let mut map = ip_to_speaker.write();
+        for (old_ip, new_ip, speaker_id) in ip_updates {
+            map.remove(&old_ip);
+            map.insert(new_ip, speaker_id);
+        }
+    }
+
+    // Emit change events for watched properties (outside write locks)
     let watched_set = watched.read();
 
     for (speaker_id, changed) in membership_changes {
@@ -513,10 +547,12 @@ mod tests {
                 ),
             ],
             boot_seqs: vec![],
+            speaker_ips: vec![],
+            satellite_ids: vec![],
         };
 
-        // Apply topology changes
-        apply_topology_changes(&store, &watched, &tx, changes);
+        let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::new()));
+        apply_topology_changes(&store, &watched, &tx, &ip_to_speaker, changes);
 
         // Verify groups are updated
         let s = store.read();
@@ -567,9 +603,12 @@ mod tests {
                 ),
             ],
             boot_seqs: vec![],
+            speaker_ips: vec![],
+            satellite_ids: vec![],
         };
 
-        apply_topology_changes(&store, &watched, &tx, changes);
+        let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::new()));
+        apply_topology_changes(&store, &watched, &tx, &ip_to_speaker, changes);
 
         // Verify GroupMembership is updated for each speaker
         let s = store.read();
@@ -632,9 +671,12 @@ mod tests {
                 ),
             ],
             boot_seqs: vec![],
+            speaker_ips: vec![],
+            satellite_ids: vec![],
         };
 
-        apply_topology_changes(&store, &watched, &tx, changes);
+        let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::new()));
+        apply_topology_changes(&store, &watched, &tx, &ip_to_speaker, changes);
 
         // Should receive event for speaker1 (watched) but not speaker2 (not watched)
         let event = rx.try_recv().unwrap();
@@ -700,9 +742,12 @@ mod tests {
                 ),
             ],
             boot_seqs: vec![],
+            speaker_ips: vec![],
+            satellite_ids: vec![],
         };
 
-        apply_topology_changes(&store, &watched, &tx, changes);
+        let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::new()));
+        apply_topology_changes(&store, &watched, &tx, &ip_to_speaker, changes);
 
         // Verify old group is gone, new group exists
         let s = store.read();
@@ -750,9 +795,12 @@ mod tests {
                 ),
             ],
             boot_seqs: vec![],
+            speaker_ips: vec![],
+            satellite_ids: vec![],
         };
 
-        apply_topology_changes(&store, &watched, &tx, changes);
+        let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::new()));
+        apply_topology_changes(&store, &watched, &tx, &ip_to_speaker, changes);
 
         // Verify speaker_to_group mapping is updated
         let s = store.read();
@@ -798,9 +846,12 @@ mod tests {
                 GroupMembership::new(group_id.clone(), true),
             )],
             boot_seqs: vec![],
+            speaker_ips: vec![],
+            satellite_ids: vec![],
         };
 
-        apply_topology_changes(&store, &watched, &tx, changes);
+        let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::new()));
+        apply_topology_changes(&store, &watched, &tx, &ip_to_speaker, changes);
 
         // No event should be emitted since membership didn't change
         assert!(rx.try_recv().is_err());

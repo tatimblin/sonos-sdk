@@ -102,6 +102,8 @@ pub struct StateStore {
     pub(crate) system_props: PropertyBag,
     /// Speaker to group mapping for quick lookups
     pub(crate) speaker_to_group: HashMap<SpeakerId, GroupId>,
+    /// Satellite speaker IDs (Invisible="1") from topology
+    pub(crate) satellite_ids: HashSet<SpeakerId>,
 }
 
 impl StateStore {
@@ -114,6 +116,7 @@ impl StateStore {
             group_props: HashMap::new(),
             system_props: PropertyBag::new(),
             speaker_to_group: HashMap::new(),
+            satellite_ids: HashSet::new(),
         }
     }
 
@@ -218,6 +221,22 @@ impl StateStore {
 
     fn set_system<P: Property>(&mut self, value: P) -> bool {
         self.system_props.set(value)
+    }
+
+    /// Update a speaker's IP address in the store. Returns the old IP if changed.
+    pub(crate) fn update_speaker_ip_address(
+        &mut self,
+        speaker_id: &SpeakerId,
+        new_ip: IpAddr,
+    ) -> Option<IpAddr> {
+        if let Some(info) = self.speakers.get_mut(speaker_id) {
+            let old_ip = info.ip_address;
+            if old_ip != new_ip {
+                info.ip_address = new_ip;
+                return Some(old_ip);
+            }
+        }
+        None
     }
 
     fn is_empty(&self) -> bool {
@@ -475,6 +494,29 @@ impl StateManager {
     /// Get boot_seq for a speaker (used by GroupManagement AddMember)
     pub fn get_boot_seq(&self, speaker_id: &SpeakerId) -> Option<u32> {
         self.store.read().speaker(speaker_id).map(|s| s.boot_seq)
+    }
+
+    /// Update a speaker's IP address in both the store and the reverse map.
+    pub fn update_speaker_ip(&self, speaker_id: &SpeakerId, new_ip: IpAddr) {
+        let old_ip = {
+            let mut store = self.store.write();
+            store.update_speaker_ip_address(speaker_id, new_ip)
+        };
+        if let Some(old_ip) = old_ip {
+            let mut map = self.ip_to_speaker.write();
+            map.remove(&old_ip);
+            map.insert(new_ip, speaker_id.clone());
+        }
+    }
+
+    /// Get all satellite speaker IDs from topology data.
+    pub fn get_satellite_ids(&self) -> Vec<SpeakerId> {
+        self.store.read().satellite_ids.iter().cloned().collect()
+    }
+
+    /// Store satellite speaker IDs from topology data.
+    pub fn set_satellite_ids(&self, ids: Vec<SpeakerId>) {
+        self.store.write().satellite_ids = ids.into_iter().collect();
     }
 
     /// Create a blocking iterator over change events
@@ -1735,5 +1777,75 @@ mod tests {
         // get_resolved on coordinator returns its own value
         let coord_resolved: Option<Volume> = store.get_resolved(&coordinator);
         assert_eq!(coord_resolved, Some(Volume::new(80)));
+    }
+
+    #[test]
+    fn test_update_speaker_ip() {
+        let manager = StateManager::new().unwrap();
+
+        let devices = vec![Device {
+            id: "RINCON_111".to_string(),
+            name: "Office".to_string(),
+            room_name: "Office".to_string(),
+            ip_address: "192.168.4.198".to_string(),
+            port: 1400,
+            model_name: "Roam 2".to_string(),
+        }];
+        manager.add_devices(devices).unwrap();
+
+        let speaker_id = SpeakerId::new("RINCON_111");
+        let old_ip: IpAddr = "192.168.4.198".parse().unwrap();
+        let new_ip: IpAddr = "192.168.4.200".parse().unwrap();
+
+        // Verify initial state
+        assert_eq!(manager.get_speaker_ip(&speaker_id), Some(old_ip));
+
+        // Update IP
+        manager.update_speaker_ip(&speaker_id, new_ip);
+
+        // Verify forward map updated
+        assert_eq!(manager.get_speaker_ip(&speaker_id), Some(new_ip));
+
+        // Verify reverse map updated (old IP removed, new IP present)
+        let ip_map = manager.ip_to_speaker.read();
+        assert!(!ip_map.contains_key(&old_ip));
+        assert_eq!(ip_map.get(&new_ip), Some(&speaker_id));
+    }
+
+    #[test]
+    fn test_update_speaker_ip_no_change() {
+        let manager = StateManager::new().unwrap();
+
+        let devices = vec![Device {
+            id: "RINCON_111".to_string(),
+            name: "Office".to_string(),
+            room_name: "Office".to_string(),
+            ip_address: "192.168.4.198".to_string(),
+            port: 1400,
+            model_name: "Roam 2".to_string(),
+        }];
+        manager.add_devices(devices).unwrap();
+
+        let speaker_id = SpeakerId::new("RINCON_111");
+        let same_ip: IpAddr = "192.168.4.198".parse().unwrap();
+
+        // Update with same IP — should be a no-op
+        manager.update_speaker_ip(&speaker_id, same_ip);
+        assert_eq!(manager.get_speaker_ip(&speaker_id), Some(same_ip));
+    }
+
+    #[test]
+    fn test_satellite_ids() {
+        let manager = StateManager::new().unwrap();
+
+        assert!(manager.get_satellite_ids().is_empty());
+
+        let ids = vec![SpeakerId::new("RINCON_SAT1"), SpeakerId::new("RINCON_SAT2")];
+        manager.set_satellite_ids(ids.clone());
+
+        let stored = manager.get_satellite_ids();
+        assert_eq!(stored.len(), 2);
+        assert!(stored.contains(&SpeakerId::new("RINCON_SAT1")));
+        assert!(stored.contains(&SpeakerId::new("RINCON_SAT2")));
     }
 }

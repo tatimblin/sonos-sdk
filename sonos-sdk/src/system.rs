@@ -218,6 +218,24 @@ impl SonosSystem {
         //    from the very first event.
         system.ensure_topology();
 
+        // 6. Filter satellite speakers (surrounds/subs marked Invisible="1")
+        let satellite_ids = system.state_manager.get_satellite_ids();
+        if !satellite_ids.is_empty() {
+            if let Ok(mut speakers) = system.speakers.write() {
+                speakers.retain(|_name, speaker| !satellite_ids.contains(&speaker.id));
+            }
+            tracing::debug!("Filtered {} satellite speakers", satellite_ids.len());
+        }
+
+        // 7. Refresh Speaker handle IPs from state store (topology may have updated them)
+        if let Ok(mut speakers) = system.speakers.write() {
+            for speaker in speakers.values_mut() {
+                if let Some(info) = system.state_manager.speaker_info(&speaker.id) {
+                    speaker.ip = info.ip_address;
+                }
+            }
+        }
+
         Ok(system)
     }
 
@@ -473,56 +491,58 @@ impl SonosSystem {
 
     /// Ensure group topology has been fetched.
     ///
-    /// If the state manager has no groups (e.g., no ZoneGroupTopology subscription
-    /// events have been received yet), this method makes a direct GetZoneGroupState
-    /// call to the first available speaker and initializes the state manager with
-    /// the result. This is a one-shot operation: once groups are populated,
-    /// subsequent calls are a no-op.
+    /// Tries all known speaker IPs sequentially until one responds with topology.
+    /// Topology data is identical from any speaker, so first success wins.
+    /// Also refreshes speaker IPs and records satellite IDs from the topology.
     fn ensure_topology(&self) {
-        // Fast path: groups already present
         if self.state_manager.group_count() > 0 {
             return;
         }
 
-        // Pick the first speaker IP to query
-        let speaker_ip = {
+        let speaker_ips: Vec<String> = {
             let speakers = match self.speakers.read() {
                 Ok(s) => s,
                 Err(_) => return,
             };
-            match speakers.values().next() {
-                Some(speaker) => speaker.ip.to_string(),
-                None => return,
-            }
+            speakers.values().map(|s| s.ip.to_string()).collect()
         };
 
-        // Call GetZoneGroupState on that speaker
-        let topology_state = match sonos_api::services::zone_group_topology::state::poll(
-            &self.api_client,
-            &speaker_ip,
-        ) {
-            Ok(state) => state,
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to fetch zone group topology from {}: {}",
-                    speaker_ip,
-                    e
-                );
-                return;
+        for speaker_ip in &speaker_ips {
+            let topology_state = match sonos_api::services::zone_group_topology::state::poll(
+                &self.api_client,
+                speaker_ip,
+            ) {
+                Ok(state) => state,
+                Err(e) => {
+                    tracing::debug!("Topology fetch failed for {}: {}", speaker_ip, e);
+                    continue;
+                }
+            };
+
+            let topology_changes = sonos_state::decode_topology_event(&topology_state);
+
+            // Apply IP updates from topology before initializing groups
+            for (speaker_id, new_ip) in &topology_changes.speaker_ips {
+                self.state_manager.update_speaker_ip(speaker_id, *new_ip);
             }
-        };
 
-        // Decode the API-level topology into state-level GroupInfo values
-        let topology_changes = sonos_state::decode_topology_event(&topology_state);
+            // Build topology with existing speaker data and freshly fetched groups
+            let topology =
+                Topology::new(self.state_manager.speaker_infos(), topology_changes.groups);
+            self.state_manager.initialize(topology);
 
-        // Build a Topology with existing speaker data and the freshly fetched groups
-        let topology = Topology::new(self.state_manager.speaker_infos(), topology_changes.groups);
-        self.state_manager.initialize(topology);
+            // Store satellite IDs for later filtering
+            self.state_manager
+                .set_satellite_ids(topology_changes.satellite_ids);
 
-        tracing::debug!(
-            "Fetched zone group topology on-demand ({} groups)",
-            self.state_manager.group_count()
-        );
+            tracing::debug!(
+                "Fetched zone group topology on-demand ({} groups)",
+                self.state_manager.group_count()
+            );
+            return;
+        }
+
+        tracing::warn!("ensure_topology: no speakers responded");
     }
 
     // ========================================================================
