@@ -12,7 +12,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use sonos_api::operation::{ComposableOperation, UPnPOperation};
-use sonos_api::SonosClient;
+use sonos_api::{ServiceScope, SonosClient};
 use sonos_event_manager::WatchGuard;
 use sonos_state::{property::SonosProperty, SpeakerId, StateManager};
 
@@ -494,25 +494,36 @@ impl<P: Fetchable> PropertyHandle<P> {
     /// ```
     #[must_use = "returns the fetched value from the device"]
     pub fn fetch(&self) -> Result<P, SdkError> {
-        // 1. Build operation using the Fetchable trait
         let operation = P::build_operation()?;
 
-        // 2. Execute operation against this speaker's IP.
-        //    Coordinator routing for PerCoordinator services is handled by
-        //    the state layer (event_worker), not the SDK.
+        // Resolve target: coordinator for PerCoordinator services, fresh IP for PerSpeaker
+        let (target_id, target_ip) = if P::SERVICE.scope() == ServiceScope::PerCoordinator {
+            self.context.state_manager.resolve_subscription_target(
+                &self.context.speaker_id,
+                self.context.speaker_ip,
+                P::SERVICE,
+            )
+        } else {
+            let current_ip = self
+                .context
+                .state_manager
+                .get_speaker_ip(&self.context.speaker_id)
+                .unwrap_or(self.context.speaker_ip);
+            (self.context.speaker_id.clone(), current_ip)
+        };
+
         let response = self
             .context
             .api_client
-            .execute_enhanced(&self.context.speaker_ip.to_string(), operation)
+            .execute_enhanced(&target_ip.to_string(), operation)
             .map_err(SdkError::ApiError)?;
 
-        // 3. Convert response to property type
         let property_value = P::from_response(response);
 
-        // 4. Update state store
+        // Store under target_id (coordinator for PerCoordinator, self for PerSpeaker)
         self.context
             .state_manager
-            .set_property(&self.context.speaker_id, property_value.clone());
+            .set_property(&target_id, property_value.clone());
 
         Ok(property_value)
     }
