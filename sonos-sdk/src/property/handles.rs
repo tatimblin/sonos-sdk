@@ -477,6 +477,24 @@ impl<P: SonosProperty> PropertyHandle<P> {
 // ============================================================================
 
 impl<P: Fetchable> PropertyHandle<P> {
+    /// Watch with lazy fetch: subscribes to events, and if the cache is empty,
+    /// performs a one-time fetch to seed the value.
+    ///
+    /// Use this instead of `watch()` when you need a value on the first frame
+    /// without waiting for a UPnP event to arrive.
+    pub fn watch_or_fetch(&self) -> Result<WatchHandle<P>, SdkError> {
+        let mut wh = self.watch()?;
+        if wh.value.is_none() {
+            match self.fetch() {
+                Ok(val) => wh.value = Some(val),
+                Err(e) => {
+                    tracing::warn!("watch_or_fetch: fetch failed for {}: {e}", P::KEY);
+                }
+            }
+        }
+        Ok(wh)
+    }
+
     /// Fetch fresh value from device + update cache (sync)
     ///
     /// This makes a synchronous UPnP call to the device and updates
@@ -979,6 +997,25 @@ pub trait GroupFetchable: SonosProperty {
 }
 
 impl<P: GroupFetchable> GroupPropertyHandle<P> {
+    /// Watch with lazy fetch: subscribes to events, and if the cache is empty,
+    /// performs a one-time fetch from the coordinator to seed the value.
+    pub fn watch_or_fetch(&self) -> Result<WatchHandle<P>, SdkError> {
+        let mut wh = self.watch()?;
+        if wh.value.is_none() {
+            match self.fetch() {
+                Ok(val) => wh.value = Some(val),
+                Err(e) => {
+                    tracing::warn!(
+                        "watch_or_fetch: fetch failed for group {} {}: {e}",
+                        self.context.group_id.as_str(),
+                        P::KEY
+                    );
+                }
+            }
+        }
+        Ok(wh)
+    }
+
     /// Fetch fresh value from coordinator + update group cache (sync)
     #[must_use = "returns the fetched value from the device"]
     pub fn fetch(&self) -> Result<P, SdkError> {
