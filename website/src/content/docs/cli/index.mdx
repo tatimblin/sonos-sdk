@@ -1,0 +1,76 @@
+---
+title: CLI Tool
+description: Control Sonos speakers from the command line.
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+The [sonos-cli](https://github.com/tatimblin/sonos-cli) is a terminal application for controlling Sonos speakers. It's built on this SDK and provides instant access to playback, volume, grouping, and more.
+
+## Install
+
+<Tabs>
+  <TabItem label="Homebrew">
+    ```bash
+    brew install tatimblin/tap/sonos-cli
+    ```
+  </TabItem>
+  <TabItem label="Cargo">
+    ```bash
+    cargo install sonos-cli
+    ```
+  </TabItem>
+  <TabItem label="Binary">
+    Pre-built binaries for macOS, Linux, and Windows are available on the [Releases](https://github.com/tatimblin/sonos-cli/releases) page.
+  </TabItem>
+</Tabs>
+
+## Quick start
+
+```bash
+# List your speakers
+sonos speakers
+
+# See what's playing
+sonos status
+
+# Set the volume
+sonos volume 50 --group "Living Room"
+
+# Skip to the next track
+sonos next
+```
+
+## Targeting speakers and groups
+
+Most commands accept `--speaker` and `--group` flags:
+
+```bash
+sonos volume 80 --group "Kitchen"
+sonos bass 5 --speaker "Beam"
+```
+
+If both are given, `--group` wins. If neither is given, the default group is used.
+
+## Configuration
+
+Create `~/.config/sonos/config.toml`:
+
+```toml
+# Default group when --speaker/--group is not specified
+default_group = "Living Room"
+
+# TUI color theme: "dark" or "light"
+theme = "dark"
+```
+
+Environment variable overrides:
+
+| Variable | Overrides |
+|----------|-----------|
+| `SONOS_DEFAULT_GROUP` | `default_group` |
+| `SONOS_CONFIG_DIR` | Config file location |
+
+## Next
+
+See the [full command reference](/sonos-sdk/cli/commands/) for every available command and flag.

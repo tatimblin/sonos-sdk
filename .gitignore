@@ -1,3 +1,8 @@
 /target/
 
 /.kiro/
+
+# Docs site
+website/node_modules/
+website/dist/
+website/.astro/
