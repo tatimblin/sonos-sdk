@@ -5,18 +5,29 @@ description: "The three access patterns: get, fetch, and watch."
 
 Every speaker property in the SDK supports three access patterns. This page explains when to use each one.
 
-## Available properties
+## Speaker properties
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `volume` | `u8` (0–100) | Speaker volume level |
-| `mute` | `bool` | Whether the speaker is muted |
-| `bass` | `i8` (-10–10) | Bass EQ setting |
-| `treble` | `i8` (-10–10) | Treble EQ setting |
-| `loudness` | `bool` | Loudness compensation |
+| `volume` | `Volume(u8)` | Master volume (0–100) |
+| `mute` | `Mute(bool)` | Mute state |
+| `bass` | `Bass(i8)` | Bass EQ (-10 to +10) |
+| `treble` | `Treble(i8)` | Treble EQ (-10 to +10) |
+| `loudness` | `Loudness(bool)` | Loudness compensation |
 | `playback_state` | `PlaybackState` | Playing, Paused, Stopped, Transitioning |
-| `position` | `Duration` | Current track position |
-| `current_track` | `TrackMetadata` | Title, artist, album, URI |
+| `position` | `Position` | Current position and duration in ms |
+| `current_track` | `CurrentTrack` | Title, artist, album, album art URI, track URI |
+| `group_membership` | `GroupMembership` | Group ID and whether this speaker is coordinator |
+
+## Group properties
+
+Accessed via `group.volume`, `group.mute`, etc.:
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `volume` | `GroupVolume(u16)` | Group master volume (0–100) |
+| `mute` | `GroupMute(bool)` | Group mute state |
+| `volume_changeable` | `GroupVolumeChangeable(bool)` | Whether group volume can be adjusted |
 
 ## get() — cached value
 
