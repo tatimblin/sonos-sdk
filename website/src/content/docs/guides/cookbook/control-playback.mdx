@@ -56,12 +56,9 @@ println!("Duration: {:?}", track.duration);
 ## Monitor playback state reactively
 
 ```rust
-let _watcher = speaker.playback_state.watch()?;
-
 for event in sonos.iter() {
-    if event.property_key == "playback_state" {
-        println!("State changed: {}", event.value);
-    }
+    let state = speaker.playback_state.watch()?;
+    println!("State: {:?}", state.value());
 }
 ```
 

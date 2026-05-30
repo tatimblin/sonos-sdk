@@ -70,15 +70,13 @@ group.volume.set(40)?;
 
 ```rust
 let speaker = sonos.speaker("Kitchen").unwrap();
-let _watcher = speaker.group_membership.watch()?;
 
 for event in sonos.iter() {
-    if event.property_key == "group_membership" {
-        println!("Group topology changed");
-        // Re-read groups to see new state
-        for group in sonos.groups() {
-            println!("  {}: {} speakers", group.name, group.speakers().len());
-        }
+    let _membership = speaker.group_membership.watch()?;
+
+    // Re-read groups to see new state
+    for group in sonos.groups() {
+        println!("  {}: {} speakers", group.name, group.speakers().len());
     }
 }
 ```

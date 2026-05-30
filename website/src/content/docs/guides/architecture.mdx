@@ -55,9 +55,9 @@ The first time you call `watch()` on any property, the SDK lazily initializes:
 - Automatic firewall detection with fallback to polling
 
 ```rust
-let _watcher = speaker.volume.watch()?;  // initializes event system
 for event in sonos.iter() {
-    // receives real-time changes
+    let volume = speaker.volume.watch()?;  // initializes event system on first call
+    println!("Volume: {:?}", volume.value());
 }
 ```
 
