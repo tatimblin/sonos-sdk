@@ -26,11 +26,16 @@ export default defineConfig({
           items: [
             { slug: 'guides/architecture' },
             { slug: 'guides/properties' },
-            {
-              label: 'Cookbook',
-              items: [{ autogenerate: { directory: 'guides/cookbook' } }],
-            },
+            { slug: 'guides/playback' },
+            { slug: 'guides/volume-and-eq' },
+            { slug: 'guides/queue' },
+            { slug: 'guides/groups' },
+            { slug: 'guides/timers' },
           ],
+        },
+        {
+          label: 'Cookbook',
+          items: [{ autogenerate: { directory: 'guides/cookbook' } }],
         },
         {
           label: 'CLI',
