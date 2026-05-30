@@ -7,9 +7,10 @@ export default defineConfig({
   integrations: [
     starlight({
       title: 'Sonos SDK',
-      social: [
-        { icon: 'github', label: 'GitHub', href: 'https://github.com/tatimblin/sonos-sdk' },
-      ],
+      components: {
+        Header: './src/components/Header.astro',
+      },
+      customCss: ['./src/styles/custom.css'],
       editLink: {
         baseUrl: 'https://github.com/tatimblin/sonos-sdk/edit/main/website/',
       },
