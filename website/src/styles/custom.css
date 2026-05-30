@@ -1,0 +1,75 @@
+.product-nav {
+	display: flex;
+	gap: 0.25rem;
+	margin-inline-start: 1rem;
+	align-items: center;
+}
+
+.product-nav-link {
+	padding: 0.25rem 0.75rem;
+	border-radius: 99rem;
+	font-size: var(--sl-text-sm);
+	font-weight: 500;
+	color: var(--sl-color-gray-2);
+	text-decoration: none;
+}
+
+.product-nav-link:hover {
+	color: var(--sl-color-white);
+	background-color: var(--sl-color-gray-6);
+}
+
+.product-nav-link.active {
+	color: var(--sl-color-white);
+	background-color: var(--sl-color-gray-5);
+}
+
+.github-dropdown {
+	position: relative;
+}
+
+.github-trigger {
+	color: var(--sl-color-text-accent);
+	background: none;
+	border: none;
+	cursor: pointer;
+	padding: 0.5em;
+	margin: -0.5em;
+	align-items: center;
+	gap: 0.25rem;
+}
+
+.github-trigger:hover {
+	color: var(--sl-color-white);
+}
+
+.github-menu {
+	display: none;
+	position: absolute;
+	top: 100%;
+	right: 0;
+	margin-top: 0.5rem;
+	background: var(--sl-color-bg-nav);
+	border: 1px solid var(--sl-color-gray-5);
+	border-radius: 0.5rem;
+	padding: 0.5rem 0;
+	min-width: 10rem;
+	z-index: 10;
+}
+
+.github-dropdown:focus-within .github-menu {
+	display: block;
+}
+
+.github-menu a {
+	display: block;
+	padding: 0.5rem 1rem;
+	color: var(--sl-color-gray-2);
+	text-decoration: none;
+	font-size: var(--sl-text-sm);
+}
+
+.github-menu a:hover {
+	color: var(--sl-color-white);
+	background: var(--sl-color-gray-6);
+}
