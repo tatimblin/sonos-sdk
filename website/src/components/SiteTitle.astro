@@ -1,0 +1,40 @@
+---
+const { siteTitleHref } = Astro.locals.starlightRoute;
+---
+
+<a href={siteTitleHref} class="site-title sl-flex">
+	<pre class="ascii-logo" aria-label="Sonos SDK">{`█▀ █▀█ █◣█ █▀█ █▀  █▀ █▀▄ █▄▀
+▄█ █▄█ █◥█ █▄█ ▄█  ▄█ █▄▀ █ █`}</pre>
+</a>
+
+<style>
+	a {
+		text-decoration: none;
+	}
+	.ascii-logo {
+		font-family: monospace;
+		font-size: 0.65rem;
+		line-height: 1.2;
+		margin: 0;
+		white-space: pre;
+		font-weight: bold;
+		letter-spacing: 0.05em;
+		background: linear-gradient(
+			90deg,
+			var(--sl-color-text-accent),
+			var(--sl-color-white),
+			var(--sl-color-text-accent)
+		);
+		background-size: 200% 100%;
+		-webkit-background-clip: text;
+		-webkit-text-fill-color: transparent;
+		background-clip: text;
+		animation: shimmer 3s ease-in-out infinite;
+	}
+
+	@keyframes shimmer {
+		0% { background-position: 100% 0; }
+		50% { background-position: 0% 0; }
+		100% { background-position: 100% 0; }
+	}
+</style>

@@ -1,8 +1,24 @@
+@media (min-width: 50rem) {
+	.hero:has(.hero-html) {
+		grid-template-columns: 2fr 3fr;
+	}
+
+	.hero > .hero-html {
+		width: 100%;
+	}
+}
+
 .product-nav {
 	display: flex;
 	gap: 0.25rem;
-	margin-inline-start: 1rem;
 	align-items: center;
+}
+
+.product-nav::after {
+	content: '';
+	height: 2rem;
+	margin-inline-start: 0.75rem;
+	border-inline-end: 1px solid var(--sl-color-gray-5);
 }
 
 .product-nav-link {

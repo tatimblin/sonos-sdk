@@ -9,6 +9,7 @@ export default defineConfig({
       title: 'Sonos SDK',
       components: {
         Header: './src/components/Header.astro',
+        SiteTitle: './src/components/SiteTitle.astro',
       },
       customCss: ['./src/styles/custom.css'],
       editLink: {
