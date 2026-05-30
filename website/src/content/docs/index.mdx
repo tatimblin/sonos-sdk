@@ -1,0 +1,52 @@
+---
+title: Sonos SDK
+description: A sync-first, property-centric Rust SDK for controlling Sonos speakers.
+template: splash
+hero:
+  tagline: Control Sonos speakers with a clean, synchronous Rust API. No async required.
+  actions:
+    - text: Quick Start
+      link: /sonos-sdk/getting-started/quick-start/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/tatimblin/sonos-sdk
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## Get started in seconds
+
+```rust
+use sonos_sdk::prelude::*;
+
+fn main() -> Result<(), SdkError> {
+    let sonos = SonosSystem::new()?;
+    let speaker = sonos.speaker("Kitchen").unwrap();
+
+    speaker.play()?;
+    let vol = speaker.volume.fetch()?;
+    println!("Playing at {}%", vol);
+
+    Ok(())
+}
+```
+
+## Why Sonos SDK?
+
+<CardGrid>
+  <Card title="Sync-first" icon="rocket">
+    All methods are synchronous. No async runtime, no `.await`, no executor setup. Just call and go.
+  </Card>
+  <Card title="Three access patterns" icon="list-format">
+    `get()` for cached values, `fetch()` for live network reads, `watch()` for reactive event streams.
+  </Card>
+  <Card title="DOM-like API" icon="puzzle">
+    Access properties directly on speaker objects. Navigate fluently between speakers and groups.
+  </Card>
+  <Card title="Zero-config events" icon="approve-check">
+    Event infrastructure initializes lazily on first `watch()` call. Automatic firewall fallback to polling.
+  </Card>
+</CardGrid>

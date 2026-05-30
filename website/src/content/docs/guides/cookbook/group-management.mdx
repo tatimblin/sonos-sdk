@@ -1,0 +1,84 @@
+---
+title: Group Management
+description: Create, modify, and navigate speaker groups.
+---
+
+## List all groups
+
+```rust
+use sonos_sdk::prelude::*;
+
+fn main() -> Result<(), SdkError> {
+    let sonos = SonosSystem::new()?;
+
+    for group in sonos.groups() {
+        println!("Group: {} ({} speakers)", group.name, group.speakers().len());
+        for speaker in group.speakers() {
+            println!("  - {}", speaker.name());
+        }
+    }
+
+    Ok(())
+}
+```
+
+## Navigate from speaker to group
+
+```rust
+let kitchen = sonos.speaker("Kitchen").unwrap();
+let group = kitchen.group().unwrap();
+
+println!("Kitchen is in group: {}", group.name);
+println!("Group coordinator: {}", group.coordinator().name());
+```
+
+## Join a speaker to a group
+
+```rust
+let living_room = sonos.speaker("Living Room").unwrap();
+let kitchen = sonos.speaker("Kitchen").unwrap();
+
+// Add Kitchen to Living Room's group
+kitchen.join(&living_room)?;
+```
+
+## Remove a speaker from its group
+
+```rust
+let kitchen = sonos.speaker("Kitchen").unwrap();
+
+// Kitchen becomes its own standalone group
+kitchen.leave()?;
+```
+
+## Group volume
+
+Groups have their own volume that applies to all members:
+
+```rust
+let group = sonos.speaker("Living Room").unwrap().group().unwrap();
+
+// Read group volume
+let group_vol = group.volume.fetch()?;
+println!("Group volume: {}%", group_vol);
+
+// Set group volume (adjusts all members proportionally)
+group.volume.set(40)?;
+```
+
+## Watch for group changes
+
+```rust
+let speaker = sonos.speaker("Kitchen").unwrap();
+let _watcher = speaker.group_membership.watch()?;
+
+for event in sonos.iter() {
+    if event.property_key == "group_membership" {
+        println!("Group topology changed");
+        // Re-read groups to see new state
+        for group in sonos.groups() {
+            println!("  {}: {} speakers", group.name, group.speakers().len());
+        }
+    }
+}
+```
