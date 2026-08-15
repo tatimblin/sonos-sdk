@@ -2273,7 +2273,7 @@ dependencies = [
 
 [[package]]
 name = "sonos-api"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "mockito",
  "paste",
@@ -2291,7 +2291,7 @@ dependencies = [
 
 [[package]]
 name = "sonos-sdk"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "chrono",
  "crossterm 0.27.0",
@@ -2312,7 +2312,7 @@ dependencies = [
 
 [[package]]
 name = "sonos-sdk-callback-server"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2330,7 +2330,7 @@ dependencies = [
 
 [[package]]
 name = "sonos-sdk-discovery"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "if-addrs",
  "mockito",
@@ -2344,7 +2344,7 @@ dependencies = [
 
 [[package]]
 name = "sonos-sdk-event-manager"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "dashmap",
  "parking_lot",
@@ -2358,7 +2358,7 @@ dependencies = [
 
 [[package]]
 name = "sonos-sdk-soap-client"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "thiserror",
  "ureq",
@@ -2367,7 +2367,7 @@ dependencies = [
 
 [[package]]
 name = "sonos-sdk-state"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "chrono",
  "crossterm 0.27.0",
@@ -2387,7 +2387,7 @@ dependencies = [
 
 [[package]]
 name = "sonos-sdk-state-store"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "crossterm 0.28.1",
  "ratatui 0.29.0",
@@ -2395,7 +2395,7 @@ dependencies = [
 
 [[package]]
 name = "sonos-sdk-stream"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "async-trait",
  "bytes",
