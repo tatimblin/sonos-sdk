@@ -194,14 +194,15 @@ pub struct DiscoveryIterator {
 1. **Entry** (`src/lib.rs:141`): `get_iter()` calls `get_iter_with_timeout()` with 3-second default timeout.
 
 2. **Iterator Creation** (`src/discovery.rs:47-62`): `DiscoveryIterator::new()` creates:
-   - `SsdpClient` bound to ephemeral UDP port with configured timeout
+   - `SsdpClient` holding the list of usable IPv4 interfaces and the configured timeout
    - `reqwest::blocking::Client` for HTTP requests
    - Empty `HashSet` for deduplication
 
-3. **SSDP M-SEARCH** (`src/ssdp.rs:40-56`): On first `next()` call:
-   - Sends M-SEARCH multicast to `239.255.255.250:1900`
+3. **SSDP M-SEARCH** (`src/ssdp.rs`): On first `next()` call:
+   - Sends M-SEARCH multicast to `239.255.255.250:1900` from every usable interface, one socket per interface, concurrently
    - Target: `urn:schemas-upnp-org:device:ZonePlayer:1`
    - Collects all responses into buffer until timeout
+   - Interfaces that fail to send are skipped; an error is returned only if every interface fails
 
 4. **Response Processing** (`src/discovery.rs:138-187`): For each SSDP response:
    - Skip if location already seen (deduplication)
@@ -283,7 +284,11 @@ let request = format!(
 );
 ```
 
-The client binds to an ephemeral port (`0.0.0.0:0`), sends to the SSDP multicast address, and reads responses until timeout.
+The client enumerates usable IPv4 interfaces via `if-addrs`, binds one ephemeral-port socket per interface, sends to the SSDP multicast address from each, and reads responses until timeout.
+
+Interfaces are probed **per interface rather than from `0.0.0.0`** because a wildcard bind delegates the multicast egress interface to the OS routing table. On hosts with virtual adapters — Hyper-V/WSL `vEthernet`, Docker bridges, VPN tunnels — the winning route is frequently an interface with no path to the speakers, so the M-SEARCH leaves via the wrong NIC and discovery silently finds nothing on an otherwise healthy network. Single-NIC hosts worked only by chance. See [issue #76](https://github.com/tatimblin/sonos-sdk/issues/76).
+
+Loopback and link-local (`169.254.0.0/16`) addresses are excluded: neither can reach a speaker, and link-local indicates a failed DHCP lease. Virtual adapters *are* probed, since their address alone does not reveal whether speakers sit behind them.
 
 #### Trade-offs
 
@@ -292,6 +297,9 @@ The client binds to an ephemeral port (`0.0.0.0:0`), sends to the SSDP multicast
 | Blocking UDP socket | Async with tokio | Simpler API, no runtime dependency for consumers |
 | Buffer all responses first | Stream as received | Prevents partial iteration issues with early termination |
 | Fixed MX=2 delay | Configurable MX | 2 seconds is standard; timeout controls overall duration |
+| One socket bound per interface | Single socket with `IP_MULTICAST_IF` per send | `std::net::UdpSocket` does not expose `set_multicast_if_v4`; per-interface bind needs no `socket2` dependency |
+| Probe interfaces concurrently | Probe serially | Serial probing multiplies the read timeout by interface count; threads keep wall-clock at ~timeout |
+| Skip failing interfaces | Fail discovery on first send error | Virtual adapters routinely reject multicast sends; one bad interface must not mask a working one |
 
 ### 4.2 Feature: Multi-Stage Device Filtering
 
@@ -457,6 +465,8 @@ pub struct DeviceDescription {
 | `reqwest` (blocking) | HTTP client for device descriptions | Well-maintained, supports timeouts, handles TLS |
 | `quick-xml` | XML deserialization | Fast, serde-compatible, handles UPnP namespaces |
 | `serde` | Struct serialization derive | Standard Rust serialization framework |
+| `if-addrs` | IPv4 interface enumeration | Needed to pick multicast egress interfaces; std has no equivalent. Pulls only `libc` |
+| `tracing` | Diagnostic logging | Surfaces which interfaces were probed and why a send failed; matches the rest of the workspace |
 
 ### 6.2 Dependents (Downstream)
 
@@ -522,6 +532,9 @@ pub enum DiscoveryError {
 | Error | Recoverable | Recovery Strategy |
 |-------|-------------|-------------------|
 | `NetworkError` (socket bind) | No | Return empty iterator, log error |
+| `NetworkError` (single-interface send) | Yes | Skip that interface, keep results from the others |
+| `NetworkError` (all interfaces failed) | No | Return empty iterator, log the per-interface reasons at `warn` |
+| `NetworkError` (interface enumeration) | No | Return empty iterator, log error |
 | `NetworkError` (HTTP) | Yes | Skip device, continue discovery |
 | `ParseError` (SSDP) | Yes | Skip response, continue iteration |
 | `ParseError` (XML) | Yes | Skip device, continue discovery |
@@ -626,7 +639,7 @@ fn test_parse_ssdp_response_valid() {
 |--------|--------|-----------|
 | Discovery latency | < 5 seconds typical | Network dependent, configurable via timeout |
 | Memory per device | < 2KB | Minimal metadata storage |
-| Socket usage | 1 UDP + N HTTP connections | N = number of potential Sonos devices |
+| Socket usage | I UDP + N HTTP connections | I = usable IPv4 interfaces (one short-lived socket and thread each); N = number of potential Sonos devices |
 
 ### 9.2 Critical Paths
 
@@ -644,7 +657,7 @@ fn test_parse_ssdp_response_valid() {
 
 | Resource | Acquisition | Release | Pooling |
 |----------|-------------|---------|---------|
-| UDP socket | `DiscoveryIterator::new()` | `Drop::drop()` | No - one per discovery |
+| UDP sockets | First `next()` call (one per interface) | End of each probe thread | No - one per interface per discovery |
 | HTTP connections | On-demand per request | After response | Yes - reqwest internal pool |
 | SSDP response buffer | First `next()` call | When iterator dropped | No - transient |
 

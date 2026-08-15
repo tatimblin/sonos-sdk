@@ -120,14 +120,13 @@ impl DiscoveryIterator {
     fn fill_buffer(&mut self) {
         if let Some(client) = self.ssdp_client.take() {
             match client.search("urn:schemas-upnp-org:device:ZonePlayer:1") {
-                Ok(iter) => {
-                    // Collect all SSDP responses into buffer
-                    for response in iter.flatten() {
-                        self.ssdp_buffer.push(response);
-                    }
+                Ok(responses) => {
+                    self.ssdp_buffer = responses;
                 }
-                Err(_) => {
-                    // Failed to start search
+                Err(e) => {
+                    // Every interface failed to send. Surface the reason: this
+                    // is otherwise indistinguishable from "no speakers here".
+                    tracing::warn!("SSDP search failed: {}", e);
                 }
             }
             self.finished = true;
@@ -193,8 +192,10 @@ impl Iterator for DiscoveryIterator {
 
 impl Drop for DiscoveryIterator {
     fn drop(&mut self) {
-        // Explicitly drop the SSDP client to ensure UDP socket cleanup
-        // This is important for early iterator termination
+        // Drop the SSDP client if the search never ran, so an unused iterator
+        // releases it promptly. Probe sockets are owned by their own threads
+        // and closed when each thread finishes, so there is nothing else to
+        // release here.
         if let Some(client) = self.ssdp_client.take() {
             drop(client);
         }
