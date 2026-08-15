@@ -82,6 +82,7 @@ All operations are synchronous - no `async`/`await` required. The SDK handles th
 
 ### 🛠️ Built with sonos-sdk
 - **[sonos-cli](https://github.com/tatimblin/sonos-cli)** - Command-line interface for Sonos speaker control and automation
+- **[oto](https://github.com/Oszkar/oto)** - Fast, local-first multi-platform Sonos controller with a Flutter UI on a Rust core (Android, Windows)
 
 ### 🤝 Contributing
 We welcome contributions! Whether you're building applications, finding bugs, or improving documentation - every contribution helps make the SDK better.
