@@ -2,7 +2,7 @@
 
 Service completion matrix and development roadmap for the Sonos SDK.
 
-**Last updated:** 2026-02-28
+**Last updated:** 2026-08-15
 
 ## Service Completion Matrix
 
@@ -26,8 +26,8 @@ Tracks each Sonos UPnP service across the 4-layer SDK architecture (6 checkpoint
 3. ~~Only `GetVolume`, `SetVolume`, `SetRelativeVolume`~~ — All 11 operations now implemented (Get/Set for Volume, Mute, Bass, Treble, Loudness + SetRelativeVolume)
 8. `GroupMembership` on Speaker; `Topology` is system-level with no SDK handle
 10. `DevicePropertiesEvent` type exists in stream but no `Service` enum variant; uses `ZoneGroupTopology` as fallback in `service_type()`
-11. GroupManagement is action-only (no Get operations); poller returns stable empty state so scheduler never emits spurious change events
-12. GroupManagement SDK actions deferred to Phase 6 where ergonomic `group.add_speaker(&speaker)` replacements are planned
+11. GroupManagement is action-only (`AddMember`, `RemoveMember`, `ReportTrackBufferingResult`, `SetSourceAreaIds` — no Get operations); poller returns stable empty state so scheduler never emits spurious change events
+12. The GroupManagement UPnP operations themselves are still unexposed in the SDK. The ergonomic group-lifecycle API landed instead and is implemented over AVTransport: `Group::add_speaker` (`x-rincon:` via `SetAVTransportURI`), `Group::remove_speaker` and `Group::dissolve` (`BecomeCoordinatorOfStandaloneGroup`) in `sonos-sdk/src/group.rs`
 
 ### Unstarted Services
 
@@ -91,7 +91,7 @@ Polling fallbacks that matter when UPnP events are blocked by firewalls.
 
 Write operations exposed as ergonomic methods on Speaker and Group.
 
-- [x] Speaker: 23 AVTransport methods (play, pause, stop, seek, queue ops, etc.)
+- [x] Speaker: 29 AVTransport methods (play, pause, stop, seek, queue ops, sleep timer, alarms, coordinator delegation)
 - [x] Speaker: 6 RenderingControl methods (set_volume, set_mute, set_bass, set_treble, set_loudness, set_relative_volume)
 - [x] Group: 4 GroupRenderingControl methods (set_volume, set_relative_volume, set_mute, snapshot_volume)
 - [x] Response type re-exports at crate root

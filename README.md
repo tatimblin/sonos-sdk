@@ -9,7 +9,7 @@ Modern Rust SDK for Sonos device control via UPnP/SOAP with a DOM-like API and s
 
 ## Quick Start
 
-**Requirements:** Sonos speakers on the local network. Discovery uses SSDP multicast on port 1400.
+**Requirements:** Sonos speakers on the local network. Discovery uses SSDP multicast (`239.255.255.250:1900`); once a device is found, control requests go to its HTTP/SOAP endpoint on port 1400.
 
 ```rust
 use sonos_sdk::{SonosSystem, SdkError};
@@ -40,7 +40,7 @@ fn main() -> Result<(), SdkError> {
 Add to your `Cargo.toml`:
 ```toml
 [dependencies]
-sonos-sdk = "0.2.1"
+sonos-sdk = "0.5.3"
 ```
 
 ## Key Concepts
