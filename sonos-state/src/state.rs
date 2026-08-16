@@ -627,8 +627,8 @@ pub struct StateManager {
     ///
     /// Counted rather than a plain set because several independent watchers can
     /// hold the same `(speaker_id, property_key)` at once — two widgets watching
-    /// one property, a re-watch-per-frame loop overlapping with a long-lived
-    /// handle, or an SDK `WatchHandle` alongside a direct `register_watch`.
+    /// one property, an SDK `WatchHandle` alongside a direct `register_watch`, or
+    /// a handle reacquired before the previous one has dropped.
     /// With a `HashSet` the *first* release removed the entry and silenced every
     /// remaining watcher; the count means an entry disappears only when the last
     /// watcher lets go.

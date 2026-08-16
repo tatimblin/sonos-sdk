@@ -39,13 +39,13 @@ let cached = speaker.volume.get();
 // 2. fetch() — makes a live SOAP call to the device
 let live = speaker.volume.fetch()?;
 
-// 3. watch() — subscribes to real-time events, returns current value
+// 3. watch() — subscribes to real-time events; the handle reads live
 let volume = speaker.volume.watch()?;
 println!("Volume right now: {:?}", volume.value());
 
-// Re-watch each iteration to get the updated snapshot
-for event in sonos.iter() {
-    let volume = speaker.volume.watch()?;
+// Hold that one handle: value() re-reads on every call, so there is no
+// need to watch again to refresh it.
+for _event in sonos.iter() {
     println!("Volume: {:?}", volume.value());
 }
 ```

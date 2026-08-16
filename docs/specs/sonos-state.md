@@ -477,11 +477,16 @@ are the only place it appears. `get_boot_seq()` (`src/state.rs:495`) exposes it 
 
 ### 3.3 Secondary Flow: watch registration
 
-`watch()` on an SDK handle (`sonos-sdk/src/property/handles.rs:334`) triggers lazy
-`event_init`, calls `resolve_subscription_target()` (`src/state.rs:736`) to route
+`watch()` on an SDK handle (`sonos-sdk/src/property/handles.rs`) triggers lazy
+`event_init`, calls `resolve_subscription_target()` (`src/state.rs:1159`) to route
 `PerCoordinator` subscriptions to the coordinator's `(SpeakerId, IpAddr)`, then acquires a
 `WatchGuard` from the event manager (`sonos-event-manager/src/manager.rs:201`). The guard's
 `register_watch` flows back through `StateWatchRegistry` (`src/state.rs:353`).
+
+The returned `WatchHandle` holds the guard and *reads through* `get_property()` on each access
+rather than capturing a value — see §4.4 of the sonos-sdk spec. Reads therefore go through
+`get_resolved()` and observe only what survived the write ordering in 4.1a; a handle cannot
+report a value the store has already superseded.
 
 `StateManager` also offers `watch_property_with_subscription()` (`src/state.rs:610`) and
 `unwatch_property_with_subscription()` (`:636`), which register plus subscribe directly
@@ -686,9 +691,9 @@ or, when a subscription is finally torn down after its grace period, on
 that service. `is_pair_watched()` is the single read used by every emission gate.
 
 **Why a watch is a hold, not a flag.** Several independent watchers can hold the same pair at
-once — two widgets on one property, or (much more commonly) the re-watch-per-frame pattern
-`watch()`'s own documentation recommends, where frame N+1 acquires its handle before frame N's
-drops. When `watched` was a `HashSet`, the first release removed the only entry, so a
+once: two widgets on one property, an SDK `WatchHandle` alongside a direct `register_watch()`, or
+a handle being reacquired while the previous one has not yet dropped. When `watched` was a
+`HashSet`, the first release removed the only entry, so a
 surviving watcher went silent while still holding its `WatchHandle`: `is_watched()` returned
 `false` and `system.iter()` stopped reporting the property. Worse, teardown was *wholesale* —
 `unregister_watches_for_service` removed every key belonging to the service — so releasing a
@@ -720,7 +725,7 @@ properties — untouched.
 |----------|----------------------|-------------------|
 | Per-property watch keys | Per-service keys | A service carries several properties; per-service would emit for all of them |
 | Cache updates regardless of watch | Only cache watched properties | Keeps `get()` useful right after `watch()` and lets an unwatched property be read without a fetch |
-| Refcounted holds | Presence-only `HashSet` | One watcher releasing must not silence others holding the same pair; the set made the first drop win |
+| Refcounted holds | Presence-only `HashSet` | One watcher releasing must not silence others holding the same pair; the set made the first drop win. Still required now that `watch()` need not be called per frame — overlapping holds arise from independent watchers, and the SDK's own `WatchHandle` tests cover exactly this |
 | Split `subscription` flag + `direct` count | A single `usize` covering both | Guard holds are cleared in bulk, individual holds one at a time. One counter must either leak or over-release |
 | `saturating_sub` on release | `panic!` / `debug_assert!` on over-release | An unbalanced release is a caller bug, but wrapping to `usize::MAX` would silently resurrect the watch forever — strictly the worse failure. Over-release is a no-op |
 
@@ -1395,4 +1400,5 @@ The workspace versions together; breaking changes ride the `sonos-sdk` version.
 | 2026-01-14 | Claude Opus 4.5 | Initial specification created |
 | 2026-08-15 | Claude Opus 5 | Rewritten to match the implemented sync-first design. The prior revision documented an async `tokio::sync::watch` architecture (`reactive.rs`, `store.rs`, `watcher.rs`, `change_iterator.rs`, `decoders/*`, `PropertyWatcher<P>`, async `watch_property()`) that does not exist in the code |
 | 2026-08-15 | Claude Opus 5 | Documented the empty-topology-snapshot guard (3.2), per-event panic containment (4.6 and step 2 of 3.1), the "degrade loudly" rule in 3.4, and checked duration arithmetic; refreshed line references and test counts |
+| 2026-08-16 | Claude Opus 5 | Recorded that SDK `WatchHandle`s read through `get_property()` live (3.3), and dropped the re-watch-per-frame framing from 4.2 — overlapping holds now come from independent watchers, not from a documented per-frame loop |
 | 2026-08-15 | Claude Opus 5 | `watched` became reference-counted `WatchCounts` so releasing one watcher no longer silences its siblings (4.2), and `set_property()` now resolves `PerCoordinator` writes to the coordinator so writes land where reads look (4.3) |

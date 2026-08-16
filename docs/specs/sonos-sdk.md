@@ -292,8 +292,8 @@ place.
 └──────────────────┘     └──────────────────┘     └──────────────────┘
        │                         │                        │
        ▼                         ▼                        ▼
-   handles.rs            increments ref count      RAII guard + value
-                         (0→1 subscribes)          snapshot
+   handles.rs            increments ref count      RAII guard + live
+                         (0→1 subscribes)          read closure
 ```
 
 **Step-by-step**:
@@ -302,7 +302,8 @@ place.
 2. **Lazy init**: If no event manager exists, triggers lazy initialization via `EventInitFn`
 3. **Acquire**: Calls `SonosEventManager::acquire_watch()` which increments the (ip, service) ref count
 4. **Guard creation**: Returns `WatchGuard` (RAII guard) holding one ref count
-5. **WatchHandle**: Wraps the guard + cached value snapshot + watch mode into `WatchHandle<P>`
+5. **WatchHandle**: Wraps the guard + watch mode + a closure that reads the property
+   from the store on demand into `WatchHandle<P>`. No value is captured — see 4.4.
 6. **Drop**: When `WatchHandle` is dropped, `WatchGuard::Drop` calls `release_watch()`, starting a 50ms grace period if ref count hits zero
 
 ### 3.4 Error Flow
@@ -453,6 +454,74 @@ define_property_handle! {
 | Declarative macro | Derive macro or trait-based | Simpler, no proc-macro crate needed |
 | Inline request builder | Separate builder struct | Less boilerplate per property |
 | Closure for conversion | Trait method | More flexible, handles edge cases |
+
+### 4.4 Feature: `WatchHandle` is a live view, not a snapshot
+
+#### What
+
+`WatchHandle::value()` reads the state store on every call and returns `Option<P>` by value.
+A handle acquired once and held reports the property's *current* value for as long as it lives.
+`has_value()` is the same read. Neither is affected by how long ago `watch()` ran.
+
+#### Why
+
+`WatchHandle` used to carry `value: Option<P>`, populated from `self.get()` at construction and
+never updated. The handle's `Deref<Target = Option<P>>` and `value()` therefore reported the
+store's contents *at the instant `watch()` returned* — so a handle held across a render loop
+showed one value forever, and a handle acquired before the first event stayed permanently
+empty. The documented workaround was to call `watch()` again every frame.
+
+That workaround is what made the refcount bug fixed in PR #93 reachable at all: re-watching per
+frame means frame N+1 acquires its handle before frame N's drops, which is exactly the
+overlapping-holds case that a presence-only watched set got wrong. PR #93 made the pattern
+*safe*; this makes it unnecessary. A `WatchHandle` is an RAII lease on a subscription, and
+reading through a live lease should give a live answer — the snapshot semantics contradicted the
+type's own purpose.
+
+#### How
+
+The value field is replaced by a read closure:
+
+```rust
+pub struct WatchHandle<P> {
+    read: Box<dyn Fn() -> Option<P> + Send + Sync>,
+    mode: WatchMode,
+    _cleanup: WatchCleanup,
+}
+
+pub fn value(&self) -> Option<P> { (self.read)() }
+```
+
+Both construction sites capture an `Arc` of their context and read through the *same* accessor
+their `get()` uses — `get_property` for `PropertyHandle`, `get_group_property` for
+`GroupPropertyHandle`. That is what keeps the live read correct rather than merely fresh:
+
+- It inherits **coordinator resolution** (§4.3 of the sonos-state spec), so a `PerCoordinator`
+  property read through a member's handle still resolves to the coordinator — including after a
+  regrouping the handle knew nothing about.
+- It inherits the **write-ordering guard** (§4.1a of the sonos-state spec). The store only ever
+  holds the newest-*observed* value, so re-reading cannot resurrect the staleness that guard
+  exists to prevent. A read is not a write and has no stamp of its own; it simply observes
+  whatever survived the ordering.
+- It can legitimately return `None` where the old snapshot returned `Some`: if the resolved
+  location no longer holds a value (a dissolved group, a speaker that left the topology), the
+  honest answer is "unknown". A snapshot would have reported the last value it happened to see
+  from a location that is no longer the right one to read.
+
+`watch_or_fetch()` gets simpler as a consequence. It used to assign `wh.value = Some(val)` after
+fetching; now it just calls `fetch()` and discards the result, because the fetch writes into the
+store the handle reads from. A stale-rejected fetch is handled correctly for free — rejection
+means an event already delivered something newer, which is what `value()` will then return.
+
+#### Trade-offs
+
+| Decision | Alternative Considered | Why We Chose This |
+|----------|----------------------|-------------------|
+| `value()` re-reads the store | Keep the handle a pure lease and route reads through the manager or a separate accessor | Splitting them fixes staleness only by making the handle useless to read from, so every call site becomes `handle` *plus* `speaker.volume.get()` — two things to keep in sync, and the handle's `#[must_use]` no longer guards the thing you actually read. It also breaks the same three methods, so it is not cheaper in migration cost. Re-reading keeps one obvious way to read a watched property |
+| Boxed closure | Store `Arc<SpeakerContext>` / `Arc<GroupContext>` in the handle | The two `watch()` sites read different stores with different keys. An enum or a second type parameter would put that difference in the public type; the closure keeps `WatchHandle<P>` single-shaped and makes it impossible for the two sites to drift into different notions of "current" |
+| Return `Option<P>` by value | Return `Option<&P>` as before | The store is behind an `RwLock` shared with the event worker. A borrow would either pin that lock for the handle's lifetime or alias a value the worker may replace. Properties are small and `Clone` by trait bound |
+| Drop `Deref<Target = Option<P>>` | Keep `Deref` returning a borrow of a cached copy | `Deref` must return a reference, so keeping it requires keeping a stored value — i.e. keeping the bug. An interior-mutability cache (`RwLock<Option<P>>` refreshed on deref) would make `&*handle` return a borrow of a cell that the next call is free to overwrite |
+| `value()` costs a lock | Cache with an invalidation flag bumped by the event worker | A generation counter is a second source of truth about freshness, and the failure mode of getting it wrong is silent staleness — the exact bug being fixed. A read-lock acquisition on an uncontended `parking_lot::RwLock` is tens of nanoseconds, against a UI frame budget of 16ms |
 
 ---
 
@@ -945,6 +1014,7 @@ None required.
 
 | Date | Author | Change |
 |------|--------|--------|
+| 2026-08-16 | Claude Opus 5 | `WatchHandle` became a live view instead of a frozen snapshot (§4.4): `value()`/`has_value()` read the store on each call, `Deref<Target = Option<P>>` removed, `value()` now returns `Option<P>` by value. Breaking for `sonos-sdk` 0.6.0 |
 | 2026-08-15 | Claude Opus 5 | Documented the `Weak<StateManager>` capture that breaks the init-closure Arc cycle (§3.1), the removal of the dead `event_manager` field (§2.3), and §8.7 leak assertions |
 | 2026-08-15 | Claude Opus 5 | Added §8.5 offline construction (`from_devices_offline`, `offline` flag), §8.6 signature assertions, and the `assemble()` split in §3.1 |
 | 2026-03-11 | Claude Opus 4.6 | Updated for v0.2.0: lazy event init, method renames, fluent navigation, prelude, #[non_exhaustive] |

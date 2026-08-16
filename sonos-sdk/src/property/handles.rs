@@ -8,7 +8,6 @@
 use std::fmt;
 use std::marker::PhantomData;
 use std::net::IpAddr;
-use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -88,12 +87,26 @@ impl fmt::Display for WatchMode {
     }
 }
 
-/// RAII handle returned by `watch()`. Holds a snapshot of the current value
-/// along with a subscription guard. Dropping the handle starts the grace
+/// RAII handle returned by `watch()`. Holds a subscription lease and reads the
+/// property live from the state store. Dropping the handle starts the grace
 /// period — the UPnP subscription persists for 50ms so it can be reacquired
 /// cheaply on the next frame.
 ///
 /// Not `Clone` — each handle is one subscription hold.
+///
+/// # The value is live, not a snapshot
+///
+/// [`Self::value`] reads the store on every call, so a handle acquired once and
+/// held across many events keeps returning the *current* value. There is no need
+/// to re-`watch()` to refresh it; a handle is a lease on the subscription, and
+/// reading through it is the same read `get()` performs.
+///
+/// The value is therefore returned by clone rather than by reference: the store
+/// sits behind an `RwLock` shared with the event worker, and handing out a
+/// borrow into it would either hold that lock for the handle's whole lifetime or
+/// alias a value the worker is free to replace. `P` is a small `Clone` property
+/// (a `u8`, a `bool`, a few `String`s at worst), so the copy is cheaper than the
+/// lock it would otherwise pin.
 ///
 /// # Example
 ///
@@ -101,14 +114,13 @@ impl fmt::Display for WatchMode {
 /// // Watch returns a handle — hold it to keep the subscription alive
 /// let volume = speaker.volume.watch()?;
 ///
-/// // Deref to Option<P> for ergonomic access
-/// if let Some(v) = &*volume {
+/// if let Some(v) = volume.value() {
 ///     println!("Volume: {}%", v.value());
 /// }
 ///
-/// // Or use the value() convenience method
-/// if let Some(v) = volume.value() {
-///     println!("Volume: {}%", v.value());
+/// // Hold the same handle across events — value() re-reads each time
+/// for _event in system.iter() {
+///     println!("Volume now: {:?}", volume.value());
 /// }
 ///
 /// // Dropping the handle starts the 50ms grace period
@@ -116,16 +128,16 @@ impl fmt::Display for WatchMode {
 /// ```
 #[must_use = "dropping the handle starts the grace period — hold it to keep the subscription alive"]
 pub struct WatchHandle<P> {
-    value: Option<P>,
+    /// Reads the property from the store on demand.
+    ///
+    /// A closure rather than a `SpeakerContext`/`GroupContext` pair because the
+    /// two `watch()` implementations read from different stores (`get_property`
+    /// vs `get_group_property`) and resolve different keys. Capturing the read
+    /// itself keeps `WatchHandle` unaware of which one it came from, so the two
+    /// construction sites cannot drift into two different notions of "current".
+    read: Box<dyn Fn() -> Option<P> + Send + Sync>,
     mode: WatchMode,
     _cleanup: WatchCleanup,
-}
-
-impl<P> Deref for WatchHandle<P> {
-    type Target = Option<P>;
-    fn deref(&self) -> &Self::Target {
-        &self.value
-    }
 }
 
 impl<P> WatchHandle<P> {
@@ -134,15 +146,25 @@ impl<P> WatchHandle<P> {
         self.mode
     }
 
-    /// Convenience: returns a reference to the inner value, if available.
-    /// Equivalent to `(*handle).as_ref()` but more ergonomic.
-    pub fn value(&self) -> Option<&P> {
-        self.value.as_ref()
+    /// Returns the property's current value, read live from the state store.
+    ///
+    /// Costs one read-lock acquisition plus a clone of `P` — not free, unlike
+    /// the frozen field this replaced, but it is the same cost as `get()` and it
+    /// is what makes the handle a live view instead of a stale snapshot.
+    ///
+    /// Returns `None` if no value has been observed yet, or if the value has
+    /// since become unreachable (a speaker that left the topology, or a
+    /// `PerCoordinator` property whose group was dissolved).
+    pub fn value(&self) -> Option<P> {
+        (self.read)()
     }
 
-    /// Returns true if a value has been received from the device.
+    /// Returns true if a value is currently available from the store.
+    ///
+    /// Also a live read: this can go from `false` to `true` as the first event
+    /// arrives, without the handle being re-acquired.
     pub fn has_value(&self) -> bool {
-        self.value.is_some()
+        self.value().is_some()
     }
 
     /// Returns true if real-time UPnP events are active.
@@ -154,7 +176,7 @@ impl<P> WatchHandle<P> {
 impl<P: fmt::Debug> fmt::Debug for WatchHandle<P> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WatchHandle")
-            .field("value", &self.value)
+            .field("value", &self.value())
             .field("mode", &self.mode)
             .finish()
     }
@@ -321,21 +343,23 @@ impl<P: SonosProperty> PropertyHandle<P> {
     /// the handle for as long as you need updates — dropping it starts a
     /// 50ms grace period before the UPnP subscription is torn down.
     ///
+    /// Acquire the handle **once** and keep it: [`WatchHandle::value`] reads the
+    /// store on every call, so one handle held across a whole render loop reports
+    /// every change. Re-watching per frame is not needed to refresh the value.
+    ///
     /// # Example
     ///
     /// ```rust,ignore
-    /// // Watch returns a handle — hold it to keep the subscription alive
+    /// // Acquire once, outside the loop — the handle is a live view
     /// let volume = speaker.volume.watch()?;
     ///
-    /// // Access the current value via Deref
-    /// if let Some(v) = &*volume {
+    /// if let Some(v) = volume.value() {
     ///     println!("Volume: {}%", v.value());
     /// }
     ///
-    /// // Changes will appear in system.iter() while the handle is alive
-    /// for event in system.iter() {
-    ///     // Re-watch each frame to refresh the snapshot
-    ///     let volume = speaker.volume.watch()?;
+    /// // Changes appear in system.iter() while the handle is alive, and the
+    /// // same handle reports the new value.
+    /// for _event in system.iter() {
     ///     println!("Volume: {:?}", volume.value());
     /// }
     /// ```
@@ -441,8 +465,15 @@ impl<P: SonosProperty> PropertyHandle<P> {
             self.context.speaker_id.as_str()
         );
 
+        // The handle reads through a clone of the context rather than capturing a
+        // value, so `value()` returns what the store holds *now*. It reads by the
+        // same `get_property` path `get()` uses, which means it inherits
+        // coordinator resolution and the write-ordering guard (§4.1a of the
+        // sonos-state spec) for free: the store only ever holds the
+        // newest-observed value, so a live read cannot resurrect a stale one.
+        let context = Arc::clone(&self.context);
         Ok(WatchHandle {
-            value: self.get(),
+            read: Box::new(move || context.state_manager.get_property::<P>(&context.speaker_id)),
             mode,
             _cleanup: cleanup,
         })
@@ -492,13 +523,15 @@ impl<P: Fetchable> PropertyHandle<P> {
     /// Use this instead of `watch()` when you need a value on the first frame
     /// without waiting for a UPnP event to arrive.
     pub fn watch_or_fetch(&self) -> Result<WatchHandle<P>, SdkError> {
-        let mut wh = self.watch()?;
-        if wh.value.is_none() {
-            match self.fetch() {
-                Ok(val) => wh.value = Some(val),
-                Err(e) => {
-                    tracing::warn!("watch_or_fetch: fetch failed for {}: {e}", P::KEY);
-                }
+        let wh = self.watch()?;
+        if !wh.has_value() {
+            // `fetch()` writes the value into the store, and the handle reads the
+            // store live, so there is nothing to patch onto the handle — unlike
+            // when the handle carried a frozen snapshot. A stale-rejected write
+            // is fine here too: it means an event already delivered something
+            // newer, which is exactly what `value()` will then return.
+            if let Err(e) = self.fetch() {
+                tracing::warn!("watch_or_fetch: fetch failed for {}: {e}", P::KEY);
             }
         }
         Ok(wh)
@@ -988,8 +1021,14 @@ impl<P: SonosProperty> GroupPropertyHandle<P> {
             )
         };
 
+        // Live read against the group store — see the speaker `watch()` above.
+        let context = Arc::clone(&self.context);
         Ok(WatchHandle {
-            value: self.get(),
+            read: Box::new(move || {
+                context
+                    .state_manager
+                    .get_group_property::<P>(&context.group_id)
+            }),
             mode,
             _cleanup: cleanup,
         })
@@ -1025,17 +1064,16 @@ impl<P: GroupFetchable> GroupPropertyHandle<P> {
     /// Watch with lazy fetch: subscribes to events, and if the cache is empty,
     /// performs a one-time fetch from the coordinator to seed the value.
     pub fn watch_or_fetch(&self) -> Result<WatchHandle<P>, SdkError> {
-        let mut wh = self.watch()?;
-        if wh.value.is_none() {
-            match self.fetch() {
-                Ok(val) => wh.value = Some(val),
-                Err(e) => {
-                    tracing::warn!(
-                        "watch_or_fetch: fetch failed for group {} {}: {e}",
-                        self.context.group_id.as_str(),
-                        P::KEY
-                    );
-                }
+        let wh = self.watch()?;
+        if !wh.has_value() {
+            // See `PropertyHandle::watch_or_fetch` — the fetch lands in the store
+            // the handle reads from, so no patching is needed.
+            if let Err(e) = self.fetch() {
+                tracing::warn!(
+                    "watch_or_fetch: fetch failed for group {} {}: {e}",
+                    self.context.group_id.as_str(),
+                    P::KEY
+                );
             }
         }
         Ok(wh)
@@ -1205,12 +1243,15 @@ mod tests {
     /// Dropping one `WatchHandle` must not silence a sibling property.
     ///
     /// Volume and Mute both belong to RenderingControl, so they shared a
-    /// subscription and shared one `(ip, service)` ref count. Two overlapping
-    /// handles are exactly what the re-watch-per-frame pattern in `watch()`'s
-    /// own docs produces: frame N+1 acquires before frame N's handle drops. With
-    /// a set-valued watched map the *first* drop removed the only entry, so the
-    /// surviving handle went silent while the caller still held it — `is_watched()`
-    /// said `false` and `system.iter()` stopped reporting the property.
+    /// subscription and shared one `(ip, service)` ref count. With a set-valued
+    /// watched map the *first* drop removed the only entry, so the surviving
+    /// handle went silent while the caller still held it — `is_watched()` said
+    /// `false` and `system.iter()` stopped reporting the property.
+    ///
+    /// Overlapping holds no longer come from re-watching per frame (handles read
+    /// live now, so nothing needs to), but they still arise wherever two
+    /// independent watchers want the same property — which is the case this
+    /// guards.
     ///
     /// Asserts delivery, not just the flag: a watch that is "registered" but no
     /// longer emits is the failure users would actually see.
@@ -1302,6 +1343,208 @@ mod tests {
         );
     }
 
+    /// A handle acquired *before* a change reports the new value afterwards,
+    /// with no re-`watch()`.
+    ///
+    /// This is the defect PR-11b exists to fix: `WatchHandle` used to capture
+    /// `self.get()` into a field at construction, so a handle held across a whole
+    /// render loop kept reporting whatever the store happened to hold at the
+    /// instant `watch()` ran. The only workaround was to re-acquire a handle
+    /// every frame — which the docs recommended, and which is what made the
+    /// refcount bug in PR #93 reachable in the first place.
+    ///
+    /// Asserts the *sequence*, not just the endpoint: two successive writes must
+    /// both be visible through the one handle, so a fix that merely refreshed
+    /// once cannot pass.
+    #[test]
+    fn test_handle_held_across_change_reports_new_value() {
+        let state_manager = create_test_state_manager();
+        let speaker_id = SpeakerId::new("RINCON_TEST123");
+
+        state_manager.set_property(&speaker_id, Volume::new(10));
+
+        let context = create_test_context(Arc::clone(&state_manager));
+        let handle: VolumeHandle = PropertyHandle::new(context);
+
+        // Acquired once, before either change, and never re-acquired.
+        let wh = handle.watch().unwrap();
+        assert_eq!(wh.value(), Some(Volume::new(10)));
+
+        state_manager.set_property(&speaker_id, Volume::new(42));
+        assert_eq!(
+            wh.value(),
+            Some(Volume::new(42)),
+            "the handle froze its value at creation — a held handle must read live"
+        );
+
+        state_manager.set_property(&speaker_id, Volume::new(43));
+        assert_eq!(
+            wh.value(),
+            Some(Volume::new(43)),
+            "the handle must keep tracking, not refresh once"
+        );
+    }
+
+    /// `has_value()` is a live read too: a handle acquired on an empty store must
+    /// start reporting a value once one arrives, without being re-acquired.
+    ///
+    /// Separate from the test above because the `None → Some` transition is the
+    /// case a snapshot gets *most* wrong — a handle acquired before the first
+    /// event stayed permanently empty, so a dashboard that watched at startup
+    /// rendered "—" forever.
+    #[test]
+    fn test_handle_acquired_before_first_value_becomes_populated() {
+        let state_manager = create_test_state_manager();
+        let speaker_id = SpeakerId::new("RINCON_TEST123");
+
+        let context = create_test_context(Arc::clone(&state_manager));
+        let handle: VolumeHandle = PropertyHandle::new(context);
+
+        let wh = handle.watch().unwrap();
+        assert!(!wh.has_value(), "nothing has been observed yet");
+        assert_eq!(wh.value(), None);
+
+        state_manager.set_property(&speaker_id, Volume::new(7));
+
+        assert!(
+            wh.has_value(),
+            "has_value() froze at creation — it must reflect the store"
+        );
+        assert_eq!(wh.value(), Some(Volume::new(7)));
+    }
+
+    /// Every handle on the same property sees the update, and dropping one
+    /// leaves the survivors both *live* and *receiving*.
+    ///
+    /// Combines the multi-handle and drop-a-sibling cases deliberately: the
+    /// interesting failure is the interaction — a live read that works only while
+    /// no handle has been dropped would pass them separately. Guards PR #93's
+    /// refcount fix (delivery through `iter()`) alongside the new live read.
+    #[test]
+    fn test_all_handles_see_update_and_survive_a_sibling_drop() {
+        let state_manager = create_test_state_manager();
+        let speaker_id = SpeakerId::new("RINCON_TEST123");
+        let context = create_test_context(Arc::clone(&state_manager));
+
+        let handle: VolumeHandle = PropertyHandle::new(Arc::clone(&context));
+
+        let first = handle.watch().unwrap();
+        let second = handle.watch().unwrap();
+        let third = handle.watch().unwrap();
+
+        let iter = state_manager.iter();
+        state_manager.set_property(&speaker_id, Volume::new(31));
+
+        // All three read the same new value.
+        assert_eq!(first.value(), Some(Volume::new(31)));
+        assert_eq!(second.value(), Some(Volume::new(31)));
+        assert_eq!(third.value(), Some(Volume::new(31)));
+        assert!(iter
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .is_some());
+
+        drop(first);
+        assert!(handle.is_watched(), "two handles still hold the property");
+
+        // Survivors keep reading live *and* keep receiving.
+        state_manager.set_property(&speaker_id, Volume::new(32));
+        assert_eq!(
+            second.value(),
+            Some(Volume::new(32)),
+            "a sibling handle dropping must not freeze the survivors"
+        );
+        assert_eq!(third.value(), Some(Volume::new(32)));
+        assert!(
+            iter.recv_timeout(std::time::Duration::from_millis(100))
+                .is_some(),
+            "the property is still held and must still emit"
+        );
+
+        drop(second);
+        state_manager.set_property(&speaker_id, Volume::new(33));
+        assert_eq!(
+            third.value(),
+            Some(Volume::new(33)),
+            "the last handle must still read live"
+        );
+    }
+
+    /// Reading through a handle whose value has become unreachable yields `None`,
+    /// not a stale value resurrected from the handle's own memory.
+    ///
+    /// The edge case the live-read design introduces. `PlaybackState` comes from
+    /// `AVTransport`, a `PerCoordinator` service, so `get_property` resolves it
+    /// through the speaker's *coordinator*. Regroup the speaker under a
+    /// coordinator that holds no `PlaybackState` and the correct answer becomes
+    /// "unknown" — a snapshot handle would confidently report the old
+    /// coordinator's value instead.
+    ///
+    /// The two speaker IDs are written explicitly rather than taken from
+    /// `with_speakers`' fixed `RINCON_{i:03}` pattern, so the assertion depends on
+    /// the regrouping rather than on either ID's spelling.
+    #[test]
+    fn test_handle_reads_none_when_value_becomes_unreachable() {
+        let manager = StateManager::new().unwrap();
+        manager
+            .add_devices(vec![
+                Device {
+                    id: "RINCON_MEMBER".to_string(),
+                    name: "Member".to_string(),
+                    room_name: "Member".to_string(),
+                    ip_address: "203.0.113.1".to_string(),
+                    port: 1400,
+                    model_name: "Sonos One".to_string(),
+                },
+                Device {
+                    id: "RINCON_NEWCOORD".to_string(),
+                    name: "New Coordinator".to_string(),
+                    room_name: "New Coordinator".to_string(),
+                    ip_address: "203.0.113.2".to_string(),
+                    port: 1400,
+                    model_name: "Sonos One".to_string(),
+                },
+            ])
+            .unwrap();
+        let state_manager = Arc::new(manager);
+
+        let member = SpeakerId::new("RINCON_MEMBER");
+        let new_coord = SpeakerId::new("RINCON_NEWCOORD");
+
+        // The member is its own coordinator and knows it is playing.
+        state_manager.set_property(&member, PlaybackState::Playing);
+
+        let context = SpeakerContext::new(
+            member.clone(),
+            "203.0.113.1".parse().unwrap(),
+            Arc::clone(&state_manager),
+            SonosClient::new(),
+        );
+        let handle: PlaybackStateHandle = PropertyHandle::new(context);
+        let wh = handle.watch().unwrap();
+        assert_eq!(wh.value(), Some(PlaybackState::Playing));
+
+        // Regroup: the member now follows a coordinator with no PlaybackState.
+        state_manager.initialize(sonos_state::Topology {
+            speakers: vec![],
+            groups: vec![sonos_state::GroupInfo::new(
+                GroupId::new("RINCON_NEWCOORD:1"),
+                new_coord.clone(),
+                vec![new_coord.clone(), member.clone()],
+            )],
+        });
+
+        assert_eq!(
+            wh.value(),
+            None,
+            "the coordinator holds no PlaybackState, so the answer is unknown — \
+             a handle must not report the value it captured at creation"
+        );
+
+        // And it picks the new coordinator's value up when there is one.
+        state_manager.set_property(&new_coord, PlaybackState::Paused);
+        assert_eq!(wh.value(), Some(PlaybackState::Paused));
+    }
+
     #[test]
     fn test_watch_returns_current_value() {
         let state_manager = create_test_state_manager();
@@ -1313,14 +1556,13 @@ mod tests {
         let handle: VolumeHandle = PropertyHandle::new(context);
 
         let wh = handle.watch().unwrap();
-        assert_eq!(*wh, Some(Volume::new(50)));
-        assert_eq!(wh.value(), Some(&Volume::new(50)));
+        assert_eq!(wh.value(), Some(Volume::new(50)));
         // No event manager configured, so should be CacheOnly mode
         assert_eq!(wh.mode(), WatchMode::CacheOnly);
     }
 
     #[test]
-    fn test_watch_handle_deref() {
+    fn test_watch_handle_accessors() {
         let state_manager = create_test_state_manager();
         let speaker_id = SpeakerId::new("RINCON_TEST123");
 
@@ -1330,14 +1572,9 @@ mod tests {
         let handle: VolumeHandle = PropertyHandle::new(context);
 
         let wh = handle.watch().unwrap();
-        // Deref<Target = Option<P>>
         assert!(wh.has_value());
         assert!(!wh.has_realtime_events());
-        if let Some(v) = &*wh {
-            assert_eq!(v.value(), 75);
-        } else {
-            panic!("Expected Some value");
-        }
+        assert_eq!(wh.value().map(|v| v.value()), Some(75));
     }
 
     #[test]
@@ -1407,6 +1644,32 @@ mod tests {
 
         drop(wh);
         assert!(!handle.is_watched());
+    }
+
+    /// The group `watch()` is a second, independent construction site — it reads
+    /// the *group* store rather than the speaker store, so the speaker tests above
+    /// say nothing about it. Without this, reverting only the group site left the
+    /// whole suite green.
+    #[test]
+    fn test_group_handle_held_across_change_reports_new_value() {
+        let state_manager = create_test_state_manager();
+        let group_id = GroupId::new("RINCON_TEST123:1");
+        let context = create_test_group_context(Arc::clone(&state_manager));
+
+        let handle: GroupVolumeHandle = GroupPropertyHandle::new(context);
+
+        let wh = handle.watch().unwrap();
+        assert!(!wh.has_value(), "the group store is empty at this point");
+
+        state_manager.set_group_property(&group_id, GroupVolume::new(20));
+        assert_eq!(
+            wh.value(),
+            Some(GroupVolume::new(20)),
+            "a group handle must read the group store live, not a snapshot"
+        );
+
+        state_manager.set_group_property(&group_id, GroupVolume::new(21));
+        assert_eq!(wh.value(), Some(GroupVolume::new(21)));
     }
 
     #[test]
