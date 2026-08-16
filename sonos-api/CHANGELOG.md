@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/tatimblin/sonos-sdk/compare/sonos-api-v0.5.3...sonos-api-v0.6.0) - 2026-08-16
+
+### Fixed
+
+- correct AVTransport request element names and escape queue URIs ([#87](https://github.com/tatimblin/sonos-sdk/pull/87))
+- parse RenderingControl EQ variables as per-channel ([#85](https://github.com/tatimblin/sonos-sdk/pull/85))
+- detect SOAP faults instead of reporting them as network errors ([#88](https://github.com/tatimblin/sonos-sdk/pull/88))
+
+### Other
+
+- prune unused dependencies and fix stale docs ([#84](https://github.com/tatimblin/sonos-sdk/pull/84))
+
 ## [0.5.0](https://github.com/tatimblin/sonos-sdk/compare/sonos-api-v0.4.0...sonos-api-v0.5.0) - 2026-05-02
 
 ### Added
