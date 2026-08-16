@@ -42,17 +42,21 @@ struct RenderingControlInstance {
     #[serde(rename = "Mute", default)]
     pub mutes: Vec<ChannelValueAttribute>,
 
+    // Bass/Treble/Loudness/Balance are per-channel state variables in UPnP RCS.
+    // Devices such as stereo pairs and home theater setups emit one element per
+    // channel, so these must be collections: modelling them as a single value
+    // made the whole event fail to deserialize with "duplicate field".
     #[serde(rename = "Bass", default)]
-    pub bass: Option<xml_utils::ValueAttribute>,
+    pub bass: Vec<ChannelValueAttribute>,
 
     #[serde(rename = "Treble", default)]
-    pub treble: Option<xml_utils::ValueAttribute>,
+    pub treble: Vec<ChannelValueAttribute>,
 
     #[serde(rename = "Loudness", default)]
-    pub loudness: Option<xml_utils::ValueAttribute>,
+    pub loudness: Vec<ChannelValueAttribute>,
 
     #[serde(rename = "Balance", default)]
-    pub balance: Option<xml_utils::ValueAttribute>,
+    pub balance: Vec<ChannelValueAttribute>,
 }
 
 /// Represents an XML element with both val and channel attributes
@@ -96,44 +100,24 @@ impl RenderingControlEvent {
         self.get_mute_for_channel("RF")
     }
 
-    /// Get bass
+    /// Get master bass
     pub fn bass(&self) -> Option<String> {
-        self.property
-            .last_change
-            .instance
-            .bass
-            .as_ref()
-            .map(|v| v.val.clone())
+        Self::master_value(&self.property.last_change.instance.bass)
     }
 
-    /// Get treble
+    /// Get master treble
     pub fn treble(&self) -> Option<String> {
-        self.property
-            .last_change
-            .instance
-            .treble
-            .as_ref()
-            .map(|v| v.val.clone())
+        Self::master_value(&self.property.last_change.instance.treble)
     }
 
-    /// Get loudness
+    /// Get master loudness
     pub fn loudness(&self) -> Option<String> {
-        self.property
-            .last_change
-            .instance
-            .loudness
-            .as_ref()
-            .map(|v| v.val.clone())
+        Self::master_value(&self.property.last_change.instance.loudness)
     }
 
-    /// Get balance
+    /// Get master balance
     pub fn balance(&self) -> Option<String> {
-        self.property
-            .last_change
-            .instance
-            .balance
-            .as_ref()
-            .map(|v| v.val.clone())
+        Self::master_value(&self.property.last_change.instance.balance)
     }
 
     /// Get other channels as a map of all non-standard channels
@@ -165,6 +149,21 @@ impl RenderingControlEvent {
             .volumes
             .iter()
             .find(|v| v.channel == channel)
+            .map(|v| v.val.clone())
+    }
+
+    /// Select the `Master` entry from a per-channel state variable.
+    ///
+    /// Exact-match on `Master`, consistent with [`Self::get_volume_for_channel`]:
+    /// if a device reports only side channels (e.g. `LF`) there is no master
+    /// value, and returning a side-channel value in its place would be wrong.
+    ///
+    /// An entry with no `channel` attribute is treated as the master value,
+    /// since some devices emit the scalar form (e.g. `<Bass val="2"/>`).
+    fn master_value(values: &[ChannelValueAttribute]) -> Option<String> {
+        values
+            .iter()
+            .find(|v| v.channel == "Master" || v.channel.is_empty())
             .map(|v| v.val.clone())
     }
 
@@ -253,6 +252,14 @@ pub fn create_enriched_event_with_registration_id(
 mod tests {
     use super::*;
 
+    /// Build a `Master`-channel entry for fixtures.
+    fn master(val: &str) -> ChannelValueAttribute {
+        ChannelValueAttribute {
+            val: val.to_string(),
+            channel: "Master".to_string(),
+        }
+    }
+
     #[test]
     fn test_rendering_control_parser_service_type() {
         let parser = RenderingControlEventParser;
@@ -273,18 +280,10 @@ mod tests {
                             val: "false".to_string(),
                             channel: "Master".to_string(),
                         }],
-                        bass: Some(xml_utils::ValueAttribute {
-                            val: "0".to_string(),
-                        }),
-                        treble: Some(xml_utils::ValueAttribute {
-                            val: "0".to_string(),
-                        }),
-                        loudness: Some(xml_utils::ValueAttribute {
-                            val: "true".to_string(),
-                        }),
-                        balance: Some(xml_utils::ValueAttribute {
-                            val: "0".to_string(),
-                        }),
+                        bass: vec![master("0")],
+                        treble: vec![master("0")],
+                        loudness: vec![master("true")],
+                        balance: vec![master("0")],
                     },
                 },
             },
@@ -357,10 +356,10 @@ mod tests {
                             val: "0".to_string(),
                             channel: "Master".to_string(),
                         }],
-                        bass: None,
-                        treble: None,
-                        loudness: None,
-                        balance: None,
+                        bass: vec![],
+                        treble: vec![],
+                        loudness: vec![],
+                        balance: vec![],
                     },
                 },
             },
@@ -391,10 +390,10 @@ mod tests {
                             val: "0".to_string(),
                             channel: "Master".to_string(),
                         }],
-                        bass: None,
-                        treble: None,
-                        loudness: None,
-                        balance: None,
+                        bass: vec![],
+                        treble: vec![],
+                        loudness: vec![],
+                        balance: vec![],
                     },
                 },
             },
@@ -403,6 +402,66 @@ mod tests {
         let enriched = create_enriched_event_with_registration_id(42, ip, source, event_data);
 
         assert_eq!(enriched.registration_id, Some(42));
+    }
+
+    #[test]
+    fn test_lf_only_loudness_is_not_reported_as_master() {
+        let xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0">
+            <e:property>
+                <LastChange>&lt;Event xmlns="urn:schemas-upnp-org:metadata-1-0/RCS/"&gt;
+                    &lt;InstanceID val="0"&gt;
+                        &lt;Loudness channel="LF" val="1"/&gt;
+                    &lt;/InstanceID&gt;
+                &lt;/Event&gt;</LastChange>
+            </e:property>
+        </e:propertyset>"#;
+
+        let event = RenderingControlEvent::from_xml(xml).unwrap();
+        assert_eq!(event.loudness(), None);
+    }
+
+    #[test]
+    fn test_duplicate_loudness_channels_do_not_drop_event() {
+        let xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0">
+            <e:property>
+                <LastChange>&lt;Event xmlns="urn:schemas-upnp-org:metadata-1-0/RCS/"&gt;
+                    &lt;InstanceID val="0"&gt;
+                        &lt;Volume channel="Master" val="42"/&gt;
+                        &lt;Mute channel="Master" val="0"/&gt;
+                        &lt;Loudness channel="Master" val="1"/&gt;
+                        &lt;Loudness channel="LF" val="0"/&gt;
+                    &lt;/InstanceID&gt;
+                &lt;/Event&gt;</LastChange>
+            </e:property>
+        </e:propertyset>"#;
+
+        let parsed = RenderingControlEvent::from_xml(xml);
+        assert!(
+            parsed.is_ok(),
+            "per-channel Loudness must not drop the event"
+        );
+
+        let event = parsed.unwrap();
+        // The whole event previously failed to parse, taking volume/mute with it.
+        assert_eq!(event.master_volume(), Some("42".to_string()));
+        assert_eq!(event.master_mute(), Some("0".to_string()));
+        assert_eq!(event.loudness(), Some("1".to_string()));
+    }
+
+    #[test]
+    fn test_scalar_bass_still_parses() {
+        let xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0">
+            <e:property>
+                <LastChange>&lt;Event xmlns="urn:schemas-upnp-org:metadata-1-0/RCS/"&gt;
+                    &lt;InstanceID val="0"&gt;
+                        &lt;Bass val="2"/&gt;
+                    &lt;/InstanceID&gt;
+                &lt;/Event&gt;</LastChange>
+            </e:property>
+        </e:propertyset>"#;
+
+        let event = RenderingControlEvent::from_xml(xml).unwrap();
+        assert_eq!(event.bass(), Some("2".to_string()));
     }
 
     #[test]
@@ -429,16 +488,10 @@ mod tests {
                             val: "0".to_string(),
                             channel: "Master".to_string(),
                         }],
-                        bass: Some(xml_utils::ValueAttribute {
-                            val: "5".to_string(),
-                        }),
-                        treble: Some(xml_utils::ValueAttribute {
-                            val: "-3".to_string(),
-                        }),
-                        loudness: Some(xml_utils::ValueAttribute {
-                            val: "1".to_string(),
-                        }),
-                        balance: None,
+                        bass: vec![master("5")],
+                        treble: vec![master("-3")],
+                        loudness: vec![master("1")],
+                        balance: vec![],
                     },
                 },
             },
