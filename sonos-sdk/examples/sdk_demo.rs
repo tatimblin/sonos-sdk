@@ -215,29 +215,21 @@ fn main() -> Result<(), SdkError> {
             Some(event) => {
                 event_count += 1;
 
-                // Read the fresh cached value after the change notification
-                let value_str = match event.property_key {
-                    "volume" => speaker
-                        .volume
-                        .get()
-                        .map(|v| format!("{}%", v.0))
-                        .unwrap_or_else(|| "?".to_string()),
-                    "playback_state" => speaker
-                        .playback_state
-                        .get()
-                        .map(|s| format!("{s:?}"))
-                        .unwrap_or_else(|| "?".to_string()),
-                    "mute" => speaker
-                        .mute
-                        .get()
-                        .map(|m| if m.0 { "muted" } else { "unmuted" }.to_string())
-                        .unwrap_or_else(|| "?".to_string()),
-                    other => other.to_string(),
+                // The value arrives with the event. No `speaker.volume.get()`
+                // re-read, so a burst of queued events prints each distinct
+                // value rather than the newest one repeated N times.
+                let value_str = match &event.change {
+                    PropertyChange::Volume(v) => format!("{}%", v.0),
+                    PropertyChange::PlaybackState(s) => format!("{s:?}"),
+                    PropertyChange::Mute(m) => if m.0 { "muted" } else { "unmuted" }.to_string(),
+                    other => other.key().to_string(),
                 };
 
                 println!(
-                    "  [event {event_count}] {} => {value_str} (speaker: {})",
-                    event.property_key, event.speaker_id
+                    "  [event {event_count}] {} => {value_str} (speaker: {}, via {:?})",
+                    event.property_key(),
+                    event.speaker_id,
+                    event.source
                 );
             }
             None => {

@@ -100,12 +100,12 @@ fn wait_for_property_event(
         if let Some(event) = iter.recv_timeout(poll_duration) {
             eprintln!(
                 "  [event] {} for {} (looking for {} on {})",
-                event.property_key,
+                event.property_key(),
                 event.speaker_id.as_str(),
                 property_key,
                 speaker_id.as_str()
             );
-            if event.speaker_id == *speaker_id && event.property_key == property_key {
+            if event.speaker_id == *speaker_id && event.property_key() == property_key {
                 return Some(event);
             }
         }
@@ -880,10 +880,10 @@ fn test_topology_properties() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(event) = iter.recv_timeout(poll_duration) {
             eprintln!(
                 "    [event] {} for {}",
-                event.property_key,
+                event.property_key(),
                 event.speaker_id.as_str()
             );
-            if event.property_key == "group_membership" {
+            if event.property_key() == "group_membership" {
                 events_received += 1;
             }
         }
@@ -933,7 +933,7 @@ fn test_topology_properties() -> Result<(), Box<dyn std::error::Error>> {
         let remaining = deadline.saturating_duration_since(Instant::now());
         let poll_duration = remaining.min(Duration::from_millis(100));
         if let Some(event) = iter.recv_timeout(poll_duration) {
-            if event.property_key == "group_membership" {
+            if event.property_key() == "group_membership" {
                 leave_events += 1;
                 eprintln!(
                     "    [event] group_membership for {}",

@@ -402,39 +402,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     while running.load(Ordering::SeqCst) {
         if let Some(event) = iter.recv_timeout(Duration::from_secs(1)) {
             let sid = event.speaker_id.as_str().to_string();
-            let key = format!("{}|{}", sid, event.property_key);
+            let key = format!("{}|{}", sid, event.property_key());
 
-            // Update the observation with the new cached value
-            if let Some(speaker_name) = speaker_display.get(&sid) {
-                if let Some(speaker) = system.speaker(speaker_name) {
-                    let new_value = read_property_value(&speaker, event.property_key);
-                    if let Some(obs) = observations.get_mut(&key) {
-                        obs.update(new_value);
-                    }
-                }
+            // The value is on the event, so no speaker/group lookup and no
+            // store re-read is needed to record it.
+            let new_value = format_change(&event.change);
+
+            if let Some(obs) = observations.get_mut(&key) {
+                obs.update(new_value.clone());
             }
 
-            // Also check group property updates
-            // Group events arrive on the coordinator speaker_id
+            // Group-scoped events arrive keyed on the coordinator's speaker_id,
+            // so the same payload also updates that group's row.
             for group in system.groups() {
                 if group.coordinator_id.as_str() == sid {
-                    let group_key = format!("group:{}|{}", group.id.as_str(), event.property_key);
+                    let group_key = format!("group:{}|{}", group.id.as_str(), event.property_key());
                     if let Some(obs) = observations.get_mut(&group_key) {
-                        let new_value = read_group_property_value(&group, event.property_key);
-                        obs.update(new_value);
+                        obs.update(new_value.clone());
                     }
                 }
             }
 
             println!(
-                "[{:>8}] {} | {} = {}",
+                "[{:>8}] {} | {} = {} ({:?})",
                 format_elapsed(event.timestamp.elapsed()),
                 speaker_display.get(&sid).unwrap_or(&sid),
-                event.property_key,
-                observations
-                    .get(&key)
-                    .map(|o| o.value.as_str())
-                    .unwrap_or("?"),
+                event.property_key(),
+                new_value,
+                event.source,
             );
 
             // Redisplay dashboard periodically (every 10 events or so)
@@ -453,77 +448,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Read the current cached value of a speaker property by key
-fn read_property_value(speaker: &Speaker, key: &str) -> String {
-    match key {
-        "volume" => speaker
-            .volume
-            .get()
-            .map(|v| format!("{}", v.0))
-            .unwrap_or_else(|| "-".into()),
-        "mute" => speaker
-            .mute
-            .get()
-            .map(|m| format!("{}", m.0))
-            .unwrap_or_else(|| "-".into()),
-        "bass" => speaker
-            .bass
-            .get()
-            .map(|b| format!("{}", b.0))
-            .unwrap_or_else(|| "-".into()),
-        "treble" => speaker
-            .treble
-            .get()
-            .map(|t| format!("{}", t.0))
-            .unwrap_or_else(|| "-".into()),
-        "loudness" => speaker
-            .loudness
-            .get()
-            .map(|l| format!("{}", l.0))
-            .unwrap_or_else(|| "-".into()),
-        "playback_state" => speaker
-            .playback_state
-            .get()
-            .map(|s| format!("{s:?}"))
-            .unwrap_or_else(|| "-".into()),
-        "position" => speaker
-            .position
-            .get()
-            .map(|p| format_position(&p))
-            .unwrap_or_else(|| "-".into()),
-        "current_track" => speaker
-            .current_track
-            .get()
-            .map(|t| t.display())
-            .unwrap_or_else(|| "-".into()),
-        "group_membership" => speaker
-            .group_membership
-            .get()
-            .map(|gm| format!("{} (coord={})", gm.group_id.as_str(), gm.is_coordinator))
-            .unwrap_or_else(|| "-".into()),
-        _ => format!("(unknown: {key})"),
-    }
-}
-
-/// Read the current cached value of a group property by key
-fn read_group_property_value(group: &Group, key: &str) -> String {
-    match key {
-        "group_volume" => group
-            .volume
-            .get()
-            .map(|v| format!("{}", v.0))
-            .unwrap_or_else(|| "-".into()),
-        "group_mute" => group
-            .mute
-            .get()
-            .map(|m| format!("{}", m.0))
-            .unwrap_or_else(|| "-".into()),
-        "group_volume_changeable" => group
-            .volume_changeable
-            .get()
-            .map(|v| format!("{}", v.0))
-            .unwrap_or_else(|| "-".into()),
-        _ => "-".into(),
+/// Format the value carried on a change event.
+///
+/// One function for both speaker- and group-scoped properties, because the
+/// event payload already distinguishes them — and, unlike the two `get()`-based
+/// readers this replaces, it cannot report a value other than the one that
+/// caused this event. That matters here specifically: this example counts
+/// updates per property, so re-reading the store would attribute N queued
+/// changes to whatever value happened to be current on the Nth read.
+fn format_change(change: &PropertyChange) -> String {
+    match change {
+        PropertyChange::Volume(v) => format!("{}", v.0),
+        PropertyChange::Mute(m) => format!("{}", m.0),
+        PropertyChange::Bass(b) => format!("{}", b.0),
+        PropertyChange::Treble(t) => format!("{}", t.0),
+        PropertyChange::Loudness(l) => format!("{}", l.0),
+        PropertyChange::PlaybackState(s) => format!("{s:?}"),
+        PropertyChange::Position(p) => format_position(p),
+        PropertyChange::CurrentTrack(t) => t.display(),
+        PropertyChange::GroupMembership(gm) => {
+            format!("{} (coord={})", gm.group_id.as_str(), gm.is_coordinator)
+        }
+        PropertyChange::GroupVolume(v) => format!("{}", v.0),
+        PropertyChange::GroupMute(m) => format!("{}", m.0),
+        PropertyChange::GroupVolumeChangeable(v) => format!("{}", v.0),
     }
 }
 

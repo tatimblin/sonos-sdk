@@ -59,6 +59,27 @@ Every property provides three access methods:
 - **`fetch()`** - Makes API call to device, updates cache (fresh data)
 - **`watch()`** - Registers for change notifications (reactive)
 
+### Change Events Carry Values
+`system.iter()` yields a `ChangeEvent` that includes the new value, so you match on it
+directly instead of re-reading the cache:
+
+```rust
+let _watch = speaker.volume.watch()?;   // hold the handle to keep receiving
+
+for event in system.iter() {
+    match &event.change {
+        PropertyChange::Volume(v) => println!("volume -> {}%", v.value()),
+        PropertyChange::PlaybackState(s) => println!("playback -> {s:?}"),
+        other => println!("{} changed", other.key()),
+    }
+}
+```
+
+This matters when events queue up: the cache only holds the *latest* value, so a
+`Playing → Transitioning → Playing` sequence reads as `Playing` three times if you re-read the
+cache per event. The event payload preserves the full sequence. Use `get()` when you want
+current state (a full UI repaint); use `event.change` when you want what changed.
+
 ### Sync-First Design
 All operations are synchronous - no `async`/`await` required. The SDK handles the complexity of UPnP subscriptions and event processing internally while presenting a simple, blocking API to your application.
 

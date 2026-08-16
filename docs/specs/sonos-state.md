@@ -26,18 +26,35 @@
    blocking TUI render loop. It does not want an async stream per property; it wants one
    blocking "something you care about moved" channel it can drain per frame.
 
-The design answer to (4) shapes the whole crate: **`ChangeEvent` is a notification, not a
-value.** It carries `{speaker_id, property_key, service, timestamp}` and deliberately no
-payload. Consumers re-read through `get_property::<P>()`, which means they always observe the
-current value rather than replaying a queue of stale ones, and the channel stays a single
-non-generic type regardless of how many property types exist.
+The design answer to (4) shapes the whole crate: **`ChangeEvent` carries the value it
+announces.** It is `{speaker_id, change: PropertyChange, source, timestamp}`, where
+`PropertyChange` is the same typed enum the decoder already produces.
+
+This reverses an earlier decision. Through 0.6.x the event was a valueless doorbell and
+consumers re-read through `get_property::<P>()`. That kept the channel non-generic — which is
+still a goal — but it made queued events lossy in a way that could not be worked around: by the
+time a consumer drains three queued events the store already holds the newest value, so a
+`Playing -> Transitioning -> Playing` sequence read as `Playing` three times. The intermediate
+state, and the fact that anything moved at all, were unrecoverable. It also cost one store lock
+per event per watcher.
+
+Reusing `PropertyChange` rather than introducing a parallel value type keeps the channel a
+single non-generic type: the enum is closed over the 12 decodable properties, so `ChangeEvent`
+stays concrete no matter how many watchers or property types exist. `property_key()` and
+`service()` are now derived from the payload rather than stored beside it, so they cannot drift
+from the value.
+
+The store remains the right source for a *full repaint* — a dashboard redrawing every field
+wants current state, not one property's history. Both readings are now available; the event is
+authoritative for "what changed", the store for "what is true now".
 
 ### 1.2 Design Goals
 
 | Priority | Goal | Rationale |
 |----------|------|-----------|
 | P0 | Fully synchronous public API | The SDK is sync-first; `sonos-state` must be usable from a blocking render loop with no runtime handle and no `.await` |
-| P0 | Valueless change notifications | Decouples the notification channel from property types and guarantees consumers read current, not stale, values |
+| P0 | Value-carrying change notifications | A consumer draining a backlog observes every value the property passed through, with no store lock per event |
+| P0 | Monotonically ordered writes | A slow `fetch()` response must not overwrite a newer event-derived value; writes are ordered by *observation* time, not arrival time |
 | P0 | Type-safe typed properties | `Property::KEY` + `SonosProperty::{SCOPE, SERVICE}` associate a property with its storage location and UPnP service at compile time |
 | P0 | Coordinator-correct reads and writes | Group members must observe the coordinator's playback state without duplicating it in the store |
 | P1 | Notify only what is watched | The `watched` set gates emission, so an unwatched property updates the cache silently instead of waking the consumer |
@@ -59,7 +76,9 @@ non-generic type regardless of how many property types exist.
 ### 1.4 Success Criteria
 
 - [x] Every public method on `StateManager` is synchronous
-- [x] `ChangeEvent` carries no property value; consumers re-read via `get_property`
+- [x] `ChangeEvent` carries the new value as a typed `PropertyChange`
+- [x] A queued `Playing -> Transitioning -> Playing` burst is fully observable through `iter()`
+- [x] A `fetch()` observed before a stored event is rejected rather than applied
 - [x] Unwatched property updates mutate the cache without emitting an event
 - [x] Setting a property to its existing value emits nothing (`PropertyBag::set` returns `false`)
 - [x] `PerCoordinator` events from non-coordinators are dropped, not stored
@@ -271,20 +290,55 @@ requires no change to the store.
 emission path is gated on it, which is what keeps UPnP's habit of re-sending identical
 `LastChange` payloads from waking the consumer.
 
-#### `ChangeEvent` (`src/state.rs:63`)
+#### `ChangeEvent` (`src/state.rs`)
 
 ```rust
 pub struct ChangeEvent {
     pub speaker_id: SpeakerId,
-    pub property_key: &'static str,
-    pub service: Service,
-    pub timestamp: Instant,
+    pub change: PropertyChange,   // the new value, typed
+    pub source: ChangeSource,     // Event | LocalAction | Fetch
+    pub timestamp: Instant,       // when the value was *observed*
+}
+
+impl ChangeEvent {
+    pub fn property_key(&self) -> &'static str;  // derived from `change`
+    pub fn service(&self) -> Service;            // derived from `change`
 }
 ```
 
-**Purpose**: the doorbell. No value field, by design (see 1.1). `property_key` is
-`&'static str` because it always comes from a `Property::KEY` constant, so the event allocates
-nothing beyond the `SpeakerId` clone.
+**Purpose**: announce *and deliver* a change. `change` is the payload; `property_key()` and
+`service()` are derived from it rather than stored, so the label cannot disagree with the value.
+`source` lets a consumer distinguish a device report from this process's own optimistic write.
+
+`timestamp` is the observation instant, not the send instant — the same `WriteStamp` that
+ordered the write (see below), so an event and its store entry always agree.
+
+#### `ChangeSource` / `WriteStamp` / `WriteOutcome` (`src/state.rs`)
+
+```rust
+pub enum ChangeSource { Event, LocalAction, Fetch }   // authority, descending
+
+pub struct WriteStamp {
+    pub observed_at: Instant,   // when the observation was made, NOT when written
+    pub source: ChangeSource,
+}
+
+pub enum WriteOutcome { Changed, Unchanged, Stale }
+```
+
+**Purpose**: order writes by when the underlying observation happened. The distinction is
+load-bearing for `fetch()`: it reads the device at *request* time but calls `set_property` at
+*response* time, a gap of up to hundreds of milliseconds. Stamped at write time it would always
+look newest and would clobber any event that arrived while it was in flight — the visible bug
+being a speaker snapping back to its previous volume a moment after changing.
+
+`PropertyBag::set` therefore checks staleness *before* comparing values, so a rejected write
+neither changes the value nor advances the stamp. The stamp *is* recorded on an `Unchanged`
+write, because that observation is still the most recent one and later writes must order against
+it.
+
+`WriteOutcome` replaces the previous `bool`: once writes are ordered, "the value differs" and
+"the write was allowed" are separate questions. Only `Changed` emits a notification.
 
 #### `SonosProperty` (`src/property.rs:52`)
 
@@ -335,11 +389,12 @@ handle_event                       src/event_worker.rs:117
         |     -> DecodedChanges { Vec<PropertyChange> }
         |
         +-- apply_property_change() per change      src/event_worker.rs:413
-        |     PropertyChange::apply() -> bool       src/decoder.rs:73
-        |     changed && watched -> event_tx.send(ChangeEvent)
+        |     PropertyChange::apply(stamp) -> WriteOutcome   src/decoder.rs
+        |     outcome.changed() && watched -> event_tx.send(ChangeEvent { change, .. })
         |
         +-- PerCoordinator? notify_group_members()   src/event_worker.rs:387
-              emits ChangeEvents for members, copies nothing
+              emits ChangeEvents carrying the coordinator's value; the store
+              still holds one copy, in the coordinator's bag
                               |
                               v
         ChangeIterator::recv()                       src/iter.rs:52
@@ -367,7 +422,7 @@ handle_event                       src/event_worker.rs:117
    `decode_group_rendering_control` (:311). `DeviceProperties` and `GroupManagement` decode to
    an empty vec (`:187`, `:190`) — the former has no API layer yet, the latter is action-only
    and surfaces its effects through topology events instead.
-6. **Apply** (`src/decoder.rs:73`): `PropertyChange::apply` routes by scope —
+6. **Apply** (`src/decoder.rs`): `PropertyChange::apply(.., stamp)` routes by scope —
    speaker-scoped variants to `store.set()`, group-scoped variants resolve
    `speaker_to_group` first and write to `store.set_group()`. A group-scoped change for a
    speaker with no group mapping returns `false` and is logged at `warn`
@@ -377,7 +432,8 @@ handle_event                       src/event_worker.rs:117
 8. **Fan out to members** (`src/event_worker.rs:387`): for `PerCoordinator` services,
    `resolve_group_members` (`:367`) returns the non-coordinator members (empty for a
    standalone speaker or a non-coordinator), and each watching member gets its own
-   `ChangeEvent`. No value is duplicated — the member's later `get_property` resolves back to
+   `ChangeEvent` carrying the coordinator's value. The *store* still holds one copy — the
+   member's `get_property` resolves back to
    the coordinator's bag.
 
 ### 3.2 Secondary Flow: topology replacement
@@ -471,39 +527,41 @@ consumer can tell the difference, so no fallback on the event path is allowed to
 
 ## 4. Features
 
-### 4.1 Feature: valueless change notifications
+### 4.1 Feature: value-carrying change notifications
 
 #### What
 
-`ChangeEvent` names what changed; the consumer re-reads the value.
+`ChangeEvent` delivers the new value alongside the identity of what changed.
 
 #### Why
 
-Three payoffs. (a) One non-generic channel serves every property type — no per-type
-broadcast, no type erasure in the channel. (b) A slow consumer coalesces rather than replays:
-whatever it reads is current. (c) The API stays sync, because reading is just a lock and a
-clone.
+The store holds only the *latest* value. A consumer that drains a backlog and re-reads per event
+therefore cannot see intermediate values, and cannot tell three changes from one. Carrying the
+value makes the event stream a faithful record; it also removes one store lock per event per
+watcher.
 
 #### How
 
 ```rust
-// src/state.rs:663
-fn maybe_emit_change(&self, speaker_id: &SpeakerId, property_key: &'static str, service: Service) {
-    let is_watched = self.watched.read().contains(&(speaker_id.clone(), property_key));
-    if is_watched {
-        let _ = self.event_tx.send(ChangeEvent::new(speaker_id.clone(), property_key, service));
-    }
+fn maybe_emit_change<P: SonosProperty>(&self, speaker_id: &SpeakerId, value: &P, stamp: WriteStamp) {
+    if !is_pair_watched(&self.watched.read(), speaker_id, P::KEY) { return; }
+    let Some(change) = value.to_change() else { /* warn: no variant */ return };
+    let _ = self.event_tx.send(ChangeEvent::new(speaker_id.clone(), change, stamp));
 }
 ```
+
+`SonosProperty::to_change()` maps a typed value to its `PropertyChange` variant. It defaults to
+`None` so a newly added property cannot silently acquire a wrong payload — it must opt in. The
+only property returning `None` today is `Topology`, which is written wholesale by `initialize()`
+and is not watchable; that path warns rather than dropping the notification silently.
 
 Consumer side:
 
 ```rust
 for event in manager.iter() {
-    if event.property_key == Volume::KEY {
-        if let Some(v) = manager.get_property::<Volume>(&event.speaker_id) {
-            println!("{} -> {}%", event.speaker_id.as_str(), v.value());
-        }
+    match &event.change {
+        PropertyChange::Volume(v) => println!("{} -> {}%", event.speaker_id.as_str(), v.value()),
+        other => println!("{} changed", other.key()),
     }
 }
 ```
@@ -512,9 +570,40 @@ for event in manager.iter() {
 
 | Decision | Alternative Considered | Why We Chose This |
 |----------|----------------------|-------------------|
-| Notification without value | `ChangeEvent<P>` carrying the value | Would make the channel generic; forces one channel per property type and leaks `P` into `iter()` |
+| Reuse `PropertyChange` as the payload | A new value-carrying enum, or `ChangeEvent<P>` | `PropertyChange` is already the typed, closed, decoder-produced representation of exactly these values. A parallel type would need the same 12 variants and could drift from the decoder; a generic `ChangeEvent<P>` would make the channel generic and force one channel per property type |
+| Derive `property_key()` / `service()` from the payload | Keep them as struct fields | Two sources of truth for "which property is this" can disagree; derivation makes that impossible |
+| Keep the store as well | Events only | A full repaint legitimately wants current state, not one property's history. Both readings now exist |
 | `std::sync::mpsc` | `tokio::sync::broadcast` | No runtime needed; blocking `recv()` is exactly what a sync render loop wants |
-| Shared receiver behind a `Mutex` | Receiver per clone | `mpsc::Receiver` is not cloneable, and one drain point matches one render loop |
+| Shared receiver behind a `Mutex` | Receiver per clone | `mpsc::Receiver` is not cloneable, and one drain point matches one render loop. Still a known limitation — see 14.1 |
+
+### 4.1a Feature: monotonic write ordering
+
+#### What
+
+Every write carries a `WriteStamp` recording when its value was *observed*. A write observed
+before the stored one is rejected as `Stale`.
+
+#### Why
+
+`fetch()` and UPnP events race. A `fetch()` issued at t0 whose response lands at t2 describes
+the device as of t0, but without ordering it would overwrite an event that arrived at t1 with
+newer truth. Ordering by arrival is simply wrong here; ordering by observation is correct.
+
+#### How
+
+Callers stamp at the right moment:
+
+| Path | Stamp | Rationale |
+|------|-------|-----------|
+| Event worker | `WriteStamp::now(Event)` before applying | Observation and write coincide |
+| `set_property` (local action) | `WriteStamp::now(LocalAction)` | The device just acknowledged the action |
+| `fetch()` | `WriteStamp::observed_at(Fetch, t_before_request)` | The read describes the device at request time |
+
+Ties on an exact `Instant` break by `ChangeSource` authority (`Event` > `LocalAction` > `Fetch`),
+so an event cannot be displaced by a `fetch()` that happens to share its timestamp.
+
+A rejected `fetch()` still returns its value to its caller — it just does not overwrite a newer
+cache entry.
 
 ### 4.2 Feature: watched-set gating
 
@@ -807,10 +896,14 @@ field that changes after insertion.
 
 #### `PropertyChange` (`src/decoder.rs:51`)
 
-A 12-variant enum, one per decodable property, with `apply` (:73), `key` (:111), `scope`
-(:130), and `service` (:149). It exists so a decoded batch can be moved out of the decoder
-without generics and without holding the store lock during decode — the worker decodes first,
-then takes the write lock per change (`src/event_worker.rs:423`).
+A 12-variant enum, one per decodable property, with `apply`, `key`, `scope`, and `service`. It
+exists so a decoded batch can be moved out of the decoder without generics and without holding
+the store lock during decode — the worker decodes first, then takes the write lock per change.
+
+Since 0.7.0 it is also the **`ChangeEvent` payload**, reached through `SonosProperty::to_change()`
+for values written outside the decoder (local actions, `fetch()` results). That dual role is
+deliberate: one closed, typed representation of "a property took this value", whether it came
+from a NOTIFY or from a SOAP write.
 
 ### 5.2 State Transitions
 
@@ -957,7 +1050,19 @@ constructing a store, applying changes, and asserting on both the store and the 
 - [x] Property metadata constants — `test_property_constants` (`src/property.rs:601`)
 - [x] Per-service decoding — `test_decode_rendering_control` (`src/decoder.rs:640`), `test_decode_av_transport` (:675), `test_decode_group_rendering_control` (:706)
 - [x] Topology decode incl. IPs, satellites, `boot_seq` — `src/decoder.rs:588`, :1026, :1059
-- [x] `PropertyChange` key/service/scope mapping — `src/decoder.rs:774`, :788, :806
+- [x] `PropertyChange` key/service/scope mapping — `src/decoder.rs`
+- [x] Queued events preserve every intermediate value —
+      `test_queued_events_preserve_every_intermediate_value` (`src/state.rs`) queues
+      `Playing -> Transitioning -> Playing` before draining and asserts all three are observed,
+      while the store holds only the last. Impossible to satisfy before 0.7.0
+- [x] Monotonic write guard — `test_stale_fetch_does_not_clobber_newer_event_value` proves a
+      `fetch()` observed before a stored event is rejected *and* that the newer value survives;
+      `test_newer_write_is_accepted_after_an_earlier_one` proves the guard is not simply
+      "reject everything after the first write"
+- [x] Event payload correctness at the SDK boundary —
+      `test_sdk_change_event_carries_value_and_source` (`sonos-sdk/src/property/handles.rs`)
+- [x] Group fan-out payload — `test_per_coordinator_notifies_members_without_data_copy` asserts
+      the member's event carries the coordinator's value
 - [x] Channel semantics — `test_channel_closed` (`src/iter.rs:269`), `test_try_iter` (:233)
 - [x] Coordinator resolution — `test_get_resolved_per_coordinator_reads_from_coordinator` (`src/state.rs:1687`), `test_get_resolved_per_speaker_reads_own_props` (:1735)
 - [x] Watch gating — `test_change_event_emission` (`src/state.rs:1040`), `test_set_group_property_no_event_when_unwatched` (:1116)
@@ -1016,7 +1121,7 @@ fallback).
 |------------|----------|----------|
 | `StateStore` | Real instance | `StateStore::new()` inline |
 | `SpeakerInfo` | Local factory functions | `create_test_speaker_info()` in the relevant test module |
-| `ChangeEvent` channel | Real `mpsc::channel()` | Assert on `try_recv()` |
+| `ChangeEvent` channel | Real `mpsc::channel()` | Assert on `try_recv()` and on `event.change` |
 | `EnrichedEvent` | Direct struct construction | `src/decoder.rs` tests |
 | `SonosEventManager` | Not mocked | Worker helpers are tested directly instead of through `iter()` |
 
@@ -1150,7 +1255,8 @@ The workspace versions together; breaking changes ride the `sonos-sdk` version.
 
 | Version | Changes |
 |---------|---------|
-| 0.5.x | Sync-first design: `std::thread` worker, `mpsc` notifications, valueless `ChangeEvent`, coordinator resolution, lazy `EventInitFn` |
+| 0.7.0 | **Breaking**: `ChangeEvent` carries the value as `PropertyChange`; `property_key`/`service` become methods; `source`/`timestamp` reflect observation. Monotonic write guard (`WriteStamp`, `WriteOutcome`, `ChangeSource`); `StateStore::set*` and `PropertyChange::apply` take a stamp and return `WriteOutcome` |
+| 0.5.x–0.6.x | Sync-first design: `std::thread` worker, `mpsc` notifications, valueless `ChangeEvent`, coordinator resolution, lazy `EventInitFn` |
 | 0.2.1 | `StateWatchRegistry` implementing `WatchRegistry`; moved to `parking_lot::RwLock` |
 | 0.1.0 | Initial release |
 
@@ -1199,8 +1305,9 @@ The workspace versions together; breaking changes ride the `sonos-sdk` version.
 ### 15.2 Open Questions
 
 - [ ] **Should `ChangeEvent` be coalesced in the channel rather than by the consumer?**
-  Because events carry no value, dedup on `(speaker_id, property_key)` is safe — the consumer
-  re-reads anyway. The open part is where to put the dedup window.
+  Now materially harder than it looked: events carry values, so collapsing two events on one
+  `(speaker_id, property_key)` *discards an observed value* — exactly what 4.1 exists to
+  prevent. Any coalescing would have to be opt-in per consumer, not a channel-level default.
 - [ ] **Should `get_resolved` be exposed directly?** Today coordinator resolution is implicit
   in `get_property`. An explicit "give me my own value, unresolved" accessor might be useful
   for diagnostics.
@@ -1218,7 +1325,9 @@ The workspace versions together; breaking changes ride the `sonos-sdk` version.
 | ServiceScope | How a service subscribes: `PerSpeaker`, `PerNetwork`, `PerCoordinator` (`sonos-api/src/service.rs:38`) |
 | PropertyBag | `HashMap<TypeId, Box<dyn Any>>` holding one entity's property values |
 | Watched set | `HashMap<(SpeakerId, &'static str), WatchHolds>` gating notification emission; an entry exists while any watcher holds the pair (4.2) |
-| ChangeEvent | Valueless notification that a watched property changed |
+| ChangeEvent | Notification that a watched property changed, carrying the new value as a `PropertyChange` |
+| WriteStamp | `{observed_at, source}` recording when a value was observed, used to reject out-of-order writes |
+| ChangeSource | Provenance of a value: `Event` (device NOTIFY), `LocalAction` (post-action write), `Fetch` (SOAP read) |
 | Coordinator | The speaker owning playback state for its group |
 | Satellite | A speaker marked `Invisible="1"` in topology (surround, sub) |
 | Event worker | The `std::thread` draining `SonosEventManager::iter()` |

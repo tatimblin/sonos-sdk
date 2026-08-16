@@ -79,7 +79,10 @@ pub mod error;
 // ============================================================================
 
 // State manager
-pub use state::{ChangeEvent, EventInitFn, StateManager, StateManagerBuilder};
+pub use state::{
+    ChangeEvent, ChangeSource, EventInitFn, StateManager, StateManagerBuilder, WriteOutcome,
+    WriteStamp,
+};
 
 // Change iterator
 pub use iter::ChangeIterator;
@@ -118,8 +121,9 @@ pub mod prelude {
     pub use crate::model::{GroupId, SpeakerId, SpeakerInfo};
 
     // State management
+    pub use crate::decoder::PropertyChange;
     pub use crate::iter::ChangeIterator;
-    pub use crate::state::{ChangeEvent, StateManager};
+    pub use crate::state::{ChangeEvent, ChangeSource, StateManager};
 
     // Error types
     pub use crate::error::{Result, StateError};

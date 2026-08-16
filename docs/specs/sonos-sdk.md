@@ -382,22 +382,41 @@ Without automatic synchronization, developers would need to manually coordinate 
 #### How
 
 ```rust
-pub async fn fetch(&self) -> Result<$property_type, SdkError> {
-    // ... API call ...
-    let property_value = $convert_expr(response);
+pub fn fetch(&self) -> Result<P, SdkError> {
+    // Stamped BEFORE the request: the device's answer describes it as of *now*,
+    // not as of whenever the response happens to arrive.
+    let observed_at = Instant::now();
 
-    // Automatic state update - triggers watchers
-    self.state_manager.update_property(&self.speaker_id, property_value.clone());
+    let response = self.context.api_client.execute_enhanced(&ip, operation)?;
+    let property_value = P::from_response(response);
+
+    // Ordered state update — triggers watchers, but loses to a newer event.
+    self.context.state_manager.set_property_stamped(
+        &target_id,
+        property_value.clone(),
+        WriteStamp::observed_at(ChangeSource::Fetch, observed_at),
+    );
 
     Ok(property_value)
 }
 ```
+
+**Ordering, not just synchronisation** (since 0.7.0): a `fetch()` is a *read at request time*
+that lands at *response time*. If a UPnP event arrives in that window with a newer value, the
+fetch response must not overwrite it — otherwise a speaker visibly snaps back to its previous
+value moments after changing. `set_property_stamped` compares observation instants and rejects
+the stale write, returning `WriteOutcome::Stale`.
+
+The caller still receives the value it fetched; only the shared cache declines to regress. See
+`docs/specs/sonos-state.md` §4.1a.
 
 #### Trade-offs
 
 | Decision | Alternative Considered | Why We Chose This |
 |----------|----------------------|-------------------|
 | Automatic update on fetch | Manual state update required | Prevents state inconsistency |
+| Stamp before the request | Stamp when the response lands | Stamping on arrival makes every slow read look freshest, which is precisely the clobbering bug |
+| Return the fetched value even when the cache rejects it | Return an error or the cached value | The caller asked the device a question and got an answer; surprising them with a different value would be worse. The cache-level decision is separate |
 | Clone value before return | Return reference | Value types are small; cloning is simpler |
 
 ### 4.3 Feature: Macro-Generated Property Handles
@@ -857,6 +876,7 @@ None required.
 
 | Version | Changes | Migration Guide |
 |---------|---------|-----------------|
+| `0.7.0` | **Breaking**: `ChangeEvent` carries the changed value (`event.change: PropertyChange`); `property_key` and `service` become methods; `fetch()` writes are ordered by observation time | Replace `event.property_key` with `event.property_key()` and `event.service` with `event.service()`. Prefer matching on `event.change` over re-reading the store — a store re-read cannot see intermediate values in a queued burst |
 | `0.3.0` | RAII `WatchHandle`, remove `unwatch()`, 50ms grace period, `WatchGuard` | Replace `watch()` result handling: hold `WatchHandle`, drop to unsubscribe instead of calling `unwatch()` |
 | `0.2.0` | Lazy event init, method renames, fluent navigation, prelude, `#[non_exhaustive]` | Replace `get_` prefixed methods with short names; use `sonos_sdk::prelude::*` |
 | `0.1.0` | Initial release | N/A |

@@ -58,6 +58,24 @@ pub trait SonosProperty: Property {
     /// Used for subscription hints - to know which services need subscriptions
     /// when this property is being watched.
     const SERVICE: Service;
+
+    /// Wrap this value in its [`PropertyChange`] variant, for the change event
+    /// payload.
+    ///
+    /// Returns `None` for properties that have no variant — currently only
+    /// [`Topology`], which is written wholesale through `initialize()` rather
+    /// than per-property and is not watchable through the SDK. Such a property
+    /// still updates the store; it just cannot be carried in a `ChangeEvent`,
+    /// so no event is emitted for it.
+    ///
+    /// Defaulted to `None` so adding a property does not silently gain a wrong
+    /// payload — a new watchable property must opt in explicitly, and the
+    /// missing-variant path logs.
+    ///
+    /// [`PropertyChange`]: crate::decoder::PropertyChange
+    fn to_change(&self) -> Option<crate::decoder::PropertyChange> {
+        None
+    }
 }
 
 // ============================================================================
@@ -75,6 +93,10 @@ impl Property for Volume {
 impl SonosProperty for Volume {
     const SCOPE: Scope = Scope::Speaker;
     const SERVICE: Service = Service::RenderingControl;
+
+    fn to_change(&self) -> Option<crate::decoder::PropertyChange> {
+        Some(crate::decoder::PropertyChange::Volume(self.clone()))
+    }
 }
 
 impl Volume {
@@ -98,6 +120,10 @@ impl Property for Mute {
 impl SonosProperty for Mute {
     const SCOPE: Scope = Scope::Speaker;
     const SERVICE: Service = Service::RenderingControl;
+
+    fn to_change(&self) -> Option<crate::decoder::PropertyChange> {
+        Some(crate::decoder::PropertyChange::Mute(self.clone()))
+    }
 }
 
 impl Mute {
@@ -121,6 +147,10 @@ impl Property for Bass {
 impl SonosProperty for Bass {
     const SCOPE: Scope = Scope::Speaker;
     const SERVICE: Service = Service::RenderingControl;
+
+    fn to_change(&self) -> Option<crate::decoder::PropertyChange> {
+        Some(crate::decoder::PropertyChange::Bass(self.clone()))
+    }
 }
 
 impl Bass {
@@ -144,6 +174,10 @@ impl Property for Treble {
 impl SonosProperty for Treble {
     const SCOPE: Scope = Scope::Speaker;
     const SERVICE: Service = Service::RenderingControl;
+
+    fn to_change(&self) -> Option<crate::decoder::PropertyChange> {
+        Some(crate::decoder::PropertyChange::Treble(self.clone()))
+    }
 }
 
 impl Treble {
@@ -167,6 +201,10 @@ impl Property for Loudness {
 impl SonosProperty for Loudness {
     const SCOPE: Scope = Scope::Speaker;
     const SERVICE: Service = Service::RenderingControl;
+
+    fn to_change(&self) -> Option<crate::decoder::PropertyChange> {
+        Some(crate::decoder::PropertyChange::Loudness(self.clone()))
+    }
 }
 
 impl Loudness {
@@ -194,6 +232,10 @@ impl Property for GroupVolume {
 impl SonosProperty for GroupVolume {
     const SCOPE: Scope = Scope::Group;
     const SERVICE: Service = Service::GroupRenderingControl;
+
+    fn to_change(&self) -> Option<crate::decoder::PropertyChange> {
+        Some(crate::decoder::PropertyChange::GroupVolume(self.clone()))
+    }
 }
 
 impl GroupVolume {
@@ -217,6 +259,10 @@ impl Property for GroupMute {
 impl SonosProperty for GroupMute {
     const SCOPE: Scope = Scope::Group;
     const SERVICE: Service = Service::GroupRenderingControl;
+
+    fn to_change(&self) -> Option<crate::decoder::PropertyChange> {
+        Some(crate::decoder::PropertyChange::GroupMute(self.clone()))
+    }
 }
 
 impl GroupMute {
@@ -240,6 +286,12 @@ impl Property for GroupVolumeChangeable {
 impl SonosProperty for GroupVolumeChangeable {
     const SCOPE: Scope = Scope::Group;
     const SERVICE: Service = Service::GroupRenderingControl;
+
+    fn to_change(&self) -> Option<crate::decoder::PropertyChange> {
+        Some(crate::decoder::PropertyChange::GroupVolumeChangeable(
+            self.clone(),
+        ))
+    }
 }
 
 impl GroupVolumeChangeable {
@@ -272,6 +324,10 @@ impl Property for PlaybackState {
 impl SonosProperty for PlaybackState {
     const SCOPE: Scope = Scope::Speaker;
     const SERVICE: Service = Service::AVTransport;
+
+    fn to_change(&self) -> Option<crate::decoder::PropertyChange> {
+        Some(crate::decoder::PropertyChange::PlaybackState(self.clone()))
+    }
 }
 
 impl PlaybackState {
@@ -315,6 +371,10 @@ impl Property for Position {
 impl SonosProperty for Position {
     const SCOPE: Scope = Scope::Speaker;
     const SERVICE: Service = Service::AVTransport;
+
+    fn to_change(&self) -> Option<crate::decoder::PropertyChange> {
+        Some(crate::decoder::PropertyChange::Position(self.clone()))
+    }
 }
 
 impl Position {
@@ -376,6 +436,10 @@ impl Property for CurrentTrack {
 impl SonosProperty for CurrentTrack {
     const SCOPE: Scope = Scope::Speaker;
     const SERVICE: Service = Service::AVTransport;
+
+    fn to_change(&self) -> Option<crate::decoder::PropertyChange> {
+        Some(crate::decoder::PropertyChange::CurrentTrack(self.clone()))
+    }
 }
 
 impl CurrentTrack {
@@ -430,6 +494,12 @@ impl Property for GroupMembership {
 impl SonosProperty for GroupMembership {
     const SCOPE: Scope = Scope::Speaker;
     const SERVICE: Service = Service::ZoneGroupTopology;
+
+    fn to_change(&self) -> Option<crate::decoder::PropertyChange> {
+        Some(crate::decoder::PropertyChange::GroupMembership(
+            self.clone(),
+        ))
+    }
 }
 
 impl GroupMembership {
