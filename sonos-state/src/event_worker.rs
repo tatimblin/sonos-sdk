@@ -12,7 +12,7 @@ use parking_lot::RwLock;
 
 use sonos_api::Service;
 use sonos_event_manager::SonosEventManager;
-use sonos_stream::events::EventData;
+use sonos_stream::events::{EnrichedEvent, EventData};
 
 use sonos_api::ServiceScope;
 
@@ -39,109 +39,200 @@ pub(crate) fn spawn_state_event_worker(
         tracing::info!("State event worker started, waiting for events...");
 
         // Consume events from event manager (blocking)
-        for event in event_manager.iter() {
-            tracing::debug!(
-                "Received event from {} for service {:?}",
-                event.speaker_ip,
-                event.service
-            );
-
-            // Handle ZoneGroupTopology events specially - they affect all speakers
-            if let EventData::ZoneGroupTopology(ref zgt_event) = event.event_data {
-                tracing::debug!("Processing ZoneGroupTopology event");
-                let topology_changes = decode_topology_event(zgt_event);
-                apply_topology_changes(
-                    &store,
-                    &watched,
-                    &event_tx,
-                    &ip_to_speaker,
-                    topology_changes,
-                );
-                continue;
-            }
-
-            // Look up speaker_id from IP for non-topology events
-            let speaker_id = {
-                let ip_map = ip_to_speaker.read();
-
-                tracing::debug!(
-                    "ip_to_speaker map has {} entries: {:?}",
-                    ip_map.len(),
-                    ip_map.keys().collect::<Vec<_>>()
-                );
-
-                match ip_map.get(&event.speaker_ip) {
-                    Some(id) => id.clone(),
-                    None => {
-                        tracing::warn!(
-                            "Received event from unknown speaker IP: {} (not in ip_to_speaker map)",
-                            event.speaker_ip
-                        );
-                        continue;
-                    }
-                }
-            };
-
-            tracing::debug!(
-                "Mapped IP {} to speaker_id {}",
-                event.speaker_ip,
-                speaker_id.as_str()
-            );
-
-            // For PerCoordinator services (e.g. AVTransport), skip events from
-            // non-coordinator speakers. Their events carry empty/default values
-            // because the coordinator owns playback state for the whole group.
-            // The coordinator's events will be propagated to members below.
-            if event.service.scope() == ServiceScope::PerCoordinator {
-                let is_coordinator = {
-                    let s = store.read();
-                    // If no group info exists yet, treat as coordinator (safe default)
-                    s.speaker_to_group
-                        .get(&speaker_id)
-                        .and_then(|gid| s.groups.get(gid))
-                        .map(|group| group.coordinator_id == speaker_id)
-                        .unwrap_or(true)
-                };
-
-                if !is_coordinator {
-                    tracing::debug!(
-                        "Skipping PerCoordinator {:?} event from non-coordinator {}",
-                        event.service,
-                        speaker_id.as_str()
-                    );
-                    continue;
-                }
-            }
-
-            // Decode event
-            let decoded = decode_event(&event, speaker_id.clone());
-            tracing::debug!(
-                "Decoded {} property changes from event",
-                decoded.changes.len()
-            );
-
-            // Apply changes to the originating speaker (coordinator)
-            for change in &decoded.changes {
-                tracing::debug!("Applying change: {:?}", change);
-                apply_property_change(&store, &watched, &event_tx, &speaker_id, change);
-            }
-
-            // For PerCoordinator services, notify group members who are watching
-            // these properties. No data is copied — members read the coordinator's
-            // value at read time via get_resolved().
-            if event.service.scope() == ServiceScope::PerCoordinator {
-                let members = {
-                    let s = store.read();
-                    resolve_group_members(&s, &speaker_id)
-                };
-                if !members.is_empty() {
-                    notify_group_members(&watched, &event_tx, &members, &decoded.changes);
-                }
-            }
-        }
+        run_event_loop(
+            event_manager.iter(),
+            &store,
+            &watched,
+            &event_tx,
+            &ip_to_speaker,
+        );
 
         tracing::info!("State event worker stopped");
     })
+}
+
+/// Escalate the panic log every N panics so a repeatedly-failing decode path is
+/// impossible to miss in a long-running log.
+const PANIC_ESCALATION_INTERVAL: u64 = 10;
+
+/// Drain `events`, applying each one to the store.
+///
+/// Each event is processed inside `catch_unwind` so that a panic anywhere in
+/// decoding or applying a single event terminates that event, not the worker.
+/// Before this guard existed, one panic silently killed the thread and *every*
+/// subsequent state update — with no log, no `Err`, and no panic surfacing to
+/// the user, because the `JoinHandle` is never joined.
+///
+/// Panics are counted and logged at `error!` every single time; they are never
+/// swallowed. `catch_unwind` here is a containment boundary, not a way to
+/// tolerate bugs.
+fn run_event_loop<I>(
+    events: I,
+    store: &Arc<RwLock<StateStore>>,
+    watched: &Arc<RwLock<HashSet<(SpeakerId, &'static str)>>>,
+    event_tx: &mpsc::Sender<ChangeEvent>,
+    ip_to_speaker: &Arc<RwLock<std::collections::HashMap<IpAddr, SpeakerId>>>,
+) where
+    I: Iterator<Item = EnrichedEvent>,
+{
+    let mut panic_count: u64 = 0;
+
+    for event in events {
+        // `AssertUnwindSafe` is sound here for two reasons:
+        //
+        // 1. Every piece of shared state is behind a `parking_lot::RwLock`,
+        //    which — unlike `std::sync::RwLock` — does not poison on panic. A
+        //    guard held at unwind time is simply released, so the store and the
+        //    watched set stay usable afterwards.
+        // 2. Events are independent: an aborted event leaves the store in a
+        //    partially-updated but internally consistent shape (each
+        //    `PropertyChange` is applied under its own lock acquisition), and
+        //    the next topology or service event overwrites it wholesale.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            handle_event(&event, store, watched, event_tx, ip_to_speaker);
+        }));
+
+        if result.is_err() {
+            panic_count += 1;
+            tracing::error!(
+                "Panic while processing event from {} for service {:?}; \
+                 skipping this event and continuing (panic #{} for this worker)",
+                event.speaker_ip,
+                event.service,
+                panic_count
+            );
+
+            if panic_count % PANIC_ESCALATION_INTERVAL == 0 {
+                tracing::error!(
+                    "State event worker has now panicked {} times — state updates \
+                     are being dropped and this is a bug that needs fixing",
+                    panic_count
+                );
+            }
+        }
+    }
+}
+
+/// Process a single event: resolve identity, gate on coordinator, decode, apply.
+fn handle_event(
+    event: &EnrichedEvent,
+    store: &Arc<RwLock<StateStore>>,
+    watched: &Arc<RwLock<HashSet<(SpeakerId, &'static str)>>>,
+    event_tx: &mpsc::Sender<ChangeEvent>,
+    ip_to_speaker: &Arc<RwLock<std::collections::HashMap<IpAddr, SpeakerId>>>,
+) {
+    tracing::debug!(
+        "Received event from {} for service {:?}",
+        event.speaker_ip,
+        event.service
+    );
+
+    // Test-only injection point for `test_worker_survives_decoder_panic`. Kept
+    // behind `cfg(test)` so no permanent production API exists for it.
+    #[cfg(test)]
+    if event.speaker_ip == tests::PANIC_TRIGGER_IP {
+        panic!("injected test panic while decoding event");
+    }
+
+    // Handle ZoneGroupTopology events specially - they affect all speakers
+    if let EventData::ZoneGroupTopology(ref zgt_event) = event.event_data {
+        tracing::debug!("Processing ZoneGroupTopology event");
+        let topology_changes = decode_topology_event(zgt_event);
+        apply_topology_changes(store, watched, event_tx, ip_to_speaker, topology_changes);
+        return;
+    }
+
+    // Look up speaker_id from IP for non-topology events
+    let speaker_id = {
+        let ip_map = ip_to_speaker.read();
+
+        tracing::debug!(
+            "ip_to_speaker map has {} entries: {:?}",
+            ip_map.len(),
+            ip_map.keys().collect::<Vec<_>>()
+        );
+
+        match ip_map.get(&event.speaker_ip) {
+            Some(id) => id.clone(),
+            None => {
+                tracing::warn!(
+                    "Received event from unknown speaker IP: {} (not in ip_to_speaker map)",
+                    event.speaker_ip
+                );
+                return;
+            }
+        }
+    };
+
+    tracing::debug!(
+        "Mapped IP {} to speaker_id {}",
+        event.speaker_ip,
+        speaker_id.as_str()
+    );
+
+    // For PerCoordinator services (e.g. AVTransport), skip events from
+    // non-coordinator speakers. Their events carry empty/default values
+    // because the coordinator owns playback state for the whole group.
+    // The coordinator's events will be propagated to members below.
+    if event.service.scope() == ServiceScope::PerCoordinator {
+        let coordinator_lookup = {
+            let s = store.read();
+            s.speaker_to_group
+                .get(&speaker_id)
+                .and_then(|gid| s.groups.get(gid))
+                .map(|group| group.coordinator_id == speaker_id)
+        };
+
+        // A lookup miss means we have no topology yet (or the speaker is absent
+        // from it), so the speaker is treated as its own coordinator. That is
+        // the right default for a standalone speaker and for the pre-topology
+        // window, but it also means a stale/incomplete topology silently makes
+        // every group member act as a coordinator — so say so out loud.
+        let is_coordinator = coordinator_lookup.unwrap_or_else(|| {
+            tracing::debug!(
+                "No group data for {} while handling PerCoordinator {:?} event; \
+                 treating it as its own coordinator",
+                speaker_id.as_str(),
+                event.service
+            );
+            true
+        });
+
+        if !is_coordinator {
+            tracing::debug!(
+                "Skipping PerCoordinator {:?} event from non-coordinator {}",
+                event.service,
+                speaker_id.as_str()
+            );
+            return;
+        }
+    }
+
+    // Decode event
+    let decoded = decode_event(event, speaker_id.clone());
+    tracing::debug!(
+        "Decoded {} property changes from event",
+        decoded.changes.len()
+    );
+
+    // Apply changes to the originating speaker (coordinator)
+    for change in &decoded.changes {
+        tracing::debug!("Applying change: {:?}", change);
+        apply_property_change(store, watched, event_tx, &speaker_id, change);
+    }
+
+    // For PerCoordinator services, notify group members who are watching
+    // these properties. No data is copied — members read the coordinator's
+    // value at read time via get_resolved().
+    if event.service.scope() == ServiceScope::PerCoordinator {
+        let members = {
+            let s = store.read();
+            resolve_group_members(&s, &speaker_id)
+        };
+        if !members.is_empty() {
+            notify_group_members(watched, event_tx, &members, &decoded.changes);
+        }
+    }
 }
 
 /// Apply topology changes from a ZoneGroupTopology event
@@ -152,6 +243,9 @@ pub(crate) fn spawn_state_event_worker(
 /// 3. Updates GroupMembership for each speaker
 /// 4. Updates boot_seq, speaker IPs, and satellite IDs
 /// 5. Emits change events for watched GroupMembership properties
+///
+/// A topology event with no groups is treated as a *partial* event and ignored,
+/// not as "the household has no groups" — see the early return below.
 fn apply_topology_changes(
     store: &Arc<RwLock<StateStore>>,
     watched: &Arc<RwLock<HashSet<(SpeakerId, &'static str)>>>,
@@ -164,6 +258,27 @@ fn apply_topology_changes(
         changes.groups.len(),
         changes.memberships.len()
     );
+
+    // A ZoneGroupTopology NOTIFY does not have to carry ZoneGroupState. Sonos
+    // sends topology events for other variables too (AlarmRunSequence,
+    // ThirdPartyMediaServersX, an empty <VanishedDevices></VanishedDevices>,
+    // ...), and `ZoneGroupTopologyEvent::zone_groups()` returns an empty Vec
+    // when the ZoneGroupState variable is absent. Clearing on such an event
+    // would drop every group, every group property, and every speaker→group
+    // mapping in response to an unrelated update, leaving `groups()` empty and
+    // coordinator resolution wrong until the next full snapshot arrived.
+    if changes.groups.is_empty() {
+        tracing::warn!(
+            "Ignoring ZoneGroupTopology event with no zone groups \
+             ({} memberships, {} boot_seqs, {} IPs, {} satellites): treating it as a \
+             partial event rather than clearing cached group state",
+            changes.memberships.len(),
+            changes.boot_seqs.len(),
+            changes.speaker_ips.len(),
+            changes.satellite_ids.len()
+        );
+        return;
+    }
 
     // Apply all changes within a single write lock
     let (membership_changes, ip_updates) = {
@@ -330,6 +445,11 @@ mod tests {
     use crate::model::GroupId;
     use crate::property::{GroupInfo, Property, Volume};
     use sonos_api::Service;
+
+    /// Events from this IP make `handle_event` panic, so the worker loop's
+    /// `catch_unwind` guard can be tested without a permanent production hook.
+    pub(super) const PANIC_TRIGGER_IP: IpAddr =
+        IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, 255));
 
     #[test]
     fn test_apply_property_change_volume() {
@@ -806,6 +926,135 @@ mod tests {
         let s = store.read();
         assert_eq!(s.speaker_to_group.get(&speaker1), Some(&group_id));
         assert_eq!(s.speaker_to_group.get(&speaker2), Some(&group_id));
+    }
+
+    #[test]
+    fn test_partial_topology_event_does_not_clear_groups() {
+        // A ZoneGroupTopology NOTIFY that carries no ZoneGroupState (e.g. an
+        // AlarmRunSequence update, or an empty <VanishedDevices></VanishedDevices>)
+        // decodes to zero groups. It must not wipe cached group state.
+        let store = Arc::new(RwLock::new(StateStore::new()));
+        let watched = Arc::new(RwLock::new(HashSet::new()));
+        let (tx, rx) = mpsc::channel();
+
+        let speaker1 = SpeakerId::new("RINCON_111");
+        let group_id = GroupId::new("RINCON_111:1");
+
+        // Seed one group plus a group-scoped property
+        {
+            let mut s = store.write();
+            s.add_speaker(make_speaker_info(
+                "RINCON_111",
+                "Living Room",
+                "192.168.1.101",
+            ));
+            s.add_group(GroupInfo::new(
+                group_id.clone(),
+                speaker1.clone(),
+                vec![speaker1.clone()],
+            ));
+            s.set_group(&group_id, crate::property::GroupVolume(42));
+        }
+
+        // Watch GroupMembership so we can also assert nothing is emitted
+        {
+            let mut w = watched.write();
+            w.insert((speaker1.clone(), GroupMembership::KEY));
+        }
+
+        let partial = TopologyChanges {
+            groups: vec![],
+            memberships: vec![],
+            boot_seqs: vec![],
+            speaker_ips: vec![],
+            satellite_ids: vec![],
+        };
+
+        let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::new()));
+        apply_topology_changes(&store, &watched, &tx, &ip_to_speaker, partial);
+
+        // The seeded group, its properties, and the speaker→group mapping survive
+        let s = store.read();
+        assert_eq!(s.groups.len(), 1);
+        assert!(s.groups.contains_key(&group_id));
+        assert_eq!(s.speaker_to_group.get(&speaker1), Some(&group_id));
+        assert_eq!(
+            s.get_group::<crate::property::GroupVolume>(&group_id),
+            Some(crate::property::GroupVolume(42))
+        );
+
+        // And no spurious notification was emitted
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_worker_survives_decoder_panic() {
+        use sonos_stream::events::RenderingControlState;
+        use sonos_stream::{EnrichedEvent, EventSource, RegistrationId};
+
+        let store = Arc::new(RwLock::new(StateStore::new()));
+        let watched = Arc::new(RwLock::new(HashSet::new()));
+        let (tx, rx) = mpsc::channel();
+
+        let speaker_id = SpeakerId::new("RINCON_111");
+        let speaker_ip: IpAddr = "192.168.1.101".parse().unwrap();
+
+        {
+            let mut s = store.write();
+            s.add_speaker(make_speaker_info(
+                "RINCON_111",
+                "Living Room",
+                "192.168.1.101",
+            ));
+        }
+        {
+            let mut w = watched.write();
+            w.insert((speaker_id.clone(), Volume::KEY));
+        }
+
+        let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::from([(
+            speaker_ip,
+            speaker_id.clone(),
+        )])));
+
+        let make_event = |ip: IpAddr, volume: &str| {
+            EnrichedEvent::new(
+                RegistrationId::new(1),
+                ip,
+                Service::RenderingControl,
+                EventSource::UPnPNotification {
+                    subscription_id: "uuid:test".to_string(),
+                },
+                EventData::RenderingControl(RenderingControlState {
+                    master_volume: Some(volume.to_string()),
+                    master_mute: None,
+                    bass: None,
+                    treble: None,
+                    loudness: None,
+                    lf_volume: None,
+                    rf_volume: None,
+                    lf_mute: None,
+                    rf_mute: None,
+                    balance: None,
+                    other_channels: std::collections::HashMap::new(),
+                }),
+            )
+        };
+
+        // First event panics (see PANIC_TRIGGER_IP), second is valid.
+        // A panic backtrace on stderr during this test is expected.
+        let events = vec![
+            make_event(PANIC_TRIGGER_IP, "10"),
+            make_event(speaker_ip, "37"),
+        ];
+
+        run_event_loop(events.into_iter(), &store, &watched, &tx, &ip_to_speaker);
+
+        // The valid event was still processed and its notification delivered
+        let event = rx.try_recv().unwrap();
+        assert_eq!(event.speaker_id, speaker_id);
+        assert_eq!(event.property_key, Volume::KEY);
+        assert_eq!(store.read().get::<Volume>(&speaker_id), Some(Volume(37)));
     }
 
     #[test]
