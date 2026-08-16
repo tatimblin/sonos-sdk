@@ -83,6 +83,124 @@ impl ChangeEvent {
 }
 
 // ============================================================================
+// Watch bookkeeping
+// ============================================================================
+
+/// The holds on one watched `(speaker_id, property_key)` pair.
+///
+/// A watch is a *hold*, not a flag: several independent watchers can claim the
+/// same pair, and it stays watched until the last of them lets go. The two
+/// fields are separate — rather than one counter — because the two kinds of hold
+/// are released by completely different events, on different schedules:
+///
+/// - **`direct`** holds come from [`StateManager::register_watch`]: the SDK's
+///   polling-fallback and cache-only paths, group-member notification
+///   forwarding, `watch_property_with_subscription`, and tests. Each is released
+///   individually by [`StateManager::unregister_watch`], normally from a
+///   `CacheOnlyGuard::drop`. These are what need counting: *n* watchers of one
+///   property must survive *n-1* drops.
+/// - **`subscription`** is a single flag covering every `WatchGuard` acquired
+///   through [`WatchRegistry::register_watch`]. It cannot be a counter, because
+///   nothing decrements it one at a time: `WatchGuard::drop` only decrements
+///   `sonos-event-manager`'s per-`(ip, service)` subscription ref count, and
+///   `unregister_watches_for_service` fires once, later, when *that* count hits
+///   zero — at which point every contributing guard is provably gone. A counter
+///   incremented per guard but cleared only in bulk would either leak (a watch
+///   nobody holds emitting forever) or, if decremented by one, drop while other
+///   guards are still alive.
+///
+/// The pair stops being watched, and the entry leaves the map, only when the
+/// flag is clear *and* the count is zero. Keeping them apart is the actual fix:
+/// a subscription teardown must not take the individually-held `direct` watches
+/// of its sibling properties with it.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WatchHolds {
+    /// Whether any `WatchGuard` is registered for this pair.
+    subscription: bool,
+    /// Number of outstanding `register_watch` holds.
+    direct: usize,
+}
+
+impl WatchHolds {
+    fn is_held(&self) -> bool {
+        self.subscription || self.direct > 0
+    }
+}
+
+/// Watch holds per `(speaker_id, property_key)` pair.
+pub(crate) type WatchCounts = HashMap<(SpeakerId, &'static str), WatchHolds>;
+
+/// Mark `(speaker_id, key)` as held by a `WatchGuard`.
+fn retain_subscription_watch(
+    watched: &RwLock<WatchCounts>,
+    speaker_id: &SpeakerId,
+    key: &'static str,
+) {
+    watched
+        .write()
+        .entry((speaker_id.clone(), key))
+        .or_default()
+        .subscription = true;
+}
+
+/// Add one `direct` hold on `(speaker_id, key)`.
+pub(crate) fn retain_direct_watch(
+    watched: &RwLock<WatchCounts>,
+    speaker_id: &SpeakerId,
+    key: &'static str,
+) {
+    watched
+        .write()
+        .entry((speaker_id.clone(), key))
+        .or_default()
+        .direct += 1;
+}
+
+/// Release one `direct` hold, dropping the entry once no holds remain.
+///
+/// Releasing a pair that is not held is a no-op: an over-release must not wrap
+/// around and resurrect the watch.
+fn release_direct_watch(watched: &RwLock<WatchCounts>, speaker_id: &SpeakerId, key: &'static str) {
+    let mut guard = watched.write();
+    let entry_key = (speaker_id.clone(), key);
+    if let Some(holds) = guard.get_mut(&entry_key) {
+        holds.direct = holds.direct.saturating_sub(1);
+        if !holds.is_held() {
+            guard.remove(&entry_key);
+        }
+    }
+}
+
+/// Clear the subscription hold on `(speaker_id, key)`, keeping `direct` holds.
+///
+/// Called when a UPnP subscription is finally torn down. `direct` holders are
+/// deliberately untouched: they are tracked per watcher and released by their
+/// own guards, and their property may not even be the one that was subscribed.
+fn release_subscription_watch(
+    watched: &RwLock<WatchCounts>,
+    speaker_id: &SpeakerId,
+    key: &'static str,
+) {
+    let mut guard = watched.write();
+    let entry_key = (speaker_id.clone(), key);
+    if let Some(holds) = guard.get_mut(&entry_key) {
+        holds.subscription = false;
+        if !holds.is_held() {
+            guard.remove(&entry_key);
+        }
+    }
+}
+
+/// Whether `(speaker_id, key)` currently has any hold on it.
+pub(crate) fn is_pair_watched(
+    watched: &WatchCounts,
+    speaker_id: &SpeakerId,
+    key: &'static str,
+) -> bool {
+    watched.contains_key(&(speaker_id.clone(), key))
+}
+
+// ============================================================================
 // Internal StateStore
 // ============================================================================
 
@@ -191,6 +309,22 @@ impl StateStore {
             self.speaker_props.get(&coordinator_id)?.get::<P>()
         } else {
             self.speaker_props.get(speaker_id)?.get::<P>()
+        }
+    }
+
+    /// Resolve which speaker's bag a `set` of `P` for `speaker_id` should target.
+    ///
+    /// The exact mirror of [`Self::get_resolved`]'s branch, so a write always
+    /// lands where the matching read looks. Factored out rather than inlined at
+    /// the two sites because the two must not be able to drift apart.
+    pub(crate) fn resolve_write_target<P: SonosProperty>(
+        &self,
+        speaker_id: &SpeakerId,
+    ) -> SpeakerId {
+        if P::SERVICE.scope() == ServiceScope::PerCoordinator && P::SCOPE == Scope::Speaker {
+            self.resolve_coordinator(speaker_id)
+        } else {
+            speaker_id.clone()
         }
     }
 
@@ -304,8 +438,16 @@ pub struct StateManager {
     /// Property values storage
     store: Arc<RwLock<StateStore>>,
 
-    /// Watched properties for iter() filtering
-    watched: Arc<RwLock<HashSet<(SpeakerId, &'static str)>>>,
+    /// Watched properties for iter() filtering, reference-counted.
+    ///
+    /// Counted rather than a plain set because several independent watchers can
+    /// hold the same `(speaker_id, property_key)` at once — two widgets watching
+    /// one property, a re-watch-per-frame loop overlapping with a long-lived
+    /// handle, or an SDK `WatchHandle` alongside a direct `register_watch`.
+    /// With a `HashSet` the *first* release removed the entry and silenced every
+    /// remaining watcher; the count means an entry disappears only when the last
+    /// watcher lets go.
+    watched: Arc<RwLock<WatchCounts>>,
 
     /// IP to speaker ID mapping (for event worker)
     ip_to_speaker: Arc<RwLock<HashMap<IpAddr, SpeakerId>>>,
@@ -344,14 +486,14 @@ pub struct StateManager {
 /// preventing StateManager itself from satisfying `WatchRegistry: Sync`.
 /// This struct holds only the Arc-wrapped fields needed for watch management.
 struct StateWatchRegistry {
-    watched: Arc<RwLock<HashSet<(SpeakerId, &'static str)>>>,
+    watched: Arc<RwLock<WatchCounts>>,
     ip_to_speaker: Arc<RwLock<HashMap<IpAddr, SpeakerId>>>,
     key_to_service: Arc<RwLock<HashMap<&'static str, Service>>>,
 }
 
 impl WatchRegistry for StateWatchRegistry {
     fn register_watch(&self, speaker_id: &SpeakerId, key: &'static str, service: Service) {
-        self.watched.write().insert((speaker_id.clone(), key));
+        retain_subscription_watch(&self.watched, speaker_id, key);
         self.key_to_service.write().insert(key, service);
     }
 
@@ -377,10 +519,14 @@ impl WatchRegistry for StateWatchRegistry {
             .map(|(&key, _)| key)
             .collect();
 
-        // 3. Remove matching (speaker_id, key) entries from watched set
-        let mut watched = self.watched.write();
+        // 3. Drop the subscription hold on each of this service's keys.
+        //
+        // Only the subscription hold: a `direct` hold is owned by an individual
+        // watcher (polling fallback, cache-only, member forwarding) which
+        // releases it through its own guard. Removing entries wholesale here is
+        // what previously made dropping one `WatchHandle` silence its siblings.
         for key in service_keys {
-            watched.remove(&(speaker_id.clone(), key));
+            release_subscription_watch(&self.watched, &speaker_id, key);
         }
     }
 }
@@ -555,14 +701,38 @@ impl StateManager {
     ///
     /// Updates the property value in the store and emits a change event
     /// if the property is being watched.
+    ///
+    /// The write is routed the same way [`Self::get_property`] reads: for a
+    /// `PerCoordinator` speaker-scoped property, the value lands in the
+    /// *coordinator's* bag, because `get_resolved` reads it from there. Writing
+    /// the raw `speaker_id` instead put the value in a bag nothing ever reads —
+    /// so `speaker.play()` on a grouped member updated a cache entry that
+    /// `playback_state.get()` could not see, and the UI kept showing the old
+    /// state until an event arrived.
+    ///
+    /// The notification is still keyed on the *requesting* speaker, so a member
+    /// watching the property is woken by its own write. The coordinator's own
+    /// watchers are reached by the worker's group fan-out on the next event.
     pub fn set_property<P: SonosProperty>(&self, speaker_id: &SpeakerId, value: P) {
-        let changed = {
+        // Resolve and write under one lock: taking the coordinator from a
+        // separate read would leave a window in which a topology event regroups
+        // the speaker and the write lands in the wrong bag.
+        let (target_id, changed) = {
             let mut store = self.store.write();
-            store.set::<P>(speaker_id, value)
+            let target_id = store.resolve_write_target::<P>(speaker_id);
+            let changed = store.set::<P>(&target_id, value);
+            (target_id, changed)
         };
 
         if changed {
+            // Key the notification on the speaker the caller asked about, so a
+            // member watching the property is woken by its own write...
             self.maybe_emit_change(speaker_id, P::KEY, P::SERVICE);
+            // ...and on the coordinator too when they differ, since it is the
+            // coordinator's bag that actually changed.
+            if target_id != *speaker_id {
+                self.maybe_emit_change(&target_id, P::KEY, P::SERVICE);
+            }
         }
     }
 
@@ -587,17 +757,21 @@ impl StateManager {
     }
 
     /// Register a property as watched (called by PropertyHandle::watch)
+    ///
+    /// Adds one reference. Balanced by [`Self::unregister_watch`]; the property
+    /// keeps emitting until every registration has been unregistered.
     pub fn register_watch(&self, speaker_id: &SpeakerId, property_key: &'static str) {
-        self.watched
-            .write()
-            .insert((speaker_id.clone(), property_key));
+        retain_direct_watch(&self.watched, speaker_id, property_key);
     }
 
     /// Unregister a property watch
+    ///
+    /// Releases one reference taken by [`Self::register_watch`]. The property
+    /// stops being watched only when the last reference is released, so one
+    /// watcher going away cannot silence its siblings. Unregistering something
+    /// that was never registered is a no-op.
     pub fn unregister_watch(&self, speaker_id: &SpeakerId, property_key: &'static str) {
-        self.watched
-            .write()
-            .remove(&(speaker_id.clone(), property_key));
+        release_direct_watch(&self.watched, speaker_id, property_key);
     }
 
     /// Watch a property with automatic UPnP subscription (recommended API)
@@ -654,9 +828,7 @@ impl StateManager {
 
     /// Check if a property is being watched
     pub fn is_watched(&self, speaker_id: &SpeakerId, property_key: &'static str) -> bool {
-        self.watched
-            .read()
-            .contains(&(speaker_id.clone(), property_key))
+        is_pair_watched(&self.watched.read(), speaker_id, property_key)
     }
 
     /// Emit a change event if the property is being watched
@@ -666,10 +838,7 @@ impl StateManager {
         property_key: &'static str,
         service: Service,
     ) {
-        let is_watched = self
-            .watched
-            .read()
-            .contains(&(speaker_id.clone(), property_key));
+        let is_watched = is_pair_watched(&self.watched.read(), speaker_id, property_key);
 
         if is_watched {
             let event = ChangeEvent::new(speaker_id.clone(), property_key, service);
@@ -904,7 +1073,7 @@ impl StateManagerBuilder {
         let (event_tx, event_rx) = mpsc::channel();
 
         let store = Arc::new(RwLock::new(StateStore::new()));
-        let watched = Arc::new(RwLock::new(HashSet::new()));
+        let watched = Arc::new(RwLock::new(WatchCounts::new()));
         let ip_to_speaker = Arc::new(RwLock::new(HashMap::new()));
         let key_to_service = Arc::new(RwLock::new(HashMap::new()));
 
@@ -1524,7 +1693,7 @@ mod tests {
 
     #[test]
     fn test_state_watch_registry_register_and_unregister() {
-        let watched = Arc::new(RwLock::new(HashSet::new()));
+        let watched = Arc::new(RwLock::new(WatchCounts::new()));
         let ip_to_speaker = Arc::new(RwLock::new(HashMap::new()));
         let key_to_service = Arc::new(RwLock::new(HashMap::new()));
 
@@ -1550,14 +1719,14 @@ mod tests {
 
         let w = watched.read();
         assert_eq!(w.len(), 1);
-        assert!(w.contains(&(speaker_id.clone(), "playback_state")));
-        assert!(!w.contains(&(speaker_id.clone(), "volume")));
-        assert!(!w.contains(&(speaker_id.clone(), "mute")));
+        assert!(is_pair_watched(&w, &speaker_id, "playback_state"));
+        assert!(!is_pair_watched(&w, &speaker_id, "volume"));
+        assert!(!is_pair_watched(&w, &speaker_id, "mute"));
     }
 
     #[test]
     fn test_state_watch_registry_unknown_ip_is_noop() {
-        let watched = Arc::new(RwLock::new(HashSet::new()));
+        let watched = Arc::new(RwLock::new(WatchCounts::new()));
         let ip_to_speaker = Arc::new(RwLock::new(HashMap::new()));
         let key_to_service = Arc::new(RwLock::new(HashMap::new()));
 
@@ -1570,7 +1739,7 @@ mod tests {
         };
 
         // Register a watch (simulating direct add to shared set)
-        watched.write().insert((speaker_id.clone(), "volume"));
+        retain_direct_watch(&watched, &speaker_id, "volume");
         key_to_service
             .write()
             .insert("volume", Service::RenderingControl);
@@ -1585,7 +1754,7 @@ mod tests {
 
     #[test]
     fn test_state_watch_registry_only_removes_matching_speaker() {
-        let watched = Arc::new(RwLock::new(HashSet::new()));
+        let watched = Arc::new(RwLock::new(WatchCounts::new()));
         let ip_to_speaker = Arc::new(RwLock::new(HashMap::new()));
         let key_to_service = Arc::new(RwLock::new(HashMap::new()));
 
@@ -1613,8 +1782,162 @@ mod tests {
 
         let w = watched.read();
         assert_eq!(w.len(), 1);
-        assert!(w.contains(&(speaker2.clone(), "volume")));
-        assert!(!w.contains(&(speaker1.clone(), "volume")));
+        assert!(is_pair_watched(&w, &speaker2, "volume"));
+        assert!(!is_pair_watched(&w, &speaker1, "volume"));
+    }
+
+    // ========================================================================
+    // Watch reference counting
+    // ========================================================================
+
+    /// Two watchers on the *same* property: the first release must not silence
+    /// the second, and the second must actually clear it.
+    ///
+    /// This is the arithmetic behind the sibling-survival guarantee. With a
+    /// plain `HashSet` the first `unregister_watch` removed the only entry, so
+    /// watcher two went quiet while still holding its handle.
+    #[test]
+    fn test_watch_refcount_survives_partial_release() {
+        let manager = StateManager::new().unwrap();
+        let speaker_id = SpeakerId::new("RINCON_123");
+
+        manager.register_watch(&speaker_id, "volume");
+        manager.register_watch(&speaker_id, "volume");
+        assert!(manager.is_watched(&speaker_id, "volume"));
+
+        // One watcher goes away; the other still holds a reference.
+        manager.unregister_watch(&speaker_id, "volume");
+        assert!(
+            manager.is_watched(&speaker_id, "volume"),
+            "one of two watchers released — the property must stay watched"
+        );
+
+        // Last watcher goes away.
+        manager.unregister_watch(&speaker_id, "volume");
+        assert!(!manager.is_watched(&speaker_id, "volume"));
+
+        // Over-release must not wrap around and resurrect the watch.
+        manager.unregister_watch(&speaker_id, "volume");
+        assert!(!manager.is_watched(&speaker_id, "volume"));
+    }
+
+    /// A subscription teardown for one service must not take individually-held
+    /// watches with it.
+    ///
+    /// `unregister_watches_for_service` clears every key of a service at once.
+    /// Previously it removed the map entries outright, so a `direct` hold taken
+    /// by the polling-fallback / cache-only path — or by a second watcher of the
+    /// same property — was destroyed by an unrelated subscription expiring.
+    #[test]
+    fn test_service_unregister_keeps_directly_held_watches() {
+        let watched = Arc::new(RwLock::new(WatchCounts::new()));
+        let ip_to_speaker = Arc::new(RwLock::new(HashMap::new()));
+        let key_to_service = Arc::new(RwLock::new(HashMap::new()));
+
+        let ip: IpAddr = "192.168.1.100".parse().unwrap();
+        let speaker_id = SpeakerId::new("RINCON_123");
+        ip_to_speaker.write().insert(ip, speaker_id.clone());
+
+        let registry = StateWatchRegistry {
+            watched: Arc::clone(&watched),
+            ip_to_speaker,
+            key_to_service,
+        };
+
+        // A guard-based watch and a direct watch on the same property...
+        registry.register_watch(&speaker_id, "volume", Service::RenderingControl);
+        retain_direct_watch(&watched, &speaker_id, "volume");
+        // ...plus a direct hold on a sibling property of the same service.
+        registry.register_watch(&speaker_id, "mute", Service::RenderingControl);
+        retain_direct_watch(&watched, &speaker_id, "mute");
+
+        registry.unregister_watches_for_service(ip, Service::RenderingControl);
+
+        let w = watched.read();
+        assert!(
+            is_pair_watched(&w, &speaker_id, "volume"),
+            "the direct hold on volume must survive the subscription teardown"
+        );
+        assert!(
+            is_pair_watched(&w, &speaker_id, "mute"),
+            "the direct hold on mute must survive the subscription teardown"
+        );
+    }
+
+    // ========================================================================
+    // set_property / get_property symmetry
+    // ========================================================================
+
+    /// `set_property` must write where `get_property` reads.
+    ///
+    /// For a `PerCoordinator` speaker-scoped property, `get_resolved` reads the
+    /// *coordinator's* bag. Writing the raw `speaker_id` therefore stored the
+    /// value where nothing would ever look: `speaker.play()` on a grouped member
+    /// updated a bag no reader consults, so the optimistic cache update was
+    /// invisible from both the member and the coordinator.
+    #[test]
+    fn test_set_property_on_group_member_is_readable_from_both() {
+        let manager = StateManager::new().unwrap();
+
+        let devices = vec![
+            Device {
+                id: "RINCON_COORD".to_string(),
+                name: "Living Room".to_string(),
+                room_name: "Living Room".to_string(),
+                ip_address: "192.168.1.100".to_string(),
+                port: 1400,
+                model_name: "Sonos One".to_string(),
+            },
+            Device {
+                id: "RINCON_MEMBER".to_string(),
+                name: "Kitchen".to_string(),
+                room_name: "Kitchen".to_string(),
+                ip_address: "192.168.1.101".to_string(),
+                port: 1400,
+                model_name: "Sonos One".to_string(),
+            },
+        ];
+        manager.add_devices(devices).unwrap();
+
+        let coordinator = SpeakerId::new("RINCON_COORD");
+        let member = SpeakerId::new("RINCON_MEMBER");
+        let group_id = GroupId::new("RINCON_COORD:1");
+        let topology = Topology::new(
+            manager.speaker_infos(),
+            vec![GroupInfo::new(
+                group_id,
+                coordinator.clone(),
+                vec![coordinator.clone(), member.clone()],
+            )],
+        );
+        manager.initialize(topology);
+
+        // Write through the *member* — what speaker.play() does on a grouped
+        // speaker. PlaybackState is AVTransport (PerCoordinator) + Speaker scope.
+        manager.set_property(&member, PlaybackState::Playing);
+
+        assert_eq!(
+            manager.get_property::<PlaybackState>(&member),
+            Some(PlaybackState::Playing),
+            "the member must be able to read back what it just wrote"
+        );
+        assert_eq!(
+            manager.get_property::<PlaybackState>(&coordinator),
+            Some(PlaybackState::Playing),
+            "the write belongs in the coordinator's bag, which is where reads resolve"
+        );
+
+        // A PerSpeaker property written on the member stays on the member.
+        manager.set_property(&member, Volume::new(33));
+        assert_eq!(
+            manager.get_property::<Volume>(&member),
+            Some(Volume::new(33))
+        );
+        assert_eq!(
+            manager.get_property::<Volume>(&coordinator),
+            None,
+            "PerSpeaker writes must not be redirected to the coordinator"
+        );
     }
 
     // ========================================================================

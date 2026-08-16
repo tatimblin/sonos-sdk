@@ -64,6 +64,8 @@ non-generic type regardless of how many property types exist.
 - [x] Setting a property to its existing value emits nothing (`PropertyBag::set` returns `false`)
 - [x] `PerCoordinator` events from non-coordinators are dropped, not stored
 - [x] Group members watching a coordinator-owned property are notified without copying data
+- [x] `set_property()` writes to the bag `get_property()` reads from, for every property
+- [x] Releasing one watcher of a property leaves the others watching and receiving
 - [x] Topology-driven IP changes update both the store and the reverse IP map
 
 ---
@@ -86,7 +88,7 @@ non-generic type regardless of how many property types exist.
 |                      StateManager  (src/state.rs:303)                       |
 |                                                                            |
 |  store:         Arc<parking_lot::RwLock<StateStore>>                        |
-|  watched:       Arc<RwLock<HashSet<(SpeakerId, &'static str)>>>             |
+|  watched:       Arc<RwLock<WatchCounts>>   (refcounted, see 4.2)           |
 |  ip_to_speaker: Arc<RwLock<HashMap<IpAddr, SpeakerId>>>                     |
 |  event_tx:      mpsc::Sender<ChangeEvent>  --------------+                  |
 |  event_rx:      Arc<Mutex<mpsc::Receiver<ChangeEvent>>>  |                  |
@@ -171,7 +173,7 @@ src/
 ```rust
 pub struct StateManager {
     store: Arc<RwLock<StateStore>>,                              // parking_lot
-    watched: Arc<RwLock<HashSet<(SpeakerId, &'static str)>>>,
+    watched: Arc<RwLock<WatchCounts>>,                            // refcounted, 4.2
     ip_to_speaker: Arc<RwLock<HashMap<IpAddr, SpeakerId>>>,
     event_manager: OnceLock<Arc<SonosEventManager>>,
     event_tx: mpsc::Sender<ChangeEvent>,
@@ -208,7 +210,7 @@ for events rather than each seeing all of them.
 
 ```rust
 struct StateWatchRegistry {
-    watched: Arc<RwLock<HashSet<(SpeakerId, &'static str)>>>,
+    watched: Arc<RwLock<WatchCounts>>,
     ip_to_speaker: Arc<RwLock<HashMap<IpAddr, SpeakerId>>>,
     key_to_service: Arc<RwLock<HashMap<&'static str, Service>>>,
 }
@@ -430,10 +432,11 @@ are the only place it appears. `get_boot_seq()` (`src/state.rs:495`) exposes it 
 without a guard. These predate the guard-based path and are not what the SDK uses; the
 guard-based route is the one with grace-period cleanup.
 
-Writes from the SDK land via `set_property()` (`src/state.rs:558`) and
-`set_group_property()` (`:574`), which update the cache and run the same
-`maybe_emit_change()` gate (`:663`). Group property emissions are keyed on the group's
-*coordinator* ID, matching how watches are registered.
+Writes from the SDK land via `set_property()` and `set_group_property()`, which update the
+cache and run the same `maybe_emit_change()` gate. `set_property()` routes the write through
+`resolve_write_target()` so it lands in the same bag `get_property()` reads from — see 4.3.
+Group property emissions are keyed on the group's *coordinator* ID, matching how watches are
+registered.
 
 ### 3.4 Error Flow
 
@@ -530,11 +533,52 @@ quiet.
 #### How
 
 Watches are keyed `(SpeakerId, &'static str)` — per speaker *and* per property, not per
-service. Registration comes either from `register_watch()` (`src/state.rs:590`) or through
-`StateWatchRegistry` when a `WatchGuard` is acquired. Removal happens on
-`unregister_watch()` (`:597`) or, when a subscription is finally torn down after its grace
-period, on `unregister_watches_for_service()` (`:358`), which uses `key_to_service` to find
-every key belonging to that service.
+service — and each key maps to a `WatchHolds`, not to a bare presence bit:
+
+```rust
+// src/state.rs
+pub(crate) struct WatchHolds {
+    subscription: bool,   // any WatchGuard registered for this pair
+    direct: usize,        // outstanding StateManager::register_watch holds
+}
+pub(crate) type WatchCounts = HashMap<(SpeakerId, &'static str), WatchHolds>;
+```
+
+A pair is watched while the map contains it, and the entry is removed only when the flag is
+clear *and* the count is zero. Registration comes either from `register_watch()` or through
+`StateWatchRegistry` when a `WatchGuard` is acquired; release happens on `unregister_watch()`
+or, when a subscription is finally torn down after its grace period, on
+`unregister_watches_for_service()`, which uses `key_to_service` to find every key belonging to
+that service. `is_pair_watched()` is the single read used by every emission gate.
+
+**Why a watch is a hold, not a flag.** Several independent watchers can hold the same pair at
+once — two widgets on one property, or (much more commonly) the re-watch-per-frame pattern
+`watch()`'s own documentation recommends, where frame N+1 acquires its handle before frame N's
+drops. When `watched` was a `HashSet`, the first release removed the only entry, so a
+surviving watcher went silent while still holding its `WatchHandle`: `is_watched()` returned
+`false` and `system.iter()` stopped reporting the property. Worse, teardown was *wholesale* —
+`unregister_watches_for_service` removed every key belonging to the service — so releasing a
+`Volume` handle also unregistered `Mute`, `Bass`, `Treble` and `Loudness`, which all share
+`RenderingControl`. Dropping one handle silenced its siblings.
+
+**Why two fields instead of one counter.** The two kinds of hold are released by different
+events on different schedules, and no single integer models both:
+
+- `direct` holds are taken and released one at a time — `register_watch()` /
+  `unregister_watch()`, normally from the SDK's `CacheOnlyGuard::drop`. These are the ones that
+  need counting, so that *n* watchers survive *n-1* drops.
+- `subscription` covers every `WatchGuard`, and is only ever cleared in *bulk*.
+  `WatchGuard::drop` does not touch this map at all; it decrements
+  `sonos-event-manager`'s per-`(ip, service)` ref count, and
+  `unregister_watches_for_service()` fires later, once *that* count has reached zero — at which
+  point every contributing guard is provably gone. A counter incremented per guard but cleared
+  only in bulk would either leak (decrement-by-one leaves a residue, and a watch nobody holds
+  emits forever) or over-release (clearing to zero while sibling guards are still alive). A
+  boolean states exactly what is knowable.
+
+Keeping them separate is what fixes the sibling bug: a subscription teardown clears only its
+own flag and leaves individually-held `direct` watches — possibly on entirely different
+properties — untouched.
 
 #### Trade-offs
 
@@ -542,13 +586,17 @@ every key belonging to that service.
 |----------|----------------------|-------------------|
 | Per-property watch keys | Per-service keys | A service carries several properties; per-service would emit for all of them |
 | Cache updates regardless of watch | Only cache watched properties | Keeps `get()` useful right after `watch()` and lets an unwatched property be read without a fetch |
+| Refcounted holds | Presence-only `HashSet` | One watcher releasing must not silence others holding the same pair; the set made the first drop win |
+| Split `subscription` flag + `direct` count | A single `usize` covering both | Guard holds are cleared in bulk, individual holds one at a time. One counter must either leak or over-release |
+| `saturating_sub` on release | `panic!` / `debug_assert!` on over-release | An unbalanced release is a caller bug, but wrapping to `usize::MAX` would silently resurrect the watch forever — strictly the worse failure. Over-release is a no-op |
 
 ### 4.3 Feature: coordinator resolution
 
 #### What
 
-For `PerCoordinator` speaker-scoped properties, reads redirect to the coordinator, non-coordinator
-events are dropped, and watching members are notified when the coordinator changes.
+For `PerCoordinator` speaker-scoped properties, reads *and* SDK writes redirect to the
+coordinator, non-coordinator events are dropped, and watching members are notified when the
+coordinator changes.
 
 #### Why
 
@@ -558,10 +606,10 @@ must still be able to report the group's `PlaybackState` when asked.
 
 #### How
 
-Three cooperating pieces:
+Four cooperating pieces, all keyed off the same predicate:
 
 ```rust
-// src/state.rs:188 — reads redirect
+// src/state.rs — reads redirect
 pub(crate) fn get_resolved<P: SonosProperty>(&self, speaker_id: &SpeakerId) -> Option<P> {
     if P::SERVICE.scope() == ServiceScope::PerCoordinator && P::SCOPE == Scope::Speaker {
         let coordinator_id = self.resolve_coordinator(speaker_id);
@@ -570,23 +618,58 @@ pub(crate) fn get_resolved<P: SonosProperty>(&self, speaker_id: &SpeakerId) -> O
         self.speaker_props.get(speaker_id)?.get::<P>()
     }
 }
+
+// src/state.rs — SDK writes redirect, by the same rule
+pub(crate) fn resolve_write_target<P: SonosProperty>(&self, speaker_id: &SpeakerId) -> SpeakerId {
+    if P::SERVICE.scope() == ServiceScope::PerCoordinator && P::SCOPE == Scope::Speaker {
+        self.resolve_coordinator(speaker_id)
+    } else {
+        speaker_id.clone()
+    }
+}
 ```
 
-- **Writes**: the worker drops `PerCoordinator` events from non-coordinators
-  (`src/event_worker.rs:177`).
-- **Notifications**: `notify_group_members()` (`src/event_worker.rs:387`) emits a
+- **Event writes**: the worker drops `PerCoordinator` events from non-coordinators
+  (`src/event_worker.rs`).
+- **SDK writes**: `set_property()` routes through `resolve_write_target()`.
+- **Notifications**: `notify_group_members()` (`src/event_worker.rs`) emits a
   `ChangeEvent` per watching member and copies nothing.
-- **Subscriptions**: `resolve_subscription_target()` (`src/state.rs:736`) points the
-  member's subscription at the coordinator's IP.
+- **Subscriptions**: `resolve_subscription_target()` points the member's subscription at the
+  coordinator's IP.
 
-`resolve_coordinator()` (`src/state.rs:171`) returns the speaker's own ID when no group data
-exists, so a standalone speaker and a not-yet-known speaker both behave correctly.
+`resolve_coordinator()` returns the speaker's own ID when no group data exists, so a standalone
+speaker and a not-yet-known speaker both behave correctly.
+
+**Why writes must resolve too.** `set_property()` used to write the raw `speaker_id`, which
+made the write and the read disagree for exactly the properties this feature exists for. The
+SDK calls `set_property()` right after a successful SOAP action so the cache reflects the change
+without waiting for an event (`sonos-sdk`'s `play()`, `pause()`, `stop()`, and `fetch()`); on a
+*grouped member* that value landed in the member's own bag, while `get_property()` resolved to
+the coordinator's. The optimistic update was written somewhere nothing reads — `play()` on a
+grouped speaker left `playback_state.get()` reporting the old state until a real event arrived.
+`fetch()` (`sonos-sdk/src/property/handles.rs`) had already worked around this by resolving the
+target itself before calling `set_property`; moving the resolution into `set_property` makes
+every caller correct and leaves `fetch()`'s own call redundant-but-harmless (it resolves to the
+coordinator, and resolving twice is idempotent).
+
+Resolution happens *inside* the store write lock, not in a separate read beforehand: taking the
+coordinator under one lock and writing under another leaves a window in which a topology event
+regroups the speaker and the write lands in the wrong bag.
+
+**Notification keying.** A resolved write emits for the requesting speaker *and*, when they
+differ, for the coordinator. Keying only on the coordinator would leave a member that watches
+the property unnotified by its own write; keying only on the requester would leave the
+coordinator's watchers unnotified about a change to their own bag.
 
 #### Trade-offs
 
 | Decision | Alternative Considered | Why We Chose This |
 |----------|----------------------|-------------------|
 | Resolve on read | Copy coordinator values into each member's bag | One source of truth; regrouping needs no cache fix-up |
+| Resolve writes with the same predicate | Leave `set_property` raw and fix each caller | Callers cannot see the read path's rule; one already got it right and the rest silently did not. Symmetry belongs where both halves are defined |
+| `resolve_write_target` as a `StateStore` method | Inline the branch in `set_property` | The read branch and the write branch must not be able to drift apart; one named mirror of the other makes divergence visible |
+| Resolve inside the write lock | Resolve via a read lock, then write | A regrouping between the two would send the write to the wrong bag |
+| Emit for both requester and coordinator | Emit for one of them | Watchers exist on both sides and neither may be dropped |
 | Drop non-coordinator events | Store them per speaker | Their values are empty defaults and would overwrite good data |
 | Notify members explicitly | Let members poll | Members watch their own `(id, key)` pair, so they need their own event |
 
@@ -849,7 +932,7 @@ remain for consumers and for paths that predate the current design.
 
 ### 8.1 Testing Philosophy
 
-103 inline unit tests, no `tests/` directory and no network access. Everything the crate does
+106 inline unit tests, no `tests/` directory and no network access. Everything the crate does
 is a pure function over in-memory state plus one channel, so behaviour is testable by
 constructing a store, applying changes, and asserting on both the store and the channel.
 
@@ -861,7 +944,7 @@ constructing a store, applying changes, and asserting on both the store and the 
            |    Worker + store integration      |  event_worker.rs (17)
            +-----------------+------------------+
     +------+------+------+------+------+------+------+
-    |               Unit tests                        |  state 33, decoder 27,
+    |               Unit tests                        |  state 36, decoder 27,
     +-------------------------------------------------+  property 15, iter 7, model 2, speaker 2
 ```
 
@@ -878,7 +961,16 @@ constructing a store, applying changes, and asserting on both the store and the 
 - [x] Channel semantics — `test_channel_closed` (`src/iter.rs:269`), `test_try_iter` (:233)
 - [x] Coordinator resolution — `test_get_resolved_per_coordinator_reads_from_coordinator` (`src/state.rs:1687`), `test_get_resolved_per_speaker_reads_own_props` (:1735)
 - [x] Watch gating — `test_change_event_emission` (`src/state.rs:1040`), `test_set_group_property_no_event_when_unwatched` (:1116)
-- [x] Registry unregistration — `test_state_watch_registry_register_and_unregister` (`src/state.rs:1526`)
+- [x] Registry unregistration — `test_state_watch_registry_register_and_unregister`
+- [x] Watch refcounting — `test_watch_refcount_survives_partial_release` proves *n* watchers
+      of one property survive *n-1* releases and that an over-release does not resurrect the
+      watch; `test_service_unregister_keeps_directly_held_watches` proves a subscription
+      teardown leaves individually-held watches — including sibling properties of the same
+      service — intact
+- [x] Write/read symmetry — `test_set_property_on_group_member_is_readable_from_both` writes a
+      `PerCoordinator` speaker-scoped property through a *group member* and asserts it is
+      readable from both the member and the coordinator, then asserts a `PerSpeaker` write is
+      *not* redirected
 - [x] IP updates — `test_update_speaker_ip` (`src/state.rs:1783`)
 - [x] Duration overflow — `test_parse_duration_ms_overflow_returns_none` (`src/decoder.rs:507`)
       proves `parse_duration_ms` returns `None` instead of panicking on components that
@@ -961,7 +1053,7 @@ fallback).
 |----------|-------------|---------|---------|
 | Worker thread | First `set_event_manager()` | When all `event_tx` clones drop and the event-manager iterator ends | One per `StateManager` |
 | `PropertyBag` entry | First `set` for that speaker | With the speaker | One per `(entity, property type)` |
-| `watched` entry | `register_watch` / `WatchGuard` acquisition | `unregister_watch`, or `unregister_watches_for_service` after the grace period | Shared across `StateManager` clones |
+| `watched` hold | `register_watch` (counted) / `WatchGuard` acquisition (flag) | `unregister_watch` releases one count; `unregister_watches_for_service` clears the flag after the grace period. Entry removed at zero holds | Shared across `StateManager` clones |
 | UPnP subscription | Delegated | Delegated | `sonos-event-manager` |
 
 `StateManager` has no `Drop` impl. Shutdown is by channel closure: dropping the last clone
@@ -1084,6 +1176,7 @@ The workspace versions together; breaking changes ride the `sonos-sdk` version.
 | Debt Item | Location | Severity | Remediation Plan |
 |-----------|----------|----------|------------------|
 | Two overlapping watch paths: `watch_property_with_subscription` vs. the SDK's guard-based `acquire_watch` | `src/state.rs:610`, `:636` | Medium | Remove the pre-guard path once nothing depends on it |
+| Watch holds are split across two crates: `WatchHolds.subscription` is a flag here because the real per-guard count lives in `sonos-event-manager`'s `service_refs`, keyed `(ip, service)` rather than `(speaker, key)` | `src/state.rs` (`WatchHolds`), `sonos-event-manager/src/manager.rs` | Low | Have `WatchGuard::drop` release its own `(speaker, key)` hold directly, so one counter covers both kinds and the flag can go |
 | Unconstructed `StateError` variants | `src/error.rs:10` | Low | Prune to the variants actually produced |
 | Hand-rolled XML extraction while `sonos-stream` already depends on `quick-xml` | `src/decoder.rs:466` | Low | Move DIDL parsing into `sonos-stream` or adopt `quick-xml` here |
 | `software_version` hardcoded to `"unknown"` | `src/state.rs:437` | Low | Read from the device description |
@@ -1124,7 +1217,7 @@ The workspace versions together; breaking changes ride the `sonos-sdk` version.
 | Scope | Where a property is stored: `Speaker`, `Group`, or `System` (`src/property.rs:23`) |
 | ServiceScope | How a service subscribes: `PerSpeaker`, `PerNetwork`, `PerCoordinator` (`sonos-api/src/service.rs:38`) |
 | PropertyBag | `HashMap<TypeId, Box<dyn Any>>` holding one entity's property values |
-| Watched set | `HashSet<(SpeakerId, &'static str)>` gating notification emission |
+| Watched set | `HashMap<(SpeakerId, &'static str), WatchHolds>` gating notification emission; an entry exists while any watcher holds the pair (4.2) |
 | ChangeEvent | Valueless notification that a watched property changed |
 | Coordinator | The speaker owning playback state for its group |
 | Satellite | A speaker marked `Invisible="1"` in topology (surround, sub) |
@@ -1147,3 +1240,4 @@ The workspace versions together; breaking changes ride the `sonos-sdk` version.
 | 2026-01-14 | Claude Opus 4.5 | Initial specification created |
 | 2026-08-15 | Claude Opus 5 | Rewritten to match the implemented sync-first design. The prior revision documented an async `tokio::sync::watch` architecture (`reactive.rs`, `store.rs`, `watcher.rs`, `change_iterator.rs`, `decoders/*`, `PropertyWatcher<P>`, async `watch_property()`) that does not exist in the code |
 | 2026-08-15 | Claude Opus 5 | Documented the empty-topology-snapshot guard (3.2), per-event panic containment (4.6 and step 2 of 3.1), the "degrade loudly" rule in 3.4, and checked duration arithmetic; refreshed line references and test counts |
+| 2026-08-15 | Claude Opus 5 | `watched` became reference-counted `WatchCounts` so releasing one watcher no longer silences its siblings (4.2), and `set_property()` now resolves `PerCoordinator` writes to the coordinator so writes land where reads look (4.3) |

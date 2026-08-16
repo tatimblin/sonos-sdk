@@ -120,10 +120,11 @@ sonos-sdk/src/
 
 ```rust
 pub struct SonosSystem {
-    state_manager: Arc<StateManager>,    // Shared reactive state management
-    event_manager: Mutex<Option<Arc<SonosEventManager>>>,  // Lazily initialized
+    state_manager: Arc<StateManager>,    // Shared state; sole owner of the event manager
     api_client: SonosClient,             // Shared SOAP client
     speakers: RwLock<HashMap<String, Speaker>>,  // Name -> Speaker registry
+    last_rediscovery: AtomicU64,         // Rediscovery cooldown timestamp
+    offline: bool,                       // Test constructors only (§8.5)
 }
 ```
 
@@ -132,9 +133,22 @@ pub struct SonosSystem {
 **Invariants**:
 - After construction, all discovered speakers are registered in the map
 - StateManager is initialized with all discovered devices
-- Event manager is `None` until first `watch()` call triggers lazy initialization
+- The event manager is unset until the first `watch()` triggers lazy initialization
+- Dropping a `SonosSystem` releases its `StateManager` (see §8.7)
 
 **Ownership**: Created once per application; owns the StateManager and speaker registry.
+
+**Why there is no `event_manager` field**: there used to be one,
+`Mutex<Option<Arc<SonosEventManager>>>`, documented as "kept alive here to
+prevent the Arc from being dropped". It was permanently `None` and therefore
+kept nothing alive. It was populated by `Arc::try_unwrap` on an `Arc` the
+lazy-init closure also held, so the unwrap could never succeed and the fallback
+arm cloned an `Option` that was still `None` at construction time. The
+`StateManager`'s own `OnceLock` was — and remains — the single owner, which is
+sufficient because `state_manager` outlives every `watch()`. The field was
+removed rather than repaired: a second handle bought nothing, and a field whose
+doc comment contradicts its runtime value is worse than no field. It was private,
+so removing it is not a breaking change (`cargo semver-checks` confirms).
 
 #### `Speaker`
 
@@ -214,6 +228,37 @@ pub struct VolumeHandle {
 7. **Return** (`src/system.rs:44-48`): Returns the initialized `SonosSystem` with all speakers registered
 
 **Shared vs. network-dependent construction**: The in-memory portion of steps 2-6 lives in `SonosSystem::assemble()`, which performs no I/O. `from_devices_inner()` calls `assemble()` and then layers on the three network-dependent steps: topology prefetch, satellite filtering, and IP refresh. This split exists so the offline test constructor (§8.5) can reuse the exact same Arc wiring instead of maintaining a divergent copy — the Arc graph here is subtle, and a second copy would drift.
+
+**Why the init closure captures a `Weak<StateManager>`**: the `EventInitFn` built
+in `assemble()` needs the `StateManager` in order to call `set_event_manager()`
+on it — but the closure is then *stored on that same manager*, via
+`set_event_init()`, which parks it in a `OnceLock`. Capturing a strong
+`Arc<StateManager>` therefore closed a reference cycle:
+
+```
+StateManager --OnceLock<EventInitFn>--> closure --Arc--> StateManager
+```
+
+Neither end of that loop could reach zero, so dropping a `SonosSystem` freed
+nothing. It was measurable: `Arc::strong_count` was 2 after `drop(system)` where
+1 was expected. Every construction permanently leaked the `StateManager`, its
+`StateStore`, the event-worker thread, and — once anything called `watch()` — the
+`SonosEventManager` with its tokio runtime and the callback server's socket. A
+long-running process that rebuilt its system (reconnect, config reload, a test
+binary constructing one per case) accumulated all of it.
+
+`Arc::downgrade` breaks the cycle at the only edge that can be weak without
+changing behaviour. The closure `upgrade()`s on entry; while the system is alive
+that always succeeds, and the sole way it can fail is a `watch()` racing
+teardown, where declining to build a runtime and bind a socket for a
+dying system is exactly right. The failure is logged at `debug` and returns
+`Ok(())`, because a torn-down system is not a caller error.
+
+The one-shot guard inside the closure is a plain `Arc<Mutex<bool>>` rather than
+the old `Arc<Mutex<Option<Arc<SonosEventManager>>>>`: its only job is to keep two
+concurrent first-`watch()` calls from each constructing an event manager, and
+storing the manager there was what created the phantom second owner in the first
+place.
 
 ### 3.2 Secondary Flow: Property Fetch (API Call + State Update)
 
@@ -613,7 +658,7 @@ Production paths (`new()` → `from_devices_inner()`) leave `offline = false`, s
 |----------|----------------------|-------------------|
 | `offline: bool` field | Separate `OfflineSonosSystem` type or a trait-abstracted transport | One flag, two call sites, no API surface duplication; a mock transport is the right long-term fix but far larger |
 | Offline flag closes *both* paths | Only skip `ensure_topology()` in the constructor | Skipping construction alone leaves the 30s rediscovery cooldown on every lookup miss — the larger of the two costs |
-| Reuse `assemble()` for both paths | Copy the constructor body | The Arc wiring (init closure capturing the `Arc<StateManager>` it is stored on) has a known cycle bug; two copies would mean two fixes |
+| Reuse `assemble()` for both paths | Copy the constructor body | The Arc wiring (init closure capturing a `Weak` to the manager that stores it) is subtle enough that two copies would drift; when the cycle bug was fixed, one edit covered both paths |
 | Wall-clock bound to prove no I/O | Mock transport / network namespace | Without a mock transport, a time bound is the only pure-unit assertion available; the 500ms threshold is ~10x headroom over the real cost and ~10x below the cheapest timeout it guards |
 | Signature assertions as never-called `fn`s | `#[test]` fns that invoke each action | Invoking an action to check its *type* pays a real 5s connect timeout per call for zero added coverage. A never-called `#[allow(dead_code)] fn` is still type-checked, so it fails the build identically if a signature drifts, at 0s. See §8.6. |
 | Tests keep building explicit `Device` lists | Route property tests through `with_speakers()` | `with_speakers()` hardcodes `RINCON_{i:03}` / `192.168.1.{100+i}`, discarding proptest-generated IDs, names and IPs. Round-trip assertions would still pass while testing nothing. Vacuous-but-green is worse than slow. |
@@ -651,6 +696,43 @@ Rust type-checks the body of a function even when nothing calls it, so a never-c
 | Take params by reference | Construct fixtures inside the fn | Nothing constructs them, so params keep the fn free of fixture setup and avoid dragging helpers into the dead-code graph |
 
 **Boundary**: this pattern applies *only* where the assertion is purely about types. Tests that assert real behavior on paths returning before any network call — `test_group_set_volume_rejects_over_100`, `test_add_speaker_rejects_coordinator_self_add`, `test_remove_speaker_rejects_coordinator_removal`, `test_dissolve_standalone_returns_empty_result`, and the `set_*_rejects_invalid` family — remain executing `#[test]` fns. Validation and guard-clause logic must keep running.
+
+### 8.7 Leak Assertions (`state_manager_weak`)
+
+#### What
+
+`SonosSystem::state_manager_weak()` returns a `std::sync::Weak<StateManager>`. It
+is gated behind `test-support` (or the crate's own `test` cfg), alongside
+`from_devices_offline`. Two tests use it:
+`test_dropping_system_releases_state_manager` and
+`test_dropping_system_after_watch_releases_state_manager` (`src/system.rs`).
+
+#### Why
+
+The Arc cycle described in §3.1 was invisible to every other kind of test.
+Construction succeeded, teardown "succeeded", and every functional assertion
+passed — the only symptom was that memory, a thread, a tokio runtime and a socket
+were never reclaimed. Detecting that requires a handle that **outlives the
+system** and can then be asked whether the target is gone.
+
+Nothing already public can answer the question. `state_manager()` returns
+`&Arc<StateManager>` borrowed from `&self`, so it cannot survive the drop, and
+cloning the `Arc` first would itself keep the manager alive and mask the very
+condition under test. A `Weak` is the only observer that does not perturb what it
+measures.
+
+The second test exists because the first does not exercise the closure. The cycle
+is created at `assemble()` time, but the closure only *runs* on the first
+`watch()`; testing both means the assertion holds whether or not lazy init ever
+fired.
+
+#### Trade-offs
+
+| Decision | Alternative Considered | Why We Chose This |
+|----------|----------------------|-------------------|
+| `Weak` accessor behind `test-support` | Assert `Arc::strong_count` via `state_manager()` while alive | A live count is not the invariant: `Speaker` handles legitimately hold their own `Arc`s, so the number tracks the device count. The invariant is "zero *after* drop", which needs a handle that outlives the system |
+| Add a test-only accessor | Leave the cycle untested | The bug is silent by construction and was reintroduced-prone; an untested fix here is indistinguishable from no fix |
+| `Weak` | A `Drop` impl on `SonosSystem` setting a flag | A flag proves `SonosSystem` dropped, which was never in doubt — the question is whether the *manager* was released |
 
 ---
 
@@ -843,6 +925,7 @@ None required.
 
 | Date | Author | Change |
 |------|--------|--------|
+| 2026-08-15 | Claude Opus 5 | Documented the `Weak<StateManager>` capture that breaks the init-closure Arc cycle (§3.1), the removal of the dead `event_manager` field (§2.3), and §8.7 leak assertions |
 | 2026-08-15 | Claude Opus 5 | Added §8.5 offline construction (`from_devices_offline`, `offline` flag), §8.6 signature assertions, and the `assemble()` split in §3.1 |
 | 2026-03-11 | Claude Opus 4.6 | Updated for v0.2.0: lazy event init, method renames, fluent navigation, prelude, #[non_exhaustive] |
 | 2026-01-14 | Claude Opus 4.5 | Initial specification created |

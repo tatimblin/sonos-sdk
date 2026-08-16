@@ -10,6 +10,7 @@ use std::time::Duration;
 use sonos_api::SonosClient;
 use sonos_discovery::{self, Device};
 use sonos_event_manager::SonosEventManager;
+
 #[cfg(feature = "test-support")]
 use sonos_state::GroupInfo;
 use sonos_state::{EventInitFn, GroupId, SpeakerId, StateManager, Topology};
@@ -72,14 +73,16 @@ fn find_speaker_by_name(speakers: &HashMap<String, Speaker>, name: &str) -> Opti
 /// }
 /// ```
 pub struct SonosSystem {
-    /// State manager for property values
+    /// State manager for property values.
+    ///
+    /// Also the sole owner of the lazily-created `SonosEventManager`, which it
+    /// holds in a `OnceLock`. `SonosSystem` deliberately keeps no second handle:
+    /// the field that used to sit here claimed to be "kept alive here to prevent
+    /// the Arc from being dropped" but was permanently `None`, because the
+    /// `Arc::try_unwrap` that populated it could never succeed while the
+    /// init closure held the other reference. Since `state_manager` outlives
+    /// every `watch()` anyway, one owner is all that was ever needed.
     state_manager: Arc<StateManager>,
-
-    /// Event manager for UPnP subscriptions (lazily initialized on first watch()).
-    /// Kept alive here to prevent the Arc from being dropped; the StateManager
-    /// holds its own reference via OnceLock for use by watch()/unwatch().
-    #[allow(dead_code)]
-    event_manager: Mutex<Option<Arc<SonosEventManager>>>,
 
     /// API client for direct operations
     api_client: SonosClient,
@@ -222,6 +225,22 @@ impl SonosSystem {
     ///
     /// Shared by [`Self::from_devices_inner`] and [`Self::from_devices_offline`]
     /// so the Arc wiring below has exactly one definition.
+    ///
+    /// # Why the closure holds a `Weak<StateManager>`
+    ///
+    /// The closure below is *stored on the very `StateManager` it needs to call*
+    /// (`set_event_init` puts it in a `OnceLock` on the manager). Capturing a
+    /// strong `Arc<StateManager>` therefore closed a reference cycle: manager →
+    /// `OnceLock<EventInitFn>` → closure → manager. Neither end could ever reach
+    /// zero, so dropping a `SonosSystem` freed nothing — a measured
+    /// `Arc::strong_count` of 2 after `drop(system)` where 1 was expected. Each
+    /// construction permanently leaked the `StateManager`, its `StateStore`, the
+    /// event-worker thread, the `SonosEventManager` with its tokio runtime, and
+    /// the callback server's UDP/TCP socket.
+    ///
+    /// A `Weak` breaks the cycle without changing the happy path: while the
+    /// system is alive the upgrade always succeeds, and the only way it can fail
+    /// is a `watch()` racing teardown, where doing nothing is exactly right.
     fn assemble(devices: Vec<Device>, offline: bool) -> Result<Self, SdkError> {
         // 1. Create shared state FIRST — no event manager yet (lazy init)
         let state_manager = Arc::new(StateManager::new().map_err(SdkError::StateError)?);
@@ -230,30 +249,46 @@ impl SonosSystem {
             .map_err(SdkError::StateError)?;
 
         let api_client = SonosClient::new();
-        let event_manager: Arc<Mutex<Option<Arc<SonosEventManager>>>> = Arc::new(Mutex::new(None));
 
         // 2. Build init closure and store on StateManager (single source of truth)
         let init_fn: EventInitFn = {
-            let em_mutex = Arc::clone(&event_manager);
-            let sm = Arc::clone(&state_manager);
+            // Serializes concurrent first-`watch()` calls so at most one
+            // SonosEventManager is ever constructed. `set_event_manager` is
+            // itself idempotent, but without this lock a race would still bind
+            // two callback sockets and spawn two runtimes before one lost.
+            let init_lock: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+            let weak_sm = Arc::downgrade(&state_manager);
             Arc::new(
                 move || -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
-                    let mut guard = em_mutex.lock().map_err(|_| SdkError::LockPoisoned)?;
-                    if guard.is_some() {
+                    let mut initialized = init_lock.lock().map_err(|_| SdkError::LockPoisoned)?;
+                    if *initialized {
                         tracing::trace!(
                             "Event manager init closure called but already initialized"
                         );
                         return Ok(());
                     }
+                    // A failed upgrade means the SonosSystem is being torn down
+                    // while a watch() is in flight. There is nothing left to
+                    // wire an event manager into, so decline quietly rather than
+                    // building a runtime and a socket for a dead system.
+                    let Some(sm) = weak_sm.upgrade() else {
+                        tracing::debug!(
+                            "Event manager init skipped: SonosSystem has already been dropped"
+                        );
+                        return Ok(());
+                    };
                     tracing::info!("Lazy-initializing event manager (first watch() call)");
                     let em = Arc::new(SonosEventManager::new().map_err(|e| {
                         tracing::error!("Failed to create SonosEventManager: {}", e);
                         SdkError::EventManager(e.to_string())
                     })?);
                     tracing::debug!("SonosEventManager created, wiring into StateManager");
-                    sm.set_event_manager(Arc::clone(&em))
-                        .map_err(SdkError::StateError)?;
-                    *guard = Some(em);
+                    // The StateManager owns the only lasting reference, in its
+                    // own OnceLock. SonosSystem deliberately keeps none: a
+                    // second copy of this handle bought nothing and previously
+                    // pretended to be the thing keeping it alive.
+                    sm.set_event_manager(em).map_err(SdkError::StateError)?;
+                    *initialized = true;
                     tracing::info!("Event manager initialization complete");
                     Ok(())
                 },
@@ -267,10 +302,6 @@ impl SonosSystem {
         // 4. Assemble struct from the SAME Arcs
         Ok(Self {
             state_manager,
-            event_manager: Arc::try_unwrap(event_manager).unwrap_or_else(|arc| {
-                let inner = arc.lock().unwrap().clone();
-                Mutex::new(inner)
-            }),
             api_client,
             speakers: RwLock::new(speakers),
             last_rediscovery: AtomicU64::new(0),
@@ -321,7 +352,6 @@ impl SonosSystem {
 
         Self {
             state_manager,
-            event_manager: Mutex::new(None),
             api_client,
             speakers: RwLock::new(speakers),
             last_rediscovery: AtomicU64::new(0),
@@ -510,6 +540,22 @@ impl SonosSystem {
     /// Get the state manager for advanced usage
     pub fn state_manager(&self) -> &Arc<StateManager> {
         &self.state_manager
+    }
+
+    /// A non-owning handle to the internal `StateManager`, for leak assertions.
+    ///
+    /// Exists so a test can outlive the system and check that dropping it
+    /// actually freed the manager. `state_manager()` cannot do that job: it
+    /// borrows from `&self`, so nothing observable survives the drop, and
+    /// cloning the `Arc` first would itself keep the manager alive. A `Weak`
+    /// is the only handle that answers "was this really released?".
+    ///
+    /// Only available when the `test-support` feature is enabled (or when
+    /// compiling this crate's own test harness), matching
+    /// [`Self::from_devices_offline`].
+    #[cfg(any(feature = "test-support", test))]
+    pub fn state_manager_weak(&self) -> std::sync::Weak<StateManager> {
+        Arc::downgrade(&self.state_manager)
     }
 
     /// Get a blocking iterator over property change events
@@ -1118,6 +1164,85 @@ mod tests {
         assert!(
             elapsed < Duration::from_millis(500),
             "offline construction and lookups should not touch the network, took {elapsed:?}"
+        );
+    }
+
+    /// Dropping a `SonosSystem` must actually free its `StateManager`.
+    ///
+    /// The init closure is stored *on* the manager, so capturing a strong
+    /// `Arc<StateManager>` in it made the manager own a closure that owned the
+    /// manager. The cycle was invisible from the outside — construction and
+    /// teardown both "worked" — but every `SonosSystem::new()` permanently
+    /// leaked the manager, its store, the event-worker thread, the event
+    /// manager's tokio runtime, and the callback socket. Only a `Weak` that
+    /// outlives the system can observe the difference.
+    #[test]
+    fn test_dropping_system_releases_state_manager() {
+        let devices = vec![Device {
+            id: "RINCON_111".to_string(),
+            name: "Living Room".to_string(),
+            room_name: "Living Room".to_string(),
+            ip_address: "203.0.113.1".to_string(),
+            port: 1400,
+            model_name: "Sonos One".to_string(),
+        }];
+
+        let system = SonosSystem::from_devices_offline(devices).unwrap();
+        let weak = system.state_manager_weak();
+
+        // Alive: reachable. The live count is deliberately not asserted — each
+        // Speaker handle legitimately holds its own Arc, so the number tracks
+        // the device count rather than anything about the cycle.
+        assert!(weak.upgrade().is_some());
+
+        drop(system);
+
+        // Dropped: the system owned the speakers too, so nothing legitimate is
+        // left holding the manager. A surviving strong reference can only be the
+        // init closure the manager itself stores.
+        assert_eq!(
+            weak.strong_count(),
+            0,
+            "StateManager outlived its SonosSystem — the event-init closure is \
+             holding a strong Arc to the manager that stores it"
+        );
+        assert!(weak.upgrade().is_none());
+    }
+
+    /// The same, but after `watch()` has run the lazy event-manager init, which
+    /// is the path that actually exercises the closure's capture.
+    ///
+    /// Speakers hold `Arc`s to the manager, so the strong count is >1 here; the
+    /// assertion is the one that matters — once every handle is gone, nothing
+    /// keeps the manager alive.
+    #[test]
+    fn test_dropping_system_after_watch_releases_state_manager() {
+        let devices = vec![Device {
+            id: "RINCON_111".to_string(),
+            name: "Living Room".to_string(),
+            room_name: "Living Room".to_string(),
+            ip_address: "203.0.113.1".to_string(),
+            port: 1400,
+            model_name: "Sonos One".to_string(),
+        }];
+
+        let system = SonosSystem::from_devices_offline(devices).unwrap();
+        let weak = system.state_manager_weak();
+
+        {
+            let speaker = system.speaker("Living Room").unwrap();
+            // Runs the init closure. No event manager can bind here (offline
+            // test host may or may not permit it), so the mode is whatever the
+            // environment allows — the point is that the closure executed.
+            let _watch = speaker.volume.watch().unwrap();
+        }
+
+        drop(system);
+
+        assert!(
+            weak.upgrade().is_none(),
+            "StateManager outlived its SonosSystem after watch() ran the lazy \
+             event-init closure"
         );
     }
 
