@@ -2240,6 +2240,7 @@ version = "0.5.3"
 dependencies = [
  "async-trait",
  "bytes",
+ "if-addrs",
  "proptest",
  "reqwest",
  "thiserror",

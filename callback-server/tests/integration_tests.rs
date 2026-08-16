@@ -8,6 +8,22 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
+/// A port range the OS just told us is free.
+///
+/// These tests used to hardcode disjoint ranges (50000-50100, 50200-50300, ...),
+/// which is only disjoint *within* one test binary. Two concurrent
+/// `cargo test --workspace` runs both found the low end of each range free and
+/// raced to bind it, failing with "Address already in use". Separate
+/// `CARGO_TARGET_DIR`s do not help: the contended resource is the host's port
+/// space, not the build directory. Asking the OS for an ephemeral port narrows the
+/// window to the microseconds between drop and rebind.
+fn free_port_range() -> (u16, u16) {
+    let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    (port, port)
+}
+
 /// Test that the callback server can start, receive events, and process them correctly.
 #[tokio::test]
 async fn test_callback_server_end_to_end() {
@@ -15,7 +31,7 @@ async fn test_callback_server_end_to_end() {
     let (tx, mut rx) = mpsc::unbounded_channel::<NotificationPayload>();
 
     // Start the callback server
-    let server = CallbackServer::new((50000, 50100), tx)
+    let server = CallbackServer::new(free_port_range(), tx)
         .await
         .expect("Failed to create callback server");
 
@@ -147,7 +163,7 @@ async fn test_callback_server_end_to_end() {
 #[tokio::test]
 async fn test_multiple_subscriptions_concurrent_events() {
     let (tx, mut rx) = mpsc::unbounded_channel::<NotificationPayload>();
-    let server = CallbackServer::new((50200, 50300), tx)
+    let server = CallbackServer::new(free_port_range(), tx)
         .await
         .expect("Failed to create callback server");
 
@@ -271,7 +287,7 @@ async fn test_multiple_subscriptions_concurrent_events() {
 #[tokio::test]
 async fn test_dynamic_subscription_management() {
     let (tx, mut rx) = mpsc::unbounded_channel::<NotificationPayload>();
-    let server = CallbackServer::new((50400, 50500), tx)
+    let server = CallbackServer::new(free_port_range(), tx)
         .await
         .expect("Failed to create callback server");
 
@@ -361,7 +377,8 @@ async fn test_dynamic_subscription_management() {
 #[tokio::test]
 async fn test_server_ip_and_url_detection() {
     let (tx, _rx) = mpsc::unbounded_channel::<NotificationPayload>();
-    let server = CallbackServer::new((50600, 50700), tx)
+    let range = free_port_range();
+    let server = CallbackServer::new(range, tx)
         .await
         .expect("Failed to create callback server");
 
@@ -371,7 +388,7 @@ async fn test_server_ip_and_url_detection() {
     // Verify URL format
     assert!(base_url.starts_with("http://"));
     assert!(base_url.contains(&port.to_string()));
-    assert!((50600..=50700).contains(&port));
+    assert_eq!(port, range.0);
 
     // Verify the URL is reachable by making a request to a non-existent endpoint
     let client = reqwest::Client::new();
@@ -393,7 +410,7 @@ async fn test_server_ip_and_url_detection() {
 #[tokio::test]
 async fn test_error_handling() {
     let (tx, mut rx) = mpsc::unbounded_channel::<NotificationPayload>();
-    let server = CallbackServer::new((50800, 50900), tx)
+    let server = CallbackServer::new(free_port_range(), tx)
         .await
         .expect("Failed to create callback server");
 
@@ -464,7 +481,7 @@ async fn test_error_handling() {
 #[tokio::test]
 async fn test_oversized_notify_body_rejected() {
     let (tx, mut rx) = mpsc::unbounded_channel::<NotificationPayload>();
-    let server = CallbackServer::new((51400, 51500), tx)
+    let server = CallbackServer::new(free_port_range(), tx)
         .await
         .expect("Failed to create callback server");
 
@@ -510,7 +527,7 @@ async fn test_oversized_notify_body_rejected() {
 #[tokio::test]
 async fn test_notify_before_register_is_replayed() {
     let (tx, mut rx) = mpsc::unbounded_channel::<NotificationPayload>();
-    let server = CallbackServer::new((51200, 51300), tx)
+    let server = CallbackServer::new(free_port_range(), tx)
         .await
         .expect("Failed to create callback server");
 

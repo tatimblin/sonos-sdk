@@ -12,6 +12,7 @@ readme = "README.md"
 name = "callback_server"
 
 [dependencies]
+if-addrs = "0.15"
 tokio = { version = "1.0", features = ["full"] }
 warp = "0.3"
 bytes = "1.0"

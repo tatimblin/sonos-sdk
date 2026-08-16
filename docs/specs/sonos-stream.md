@@ -224,12 +224,32 @@ pub struct RegistrationId(u64);
 
 **Step-by-step**:
 
-1. **Registration** (`src/broker.rs:385-489`): User calls `register_speaker_service()` which:
+1. **Registration** (`src/broker.rs`): User calls `register_speaker_service()` which:
    - Registers the speaker/service pair in the registry
    - Checks if this is the first subscription for this device
+   - On the first subscription, warns via `warn_if_speaker_unreachable` when the
+     speaker is on no subnet we hold an address on (see below)
    - Triggers firewall detection if enabled
    - Creates a UPnP subscription via SubscriptionManager
    - Evaluates whether to start immediate polling based on firewall status
+
+**Callback URL: one authoritative source.** `subscription_callback_url()` returns
+`CallbackServer::base_url()` verbatim, and `SubscriptionManager` is constructed
+from it. The broker previously ran its own `get_local_ip()` — a second
+route-to-8.8.8.8 UDP probe — and rebuilt `http://{ip}:{port}` by hand, duplicating
+a derivation `CallbackServer` had already performed. Two copies of one derivation
+is what let them drift; whichever was wrong, speakers were handed an address they
+could not reach, so **events were silently lost and the firewall detector
+misattributed the silence to a firewall**, sending the device to polling. With a
+VPN up, the probe returned the tunnel address and this happened for every speaker.
+`get_local_ip()` is deleted; the broker never derives an address itself.
+
+`warn_if_speaker_unreachable` calls `CallbackServer::local_ip_for_speaker`, which
+does real subnet containment using each interface's actual netmask. A /24
+assumption would be wrong here: this project's network is one flat
+`192.168.4.0/22`, so a `192.168.5.x` speaker *is* reachable from `192.168.4.32`,
+and a /24 check would emit a false warning for half the household. See
+`docs/specs/callback-server.md` §4.5.
 
 2. **Firewall Detection** (`src/broker.rs:406-417`): Per-device firewall detection:
    - First subscription triggers proactive detection
@@ -997,6 +1017,7 @@ BrokerConfig::firewall_simulation()
 | Single EventIterator per broker | Can't fan-out events | Create wrapper channel | Consider multi-consumer support |
 | Blocking SOAP client in polling | Thread pool usage | Uses tokio::task::spawn_blocking | Migrate to async SOAP client |
 | DeviceProperties service not fully supported | Limited device property events | Use ZoneGroupTopology fallback | Add DeviceProperties service |
+| **One callback URL for all subscriptions** | A household spanning genuinely different subnets gets a URL only one half can reach; the rest logs a warning and falls back to polling | Polling still delivers state, just less promptly | **Named follow-up**: per-subscription callback URL. `SubscriptionManager::callback_url` is a single `String`, so this needs a signature change from `create_subscription` down. `CallbackServer::local_ip_for_speaker` is the piece to consume. Moot on the current dev network (one flat /22), but multi-subnet households are **not** supported today. |
 
 ### 14.2 Technical Debt
 
@@ -1050,4 +1071,5 @@ BrokerConfig::firewall_simulation()
 | Date | Author | Change |
 |------|--------|--------|
 | 2025-01-14 | Claude Code | Initial specification |
+| 2026-08-15 | Claude Code | Deleted `broker::get_local_ip` (a duplicate route-to-8.8.8.8 probe) and made the broker consume `CallbackServer::base_url()` as the single authoritative callback URL (3.1). Added a first-subscription reachability warning based on real netmasks. Recorded the single-callback-URL multi-subnet limitation as a named follow-up (14.1). |
 | 2026-08-15 | Claude Code | Documented the polling-fallback lifecycle as reversible (3.2, 5.2): `record_event` liveness reporting, `PollingAction::Stop` on event resumption, and EventRouter SID release on unregistration. Noted `polling_activation_delay` is now unread. |
