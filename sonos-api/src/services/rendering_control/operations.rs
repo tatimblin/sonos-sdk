@@ -536,6 +536,23 @@ mod tests {
         );
     }
 
+    /// Negative control: single-word request fields still get their element name
+    /// derived by the macro, so adding the optional `request_xml_mapping:` block did
+    /// not regress the call sites that were already correct.
+    #[test]
+    fn test_set_relative_volume_payload_element_names() {
+        let request = SetRelativeVolumeOperationRequest {
+            instance_id: 0,
+            channel: "Master".to_string(),
+            adjustment: -5,
+        };
+        let payload = SetRelativeVolumeOperation::build_payload(&request).unwrap();
+        assert_eq!(
+            payload,
+            "<InstanceID>0</InstanceID><Channel>Master</Channel><Adjustment>-5</Adjustment>"
+        );
+    }
+
     #[test]
     fn test_service_level_subscription_helpers() {
         // Test that subscription helper functions have correct signatures
