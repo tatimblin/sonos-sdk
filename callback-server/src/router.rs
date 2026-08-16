@@ -17,6 +17,21 @@ use tracing::debug;
 /// pathological scheduling delay.
 const BUFFER_TTL: Duration = Duration::from_secs(5);
 
+/// Hard cap on buffered pending events.
+///
+/// The buffer exists only to bridge the microsecond race between a SUBSCRIBE
+/// response and the `register()` call that follows it, so legitimate occupancy is
+/// 0-5 entries. But `route_event` buffers events for *any* unrecognised SID, and
+/// the endpoint is unauthenticated — a hostile or buggy sender spraying random
+/// SIDs would grow this Vec without bound (each entry holds a full event body).
+///
+/// 256 is ~50x the legitimate high-water mark, so it cannot be reached by normal
+/// operation even on a large household bringing every subscription up at once,
+/// while bounding worst-case retention to 256 bodies. On overflow the oldest
+/// entry is dropped: these are pending state snapshots, and the newest is both
+/// the most current and the most likely to still have a `register()` coming.
+const MAX_PENDING_EVENTS: usize = 256;
+
 /// Generic notification payload for UPnP event notifications.
 ///
 /// This represents an unparsed UPnP event notification that has been received
@@ -34,9 +49,50 @@ pub struct NotificationPayload {
 struct RouterState {
     subscriptions: HashSet<String>,
     /// Flat buffer of (subscription_id, event_xml, buffered_at).
-    /// Expected size: 0-5 entries. Only populated during the microsecond
-    /// race window between SUBSCRIBE response and register() call.
+    /// Expected size: 0-5 entries for well-behaved senders — only populated
+    /// during the microsecond race window between SUBSCRIBE response and
+    /// register(). Hard-capped at `MAX_PENDING_EVENTS` because the HTTP endpoint
+    /// is unauthenticated and cannot rely on senders being well-behaved.
     pending: Vec<(String, String, Instant)>,
+}
+
+impl RouterState {
+    /// Drop buffered entries older than `BUFFER_TTL`.
+    fn sweep_stale(&mut self) {
+        let now = Instant::now();
+        self.pending
+            .retain(|(_, _, buffered_at)| now.duration_since(*buffered_at) <= BUFFER_TTL);
+    }
+
+    /// Buffer an event, enforcing `MAX_PENDING_EVENTS` by dropping the oldest.
+    fn push_pending(&mut self, subscription_id: String, event_xml: String) {
+        self.sweep_stale();
+
+        while self.pending.len() >= MAX_PENDING_EVENTS {
+            // Evict by timestamp rather than position: swap_remove elsewhere
+            // means index order does not track insertion order.
+            let oldest = self
+                .pending
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, (_, _, at))| *at)
+                .map(|(i, _)| i);
+            match oldest {
+                Some(i) => {
+                    let (sid, _, _) = self.pending.remove(i);
+                    debug!(
+                        sid = %sid,
+                        cap = MAX_PENDING_EVENTS,
+                        "Pending event buffer full; dropped oldest entry"
+                    );
+                }
+                None => break,
+            }
+        }
+
+        self.pending
+            .push((subscription_id, event_xml, Instant::now()));
+    }
 }
 
 /// Routes events from HTTP callbacks to a channel.
@@ -129,6 +185,10 @@ impl EventRouter {
     /// If not, the event is buffered for replay when `register()` is called.
     /// The caller should always return HTTP 200 OK — buffered events are
     /// accepted for processing, not rejected.
+    ///
+    /// Buffering sweeps entries older than `BUFFER_TTL` and enforces a hard cap
+    /// of `MAX_PENDING_EVENTS`, dropping the oldest entry on overflow. Without
+    /// this, unrecognised SIDs could grow the buffer without bound.
     pub async fn route_event(&self, subscription_id: String, event_xml: String) {
         let mut state = self.state.write().await;
         if state.subscriptions.contains(&subscription_id) {
@@ -139,9 +199,11 @@ impl EventRouter {
             let _ = self.event_sender.send(payload);
         } else {
             debug!(sid = %subscription_id, "Buffered event for pending SID");
-            state
-                .pending
-                .push((subscription_id, event_xml, Instant::now()));
+            // Sweeps stale entries and enforces MAX_PENDING_EVENTS. Doing this
+            // here (not only in register()) is what bounds the buffer: register()
+            // is called on genuine new subscriptions only, so events for random
+            // SIDs would otherwise never trigger cleanup.
+            state.push_pending(subscription_id, event_xml);
         }
     }
 }
@@ -303,6 +365,91 @@ mod tests {
 
         // No more events
         assert!(rx.try_recv().is_err());
+    }
+
+    /// The pending buffer is hard-capped so unknown-SID traffic cannot grow it
+    /// without bound. Only `register()` used to sweep the buffer, so a sender
+    /// spraying random SIDs would never trigger cleanup.
+    #[tokio::test]
+    async fn test_pending_buffer_is_bounded() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let router = EventRouter::new(tx);
+
+        for i in 0..(MAX_PENDING_EVENTS + 50) {
+            router
+                .route_event(
+                    format!("uuid:unknown-{i}"),
+                    "<event>spam</event>".to_string(),
+                )
+                .await;
+        }
+
+        let state = router.state.read().await;
+        assert!(
+            state.pending.len() <= MAX_PENDING_EVENTS,
+            "pending buffer grew to {} entries (cap is {MAX_PENDING_EVENTS})",
+            state.pending.len()
+        );
+    }
+
+    /// Dropping the oldest entry keeps the newest events, which are the ones a
+    /// pending `register()` is most likely to still care about.
+    #[tokio::test]
+    async fn test_pending_buffer_evicts_oldest_first() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let router = EventRouter::new(tx);
+
+        // First event is the oldest and should be evicted once the cap is hit.
+        router
+            .route_event(
+                "uuid:oldest".to_string(),
+                "<event>oldest</event>".to_string(),
+            )
+            .await;
+        for i in 0..MAX_PENDING_EVENTS {
+            router
+                .route_event(
+                    format!("uuid:filler-{i}"),
+                    "<event>filler</event>".to_string(),
+                )
+                .await;
+        }
+
+        // The evicted SID has nothing to replay.
+        router.register("uuid:oldest".to_string()).await;
+        assert!(rx.try_recv().is_err(), "oldest entry should be evicted");
+
+        // The most recent SID is still buffered and replays fine.
+        let newest = format!("uuid:filler-{}", MAX_PENDING_EVENTS - 1);
+        router.register(newest.clone()).await;
+        let payload = rx
+            .try_recv()
+            .expect("newest entry should still be buffered");
+        assert_eq!(payload.subscription_id, newest);
+    }
+
+    /// Stale entries are swept by `route_event`, not only by `register()`.
+    #[tokio::test]
+    async fn test_stale_entries_swept_on_route() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let router = EventRouter::new(tx);
+
+        {
+            let mut state = router.state.write().await;
+            state.pending.push((
+                "uuid:stale".to_string(),
+                "<event>stale</event>".to_string(),
+                Instant::now() - Duration::from_secs(10),
+            ));
+        }
+
+        router
+            .route_event("uuid:fresh".to_string(), "<event>fresh</event>".to_string())
+            .await;
+
+        let state = router.state.read().await;
+        assert_eq!(state.pending.len(), 1, "stale entry should have been swept");
+        assert_eq!(state.pending[0].0, "uuid:fresh");
     }
 
     /// Buffered events for different SIDs don't interfere.

@@ -457,6 +457,55 @@ async fn test_error_handling() {
     server.shutdown().await.expect("Failed to shutdown server");
 }
 
+/// An oversized NOTIFY body is rejected before it is buffered in memory.
+///
+/// Without a `content_length_limit` the server would happily read (and then
+/// copy) an arbitrarily large body, letting any host on the LAN exhaust memory.
+#[tokio::test]
+async fn test_oversized_notify_body_rejected() {
+    let (tx, mut rx) = mpsc::unbounded_channel::<NotificationPayload>();
+    let server = CallbackServer::new((51400, 51500), tx)
+        .await
+        .expect("Failed to create callback server");
+
+    let base_url = server.base_url().to_string();
+    let client = reqwest::Client::new();
+
+    let sub_id = "uuid:oversized-body";
+    server.router().register(sub_id.to_string()).await;
+
+    // 128 KiB — comfortably over the 64 KiB limit.
+    let oversized = "x".repeat(128 * 1024);
+
+    let response = client
+        .request(
+            reqwest::Method::from_bytes(b"NOTIFY").unwrap(),
+            format!("{base_url}/notify/oversized"),
+        )
+        .header("SID", sub_id)
+        .header("NT", "upnp:event")
+        .header("NTS", "upnp:propchange")
+        .body(oversized)
+        .send()
+        .await
+        .expect("Failed to send oversized NOTIFY");
+
+    assert_eq!(
+        response.status(),
+        413,
+        "oversized body should be rejected with 413 Payload Too Large"
+    );
+
+    // The body was never routed.
+    let no_notification = timeout(Duration::from_millis(100), rx.recv()).await;
+    assert!(
+        no_notification.is_err(),
+        "oversized body should not be routed"
+    );
+
+    server.shutdown().await.expect("Failed to shutdown server");
+}
+
 /// Test the SUBSCRIBE/NOTIFY race: event arrives before register, gets replayed.
 #[tokio::test]
 async fn test_notify_before_register_is_replayed() {
