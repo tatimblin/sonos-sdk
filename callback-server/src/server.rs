@@ -1,5 +1,6 @@
 //! HTTP server for receiving UPnP event notifications.
 
+use if_addrs::IfAddr;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -43,6 +44,116 @@ fn preview(s: &str, max: usize) -> &str {
         end -= 1;
     }
     &s[..end]
+}
+
+/// An IPv4 interface as (address, netmask).
+///
+/// A pair rather than `if_addrs::Interface` so the selection logic below is a pure
+/// function over synthetic data and can be tested without real NICs.
+type Interface = (Ipv4Addr, Ipv4Addr);
+
+/// Enumerate IPv4 interface addresses that could plausibly reach a speaker.
+///
+/// Loopback is excluded because a speaker cannot reach it, link-local
+/// (169.254.0.0/16) because it indicates a failed DHCP lease, and unspecified
+/// because it is not an address.
+///
+/// This mirrors `usable_interfaces()` / `is_usable_ipv4()` in
+/// `sonos-discovery/src/ssdp.rs`. The ~15 lines are duplicated deliberately:
+/// `callback-server` sits *below* `sonos-discovery` in the dependency graph, so
+/// importing the helper from there would invert the layering for the sake of a
+/// filter predicate.
+fn usable_interfaces() -> Vec<Interface> {
+    let addrs = match if_addrs::get_if_addrs() {
+        Ok(addrs) => addrs,
+        Err(e) => {
+            error!(error = %e, "Failed to enumerate network interfaces");
+            return Vec::new();
+        }
+    };
+
+    let mut interfaces: Vec<Interface> = addrs
+        .into_iter()
+        .filter_map(|iface| match iface.addr {
+            IfAddr::V4(v4) if is_usable_ipv4(&v4.ip) => Some((v4.ip, v4.netmask)),
+            _ => None,
+        })
+        .collect();
+
+    interfaces.sort();
+    interfaces.dedup();
+    interfaces
+}
+
+/// Whether an IPv4 address belongs to an interface that could reach a speaker.
+fn is_usable_ipv4(addr: &Ipv4Addr) -> bool {
+    !addr.is_loopback() && !addr.is_link_local() && !addr.is_unspecified()
+}
+
+/// Prefix length of a netmask, used only to rank specificity.
+fn prefix_len(netmask: Ipv4Addr) -> u32 {
+    u32::from_be_bytes(netmask.octets()).count_ones()
+}
+
+/// Whether `target` falls inside the subnet described by `(addr, netmask)`.
+///
+/// The interface's *actual* netmask is used. Assuming /24 would be wrong on this
+/// project's own test network, which is a single /22 (`192.168.4.0/22`): a speaker
+/// at `192.168.5.19` is directly reachable from an interface at `192.168.4.32`,
+/// but a /24 comparison would call it off-net.
+fn contains(addr: Ipv4Addr, netmask: Ipv4Addr, target: Ipv4Addr) -> bool {
+    let mask = u32::from_be_bytes(netmask.octets());
+    (u32::from_be_bytes(addr.octets()) & mask) == (u32::from_be_bytes(target.octets()) & mask)
+}
+
+/// Pick the local address a speaker at `target` would see us on.
+///
+/// Selects the interface whose subnet actually contains `target`, most specific
+/// prefix first. Returns `None` when no interface is on the target's subnet, which
+/// is the honest answer: we have no address that speaker can reach directly.
+///
+/// A pure function over `(addr, netmask)` pairs so the /22 and VPN cases are
+/// provable offline.
+fn select_interface(interfaces: &[Interface], target: Ipv4Addr) -> Option<Ipv4Addr> {
+    interfaces
+        .iter()
+        .filter(|(addr, netmask)| contains(*addr, *netmask, target))
+        .max_by_key(|(_, netmask)| prefix_len(*netmask))
+        .map(|(addr, _)| *addr)
+}
+
+/// Pick a local address when no target speaker is known yet.
+///
+/// The callback server is constructed before any speaker is registered, so there
+/// is no target to match against; this is the target-less fallback that
+/// [`CallbackServer::base_url`] is built from.
+///
+/// Preference order — RFC 1918 private, then anything else, then CGNAT
+/// (100.64.0.0/10) last. CGNAT is deprioritised because that is where VPN tunnel
+/// interfaces (e.g. Tailscale) live, and a tunnel address is exactly what the old
+/// route-to-8.8.8.8 probe used to return: a plausible-looking address that no
+/// speaker on the LAN can reach. Ties break on address value so the choice is
+/// deterministic across runs.
+fn preferred_local_ip(interfaces: &[Interface]) -> Option<Ipv4Addr> {
+    interfaces
+        .iter()
+        .min_by_key(|(addr, _)| {
+            let class = if is_cgnat(addr) {
+                2
+            } else if addr.is_private() {
+                0
+            } else {
+                1
+            };
+            (class, u32::from_be_bytes(addr.octets()))
+        })
+        .map(|(addr, _)| *addr)
+}
+
+/// Whether an address is in the carrier-grade NAT range (100.64.0.0/10).
+fn is_cgnat(addr: &Ipv4Addr) -> bool {
+    let [a, b, ..] = addr.octets();
+    a == 100 && (64..128).contains(&b)
 }
 
 /// HTTP callback server for receiving UPnP event notifications.
@@ -137,7 +248,7 @@ impl CallbackServer {
             )
         })?;
 
-        // Detect local IP address
+        // Detect the local IP address speakers should call back to.
         let local_ip = Self::detect_local_ip()
             .ok_or_else(|| "Failed to detect local IP address".to_string())?;
 
@@ -263,17 +374,27 @@ impl CallbackServer {
         TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), port)).is_ok()
     }
 
-    /// Detect the local IP address for callback URLs.
+    /// Detect the local IP address to advertise in callback URLs.
     ///
-    /// This uses a UDP socket connection to determine the local IP address
-    /// that would be used for outbound connections. No data is actually sent.
-    fn detect_local_ip() -> Option<IpAddr> {
-        // Try to connect to a public IP to determine our local IP
-        // We don't actually send data, just use the socket to determine routing
-        let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
-        socket.connect("8.8.8.8:80").ok()?;
-        let local_addr = socket.local_addr().ok()?;
-        Some(local_addr.ip())
+    /// Enumerates usable IPv4 interfaces and picks one via [`preferred_local_ip`].
+    ///
+    /// This replaces a "connect a UDP socket to 8.8.8.8 and read back the local
+    /// address" probe, which reported whichever interface won the *default route*.
+    /// With a VPN up that is the tunnel, so the callback URL advertised a tunnel
+    /// address no speaker could reach — every event was then silently lost and
+    /// misreported as a firewall block.
+    fn detect_local_ip() -> Option<Ipv4Addr> {
+        preferred_local_ip(&usable_interfaces())
+    }
+
+    /// The local address a speaker at `speaker_ip` would see us on, if any.
+    ///
+    /// Selects the interface whose subnet actually contains `speaker_ip`, using
+    /// that interface's real netmask. Exposed so callers can tell whether
+    /// [`Self::base_url`] is genuinely reachable from a given speaker; see the
+    /// single-`base_url` limitation in `docs/specs/callback-server.md` §14.1.
+    pub fn local_ip_for_speaker(speaker_ip: Ipv4Addr) -> Option<Ipv4Addr> {
+        select_interface(&usable_interfaces(), speaker_ip)
     }
 
     /// Start the HTTP server on the given port.
@@ -481,12 +602,29 @@ mod tests {
         drop(_listener);
     }
 
+    /// A port range the OS just told us is free.
+    ///
+    /// Tests used to hardcode 50000-50100. Two concurrent `cargo test --workspace`
+    /// runs then raced for the same ports and one failed with "Address already in
+    /// use" — separate `CARGO_TARGET_DIR`s do not help, because the contended
+    /// resource is the host's port space. Asking the OS for an ephemeral port and
+    /// releasing it narrows the race to the microseconds between drop and rebind.
+    fn free_port_range() -> (u16, u16) {
+        let listener = TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        (port, port)
+    }
+
     #[test]
     fn test_find_available_port() {
-        // Should find a port in a reasonable range
-        let port = CallbackServer::find_available_port(50000, 50100);
-        assert!(port.is_some());
-        assert!(port.unwrap() >= 50000 && port.unwrap() <= 50100);
+        // A range whose only port is held is exhausted; the same range is usable
+        // once the holder releases it.
+        let listener = TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert_eq!(CallbackServer::find_available_port(port, port), None);
+        drop(listener);
+        assert_eq!(CallbackServer::find_available_port(port, port), Some(port));
     }
 
     #[test]
@@ -495,9 +633,121 @@ mod tests {
         assert!(ip.is_some());
 
         // Should not be localhost
-        if let Some(IpAddr::V4(addr)) = ip {
+        if let Some(addr) = ip {
             assert_ne!(addr, Ipv4Addr::new(127, 0, 0, 1));
         }
+    }
+
+    /// The real network this SDK is developed against is a single **/22**
+    /// (`192.168.4.0/22`, netmask `255.255.252.0`), not two /24s: speakers sit on
+    /// both `192.168.4.x` and `192.168.5.x` and are all directly reachable from
+    /// the one interface at `192.168.4.32`.
+    ///
+    /// An implementation that assumed /24 would decide `192.168.5.19` is off-net
+    /// and either refuse to subscribe or advertise a wrong callback address. This
+    /// test fails under such an implementation, which is the point of it.
+    #[test]
+    fn test_selects_interface_across_22_subnet() {
+        let lan = (
+            Ipv4Addr::new(192, 168, 4, 32),
+            Ipv4Addr::new(255, 255, 252, 0),
+        );
+
+        // A speaker in the *upper* half of the /22, outside a naive /24 read.
+        assert_eq!(
+            select_interface(&[lan], Ipv4Addr::new(192, 168, 5, 19)),
+            Some(Ipv4Addr::new(192, 168, 4, 32))
+        );
+        // And one in the same /24, which both readings get right.
+        assert_eq!(
+            select_interface(&[lan], Ipv4Addr::new(192, 168, 4, 20)),
+            Some(Ipv4Addr::new(192, 168, 4, 32))
+        );
+        // Just past the /22 boundary is genuinely off-net.
+        assert_eq!(
+            select_interface(&[lan], Ipv4Addr::new(192, 168, 8, 1)),
+            None
+        );
+    }
+
+    #[test]
+    fn test_selects_interface_on_target_subnet() {
+        let interfaces = [
+            (Ipv4Addr::new(10, 0, 0, 5), Ipv4Addr::new(255, 255, 255, 0)),
+            (
+                Ipv4Addr::new(192, 168, 4, 32),
+                Ipv4Addr::new(255, 255, 252, 0),
+            ),
+            (
+                Ipv4Addr::new(172, 16, 3, 9),
+                Ipv4Addr::new(255, 255, 255, 0),
+            ),
+        ];
+
+        // Each target picks the interface sharing its subnet, not merely the first.
+        assert_eq!(
+            select_interface(&interfaces, Ipv4Addr::new(192, 168, 5, 19)),
+            Some(Ipv4Addr::new(192, 168, 4, 32))
+        );
+        assert_eq!(
+            select_interface(&interfaces, Ipv4Addr::new(10, 0, 0, 200)),
+            Some(Ipv4Addr::new(10, 0, 0, 5))
+        );
+        // Overlapping subnets resolve to the more specific prefix.
+        let overlapping = [
+            (
+                Ipv4Addr::new(192, 168, 4, 32),
+                Ipv4Addr::new(255, 255, 0, 0),
+            ),
+            (
+                Ipv4Addr::new(192, 168, 5, 7),
+                Ipv4Addr::new(255, 255, 255, 0),
+            ),
+        ];
+        assert_eq!(
+            select_interface(&overlapping, Ipv4Addr::new(192, 168, 5, 19)),
+            Some(Ipv4Addr::new(192, 168, 5, 7))
+        );
+    }
+
+    /// A live Tailscale/VPN tunnel is what made the old route-to-8.8.8.8 probe
+    /// dangerous: the tunnel wins the default route, so the callback URL advertised
+    /// a CGNAT address unreachable from the LAN and every event vanished.
+    #[test]
+    fn test_tunnel_interface_not_chosen_for_lan_target() {
+        let interfaces = [
+            // Tailscale CGNAT /32 — sorts first numerically, so ordering alone
+            // would pick it.
+            (
+                Ipv4Addr::new(100, 78, 222, 31),
+                Ipv4Addr::new(255, 255, 255, 255),
+            ),
+            (
+                Ipv4Addr::new(192, 168, 4, 32),
+                Ipv4Addr::new(255, 255, 252, 0),
+            ),
+        ];
+
+        // Subnet containment rules the tunnel out for a LAN speaker.
+        assert_eq!(
+            select_interface(&interfaces, Ipv4Addr::new(192, 168, 5, 19)),
+            Some(Ipv4Addr::new(192, 168, 4, 32))
+        );
+        // And the target-less fallback deprioritises CGNAT too, since base_url is
+        // built before any speaker is known.
+        assert_eq!(
+            preferred_local_ip(&interfaces),
+            Some(Ipv4Addr::new(192, 168, 4, 32))
+        );
+    }
+
+    #[test]
+    fn test_unusable_addresses_are_filtered() {
+        assert!(is_usable_ipv4(&Ipv4Addr::new(192, 168, 4, 32)));
+        assert!(!is_usable_ipv4(&Ipv4Addr::LOCALHOST));
+        assert!(!is_usable_ipv4(&Ipv4Addr::UNSPECIFIED));
+        // Link-local means DHCP failed; it cannot reach a speaker.
+        assert!(!is_usable_ipv4(&Ipv4Addr::new(169, 254, 1, 1)));
     }
 
     #[test]
@@ -573,12 +823,15 @@ mod tests {
     async fn test_callback_server_creation() {
         let (tx, _rx) = mpsc::unbounded_channel();
 
-        let server = CallbackServer::new((50000, 50100), tx).await;
+        let range = free_port_range();
+        let server = CallbackServer::new(range, tx).await;
         assert!(server.is_ok());
 
         let server = server.unwrap();
-        assert!(server.port() >= 50000 && server.port() <= 50100);
+        assert_eq!(server.port(), range.0);
         assert!(server.base_url().contains(&server.port().to_string()));
+        // The advertised host is a real interface address, not a route probe result.
+        assert!(server.base_url().starts_with("http://"));
 
         // Cleanup
         server.shutdown().await.unwrap();
@@ -587,7 +840,7 @@ mod tests {
     #[tokio::test]
     async fn test_callback_server_register_unregister() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let server = CallbackServer::new((51000, 51100), tx).await.unwrap();
+        let server = CallbackServer::new(free_port_range(), tx).await.unwrap();
 
         let sub_id = "test-sub-123".to_string();
 

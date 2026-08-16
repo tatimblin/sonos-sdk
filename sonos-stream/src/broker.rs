@@ -4,7 +4,7 @@
 //! the primary user interface for the sonos-stream crate. It coordinates subscription
 //! management, event processing, polling, and firewall detection.
 
-use std::net::{IpAddr, Ipv4Addr, UdpSocket};
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -116,19 +116,38 @@ pub struct EventBroker {
     polling_request_receiver: Option<mpsc::UnboundedReceiver<PollingRequest>>,
 }
 
-/// Get the local IP address that can be reached by devices on the network
-fn get_local_ip() -> Result<Ipv4Addr, std::io::Error> {
-    // Create a UDP socket and connect to a remote address to determine the local interface
-    // This doesn't actually send data, just determines which interface would be used
-    let socket = UdpSocket::bind("0.0.0.0:0")?;
-    socket.connect("8.8.8.8:53")?; // Connect to Google DNS
+/// The callback URL handed to every UPnP SUBSCRIBE.
+///
+/// Reads the callback server's own `base_url()` verbatim. It used to run a second,
+/// independent route-to-8.8.8.8 probe and rebuild `http://{ip}:{port}` by hand —
+/// duplicating a derivation `CallbackServer` had already done. Two copies is what
+/// let them drift, and a wrong one means speakers are told an address they cannot
+/// reach, so every event is silently lost and then misreported as a firewall
+/// block. One authoritative source.
+///
+/// A named function so that single-source property is directly testable.
+fn subscription_callback_url(callback_server: &CallbackServer) -> String {
+    callback_server.base_url().to_string()
+}
 
-    match socket.local_addr()? {
-        std::net::SocketAddr::V4(addr) => Ok(*addr.ip()),
-        std::net::SocketAddr::V6(_) => {
-            // Fallback to IPv4 localhost if we got IPv6
-            Ok(Ipv4Addr::new(127, 0, 0, 1))
-        }
+/// Warn when a speaker is on no subnet we hold an address on.
+///
+/// The callback URL is a single `base_url`, chosen before any speaker is known, so
+/// a speaker off that subnet cannot reach it and will fall back to polling. This
+/// uses each interface's real netmask: on this project's own network — one flat
+/// `192.168.4.0/22` — a `192.168.5.x` speaker *is* reachable from `192.168.4.32`,
+/// and a /24 assumption would raise a false warning for half the household.
+fn warn_if_speaker_unreachable(callback_server: &CallbackServer, speaker_ip: IpAddr) {
+    let IpAddr::V4(v4) = speaker_ip else {
+        return;
+    };
+    if CallbackServer::local_ip_for_speaker(v4).is_none() {
+        warn!(
+            speaker_ip = %speaker_ip,
+            callback_url = %callback_server.base_url(),
+            "Speaker is not on any local subnet; UPnP events will not reach the \
+             callback server and this device will fall back to polling"
+        );
     }
 }
 
@@ -178,14 +197,10 @@ impl EventBroker {
         // Get the event router from the callback server for subscription registration
         let event_router = Arc::clone(callback_server.router());
 
-        // Get the actual network IP address so Sonos devices can reach the callback server
-        let local_ip = get_local_ip().map_err(|e| {
-            BrokerError::Configuration(format!("Failed to determine local IP address: {e}"))
-        })?;
-        let server_url = format!("http://{}:{}", local_ip, callback_server.port());
-
-        // Initialize subscription manager with correct callback URL
-        let subscription_manager = Arc::new(SubscriptionManager::new(server_url.clone()));
+        // Initialize subscription manager with the callback server's own URL.
+        let subscription_manager = Arc::new(SubscriptionManager::new(subscription_callback_url(
+            &callback_server,
+        )));
 
         // Initialize firewall detection coordinator if enabled
         let firewall_coordinator = if config.enable_proactive_firewall_detection {
@@ -580,6 +595,10 @@ impl EventBroker {
 
             // Check if this is the first subscription for this device
             let is_first_for_device = self.is_first_subscription_for_device(speaker_ip).await;
+
+            if is_first_for_device {
+                warn_if_speaker_unreachable(&self._callback_server, speaker_ip);
+            }
 
             // Get or trigger firewall detection for this device
             firewall_status = if let Some(coordinator) = &self.firewall_coordinator {
@@ -987,6 +1006,32 @@ mod tests {
         assert_eq!(result.firewall_status, FirewallStatus::Accessible);
         assert_eq!(result.polling_reason, Some(PollingReason::FirewallBlocked));
         assert!(!result.was_duplicate);
+    }
+
+    /// The broker used to derive its own callback URL with a second
+    /// route-to-8.8.8.8 probe plus a hand-built `http://{ip}:{port}`, duplicating
+    /// what `CallbackServer` had already computed. Asserting byte equality with
+    /// `base_url()` pins the URL to one authoritative source, so the two cannot
+    /// drift again.
+    ///
+    /// Binds a real callback server on an OS-assigned port; no speaker is contacted.
+    #[tokio::test]
+    async fn test_base_url_is_reused_not_rebuilt() {
+        let port = {
+            let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+            listener.local_addr().unwrap().port()
+        };
+
+        let (upnp_tx, _upnp_rx) = mpsc::unbounded_channel();
+        let server = CallbackServer::new((port, port), upnp_tx)
+            .await
+            .expect("callback server should bind an OS-assigned port");
+
+        assert_eq!(subscription_callback_url(&server), server.base_url());
+        // Consumed verbatim, not re-derived: no separate IP probe can disagree.
+        assert!(subscription_callback_url(&server).ends_with(&format!(":{port}")));
+
+        server.shutdown().await.unwrap();
     }
 
     /// The unregistration path used to tear down its own state but never call

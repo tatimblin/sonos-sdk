@@ -253,18 +253,20 @@ pub struct FirewallDetectionCoordinator {
 ```
 ┌──────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
 │   new()      │────▶│ find_port()  │────▶│ detect_ip()  │────▶│ start_server │
-│   Entry      │     │ 3400-3500    │     │ UDP trick    │     │ warp::serve  │
+│   Entry      │     │ 3400-3500    │     │ enumerate    │     │ warp::serve  │
 └──────────────┘     └──────────────┘     └──────────────┘     └──────────────┘
        │                    │                    │                    │
        ▼                    ▼                    ▼                    ▼
   new()            find_available_port  detect_local_ip     start_server
+                                        (usable_interfaces
+                                         + preferred_local_ip)
 ```
 
 **Step-by-step**:
 
 1. **Port Discovery** (`find_available_port`/`is_port_available`): Iterates through port range, attempts TCP bind to find available port.
 
-2. **IP Detection** (`detect_local_ip`): Creates UDP socket, "connects" to 8.8.8.8:80 (no data sent), reads local address from socket. This determines which interface would be used for outbound traffic.
+2. **IP Detection** (`detect_local_ip`): Enumerates IPv4 interfaces via `if-addrs` and picks one with `preferred_local_ip`. See §4.5 for why this is not a route probe and why the interface netmask matters.
 
 3. **URL Construction** (`new`): Combines IP and port into `http://ip:port` format.
 
@@ -513,6 +515,67 @@ fn validate_upnp_headers(
 - NT/NTS are validated only if both are present (some devices omit them)
 - Invalid NT/NTS values result in 400 Bad Request
 
+### 4.5 Feature: Per-Interface Callback Address Selection
+
+#### What
+
+The advertised callback address is chosen by enumerating the host's IPv4
+interfaces and, where a target speaker is known, selecting the interface whose
+subnet **actually contains** that speaker — using the interface's real netmask.
+
+| Function | Role |
+|----------|------|
+| `usable_interfaces()` | Enumerate IPv4 interfaces, excluding loopback, link-local, unspecified |
+| `select_interface(&[(addr, netmask)], target)` | Pure: pick the interface containing `target`, most-specific prefix first |
+| `preferred_local_ip(&[(addr, netmask)])` | Target-less fallback used to build `base_url`; deprioritises CGNAT |
+| `CallbackServer::local_ip_for_speaker(ip)` | Public wrapper over `select_interface` for reachability diagnostics |
+
+#### Why
+
+`detect_local_ip` previously bound a UDP socket, "connected" it to `8.8.8.8:80`
+(sending nothing) and read back the local address. That reports whichever
+interface wins the **default route** — which is not the interface that reaches a
+LAN speaker. With a VPN up the default route is the tunnel, so the callback URL
+advertised a tunnel address no speaker could reach. Speakers accepted the
+SUBSCRIBE and then had nowhere to deliver to, so **every event was silently lost
+and the firewall detector attributed it to a firewall**, which is a plausible but
+wrong diagnosis that sends the device to polling forever.
+
+The same probe existed a second time in `sonos-stream::broker`, which rebuilt
+`http://{ip}:{port}` by hand rather than reading `base_url()`. Two independent
+copies of one derivation is what allowed them to disagree; the broker now consumes
+`base_url()` verbatim (see `docs/specs/sonos-stream.md` §3.1).
+
+PR #80 fixed the same class of bug for *discovery* by binding SSDP per-interface
+instead of `0.0.0.0`. The callback URL was left on the old pattern, which made
+things strictly worse: discovery now finds speakers that events then cannot reach.
+
+#### How: the netmask is load-bearing
+
+Subnet containment uses each interface's actual netmask, converted to a prefix
+length only for ranking specificity. **Assuming /24 is wrong.** The network this
+SDK is developed against is a single **/22**:
+
+| Interface | Address | Netmask | Range |
+|-----------|---------|---------|-------|
+| `en1` | `192.168.4.32` | `255.255.252.0` (`0xfffffc00`) | `192.168.4.0`-`192.168.7.255` |
+
+Speakers sit on both `192.168.4.x` and `192.168.5.x` and are all directly
+reachable from that one interface. A /24 comparison would conclude the
+`192.168.5.x` speakers are off-net and either refuse to subscribe or advertise a
+wrong address — breaking half the household. `test_selects_interface_across_22_subnet`
+encodes exactly this case and fails under a /24 implementation.
+
+#### Trade-offs
+
+| Decision | Alternative Considered | Why We Chose This |
+|----------|----------------------|-------------------|
+| Duplicate ~15 lines of interface filtering from `sonos-discovery/src/ssdp.rs` | Export `usable_interfaces()` from `sonos-discovery` and depend on it | `callback-server` sits *below* `sonos-discovery` in the dependency graph; importing would invert the layering for the sake of a filter predicate. Duplicating a filter is the cheaper coupling. |
+| Real netmask from `if_addrs::Ifv4Addr::netmask` | Assume /24 | /24 is factually wrong on the project's own network (above) |
+| CGNAT (`100.64.0.0/10`) ranked last in the target-less fallback | Treat all interfaces equally | CGNAT is where VPN tunnels live, and a tunnel address is precisely the failure the route probe produced |
+| Pure `select_interface` over `(addr, netmask)` pairs | Operate on `if_addrs::Interface` directly | Makes the /22 and VPN cases provable offline with synthetic data — no real NICs, no packets |
+| Most-specific prefix wins on overlap | First match | Matches longest-prefix routing semantics |
+
 ---
 
 ## 5. Data Model
@@ -602,6 +665,7 @@ pub struct DeviceFirewallState {
 
 | Crate | Purpose | Why This Dependency |
 |-------|---------|---------------------|
+| `if-addrs` | IPv4 interface enumeration with netmasks | Callback address selection needs each interface's real netmask (§4.5); already used by `sonos-discovery` for per-interface SSDP |
 | `tokio` | Async runtime | Standard async runtime in Rust ecosystem; required for async HTTP server |
 | `warp` | HTTP server framework | Lightweight, filter-based API that composes well; excellent for simple REST endpoints |
 | `bytes` | Byte buffer handling | Required by warp for efficient body handling |
@@ -724,6 +788,10 @@ The callback server emphasizes integration tests because the core value is HTTP 
 - [x] Port availability detection
 - [x] Port range scanning
 - [x] Local IP detection
+- [x] Subnet containment across a **/22** (`test_selects_interface_across_22_subnet`) — the load-bearing case; fails under a /24 assumption (§4.5)
+- [x] Interface selection among several candidates, most-specific prefix on overlap (`test_selects_interface_on_target_subnet`)
+- [x] CGNAT/VPN tunnel not chosen for a LAN target, in both `select_interface` and the target-less fallback (`test_tunnel_interface_not_chosen_for_lan_target`)
+- [x] Loopback / link-local / unspecified filtered out (`test_unusable_addresses_are_filtered`)
 - [x] UPnP header validation
 - [x] UTF-8-safe trace preview (`test_event_xml_preview_handles_multibyte_boundary`) — asserts the previously-panicking 198-ASCII + multibyte case
 - [x] Event router registration and routing
@@ -805,6 +873,19 @@ async fn test_callback_server_end_to_end() {
 | HTTP client | Real reqwest client | `tests/integration_tests.rs` |
 | Sonos device | Simulated via reqwest NOTIFY | `tests/integration_tests.rs` |
 | Network | Real localhost network | No mocking |
+| Network interfaces | Synthetic `(addr, netmask)` pairs passed to the pure `select_interface` / `preferred_local_ip` | `src/server.rs` tests — no real NICs, no packets |
+
+**Port allocation in tests**: tests must not hardcode a port range. The
+`free_port_range()` helper (present in both `src/server.rs` and
+`tests/integration_tests.rs`) binds `0.0.0.0:0`, records the OS-assigned port and
+releases it.
+
+Hardcoded ranges were only disjoint *within* one test binary. Two concurrent
+`cargo test --workspace` runs both found the low end of each range free and raced
+to bind it, failing with "Address already in use". Separate `CARGO_TARGET_DIR`s do
+not help, because the contended resource is the host's port space, not the build
+directory. Verified with four simultaneous `cargo test` invocations: zero
+collisions.
 
 ---
 
@@ -1016,7 +1097,8 @@ For firewall detection (`FirewallDetectionConfig`):
 | API | Stability | Notes |
 |-----|-----------|-------|
 | `CallbackServer::new()` | Stable | Constructor signature established |
-| `CallbackServer::base_url()` | Stable | Core functionality |
+| `CallbackServer::base_url()` | Stable | Core functionality. The single authoritative source for the callback URL — consumers must read it, never rebuild `http://{ip}:{port}` themselves |
+| `CallbackServer::local_ip_for_speaker()` | Evolving | Reachability diagnostics; the hook for per-subscription URLs (§14.1) |
 | `CallbackServer::router()` | Stable | Router access pattern established |
 | `EventRouter::register/unregister` | Stable | Core functionality |
 | `EventRouter::route_event` | Internal | Called by server, not typically by consumers |
@@ -1043,7 +1125,8 @@ For firewall detection (`FirewallDetectionConfig`):
 
 | Limitation | Impact | Workaround | Planned Fix |
 |------------|--------|------------|-------------|
-| Single IP detection method | May fail on complex network setups | Manual callback URL override | Add fallback detection methods |
+| **One `base_url` cannot serve speakers on genuinely different subnets** | A household split across two subnets gets a callback URL only one half can reach; the other half silently falls back to polling | None; polling still delivers state, just less promptly | **Named follow-up**: per-subscription callback URL selection. `SubscriptionManager::callback_url` is a single `String`, so this needs a signature change through `sonos-stream`. `select_interface` and `CallbackServer::local_ip_for_speaker` are the pieces that follow-up would consume. Moot on the current dev network (one flat /22), but the SDK does **not** support multi-subnet households today. |
+| Interface selection is address-based, not route-table-based | A speaker reachable only via a gateway (different subnet, routed) is reported unreachable | Polling fallback | Consult the routing table rather than interface subnets |
 | Unbounded output channel | Memory growth under sustained load | Acceptable for UPnP event rates, and bounded upstream by the body-size and pending-buffer caps | Consider bounded with overflow policy |
 | Chunked NOTIFY bodies rejected (411) | A device omitting `Content-Length` could not deliver events | None needed; real Sonos devices always send it | Revisit only if a device is found that omits it |
 
@@ -1097,4 +1180,5 @@ For firewall detection (`FirewallDetectionConfig`):
 | Date | Author | Change |
 |------|--------|--------|
 | 2025-01-14 | Claude | Initial specification created |
+| 2026-08-15 | Claude | Replaced route-to-8.8.8.8 IP detection with per-interface selection using each interface's real netmask (§4.5), added `if-addrs` (§6.1), documented the single-`base_url` multi-subnet limitation as a named follow-up (§14.1), and required OS-assigned ports in tests (§8.4). |
 | 2026-08-15 | Claude | Hardened the unauthenticated NOTIFY endpoint: added the 64 KiB body limit (§10.4), the 256-entry pending buffer cap with per-route TTL sweep (§10.5), and UTF-8-safe trace previews (§10.6). Expanded the threat model to state that unbounded buffers are the primary risk given UPnP has no authentication. |
