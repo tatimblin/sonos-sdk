@@ -35,14 +35,27 @@ const MAX_PENDING_EVENTS: usize = 256;
 /// Generic notification payload for UPnP event notifications.
 ///
 /// This represents an unparsed UPnP event notification that has been received
-/// via HTTP callback. It contains only the subscription ID and raw XML body,
-/// with no device-specific context.
+/// via HTTP callback. It contains only the subscription ID, raw XML body, and
+/// when the notification arrived — no device-specific context.
 #[derive(Debug, Clone)]
 pub struct NotificationPayload {
     /// The subscription ID from the UPnP SID header
     pub subscription_id: String,
     /// The raw XML event body
     pub event_xml: String,
+    /// When this notification reached the router, on the monotonic clock.
+    ///
+    /// This is the earliest instant at which the process can be said to have
+    /// *observed* the values in `event_xml`, and downstream consumers order
+    /// writes by it. It is deliberately `Instant` and not `SystemTime`: an
+    /// ordering built on the wall clock would reverse itself whenever NTP
+    /// stepped the clock backwards.
+    ///
+    /// For an event that arrived before its SID was registered, this is the
+    /// original arrival instant, *not* the replay instant — a notification held
+    /// in the pending buffer for seconds must not be treated as freshly
+    /// observed when it is finally replayed.
+    pub received_at: Instant,
 }
 
 /// Internal state protected by a single lock to eliminate TOCTOU gaps.
@@ -65,7 +78,12 @@ impl RouterState {
     }
 
     /// Buffer an event, enforcing `MAX_PENDING_EVENTS` by dropping the oldest.
-    fn push_pending(&mut self, subscription_id: String, event_xml: String) {
+    ///
+    /// `received_at` is the caller's arrival instant, carried through so that a
+    /// replayed event is stamped with when it arrived rather than when it was
+    /// replayed. It doubles as the TTL/eviction key, which is what it already
+    /// was.
+    fn push_pending(&mut self, subscription_id: String, event_xml: String, received_at: Instant) {
         self.sweep_stale();
 
         while self.pending.len() >= MAX_PENDING_EVENTS {
@@ -90,8 +108,7 @@ impl RouterState {
             }
         }
 
-        self.pending
-            .push((subscription_id, event_xml, Instant::now()));
+        self.pending.push((subscription_id, event_xml, received_at));
     }
 }
 
@@ -152,11 +169,15 @@ impl EventRouter {
         while i < state.pending.len() {
             let (ref sid, _, buffered_at) = state.pending[i];
             if sid == &subscription_id {
-                let (_, xml, _) = state.pending.swap_remove(i);
+                let (_, xml, arrived_at) = state.pending.swap_remove(i);
                 debug!(sid = %subscription_id, "Replayed buffered event");
                 let payload = NotificationPayload {
                     subscription_id: subscription_id.clone(),
                     event_xml: xml,
+                    // The buffer entry's instant *is* the arrival instant, so a
+                    // replayed event keeps its original observation time rather
+                    // than looking as though it just arrived.
+                    received_at: arrived_at,
                 };
                 let _ = self.event_sender.send(payload);
                 // Don't increment i — swap_remove moved the last element here
@@ -190,11 +211,17 @@ impl EventRouter {
     /// of `MAX_PENDING_EVENTS`, dropping the oldest entry on overflow. Without
     /// this, unrecognised SIDs could grow the buffer without bound.
     pub async fn route_event(&self, subscription_id: String, event_xml: String) {
+        // Taken before acquiring the lock: waiting on a contended write lock is
+        // not part of the observation, and stamping afterwards would push the
+        // event's apparent observation time later than it really was.
+        let received_at = Instant::now();
+
         let mut state = self.state.write().await;
         if state.subscriptions.contains(&subscription_id) {
             let payload = NotificationPayload {
                 subscription_id,
                 event_xml,
+                received_at,
             };
             let _ = self.event_sender.send(payload);
         } else {
@@ -203,7 +230,7 @@ impl EventRouter {
             // here (not only in register()) is what bounds the buffer: register()
             // is called on genuine new subscriptions only, so events for random
             // SIDs would otherwise never trigger cleanup.
-            state.push_pending(subscription_id, event_xml);
+            state.push_pending(subscription_id, event_xml, received_at);
         }
     }
 }
@@ -230,6 +257,38 @@ mod tests {
         let payload = rx.recv().await.unwrap();
         assert_eq!(payload.subscription_id, sub_id);
         assert_eq!(payload.event_xml, event_xml);
+    }
+
+    #[tokio::test]
+    async fn test_replayed_event_keeps_original_arrival_instant() {
+        // An event that arrives before its SID is registered is buffered and
+        // replayed later. Downstream orders writes by `received_at`, so the
+        // replayed payload must carry when it *arrived*, not when it was
+        // replayed — otherwise a notification held in the buffer would come out
+        // looking freshly observed and could displace a newer local write.
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let router = EventRouter::new(tx);
+
+        let sub_id = "test-sub-replay".to_string();
+
+        // Arrives before registration, so it is buffered.
+        let before = Instant::now();
+        router
+            .route_event(sub_id.clone(), "<event>buffered</event>".to_string())
+            .await;
+        assert!(rx.try_recv().is_err(), "precondition: event was buffered");
+
+        // Time passes, then registration replays it.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let after_delay = Instant::now();
+        router.register(sub_id.clone()).await;
+
+        let payload = rx.try_recv().expect("buffered event should be replayed");
+        assert_eq!(payload.subscription_id, sub_id);
+        assert!(
+            payload.received_at >= before && payload.received_at < after_delay,
+            "replayed payload must keep its original arrival instant, not the replay instant"
+        );
     }
 
     #[tokio::test]

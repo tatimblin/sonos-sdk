@@ -4,6 +4,7 @@
 //! a simple delegation to the sonos-api EventProcessor.
 
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, trace, warn};
 
@@ -100,6 +101,7 @@ impl EventProcessor {
             pair,
             payload.subscription_id,
             &payload.event_xml,
+            payload.received_at,
         )
         .await
     }
@@ -112,12 +114,19 @@ impl EventProcessor {
     /// round-trip against a device. Everything that was historically broken, notably
     /// the `EventDetector::record_event` liveness report, is inside this function and
     /// is therefore reachable from unit tests.
+    ///
+    /// `received_at` is the callback server's arrival instant for this
+    /// notification. It is threaded through rather than re-taken here because
+    /// everything between arrival and this call — the SID lookup, the parse, the
+    /// channel hop — happens *after* the observation and must not be counted as
+    /// part of it.
     async fn process_notification_for_registration(
         &self,
         registration_id: RegistrationId,
         pair: &SpeakerServicePair,
         subscription_id: String,
         event_xml: &str,
+        received_at: Instant,
     ) -> EventProcessingResult<()> {
         // Report liveness to the event detector. This suppresses the false
         // "UPnP is dead" timeout and, if polling fallback is currently active for
@@ -144,13 +153,17 @@ impl EventProcessor {
         let event_data =
             self.convert_api_event_data(&pair.service, api_enriched_event.event_data)?;
 
-        // Create enriched event compatible with existing sonos-stream code
-        let enriched_event = EnrichedEvent::new(
+        // Create enriched event compatible with existing sonos-stream code.
+        // Stamped with the arrival instant, not "now": a NOTIFY that queued
+        // behind a slow parse or a busy runtime still describes the device as of
+        // when it landed.
+        let enriched_event = EnrichedEvent::observed_at(
             registration_id,
             pair.speaker_ip,
             pair.service,
             EventSource::UPnPNotification { subscription_id },
             event_data,
+            received_at,
         );
 
         // Send enriched event
@@ -555,6 +568,7 @@ mod tests {
                 &pair,
                 "uuid:sub-1".to_string(),
                 AVTRANSPORT_NOTIFY_XML,
+                Instant::now(),
             )
             .await
             .expect("notification should process");
@@ -573,6 +587,54 @@ mod tests {
             event.event_source,
             EventSource::UPnPNotification { .. }
         ));
+    }
+
+    /// The enriched event must carry the notification's *arrival* instant, not
+    /// the instant enrichment finished. Everything in between — the SID lookup,
+    /// the XML parse, the channel hop — is latency, and counting it as part of
+    /// the observation is what let a stale NOTIFY outrank a newer local write
+    /// downstream in `sonos-state`.
+    #[tokio::test]
+    async fn test_enriched_event_carries_arrival_instant_not_processing_instant() {
+        let (processor, detector, mut rx) = test_processor(Duration::from_secs(30));
+
+        let registration_id = RegistrationId::new(1);
+        // RFC 5737 TEST-NET-1.
+        let pair = SpeakerServicePair::new(
+            "192.0.2.100".parse().unwrap(),
+            sonos_api::Service::AVTransport,
+        );
+        detector
+            .register_subscription(registration_id, pair.clone())
+            .await;
+
+        // The notification arrives, then a delay stands in for the processing
+        // latency between arrival and enrichment.
+        let received_at = Instant::now();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let before_processing = Instant::now();
+
+        processor
+            .process_notification_for_registration(
+                registration_id,
+                &pair,
+                "uuid:sub-1".to_string(),
+                AVTRANSPORT_NOTIFY_XML,
+                received_at,
+            )
+            .await
+            .expect("notification should process");
+
+        let event = rx.try_recv().expect("enriched event should be emitted");
+        assert_eq!(
+            event.observed_at, received_at,
+            "observed_at must be the arrival instant threaded in from the callback \
+             server, not a fresh Instant::now() taken during enrichment"
+        );
+        assert!(
+            event.observed_at < before_processing,
+            "observed_at must precede the start of processing"
+        );
     }
 
     #[test]

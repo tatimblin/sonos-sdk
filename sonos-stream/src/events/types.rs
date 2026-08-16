@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::registry::RegistrationId;
 
@@ -37,15 +37,39 @@ pub struct EnrichedEvent {
     /// Source of this event (UPnP notification or polling)
     pub event_source: EventSource,
 
-    /// Timestamp when this event was processed
+    /// Wall-clock time at which this event was constructed.
+    ///
+    /// Suitable for display and logging. **Not** suitable for ordering: it can
+    /// step backwards when NTP corrects the clock. Use [`Self::observed_at`] to
+    /// order two events against each other.
     pub timestamp: SystemTime,
+
+    /// Monotonic instant at which the values in `event_data` were *observed*.
+    ///
+    /// This is what downstream write ordering keys on, and the two sources
+    /// define it differently on purpose:
+    ///
+    /// - A UPnP NOTIFY: when the notification arrived at the callback server.
+    ///   That is the earliest moment the process could have known these values,
+    ///   and it precedes parsing, channel hops, and worker scheduling.
+    /// - A poll: when the poll *request* was issued. A poll response describes
+    ///   the device as of the request, exactly like `fetch()`, so stamping it on
+    ///   arrival would let a slow poll displace a value observed later.
+    ///
+    /// It is an `Instant` rather than a `SystemTime` because it exists solely to
+    /// be compared, and only the monotonic clock makes comparison sound.
+    pub observed_at: Instant,
 
     /// The actual event data
     pub event_data: EventData,
 }
 
 impl EnrichedEvent {
-    /// Create a new enriched event
+    /// Create a new enriched event observed right now.
+    ///
+    /// Only correct when construction and observation coincide. A UPnP NOTIFY
+    /// (observed at the callback server) and a poll (observed when the request
+    /// went out) must use [`Self::observed_at`] instead.
     pub fn new(
         registration_id: RegistrationId,
         speaker_ip: IpAddr,
@@ -53,12 +77,36 @@ impl EnrichedEvent {
         event_source: EventSource,
         event_data: EventData,
     ) -> Self {
+        Self::observed_at(
+            registration_id,
+            speaker_ip,
+            service,
+            event_source,
+            event_data,
+            Instant::now(),
+        )
+    }
+
+    /// Create an enriched event whose values were observed at a known instant.
+    ///
+    /// `observed_at` must be the instant the *device state* was seen, not the
+    /// instant this struct is built — see the field docs on
+    /// [`Self::observed_at`].
+    pub fn observed_at(
+        registration_id: RegistrationId,
+        speaker_ip: IpAddr,
+        service: sonos_api::Service,
+        event_source: EventSource,
+        event_data: EventData,
+        observed_at: Instant,
+    ) -> Self {
         Self {
             registration_id,
             speaker_ip,
             service,
             event_source,
             timestamp: SystemTime::now(),
+            observed_at,
             event_data,
         }
     }

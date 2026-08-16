@@ -396,17 +396,18 @@ mod tests {
     use super::*;
     use crate::events::types::{AVTransportState, EventData, EventSource};
 
-    use std::time::SystemTime;
+    use std::time::{Instant, SystemTime};
 
     fn create_test_event(registration_id: RegistrationId) -> EnrichedEvent {
         EnrichedEvent {
             registration_id,
-            speaker_ip: "192.168.1.100".parse().unwrap(),
+            speaker_ip: "192.0.2.100".parse().unwrap(),
             service: sonos_api::Service::AVTransport,
             event_source: EventSource::UPnPNotification {
                 subscription_id: "test-sid".to_string(),
             },
             timestamp: SystemTime::now(),
+            observed_at: Instant::now(),
             event_data: EventData::AVTransport(AVTransportState {
                 transport_state: Some("PLAYING".to_string()),
                 transport_status: None,

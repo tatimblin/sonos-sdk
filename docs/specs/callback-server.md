@@ -177,6 +177,7 @@ into a TOCTOU gap between "is this SID registered?" and "buffer it".
 pub struct NotificationPayload {
     pub subscription_id: String,  // UPnP SID header value
     pub event_xml: String,        // Raw XML event body
+    pub received_at: Instant,     // Monotonic arrival instant
 }
 ```
 
@@ -185,6 +186,11 @@ pub struct NotificationPayload {
 **Invariants**:
 - `subscription_id` is never empty (validated by router before creation)
 - `event_xml` contains the raw HTTP body (may be malformed XML; validation is consumer responsibility)
+- `received_at` is the monotonic instant the notification arrived, taken before the router's own
+  lock. Consumers order state writes by it (see `sonos-state` spec §4.1a), so it is an `Instant`
+  and not a `SystemTime`: a wall-clock ordering would invert under NTP correction. A buffered
+  event replayed on late SID registration carries its **original** arrival instant, not the
+  replay instant
 
 #### `FirewallDetectionCoordinator`
 
@@ -593,11 +599,17 @@ pub struct NotificationPayload {
 
     /// The raw XML event body
     pub event_xml: String,
+
+    /// Monotonic instant the notification arrived; used downstream to order
+    /// state writes by observation time.
+    pub received_at: Instant,
 }
 ```
 
 **Lifecycle**:
-1. **Creation**: Created in `EventRouter::route_event()` when a valid event arrives
+1. **Creation**: Created in `EventRouter::route_event()` when a valid event arrives, or in
+   `EventRouter::register()` when a buffered event is replayed — in which case `received_at`
+   is carried over from the buffer entry rather than re-taken
 2. **Mutation**: Immutable after creation (all fields are `pub` but typically consumed without modification)
 3. **Destruction**: Dropped when consumer processes the event
 
