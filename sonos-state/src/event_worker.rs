@@ -3,7 +3,6 @@
 //! This module provides a background thread that consumes events from the
 //! SonosEventManager and applies them to the StateStore.
 
-use std::collections::HashSet;
 use std::net::IpAddr;
 use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
@@ -19,7 +18,7 @@ use sonos_api::ServiceScope;
 use crate::decoder::{decode_event, decode_topology_event, PropertyChange, TopologyChanges};
 use crate::model::SpeakerId;
 use crate::property::{GroupMembership, Property, Scope};
-use crate::state::{ChangeEvent, StateStore};
+use crate::state::{is_pair_watched, ChangeEvent, StateStore, WatchCounts};
 
 /// Spawns the state event worker thread
 ///
@@ -31,7 +30,7 @@ use crate::state::{ChangeEvent, StateStore};
 pub(crate) fn spawn_state_event_worker(
     event_manager: Arc<SonosEventManager>,
     store: Arc<RwLock<StateStore>>,
-    watched: Arc<RwLock<HashSet<(SpeakerId, &'static str)>>>,
+    watched: Arc<RwLock<WatchCounts>>,
     event_tx: mpsc::Sender<ChangeEvent>,
     ip_to_speaker: Arc<RwLock<std::collections::HashMap<IpAddr, SpeakerId>>>,
 ) -> JoinHandle<()> {
@@ -69,7 +68,7 @@ const PANIC_ESCALATION_INTERVAL: u64 = 10;
 fn run_event_loop<I>(
     events: I,
     store: &Arc<RwLock<StateStore>>,
-    watched: &Arc<RwLock<HashSet<(SpeakerId, &'static str)>>>,
+    watched: &Arc<RwLock<WatchCounts>>,
     event_tx: &mpsc::Sender<ChangeEvent>,
     ip_to_speaker: &Arc<RwLock<std::collections::HashMap<IpAddr, SpeakerId>>>,
 ) where
@@ -117,7 +116,7 @@ fn run_event_loop<I>(
 fn handle_event(
     event: &EnrichedEvent,
     store: &Arc<RwLock<StateStore>>,
-    watched: &Arc<RwLock<HashSet<(SpeakerId, &'static str)>>>,
+    watched: &Arc<RwLock<WatchCounts>>,
     event_tx: &mpsc::Sender<ChangeEvent>,
     ip_to_speaker: &Arc<RwLock<std::collections::HashMap<IpAddr, SpeakerId>>>,
 ) {
@@ -248,7 +247,7 @@ fn handle_event(
 /// not as "the household has no groups" — see the early return below.
 fn apply_topology_changes(
     store: &Arc<RwLock<StateStore>>,
-    watched: &Arc<RwLock<HashSet<(SpeakerId, &'static str)>>>,
+    watched: &Arc<RwLock<WatchCounts>>,
     event_tx: &mpsc::Sender<ChangeEvent>,
     ip_to_speaker: &Arc<RwLock<std::collections::HashMap<IpAddr, SpeakerId>>>,
     changes: TopologyChanges,
@@ -344,7 +343,7 @@ fn apply_topology_changes(
     let watched_set = watched.read();
 
     for (speaker_id, changed) in membership_changes {
-        if changed && watched_set.contains(&(speaker_id.clone(), GroupMembership::KEY)) {
+        if changed && is_pair_watched(&watched_set, &speaker_id, GroupMembership::KEY) {
             tracing::debug!(
                 "GroupMembership changed for {}, emitting event",
                 speaker_id.as_str()
@@ -385,7 +384,7 @@ fn resolve_group_members(store: &StateStore, speaker_id: &SpeakerId) -> Vec<Spea
 /// on the coordinator. Only emits ChangeEvents — no data is copied. Members
 /// read the coordinator's value at read time via `StateStore::get_resolved()`.
 fn notify_group_members(
-    watched: &Arc<RwLock<HashSet<(SpeakerId, &'static str)>>>,
+    watched: &Arc<RwLock<WatchCounts>>,
     event_tx: &mpsc::Sender<ChangeEvent>,
     members: &[SpeakerId],
     changes: &[PropertyChange],
@@ -395,7 +394,7 @@ fn notify_group_members(
         for change in changes {
             if change.scope() == Scope::Speaker {
                 let key = change.key();
-                if watched_set.contains(&(member_id.clone(), key)) {
+                if is_pair_watched(&watched_set, member_id, key) {
                     tracing::debug!(
                         "Notifying member {} of coordinator change for {}",
                         member_id.as_str(),
@@ -412,7 +411,7 @@ fn notify_group_members(
 /// Apply a single property change to the store
 fn apply_property_change(
     store: &Arc<RwLock<StateStore>>,
-    watched: &Arc<RwLock<HashSet<(SpeakerId, &'static str)>>>,
+    watched: &Arc<RwLock<WatchCounts>>,
     event_tx: &mpsc::Sender<ChangeEvent>,
     speaker_id: &SpeakerId,
     change: &PropertyChange,
@@ -426,7 +425,7 @@ fn apply_property_change(
     };
 
     if changed {
-        let is_watched = watched.read().contains(&(speaker_id.clone(), key));
+        let is_watched = is_pair_watched(&watched.read(), speaker_id, key);
 
         if is_watched {
             tracing::debug!(
@@ -444,6 +443,7 @@ mod tests {
     use super::*;
     use crate::model::GroupId;
     use crate::property::{GroupInfo, Property, Volume};
+    use crate::state::retain_direct_watch;
     use sonos_api::Service;
 
     /// Events from this IP make `handle_event` panic, so the worker loop's
@@ -454,7 +454,7 @@ mod tests {
     #[test]
     fn test_apply_property_change_volume() {
         let store = Arc::new(RwLock::new(StateStore::new()));
-        let watched = Arc::new(RwLock::new(HashSet::new()));
+        let watched = Arc::new(RwLock::new(WatchCounts::new()));
         let (tx, rx) = mpsc::channel();
 
         let speaker_id = SpeakerId::new("test-speaker");
@@ -495,7 +495,7 @@ mod tests {
     #[test]
     fn test_apply_property_change_with_watch() {
         let store = Arc::new(RwLock::new(StateStore::new()));
-        let watched = Arc::new(RwLock::new(HashSet::new()));
+        let watched = Arc::new(RwLock::new(WatchCounts::new()));
         let (tx, rx) = mpsc::channel();
 
         let speaker_id = SpeakerId::new("test-speaker");
@@ -517,10 +517,7 @@ mod tests {
         }
 
         // Register watch
-        {
-            let mut w = watched.write();
-            w.insert((speaker_id.clone(), Volume::KEY));
-        }
+        retain_direct_watch(&watched, &speaker_id, Volume::KEY);
 
         // Apply change
         apply_property_change(
@@ -560,7 +557,7 @@ mod tests {
     #[test]
     fn test_apply_property_change_group_volume() {
         let store = Arc::new(RwLock::new(StateStore::new()));
-        let watched = Arc::new(RwLock::new(HashSet::new()));
+        let watched = Arc::new(RwLock::new(WatchCounts::new()));
         let (tx, _rx) = mpsc::channel();
 
         let speaker_id = SpeakerId::new("RINCON_111");
@@ -599,7 +596,7 @@ mod tests {
     #[test]
     fn test_apply_property_change_group_volume_no_group() {
         let store = Arc::new(RwLock::new(StateStore::new()));
-        let watched = Arc::new(RwLock::new(HashSet::new()));
+        let watched = Arc::new(RwLock::new(WatchCounts::new()));
         let (tx, _rx) = mpsc::channel();
 
         let speaker_id = SpeakerId::new("RINCON_111");
@@ -631,7 +628,7 @@ mod tests {
     #[test]
     fn test_apply_topology_changes_updates_groups() {
         let store = Arc::new(RwLock::new(StateStore::new()));
-        let watched = Arc::new(RwLock::new(HashSet::new()));
+        let watched = Arc::new(RwLock::new(WatchCounts::new()));
         let (tx, _rx) = mpsc::channel();
 
         // Add speakers to store
@@ -688,7 +685,7 @@ mod tests {
     #[test]
     fn test_apply_topology_changes_updates_group_membership() {
         let store = Arc::new(RwLock::new(StateStore::new()));
-        let watched = Arc::new(RwLock::new(HashSet::new()));
+        let watched = Arc::new(RwLock::new(WatchCounts::new()));
         let (tx, _rx) = mpsc::channel();
 
         // Add speakers to store
@@ -749,7 +746,7 @@ mod tests {
     #[test]
     fn test_apply_topology_changes_emits_events_for_watched_properties() {
         let store = Arc::new(RwLock::new(StateStore::new()));
-        let watched = Arc::new(RwLock::new(HashSet::new()));
+        let watched = Arc::new(RwLock::new(WatchCounts::new()));
         let (tx, rx) = mpsc::channel();
 
         let speaker1 = SpeakerId::new("RINCON_111");
@@ -767,10 +764,7 @@ mod tests {
         }
 
         // Watch GroupMembership for speaker1 only
-        {
-            let mut w = watched.write();
-            w.insert((speaker1.clone(), GroupMembership::KEY));
-        }
+        retain_direct_watch(&watched, &speaker1, GroupMembership::KEY);
 
         let group_id = GroupId::new("RINCON_111:1");
 
@@ -811,7 +805,7 @@ mod tests {
     #[test]
     fn test_apply_topology_changes_clears_old_groups() {
         let store = Arc::new(RwLock::new(StateStore::new()));
-        let watched = Arc::new(RwLock::new(HashSet::new()));
+        let watched = Arc::new(RwLock::new(WatchCounts::new()));
         let (tx, _rx) = mpsc::channel();
 
         let speaker1 = SpeakerId::new("RINCON_111");
@@ -879,7 +873,7 @@ mod tests {
     #[test]
     fn test_apply_topology_changes_updates_speaker_to_group_mapping() {
         let store = Arc::new(RwLock::new(StateStore::new()));
-        let watched = Arc::new(RwLock::new(HashSet::new()));
+        let watched = Arc::new(RwLock::new(WatchCounts::new()));
         let (tx, _rx) = mpsc::channel();
 
         let speaker1 = SpeakerId::new("RINCON_111");
@@ -934,7 +928,7 @@ mod tests {
         // AlarmRunSequence update, or an empty <VanishedDevices></VanishedDevices>)
         // decodes to zero groups. It must not wipe cached group state.
         let store = Arc::new(RwLock::new(StateStore::new()));
-        let watched = Arc::new(RwLock::new(HashSet::new()));
+        let watched = Arc::new(RwLock::new(WatchCounts::new()));
         let (tx, rx) = mpsc::channel();
 
         let speaker1 = SpeakerId::new("RINCON_111");
@@ -957,10 +951,7 @@ mod tests {
         }
 
         // Watch GroupMembership so we can also assert nothing is emitted
-        {
-            let mut w = watched.write();
-            w.insert((speaker1.clone(), GroupMembership::KEY));
-        }
+        retain_direct_watch(&watched, &speaker1, GroupMembership::KEY);
 
         let partial = TopologyChanges {
             groups: vec![],
@@ -993,7 +984,7 @@ mod tests {
         use sonos_stream::{EnrichedEvent, EventSource, RegistrationId};
 
         let store = Arc::new(RwLock::new(StateStore::new()));
-        let watched = Arc::new(RwLock::new(HashSet::new()));
+        let watched = Arc::new(RwLock::new(WatchCounts::new()));
         let (tx, rx) = mpsc::channel();
 
         let speaker_id = SpeakerId::new("RINCON_111");
@@ -1007,10 +998,7 @@ mod tests {
                 "192.168.1.101",
             ));
         }
-        {
-            let mut w = watched.write();
-            w.insert((speaker_id.clone(), Volume::KEY));
-        }
+        retain_direct_watch(&watched, &speaker_id, Volume::KEY);
 
         let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::from([(
             speaker_ip,
@@ -1060,7 +1048,7 @@ mod tests {
     #[test]
     fn test_apply_topology_changes_no_event_when_membership_unchanged() {
         let store = Arc::new(RwLock::new(StateStore::new()));
-        let watched = Arc::new(RwLock::new(HashSet::new()));
+        let watched = Arc::new(RwLock::new(WatchCounts::new()));
         let (tx, rx) = mpsc::channel();
 
         let speaker1 = SpeakerId::new("RINCON_111");
@@ -1078,10 +1066,7 @@ mod tests {
         }
 
         // Watch the property
-        {
-            let mut w = watched.write();
-            w.insert((speaker1.clone(), GroupMembership::KEY));
-        }
+        retain_direct_watch(&watched, &speaker1, GroupMembership::KEY);
 
         // Apply same topology (no change)
         let changes = TopologyChanges {
@@ -1115,7 +1100,7 @@ mod tests {
         use crate::property::PlaybackState;
 
         let store = Arc::new(RwLock::new(StateStore::new()));
-        let watched = Arc::new(RwLock::new(HashSet::new()));
+        let watched = Arc::new(RwLock::new(WatchCounts::new()));
         let (tx, rx) = mpsc::channel();
 
         let coordinator = SpeakerId::new("RINCON_COORD");
@@ -1143,11 +1128,8 @@ mod tests {
         }
 
         // Watch PlaybackState on both speakers
-        {
-            let mut w = watched.write();
-            w.insert((coordinator.clone(), PlaybackState::KEY));
-            w.insert((member.clone(), PlaybackState::KEY));
-        }
+        retain_direct_watch(&watched, &coordinator, PlaybackState::KEY);
+        retain_direct_watch(&watched, &member, PlaybackState::KEY);
 
         // Simulate what event_worker does: apply changes to coordinator, then notify members
         let changes = vec![PropertyChange::PlaybackState(PlaybackState::Playing)];
@@ -1195,7 +1177,7 @@ mod tests {
         use crate::property::PlaybackState;
 
         let store = Arc::new(RwLock::new(StateStore::new()));
-        let watched = Arc::new(RwLock::new(HashSet::new()));
+        let watched = Arc::new(RwLock::new(WatchCounts::new()));
         let (tx, rx) = mpsc::channel();
 
         let speaker = SpeakerId::new("RINCON_STANDALONE");
@@ -1217,10 +1199,7 @@ mod tests {
         }
 
         // Watch PlaybackState
-        {
-            let mut w = watched.write();
-            w.insert((speaker.clone(), PlaybackState::KEY));
-        }
+        retain_direct_watch(&watched, &speaker, PlaybackState::KEY);
 
         // Apply change to the standalone speaker
         let changes = vec![PropertyChange::PlaybackState(PlaybackState::Playing)];
@@ -1246,7 +1225,7 @@ mod tests {
         // RenderingControl is PerSpeaker — changes on the coordinator should NOT
         // notify group members even when a group exists.
         let store = Arc::new(RwLock::new(StateStore::new()));
-        let watched = Arc::new(RwLock::new(HashSet::new()));
+        let watched = Arc::new(RwLock::new(WatchCounts::new()));
         let (tx, rx) = mpsc::channel();
 
         let coordinator = SpeakerId::new("RINCON_COORD");
@@ -1274,11 +1253,8 @@ mod tests {
         }
 
         // Watch Volume on both speakers
-        {
-            let mut w = watched.write();
-            w.insert((coordinator.clone(), Volume::KEY));
-            w.insert((member.clone(), Volume::KEY));
-        }
+        retain_direct_watch(&watched, &coordinator, Volume::KEY);
+        retain_direct_watch(&watched, &member, Volume::KEY);
 
         // Apply Volume change only to coordinator (PerSpeaker service — no notification)
         apply_property_change(
@@ -1341,18 +1317,15 @@ mod tests {
     fn test_notify_group_members_only_notifies_watched() {
         use crate::property::PlaybackState;
 
-        let watched = Arc::new(RwLock::new(HashSet::new()));
+        let watched = Arc::new(RwLock::new(WatchCounts::new()));
         let (tx, rx) = mpsc::channel();
 
         let member_watched = SpeakerId::new("RINCON_WATCHED");
         let member_unwatched = SpeakerId::new("RINCON_UNWATCHED");
 
         // Only watch PlaybackState on one member
-        {
-            let mut w = watched.write();
-            w.insert((member_watched.clone(), PlaybackState::KEY));
-            // member_unwatched is NOT in the watched set
-        }
+        retain_direct_watch(&watched, &member_watched, PlaybackState::KEY);
+        // member_unwatched is NOT in the watched set
 
         let changes = vec![PropertyChange::PlaybackState(PlaybackState::Playing)];
         let members = vec![member_watched.clone(), member_unwatched.clone()];

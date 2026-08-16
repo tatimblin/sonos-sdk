@@ -180,7 +180,12 @@ enum WatchCleanup {
 }
 
 /// Cleanup guard for CacheOnly mode (no event manager).
-/// Unregisters the property from the watched set on drop.
+///
+/// Holds one reference on `(speaker_id, property_key)` in the state manager's
+/// watched set and releases it on drop. Because the set is reference-counted,
+/// dropping this guard only stops emission if no other watcher still holds the
+/// same pair — several `WatchHandle`s for one property can coexist, and one
+/// going away must not silence the others.
 struct CacheOnlyGuard {
     state_manager: Arc<StateManager>,
     speaker_id: SpeakerId,
@@ -189,6 +194,8 @@ struct CacheOnlyGuard {
 
 impl Drop for CacheOnlyGuard {
     fn drop(&mut self) {
+        // Releases exactly the one reference taken by the matching
+        // `register_watch()` above.
         self.state_manager
             .unregister_watch(&self.speaker_id, self.property_key);
     }
@@ -442,8 +449,9 @@ impl<P: SonosProperty> PropertyHandle<P> {
 
     /// Check if this property is currently being watched
     ///
-    /// Returns `true` while a `WatchHandle` for this property is alive,
-    /// or during the grace period after the last handle was dropped.
+    /// Returns `true` while *any* `WatchHandle` for this property is alive, or
+    /// during the grace period after the last handle was dropped. Watches are
+    /// reference-counted, so dropping one of several handles leaves this `true`.
     ///
     /// # Example
     ///
@@ -1086,6 +1094,7 @@ pub type GroupVolumeChangeableHandle = GroupPropertyHandle<GroupVolumeChangeable
 mod tests {
     use super::*;
     use sonos_discovery::Device;
+    use sonos_state::Property;
 
     fn create_test_state_manager() -> Arc<StateManager> {
         let manager = StateManager::new().unwrap();
@@ -1169,6 +1178,70 @@ mod tests {
 
         drop(wh);
         assert!(!handle.is_watched());
+    }
+
+    /// Dropping one `WatchHandle` must not silence a sibling property.
+    ///
+    /// Volume and Mute both belong to RenderingControl, so they shared a
+    /// subscription and shared one `(ip, service)` ref count. Two overlapping
+    /// handles are exactly what the re-watch-per-frame pattern in `watch()`'s
+    /// own docs produces: frame N+1 acquires before frame N's handle drops. With
+    /// a set-valued watched map the *first* drop removed the only entry, so the
+    /// surviving handle went silent while the caller still held it — `is_watched()`
+    /// said `false` and `system.iter()` stopped reporting the property.
+    ///
+    /// Asserts delivery, not just the flag: a watch that is "registered" but no
+    /// longer emits is the failure users would actually see.
+    #[test]
+    fn test_dropping_one_of_two_handles_keeps_property_emitting() {
+        let state_manager = create_test_state_manager();
+        let speaker_id = SpeakerId::new("RINCON_TEST123");
+        let context = create_test_context(Arc::clone(&state_manager));
+
+        let volume: VolumeHandle = PropertyHandle::new(Arc::clone(&context));
+        let mute: MuteHandle = PropertyHandle::new(context);
+
+        let first = volume.watch().unwrap();
+        let second = volume.watch().unwrap();
+        // A sibling property of the same service, held once.
+        let _mute_watch = mute.watch().unwrap();
+        assert!(volume.is_watched());
+        assert!(mute.is_watched());
+
+        drop(first);
+
+        assert!(
+            volume.is_watched(),
+            "one of two Volume handles dropped — the property must stay watched"
+        );
+        assert!(
+            mute.is_watched(),
+            "releasing a Volume handle must not disturb its RenderingControl sibling"
+        );
+
+        // The surviving handle must still receive events, not merely be flagged.
+        state_manager.set_property(&speaker_id, Volume::new(11));
+        state_manager.set_property(&speaker_id, Mute::new(true));
+
+        let iter = state_manager.iter();
+        let first_event = iter
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .expect("Volume is still held by `second` and must still emit");
+        assert_eq!(first_event.property_key, Volume::KEY);
+        let second_event = iter
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .expect("Mute is still held and must still emit");
+        assert_eq!(second_event.property_key, Mute::KEY);
+
+        // Last holder goes away: now it really stops.
+        drop(second);
+        assert!(!volume.is_watched());
+        state_manager.set_property(&speaker_id, Volume::new(22));
+        assert!(
+            iter.recv_timeout(std::time::Duration::from_millis(50))
+                .is_none(),
+            "with every Volume handle dropped the property must stop emitting"
+        );
     }
 
     #[test]
