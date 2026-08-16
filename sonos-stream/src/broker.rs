@@ -357,15 +357,13 @@ impl EventBroker {
         // deliberate: concurrent handling could apply a Start and a Stop for the same
         // registration out of order.
         //
-        // A Stop can block this loop for a long time. `PollingTask::shutdown` only
-        // sets an AtomicBool that the polling loop checks at the top of each
-        // iteration, so an in-flight iteration must finish first: up to
-        // `current_interval` of sleep, plus a full poll (4-5 sequential SOAP calls,
-        // each with the ureq timeout), plus — on the error path — a backoff sleep
-        // capped at `max_polling_interval` that is *not* guarded by the shutdown
-        // flag. Against an unreachable speaker that is tens of seconds. Requests
-        // queued behind a Stop can therefore be stale by the time they are handled,
-        // which is why `handle_polling_request` re-checks liveness.
+        // A Stop can still block this loop. Shutdown now interrupts the polling loop's
+        // sleeps promptly — its signal carries a Notify and every sleep selects on it —
+        // but it must still await the *in-flight poll*: 4-5 sequential SOAP calls, each
+        // with a 5s connect / 10s read timeout. Against an unreachable speaker that is
+        // seconds. Requests queued behind a Stop can therefore still be stale by the
+        // time they are handled, which is why `handle_polling_request` re-checks
+        // liveness.
         let task = tokio::spawn(async move {
             info!("Starting polling request processing");
 
@@ -545,18 +543,44 @@ impl EventBroker {
             "Registering speaker service"
         );
 
-        // Check for duplicates and register
-        let registration_id = self.registry.register(speaker_ip, service).await?;
-        let was_duplicate = self.registry.is_registered(speaker_ip, service).await;
+        // Check for duplicates and register. The duplicate verdict is decided inside
+        // `register_reporting_duplicate`, under the locks that perform the insert. It
+        // used to be a separate `is_registered` call made *after* `register`, which
+        // always answered `true` — see the doc comment on that method.
+        let (registration_id, was_duplicate) = self
+            .registry
+            .register_reporting_duplicate(speaker_ip, service)
+            .await?;
 
+        let pair = SpeakerServicePair::new(speaker_ip, service);
+
+        // Short-circuit an already-registered pair. Falling through would perform a
+        // second UPnP SUBSCRIBE, yielding a *new* SID, and
+        // `SubscriptionManager::create_subscription` would overwrite the wrapper holding
+        // the old one. The superseded SID stays in the EventRouter's active set for the
+        // process lifetime (nothing else can name it any more) and a later
+        // `unregister_speaker_service` releases only the newest. Returning the existing
+        // registration untouched is also what callers expect from a registry that
+        // deduplicates: the first registration's subscription, polling state and
+        // detector entry are still live and correct.
         if was_duplicate {
             debug!(
                 registration_id = %registration_id,
-                "Registration already exists"
+                speaker_ip = %speaker_ip,
+                service = ?service,
+                "Registration already exists; reusing it without re-subscribing"
             );
-        }
 
-        let pair = SpeakerServicePair::new(speaker_ip, service);
+            return Ok(RegistrationResult {
+                registration_id,
+                firewall_status: self.get_device_firewall_status(speaker_ip).await,
+                // `polling_reason` reports what *this* call activated, and this call
+                // activated nothing. Whether the reused registration is currently
+                // polling is a separate question, answered by `stats()`.
+                polling_reason: None,
+                was_duplicate: true,
+            });
+        }
 
         let mut polling_reason = None;
         let firewall_status;
@@ -1333,6 +1357,155 @@ mod tests {
 
         sweep.abort();
         scheduler.shutdown_all().await.unwrap();
+    }
+
+    /// A port range the OS just told us is free.
+    ///
+    /// Hardcoded ranges caused a real flake in this workspace: concurrent test runs
+    /// raced for the same ports and one failed to bind. Separate `CARGO_TARGET_DIR`s do
+    /// not help — the contended resource is the host's port space.
+    ///
+    /// Unlike `callback_server::server::tests::free_port_range`, this returns a
+    /// two-port range: `BrokerConfig::validate` rejects `start >= end`, so a single-port
+    /// `(p, p)` range cannot be used here. `find_available_port` scans `start..=end` in
+    /// order and takes the first free port, so the OS-assigned one is used unless it was
+    /// taken in the interim, in which case `p + 1` is the fallback.
+    fn free_port_range() -> (u16, u16) {
+        let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        (port, port + 1)
+    }
+
+    /// A broker whose callback port is OS-assigned and whose polling intervals are long
+    /// enough that no fallback task actually polls during a test.
+    async fn test_broker() -> EventBroker {
+        let mut config = BrokerConfig::no_firewall_detection();
+        config.callback_port_range = free_port_range();
+        config.base_polling_interval = Duration::from_secs(300);
+        config.max_polling_interval = Duration::from_secs(600);
+        EventBroker::new(config)
+            .await
+            .expect("broker should start on an OS-assigned callback port")
+    }
+
+    /// `was_duplicate` must distinguish a first registration from a repeat.
+    ///
+    /// It was computed as `registry.register(..)` followed by
+    /// `registry.is_registered(..)` — asked *after* the insert, so it always answered
+    /// `true`. Every registration was reported to callers as a duplicate, brand-new ones
+    /// included. The pre-existing `test_registration_result` did not catch this: it
+    /// constructs a `RegistrationResult` literal with `was_duplicate: false` and asserts
+    /// the field reads back, never invoking the computation.
+    ///
+    /// Offline: the speaker is an RFC 5737 TEST-NET-3 address, so no real device is
+    /// contacted.
+    #[tokio::test]
+    async fn test_was_duplicate_distinguishes_first_registration_from_repeat() {
+        let broker = test_broker().await;
+        let speaker_ip: IpAddr = "203.0.113.70".parse().unwrap();
+
+        let first = broker
+            .register_speaker_service(speaker_ip, Service::AVTransport)
+            .await
+            .expect("first registration should succeed");
+        assert!(
+            !first.was_duplicate,
+            "a first-ever registration must not be reported as a duplicate"
+        );
+
+        let second = broker
+            .register_speaker_service(speaker_ip, Service::AVTransport)
+            .await
+            .expect("duplicate registration should succeed");
+        assert!(
+            second.was_duplicate,
+            "a repeat registration of the same speaker/service must be reported as a \
+             duplicate"
+        );
+        assert_eq!(
+            second.registration_id, first.registration_id,
+            "the duplicate must reuse the existing registration ID"
+        );
+
+        // A different service on the same speaker is a distinct pair, so it is new.
+        let other_service = broker
+            .register_speaker_service(speaker_ip, Service::RenderingControl)
+            .await
+            .expect("registering a second service should succeed");
+        assert!(
+            !other_service.was_duplicate,
+            "a different service on the same speaker is a new registration, not a \
+             duplicate"
+        );
+
+        broker.shutdown().await.expect("shutdown should succeed");
+    }
+
+    /// A duplicate registration must short-circuit instead of re-running the subscribe
+    /// path — which is what orphaned a SID in the EventRouter.
+    ///
+    /// `registry.register()` returns the *existing* ID for an already-registered pair,
+    /// and the function did not stop there. It went on to `create_subscription`, issuing
+    /// a second UPnP SUBSCRIBE that yields a **new** SID, while
+    /// `subscriptions.insert(registration_id, wrapper)` overwrote the wrapper holding the
+    /// old one. The superseded SID was then unnameable by any code path yet stayed in
+    /// the router's active set for the process lifetime, and a later
+    /// `unregister_speaker_service` released only the newest.
+    ///
+    /// The discriminator is `polling_reason`. Offline the SUBSCRIBE cannot succeed, so
+    /// re-entering the subscribe path lands in the fallback branch and reports
+    /// `Some(SubscriptionFailed)`; the short-circuit reports `None` because it performed
+    /// no subscribe work at all. Registry and subscription counts pin that nothing was
+    /// added either way.
+    ///
+    /// Honest scope: because SUBSCRIBE cannot succeed without a real speaker, this
+    /// asserts *that the second subscribe never happens*, not the growth of the router's
+    /// SID set — with no live SID there is no non-vacuous set assertion to make offline.
+    #[tokio::test]
+    async fn test_duplicate_registration_does_not_resubscribe() {
+        let broker = test_broker().await;
+        let speaker_ip: IpAddr = "203.0.113.71".parse().unwrap();
+
+        let first = broker
+            .register_speaker_service(speaker_ip, Service::AVTransport)
+            .await
+            .expect("first registration should succeed");
+        // Precondition: the first call really did attempt a subscribe and fall back.
+        assert_eq!(
+            first.polling_reason,
+            Some(PollingReason::SubscriptionFailed),
+            "precondition: offline, the first registration attempts SUBSCRIBE and falls \
+             back to polling"
+        );
+
+        let registrations_after_first = broker.registry.count().await;
+        let subscriptions_after_first =
+            broker.subscription_manager.list_subscriptions().await.len();
+
+        let second = broker
+            .register_speaker_service(speaker_ip, Service::AVTransport)
+            .await
+            .expect("duplicate registration should succeed");
+
+        assert_eq!(
+            second.polling_reason, None,
+            "a duplicate must short-circuit before the subscribe path; a second \
+             SUBSCRIBE is what produced a new SID and orphaned the previous one"
+        );
+        assert_eq!(
+            broker.registry.count().await,
+            registrations_after_first,
+            "a duplicate must not add a registry entry"
+        );
+        assert_eq!(
+            broker.subscription_manager.list_subscriptions().await.len(),
+            subscriptions_after_first,
+            "a duplicate must not create a second subscription, which is what \
+             overwrote the wrapper and orphaned the previous SID"
+        );
+
+        broker.shutdown().await.expect("shutdown should succeed");
     }
 
     #[test]

@@ -106,13 +106,40 @@ impl SpeakerServiceRegistry {
         speaker_ip: IpAddr,
         service: sonos_api::Service,
     ) -> RegistryResult<RegistrationId> {
+        self.register_reporting_duplicate(speaker_ip, service)
+            .await
+            .map(|(registration_id, _)| registration_id)
+    }
+
+    /// Register a speaker/service pair, also reporting whether it already existed.
+    ///
+    /// [`Self::register`] cannot answer that question: it returns the same
+    /// `RegistrationId` for a new and an existing pair alike, and asking
+    /// [`Self::is_registered`] *afterwards* always answers `true` — the pair was just
+    /// registered. `EventBroker::register_speaker_service` used exactly that broken
+    /// sequence, so `RegistrationResult::was_duplicate` was `true` for every
+    /// registration, brand-new ones included.
+    ///
+    /// The verdict is decided under the same write locks that perform the insert. That
+    /// is what makes it race-free: a "check, then register" pair in the caller would
+    /// report two genuinely concurrent first-registrations as both new.
+    ///
+    /// # Returns
+    /// * `Ok((RegistrationId, was_duplicate))` - `was_duplicate` is `true` when the
+    ///   pair was already registered and the returned ID is the pre-existing one
+    /// * `Err(RegistryError)` - If registration fails
+    pub async fn register_reporting_duplicate(
+        &self,
+        speaker_ip: IpAddr,
+        service: sonos_api::Service,
+    ) -> RegistryResult<(RegistrationId, bool)> {
         let pair = SpeakerServicePair::new(speaker_ip, service);
 
         // First check if this pair is already registered (read lock)
         {
             let pair_lookup = self.pair_to_registration.read().await;
             if let Some(existing_id) = pair_lookup.get(&pair) {
-                return Ok(*existing_id);
+                return Ok((*existing_id, true));
             }
         }
 
@@ -122,7 +149,7 @@ impl SpeakerServiceRegistry {
 
         // Double-check in case another task registered it between locks
         if let Some(existing_id) = pair_lookup.get(&pair) {
-            return Ok(*existing_id);
+            return Ok((*existing_id, true));
         }
 
         // Check registration limit
@@ -139,7 +166,7 @@ impl SpeakerServiceRegistry {
         registrations.insert(registration_id, pair.clone());
         pair_lookup.insert(pair, registration_id);
 
-        Ok(registration_id)
+        Ok((registration_id, false))
     }
 
     /// Unregister a registration ID and return the associated pair
@@ -320,6 +347,50 @@ mod tests {
 
         assert_eq!(reg_id1, reg_id2);
         assert_eq!(registry.count().await, 1);
+    }
+
+    /// The duplicate verdict must distinguish a first registration from a repeat.
+    ///
+    /// `EventBroker::register_speaker_service` used to compute it as
+    /// `register(..)` followed by `is_registered(..)`, which always answered `true`
+    /// because the pair had just been registered — so `was_duplicate` was `true` even
+    /// for a brand-new registration, and the duplicate short-circuit could not be
+    /// written on top of it.
+    #[tokio::test]
+    async fn test_register_reports_duplicate_only_for_repeats() {
+        let registry = SpeakerServiceRegistry::new(100);
+        let ip: IpAddr = "203.0.113.50".parse().unwrap();
+        let service = sonos_api::Service::AVTransport;
+
+        let (first_id, first_was_duplicate) = registry
+            .register_reporting_duplicate(ip, service)
+            .await
+            .unwrap();
+        assert!(
+            !first_was_duplicate,
+            "a first registration is not a duplicate"
+        );
+
+        let (second_id, second_was_duplicate) = registry
+            .register_reporting_duplicate(ip, service)
+            .await
+            .unwrap();
+        assert!(second_was_duplicate, "a repeat registration is a duplicate");
+        assert_eq!(
+            first_id, second_id,
+            "the duplicate must return the pre-existing ID"
+        );
+        assert_eq!(registry.count().await, 1);
+
+        // A different service on the same speaker is a distinct pair, not a duplicate.
+        let (_, other_service_was_duplicate) = registry
+            .register_reporting_duplicate(ip, sonos_api::Service::RenderingControl)
+            .await
+            .unwrap();
+        assert!(
+            !other_service_was_duplicate,
+            "a different service on the same speaker is a new registration"
+        );
     }
 
     #[tokio::test]
