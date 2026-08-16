@@ -473,6 +473,43 @@ pub struct AVTransportEvent {
 
 **Memory considerations**: Events contain String fields for flexibility. For high-frequency event processing, consider reusing allocations.
 
+#### `RenderingControlEvent`
+
+```rust
+pub struct RenderingControlEvent {
+    property: RenderingControlProperty,
+}
+
+// Provides accessors for:
+// - master_volume(), lf_volume(), rf_volume()
+// - master_mute(), lf_mute(), rf_mute()
+// - bass(), treble(), loudness(), balance()
+// - other_channels()
+```
+
+**Per-channel state variables**: In UPnP RenderingControl every state variable in the
+`LastChange` document is scoped to a channel (`Master`, `LF`, `RF`, ...). A device may
+emit the same variable several times in one event — stereo pairs and home theater setups
+routinely report `Loudness` and `Bass` per channel. Every such variable is therefore
+modelled as a `Vec` of channel/value pairs rather than as a single value.
+
+**Why this matters**: a single-value model makes serde reject the event with
+`duplicate field`, and because `from_xml()` returns `Err` the *entire* event is discarded
+by `sonos-stream`'s event processor. Any unrelated volume or mute change riding in the
+same event is lost with it, so volume and mute silently stop updating on any device that
+reports per-channel EQ. Collections keep the event parseable so unaffected fields survive.
+
+**Master selection semantics**: accessors return the value for the `Master` channel via
+exact match, mirroring `get_volume_for_channel()`. When no `Master` entry is present the
+accessor returns `None` rather than falling back to whichever channel came first —
+reporting an `LF` value as though it were the master value would misrepresent the
+device's state. An element with **no** `channel` attribute (the scalar form
+`<Bass val="2"/>`, which some devices emit) is treated as the master value for
+backwards compatibility.
+
+**Stability**: the accessors keep their `Option<String>` signatures, and
+`RenderingControlInstance` is private, so this modelling is not a public API change.
+
 ### 5.2 Serialization
 
 | Format | Use Case | Library | Notes |
@@ -883,3 +920,4 @@ The crate has `tracing` available as a dependency but does not currently instrum
 | Date | Author | Change |
 |------|--------|--------|
 | 2025-01-14 | Claude Opus 4.5 | Initial specification |
+| 2026-08-15 | Claude Opus 5 | Document RenderingControl per-channel event state variables and master-selection semantics |
