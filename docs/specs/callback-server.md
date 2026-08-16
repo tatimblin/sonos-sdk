@@ -22,6 +22,7 @@ Without this crate, each device-specific implementation would need to duplicate 
 | P0 | Generic, device-agnostic design | Enables reuse across different UPnP device types without modification |
 | P0 | Reliable event delivery | Events must be routed correctly to registered handlers without loss |
 | P0 | Unified event stream | Single HTTP endpoint handles all speakers and services efficiently |
+| P0 | Bounded resource use under hostile input | The endpoint is unauthenticated and LAN-reachable; input validation is the only defence, so every buffer must have a ceiling |
 | P1 | Automatic port selection | Simplifies deployment by finding available ports in a range |
 | P1 | Graceful lifecycle management | Clean startup and shutdown without resource leaks |
 | P2 | Firewall detection | Proactively identify when devices cannot reach the callback server |
@@ -31,7 +32,7 @@ Without this crate, each device-specific implementation would need to duplicate 
 - **Device-specific parsing**: The crate delivers raw XML payloads; parsing Sonos-specific event formats is handled by consuming crates
 - **Subscription creation**: This crate only receives events; creating UPnP subscriptions is handled by `sonos-api`
 - **Event persistence**: Events are delivered via channels with no durability guarantees
-- **Authentication**: UPnP events on local networks do not require authentication
+- **Authentication**: UPnP eventing has no authentication mechanism, so the endpoint cannot authenticate callers. This is a deliberate non-goal, not an oversight — but it makes input validation and resource bounding the only available defence (see §10)
 - **HTTPS support**: UPnP callbacks use plain HTTP by specification
 
 ### 1.4 Success Criteria
@@ -42,6 +43,9 @@ Without this crate, each device-specific implementation would need to duplicate 
 - [x] Multiple concurrent subscriptions are handled without interference
 - [x] Server shuts down gracefully without dropping in-flight requests
 - [x] Firewall status is detected per-device via event delivery monitoring
+- [x] Oversized NOTIFY bodies are rejected before being buffered in memory
+- [x] The pending-event buffer cannot grow without bound from unrecognised SIDs
+- [x] Non-ASCII event payloads never panic the request handler
 
 ---
 
@@ -56,7 +60,7 @@ Without this crate, each device-specific implementation would need to duplicate 
                                     ├─────────────────────────────────────────┤
     ┌──────────────┐                │                                         │
     │ Sonos Device │ ──NOTIFY──────▶│     warp HTTP Server (port 3400-3500)   │
-    │ (Speaker)    │   HTTP POST    │                                         │
+    │ (Speaker)    │   HTTP POST    │     body capped at 64 KiB (→413/411)    │
     └──────────────┘                └─────────────────┬───────────────────────┘
                                                       │
                                                       ▼
@@ -65,6 +69,7 @@ Without this crate, each device-specific implementation would need to duplicate 
                                     │  (Subscription registry & routing)       │
                                     ├─────────────────────────────────────────┤
                                     │  HashSet<subscription_id>               │
+                                    │  pending buffer (≤256, TTL 5s)          │
                                     │  UnboundedSender<NotificationPayload>   │
                                     └─────────────────┬───────────────────────┘
                                                       │
@@ -141,17 +146,26 @@ pub struct CallbackServer {
 
 ```rust
 pub struct EventRouter {
-    subscriptions: Arc<RwLock<HashSet<String>>>,  // Active subscription IDs
+    state: Arc<RwLock<RouterState>>,              // Subscriptions + pending buffer
     event_sender: mpsc::UnboundedSender<NotificationPayload>, // Output channel
 }
+
+struct RouterState {
+    subscriptions: HashSet<String>,               // Active subscription IDs
+    pending: Vec<(String, String, Instant)>,      // Capped at MAX_PENDING_EVENTS
+}
 ```
+
+Both fields live behind a single lock so registration and routing cannot interleave
+into a TOCTOU gap between "is this SID registered?" and "buffer it".
 
 **Purpose**: Routes incoming events to the unified event stream based on subscription registration.
 
 **Invariants**:
 - Events for registered subscription IDs are forwarded immediately
 - Events for unregistered subscription IDs are buffered and replayed when `register()` is called
-- Buffered events expire after 5 seconds (BUFFER_TTL)
+- Buffered events expire after 5 seconds (`BUFFER_TTL`), swept on both `route_event()` and `register()`
+- The pending buffer never exceeds `MAX_PENDING_EVENTS` (256); on overflow the oldest entry is dropped
 - `unregister()` drains buffered events to prevent stale replays
 - Thread-safe for concurrent registration/routing
 
@@ -203,30 +217,36 @@ pub struct FirewallDetectionCoordinator {
 └──────────────┘     └──────────────┘     └──────────────┘     └──────────────┘
        │                    │                    │                    │
        ▼                    ▼                    ▼                    ▼
-   HTTP Request      server.rs:262         router.rs:157        rx.recv()
+   HTTP Request      notify_route          route_event()        rx.recv()
 ```
 
 **Step-by-step**:
 
-1. **HTTP Reception** (`src/server.rs:262-337`): The warp filter receives an HTTP request. It extracts:
+1. **Method Validation**: A dedicated `notify_method` filter rejects non-NOTIFY methods with 404. This gate deliberately runs **before** the body filters so that ordinary bodiless requests (e.g. a browser GET) still get 404 rather than 411 Length Required.
+
+2. **Body Size Limit**: `warp::body::content_length_limit(MAX_NOTIFY_BODY_BYTES)` caps the body at 64 KiB before warp buffers it. Oversized bodies get 413; a missing `Content-Length` gets 411. See §10.4 for sizing rationale.
+
+3. **HTTP Reception**: The warp filter receives the request and extracts:
    - HTTP method (must be NOTIFY)
    - Path (any path accepted)
    - Headers: `SID`, `NT`, `NTS`
-   - Body bytes
+   - Body bytes (size-capped)
 
-2. **Method Validation** (`src/server.rs:279-281`): Non-NOTIFY methods are rejected with 404.
-
-3. **Header Validation** (`src/server.rs:311-314`, `src/server.rs:362-381`): UPnP headers are validated:
+4. **Header Validation** (`validate_upnp_headers`): UPnP headers are validated:
    - SID header must be present
    - If NT and NTS are present, they must be `upnp:event` and `upnp:propchange`
 
-4. **Event Routing** (`src/router.rs`): The router checks if the subscription ID is registered:
+   Header validation runs **before** the body is decoded to a `String`, so junk requests never pay for the full allocation. This ordering matters: decoding first would let an invalid request cost a full body copy on top of the buffered bytes.
+
+5. **Trace Preview**: If trace logging is enabled, the body is previewed via `preview(&event_xml, TRACE_PREVIEW_BYTES)`, which snaps the truncation point back to a UTF-8 char boundary. A naive `&s[..200]` panics when byte 200 falls inside a multi-byte codepoint — reachable with any non-Latin track title.
+
+6. **Event Routing** (`src/router.rs`): The router checks if the subscription ID is registered:
    - If registered: creates `NotificationPayload` and sends to channel immediately
-   - If not registered: buffers event for replay when `register()` is called
+   - If not registered: buffers event for replay when `register()` is called, sweeping stale entries and enforcing `MAX_PENDING_EVENTS`
 
-5. **Channel Delivery**: The payload is sent via `event_sender.send()`. Errors are ignored (receiver may have dropped).
+7. **Channel Delivery**: The payload is sent via `event_sender.send()`. Errors are ignored (receiver may have dropped).
 
-6. **HTTP Response**: Always returns 200 OK for valid NOTIFY requests. Events are either routed immediately or buffered for replay — returning 404 could cause speakers to cancel subscriptions.
+8. **HTTP Response**: Always returns 200 OK for valid, size-conformant NOTIFY requests. Events are either routed immediately or buffered for replay — returning 404 could cause speakers to cancel subscriptions.
 
 ### 3.2 Secondary Flow: Server Initialization
 
@@ -237,20 +257,20 @@ pub struct FirewallDetectionCoordinator {
 └──────────────┘     └──────────────┘     └──────────────┘     └──────────────┘
        │                    │                    │                    │
        ▼                    ▼                    ▼                    ▼
-  server.rs:90         server.rs:227       server.rs:244       server.rs:254
+  new()            find_available_port  detect_local_ip     start_server
 ```
 
 **Step-by-step**:
 
-1. **Port Discovery** (`src/server.rs:95-101`, `src/server.rs:227-238`): Iterates through port range, attempts TCP bind to find available port.
+1. **Port Discovery** (`find_available_port`/`is_port_available`): Iterates through port range, attempts TCP bind to find available port.
 
-2. **IP Detection** (`src/server.rs:104-106`, `src/server.rs:244-251`): Creates UDP socket, "connects" to 8.8.8.8:80 (no data sent), reads local address from socket. This determines which interface would be used for outbound traffic.
+2. **IP Detection** (`detect_local_ip`): Creates UDP socket, "connects" to 8.8.8.8:80 (no data sent), reads local address from socket. This determines which interface would be used for outbound traffic.
 
-3. **URL Construction** (`src/server.rs:108`): Combines IP and port into `http://ip:port` format.
+3. **URL Construction** (`new`): Combines IP and port into `http://ip:port` format.
 
-4. **Server Spawn** (`src/server.rs:120-125`, `src/server.rs:254-356`): Spawns tokio task running warp server with graceful shutdown support.
+4. **Server Spawn** (`start_server`): Spawns tokio task running warp server with graceful shutdown support.
 
-5. **Ready Signal** (`src/server.rs:128-130`, `src/server.rs:353`): Server signals readiness via channel before `new()` returns, ensuring the server is actually listening.
+5. **Ready Signal** (`ready_tx`/`ready_rx`): Server signals readiness via channel before `new()` returns, ensuring the server is actually listening.
 
 ### 3.3 Secondary Flow: Firewall Detection
 
@@ -300,7 +320,11 @@ firewall_detection.rs:150   firewall_detection.rs:232   firewall_detection.rs:25
 [Invalid HTTP headers] ──▶ [warp::reject::custom(InvalidUpnpHeaders)] ──▶ [400 Bad Request]
                                           │
                                           ▼
-                                   handle_rejection (server.rs:393-411)
+                                   handle_rejection
+
+[Body > 64 KiB]        ──▶ [warp::reject::PayloadTooLarge] ──▶ [413 Payload Too Large]
+
+[No Content-Length]    ──▶ [warp::reject::LengthRequired]  ──▶ [411 Length Required]
 
 [Unknown subscription] ──▶ [router.route_event buffers event] ──▶ [200 OK]
                                           │
@@ -336,7 +360,7 @@ The unified approach means one server handles all traffic, simplifying deploymen
 
 #### How
 
-The `CallbackServer` accepts any path for NOTIFY requests (`src/server.rs:262-263`). The subscription ID from the SID header is the routing key, not the URL path. This allows the same callback URL to be registered for all subscriptions.
+The `CallbackServer` accepts any path for NOTIFY requests (`warp::path::full`). The subscription ID from the SID header is the routing key, not the URL path. This allows the same callback URL to be registered for all subscriptions.
 
 ```rust
 // All subscriptions use the same base URL
@@ -372,7 +396,7 @@ Automatic selection eliminates manual port configuration.
 
 #### How
 
-Sequential scan from start to end of range, attempting TCP bind on each (`src/server.rs:227-238`). First successful bind wins. The bound listener is immediately dropped (just testing availability), then warp binds to the same port.
+Sequential scan from start to end of range, attempting TCP bind on each (`is_port_available`). First successful bind wins. The bound listener is immediately dropped (just testing availability), then warp binds to the same port.
 
 ```rust
 fn find_available_port(start: u16, end: u16) -> Option<u16> {
@@ -459,7 +483,7 @@ Validates UPnP-specific headers (SID, NT, NTS) according to the UPnP Device Arch
 
 #### How
 
-Validation in `validate_upnp_headers` (`src/server.rs:362-381`):
+Validation in `validate_upnp_headers`:
 
 ```rust
 fn validate_upnp_headers(
@@ -510,7 +534,7 @@ pub struct NotificationPayload {
 ```
 
 **Lifecycle**:
-1. **Creation**: Created in `EventRouter::route_event()` when a valid event arrives (`src/router.rs:161-164`)
+1. **Creation**: Created in `EventRouter::route_event()` when a valid event arrives
 2. **Mutation**: Immutable after creation (all fields are `pub` but typically consumed without modification)
 3. **Destruction**: Dropped when consumer processes the event
 
@@ -611,9 +635,11 @@ pub struct DeviceFirewallState {
 - `NTS`: Notification sub-type, value `upnp:propchange` (optional but validated if present)
 - `Content-Type`: `text/xml`
 
-**Body**: UPnP propertyset XML containing changed property values
+- `Content-Length`: Required (bodies without it are rejected with 411, since their size cannot be bounded before reading)
 
-**Error handling**: Invalid requests receive HTTP 400. Valid NOTIFY requests always receive 200 OK (events are buffered if the SID is not yet registered). Network errors on the device side are not our responsibility.
+**Body**: UPnP propertyset XML containing changed property values, up to 64 KiB (§10.4)
+
+**Error handling**: Invalid requests receive HTTP 400, oversized bodies 413, bodies with no declared length 411. Valid NOTIFY requests always receive 200 OK (events are buffered if the SID is not yet registered). Network errors on the device side are not our responsibility.
 
 **Retry strategy**: None. UPnP devices do not expect or handle retry from callback servers.
 
@@ -640,6 +666,16 @@ struct InvalidUpnpHeaders;
 impl warp::reject::Reject for InvalidUpnpHeaders {}
 ```
 
+`handle_rejection` maps rejections to statuses:
+
+| Rejection | Status | Meaning |
+|-----------|--------|---------|
+| `is_not_found()` | 404 | Not a NOTIFY request |
+| `InvalidUpnpHeaders` | 400 | Missing SID, or bad NT/NTS |
+| `warp::reject::PayloadTooLarge` | 413 | Body over `MAX_NOTIFY_BODY_BYTES` (logged at error level with the limit) |
+| `warp::reject::LengthRequired` | 411 | No `Content-Length`, so the body cannot be bounded before reading |
+| anything else | 500 | Unexpected |
+
 ### 7.2 Error Philosophy
 
 | Principle | Implementation | Rationale |
@@ -655,6 +691,8 @@ impl warp::reject::Reject for InvalidUpnpHeaders {}
 | Port exhaustion | Yes | Widen port range or wait for ports to free |
 | IP detection failure | Partial | May indicate no network; retry after network comes up |
 | Invalid UPnP headers | Yes | Device issue; subsequent valid requests will succeed |
+| Oversized body (413) | Yes | Not expected from real devices; a genuine over-limit event would indicate the limit needs revisiting (§10.4) |
+| Pending buffer eviction | Partial | The dropped event's state is recovered on the next NOTIFY or poll for that SID |
 | Unknown subscription | Yes | Register subscription before events arrive |
 | Channel send failure | N/A | Not an error condition; indicates shutdown |
 
@@ -683,14 +721,17 @@ The callback server emphasizes integration tests because the core value is HTTP 
 **Location**: Inline `#[cfg(test)]` modules in each source file
 
 **What to test**:
-- [x] Port availability detection (`src/server.rs:417-428`)
-- [x] Port range scanning (`src/server.rs:432-437`)
-- [x] Local IP detection (`src/server.rs:440-448`)
-- [x] UPnP header validation (`src/server.rs:453-488`)
-- [x] Event router registration and routing (`src/router.rs:179-233`)
-- [x] Firewall detection state transitions (`src/firewall_detection.rs:334-456`)
+- [x] Port availability detection
+- [x] Port range scanning
+- [x] Local IP detection
+- [x] UPnP header validation
+- [x] UTF-8-safe trace preview (`test_event_xml_preview_handles_multibyte_boundary`) — asserts the previously-panicking 198-ASCII + multibyte case
+- [x] Event router registration and routing
+- [x] Pending buffer cap and drop-oldest eviction (`test_pending_buffer_is_bounded`, `test_pending_buffer_evicts_oldest_first`)
+- [x] TTL sweep on `route_event`, not just `register()` (`test_stale_entries_swept_on_route`)
+- [x] Firewall detection state transitions
 
-**Example** (from `src/router.rs:179-198`):
+**Example**:
 ```rust
 #[tokio::test]
 async fn test_event_router_register_and_route() {
@@ -724,8 +765,10 @@ async fn test_event_router_register_and_route() {
 - [x] Dynamic registration/unregistration (`test_dynamic_subscription_management`)
 - [x] Server URL and port detection (`test_server_ip_and_url_detection`)
 - [x] Error handling for malformed requests (`test_error_handling`)
+- [x] SUBSCRIBE/NOTIFY race replay (`test_notify_before_register_is_replayed`)
+- [x] Oversized body rejected with 413 (`test_oversized_notify_body_rejected`)
 
-**Example** (from `tests/integration_tests.rs:12-130`):
+**Example**:
 ```rust
 #[tokio::test]
 async fn test_callback_server_end_to_end() {
@@ -774,18 +817,19 @@ async fn test_callback_server_end_to_end() {
 | Event latency | < 10ms from HTTP receipt to channel delivery | Real-time UPnP events should feel instantaneous |
 | Concurrent connections | 100+ simultaneous | Support many speakers and services |
 | Memory per subscription | < 1KB | Subscription registry should be lightweight |
+| Memory per in-flight request | ≤ ~128 KiB | 64 KiB body + one lossy-decode copy; hard ceiling under hostile input |
 
 ### 9.2 Critical Paths
 
-1. **Event Routing** (`src/router.rs:157-172`)
+1. **Event Routing** (`EventRouter::route_event`)
    - **Complexity**: O(1) average for HashSet lookup
    - **Bottleneck**: RwLock acquisition for subscriptions set
    - **Optimization**: Using `read()` lock for routing; write lock only for register/unregister
 
-2. **HTTP Handler** (`src/server.rs:262-337`)
+2. **HTTP Handler**
    - **Complexity**: O(1) for header extraction and validation
-   - **Bottleneck**: Body allocation (String::from_utf8_lossy)
-   - **Optimization**: Acceptable for small XML payloads; could use zero-copy with more complexity
+   - **Bottleneck**: Body allocation (`String::from_utf8_lossy` copies the whole body)
+   - **Optimization**: Bounded rather than eliminated — `content_length_limit` caps the body at 64 KiB, so the double allocation is bounded at ~128 KiB per request. Header validation runs first so invalid requests skip the copy entirely. Zero-copy is possible but not worth the complexity at these sizes.
 
 ### 9.3 Resource Management
 
@@ -794,6 +838,8 @@ async fn test_callback_server_end_to_end() {
 | TCP port | On server creation | On shutdown | No - single port per server |
 | Tokio tasks | Server task on creation, timeout task for firewall detection | Graceful shutdown signal | No - long-lived tasks |
 | Channel buffers | Unbounded on creation | When receiver drops | No - grows as needed |
+| NOTIFY body buffer | Per request, capped at `MAX_NOTIFY_BODY_BYTES` (64 KiB) | End of request | No |
+| Pending event buffer | On buffering an unregistered SID, capped at `MAX_PENDING_EVENTS` (256) | TTL sweep, cap eviction, `register()` replay, or `unregister()` drain | No |
 
 ---
 
@@ -801,11 +847,20 @@ async fn test_callback_server_end_to_end() {
 
 ### 10.1 Threat Model
 
+The server binds `0.0.0.0` and accepts NOTIFY on any path. UPnP eventing has no
+authentication mechanism, so **any host on the LAN can reach this endpoint** and
+the server cannot distinguish a real speaker from a hostile sender. Input
+validation and resource bounding are therefore the only defences available, and
+every unbounded buffer is a memory-exhaustion primitive.
+
 | Threat | Likelihood | Impact | Mitigation |
 |--------|------------|--------|------------|
-| Malicious HTTP requests | Medium | Low | Header validation rejects non-UPnP traffic |
+| Malicious HTTP requests | Medium | Low | Header validation rejects non-UPnP traffic before the body is decoded |
+| Memory exhaustion via large body | Medium | High | `content_length_limit(64 KiB)` → 413; missing `Content-Length` → 411 (§10.4) |
+| Memory exhaustion via pending buffer | Medium | High | `MAX_PENDING_EVENTS` cap (256) with drop-oldest, plus TTL sweep on every `route_event` (§10.5) |
+| Panic-based DoS via non-ASCII payload | Medium | Medium | `preview()` snaps truncation to a UTF-8 char boundary (§10.6) |
 | Subscription ID spoofing | Low | Medium | Events only routed to registered subscriptions |
-| Denial of Service | Medium | Medium | Unbounded channel could grow; warp handles connection limits |
+| Unbounded output channel growth | Low | Medium | Not bounded; acceptable because delivery is gated by the size and buffer caps above |
 | XML entity expansion | Low | Medium | XML parsing is consumer responsibility, not ours |
 
 ### 10.2 Sensitive Data
@@ -820,11 +875,85 @@ async fn test_callback_server_end_to_end() {
 
 | Input Source | Validation | Location |
 |--------------|------------|----------|
-| HTTP method | Must be NOTIFY | `src/server.rs:279-281` |
-| SID header | Must be present | `src/server.rs:362-381` |
-| NT header | If present, must be `upnp:event` | `src/server.rs:374-376` |
-| NTS header | If present, must be `upnp:propchange` | `src/server.rs:374-376` |
-| Event body | No validation (passed through) | Consumer responsibility |
+| HTTP method | Must be NOTIFY (checked before body filters) | `notify_method` filter in `start_server` |
+| Content-Length | Must be present and ≤ `MAX_NOTIFY_BODY_BYTES` | `warp::body::content_length_limit` |
+| SID header | Must be present | `validate_upnp_headers` |
+| NT header | If present, must be `upnp:event` | `validate_upnp_headers` |
+| NTS header | If present, must be `upnp:propchange` | `validate_upnp_headers` |
+| Event body | Size-capped; contents not parsed (passed through) | Consumer responsibility |
+
+**Ordering requirement**: header validation must precede `String::from_utf8_lossy`
+on the body. The lossy decode allocates a second full copy of the body, so
+validating first means an invalid request costs only the (already capped) buffered
+bytes rather than double.
+
+### 10.4 Body Size Limit
+
+`MAX_NOTIFY_BODY_BYTES = 64 * 1024` (64 KiB).
+
+**Why a limit is required**: without `content_length_limit`, warp buffers the
+entire body, and the handler then allocates a second full copy when decoding it to
+a `String`. Peak cost is ~2x the body size per in-flight request, so two
+concurrent 1 GB posts would be roughly 4 GB resident. Chunked requests with no
+`Content-Length` have no declared size at all.
+
+**Why 64 KiB specifically**:
+
+| Payload | Typical size |
+|---------|--------------|
+| Volume / Mute / TransportState propertyset | ~1-5 KB |
+| `ZoneGroupTopology` event, small household | ~2-5 KB |
+| `ZoneGroupTopology` event, 32-player household (Sonos max) | ~20-30 KB |
+
+The `ZoneGroupTopology` event is the largest realistic case: its `ZoneGroupState`
+property carries a double-XML-escaped topology document containing a UUID,
+`Location` URL, and `ZoneName` for every player, running a few hundred bytes per
+player. 64 KiB gives ~2x headroom over the 32-player worst case and ~10x over
+typical events, while capping the cost of a hostile request at ~128 KiB
+(bytes + string copy) instead of unbounded. Legitimate traffic cannot reach it.
+
+**Rejection behaviour**: over-limit → 413 Payload Too Large; missing
+`Content-Length` → 411 Length Required. Real Sonos devices always send
+`Content-Length`, so 411 does not affect legitimate traffic.
+
+### 10.5 Pending Buffer Cap
+
+`MAX_PENDING_EVENTS = 256`, with drop-oldest eviction.
+
+**Why a cap is required**: `route_event` buffers events for any SID it does not
+recognise, which is what bridges the SUBSCRIBE/NOTIFY race. But the TTL sweep
+originally ran only inside `register()`, which is called only on a genuine new
+subscription. A sender spraying events for random SIDs therefore grew `pending`
+without bound and never triggered cleanup — each entry retains a full event body.
+The "0-5 entries" expectation held only for well-behaved senders.
+
+**Fix**: `route_event` now sweeps `BUFFER_TTL`-expired entries *and* enforces the
+cap on every buffering operation, so cleanup no longer depends on `register()`
+being called.
+
+**Why 256**: legitimate occupancy is 0-5 entries (the race window is
+microseconds), so 256 is ~50x the real high-water mark and cannot be reached by
+normal operation even when a large household brings every subscription up at
+once. Worst-case retention is bounded at 256 event bodies.
+
+**Why drop-oldest**: these are pending state snapshots. The newest entry is both
+the most current state and the one most likely to still have a `register()`
+coming, so the oldest is the cheapest to lose. Eviction picks the minimum
+timestamp rather than index 0, because `swap_remove` elsewhere in the module means
+index order does not track insertion order.
+
+### 10.6 UTF-8 Boundary Safety
+
+Slicing a `&str` at a byte index that is not a char boundary panics. The
+trace-logging path previously did `&event_xml[..200]` directly: 198 ASCII bytes
+followed by a 3-byte codepoint spanning bytes 198-200 panics with
+`byte index 200 is not a char boundary`. Event XML routinely carries non-ASCII
+track metadata, so this is reachable in normal use for a music SDK — a panic in
+the warp handler, triggerable by any sender, at trace level.
+
+The `preview(s, max)` helper walks the truncation point back to the nearest char
+boundary. It is a free function rather than inline code specifically so it can be
+unit-tested; logic inside a warp closure cannot be.
 
 ---
 
@@ -832,31 +961,24 @@ async fn test_callback_server_end_to_end() {
 
 ### 11.1 Logging
 
-The crate uses `eprintln!` for logging (should migrate to `tracing`):
+The crate uses structured `tracing` events:
 
-| Level | What's Logged | Example |
-|-------|--------------|---------|
-| Info-equivalent | Server startup, event routing success | `"Unified CallbackServer listening on {addr}"` |
-| Debug-equivalent | Incoming request details, headers | `"Method: {}, Path: {}, Body size: {} bytes"` |
-| Error-equivalent | Invalid headers, routing failures, firewall detection results | `"Invalid UPnP headers"`, `"Firewall detection: No events from {} within timeout"` |
+| Level | What's Logged |
+|-------|--------------|
+| `info` | Server startup and bound address |
+| `debug` | Incoming request details (method, path, body size, headers), event buffering, pending-buffer eviction, replay on register |
+| `trace` | Event XML body — truncated to `TRACE_PREVIEW_BYTES` via `preview()` when longer |
+| `error` | Invalid headers, oversized bodies (with the limit), firewall detection results |
 
-**Note**: Current logging uses emoji prefixes for visual distinction in development. Production use should migrate to structured logging via `tracing`.
+**Note**: the `trace` level logs event bodies. `preview()` bounds both the output
+size and the char-boundary panic risk on that path.
 
 ### 11.2 Tracing
 
-**Current state**: No formal tracing integration. Future enhancement should add:
-
-```rust
-#[tracing::instrument(skip(body))]
-async fn handle_notify(
-    sid: Option<String>,
-    nt: Option<String>,
-    nts: Option<String>,
-    body: bytes::Bytes,
-) -> Result<impl Reply, Rejection> {
-    // ...
-}
-```
+**Current state**: `tracing` events are emitted, but there are no spans. Because
+the handler lives inside a warp closure there is no named function to attach
+`#[tracing::instrument]` to; adding request-scoped spans would mean extracting the
+handler body into a standalone async function first.
 
 ---
 
@@ -867,6 +989,15 @@ async fn handle_notify(
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `port_range` | `(u16, u16)` | `(3400, 3500)` | Range of ports to search for binding |
+
+Compile-time limits (not runtime-configurable; see §10.4 and §10.5 for rationale):
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `MAX_NOTIFY_BODY_BYTES` | `64 KiB` | Maximum accepted NOTIFY body size |
+| `TRACE_PREVIEW_BYTES` | `200` | Bytes of event XML included in trace logs |
+| `MAX_PENDING_EVENTS` | `256` | Maximum buffered events for unregistered SIDs |
+| `BUFFER_TTL` | `5 seconds` | Lifetime of a buffered pending event |
 
 For firewall detection (`FirewallDetectionConfig`):
 
@@ -912,15 +1043,15 @@ For firewall detection (`FirewallDetectionConfig`):
 
 | Limitation | Impact | Workaround | Planned Fix |
 |------------|--------|------------|-------------|
-| `eprintln!` logging | No log level control, not structured | Redirect stderr | Migrate to `tracing` |
 | Single IP detection method | May fail on complex network setups | Manual callback URL override | Add fallback detection methods |
-| Unbounded channel | Memory growth under sustained load | Acceptable for UPnP event rates | Consider bounded with overflow policy |
+| Unbounded output channel | Memory growth under sustained load | Acceptable for UPnP event rates, and bounded upstream by the body-size and pending-buffer caps | Consider bounded with overflow policy |
+| Chunked NOTIFY bodies rejected (411) | A device omitting `Content-Length` could not deliver events | None needed; real Sonos devices always send it | Revisit only if a device is found that omits it |
 
 ### 14.2 Technical Debt
 
 | Debt Item | Location | Severity | Remediation Plan |
 |-----------|----------|----------|------------------|
-| Emoji in log messages | `src/server.rs`, `src/firewall_detection.rs` | Low | Replace with tracing spans/events |
+| No request-scoped tracing spans | `src/server.rs` (handler is a warp closure) | Low | Extract the handler into a named async fn and add `#[tracing::instrument]` |
 | Unused `soap-client` dependency | `Cargo.toml` | Low | Remove if truly unused |
 | String-based errors | `src/server.rs` | Low | Consider `thiserror` enum |
 
@@ -932,9 +1063,10 @@ For firewall detection (`FirewallDetectionConfig`):
 
 | Enhancement | Priority | Rationale | Dependencies |
 |-------------|----------|-----------|--------------|
-| `tracing` integration | P1 | Structured logging, spans for request tracing | None |
+| Request-scoped tracing spans | P1 | Correlate log lines for a single NOTIFY; needs the handler extracted from the warp closure | None |
 | Configurable callback URL | P2 | Support for Docker/NAT environments where auto-detection fails | None |
-| Metrics export | P2 | Prometheus-compatible counters for events received, routing success rate | `metrics` crate |
+| Metrics export | P2 | Prometheus-compatible counters for events received, routing success rate, and rejected/evicted counts | `metrics` crate |
+| Per-source-IP rate limiting | P3 | The size and buffer caps bound memory per request, but not request *rate* from a hostile LAN host | None |
 
 ### 15.2 Open Questions
 
@@ -965,3 +1097,4 @@ For firewall detection (`FirewallDetectionConfig`):
 | Date | Author | Change |
 |------|--------|--------|
 | 2025-01-14 | Claude | Initial specification created |
+| 2026-08-15 | Claude | Hardened the unauthenticated NOTIFY endpoint: added the 64 KiB body limit (§10.4), the 256-entry pending buffer cap with per-route TTL sweep (§10.5), and UTF-8-safe trace previews (§10.6). Expanded the threat model to state that unbounded buffers are the primary risk given UPnP has no authentication. |

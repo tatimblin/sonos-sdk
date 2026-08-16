@@ -8,6 +8,43 @@ use warp::Filter;
 
 use super::router::{EventRouter, NotificationPayload};
 
+/// Maximum accepted size of a UPnP NOTIFY body, in bytes (64 KiB).
+///
+/// The endpoint is unauthenticated by design (UPnP eventing has no auth), so any
+/// host on the LAN can POST to it. Without a limit, warp would buffer the whole
+/// body and then a second full copy is made when it is decoded to a `String` —
+/// two concurrent 1 GB posts would be ~4 GB resident.
+///
+/// Sizing: real Sonos propertysets are ~1-5 KB. The largest realistic case is a
+/// `ZoneGroupTopology` event, whose double-escaped `ZoneGroupState` payload runs
+/// a few hundred bytes per player; at the 32-player household maximum that is
+/// roughly 20-30 KB. 64 KiB leaves ~2x headroom over that worst case and ~10x
+/// over typical events, while capping the cost of a hostile request at 128 KiB
+/// (bytes + string copy) instead of unbounded.
+///
+/// Requests without a `Content-Length` header (e.g. chunked bodies, which Sonos
+/// never sends) are rejected with 411 Length Required.
+const MAX_NOTIFY_BODY_BYTES: u64 = 64 * 1024;
+
+/// How many bytes of event XML to include in trace-level logs.
+const TRACE_PREVIEW_BYTES: usize = 200;
+
+/// Truncate `s` to at most `max` bytes, snapping back to a UTF-8 char boundary.
+///
+/// Slicing a `&str` at a byte index that falls inside a multi-byte codepoint
+/// panics. Event XML routinely carries non-ASCII track metadata, so a naive
+/// `&s[..max]` in the trace-logging path is a reachable panic.
+fn preview(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// HTTP callback server for receiving UPnP event notifications.
 ///
 /// The `CallbackServer` binds to a local port and provides an HTTP endpoint
@@ -247,12 +284,25 @@ impl CallbackServer {
         ready_tx: mpsc::Sender<()>,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
+            // Only NOTIFY is handled. This gate runs *before* the body filters so
+            // that ordinary bodiless requests (e.g. a browser GET) still get 404
+            // rather than 411 Length Required.
+            let notify_method = warp::method().and_then(|method: warp::http::Method| async move {
+                if method == warp::http::Method::from_bytes(b"NOTIFY").unwrap() {
+                    Ok(method)
+                } else {
+                    Err(warp::reject::not_found())
+                }
+            });
+
             // Create the NOTIFY endpoint that accepts any path (like the old code)
-            let notify_route = warp::method()
+            let notify_route = notify_method
                 .and(warp::path::full())
                 .and(warp::header::optional::<String>("sid"))
                 .and(warp::header::optional::<String>("nt"))
                 .and(warp::header::optional::<String>("nts"))
+                // Cap the body before warp buffers it — see MAX_NOTIFY_BODY_BYTES.
+                .and(warp::body::content_length_limit(MAX_NOTIFY_BODY_BYTES))
                 .and(warp::body::bytes())
                 .and_then({
                     let router = event_router.clone();
@@ -264,11 +314,6 @@ impl CallbackServer {
                           body: bytes::Bytes| {
                         let router = router.clone();
                         async move {
-                            // Only handle NOTIFY method
-                            if method != warp::http::Method::from_bytes(b"NOTIFY").unwrap() {
-                                return Err(warp::reject::not_found());
-                            }
-
                             // Log incoming request details for unified event stream monitoring
                             debug!(
                                 method = %method,
@@ -280,22 +325,8 @@ impl CallbackServer {
                                 "Received UPnP NOTIFY event"
                             );
 
-                            // Convert body to string and log content at trace level only
-                            let event_xml = String::from_utf8_lossy(&body).to_string();
-                            if event_xml.len() > 200 {
-                                trace!(
-                                    event_xml_preview = %&event_xml[..200],
-                                    total_length = event_xml.len(),
-                                    "UPnP event XML content (truncated)"
-                                );
-                            } else {
-                                trace!(
-                                    event_xml = %event_xml,
-                                    "UPnP event XML content (full)"
-                                );
-                            }
-
-                            // Validate UPnP headers
+                            // Validate UPnP headers *before* decoding the body, so
+                            // junk requests never pay for the full allocation.
                             if !Self::validate_upnp_headers(&sid, &nt, &nts) {
                                 error!(
                                     sid = ?sid,
@@ -311,6 +342,21 @@ impl CallbackServer {
                                 error!("Missing required SID header in UPnP NOTIFY request");
                                 warp::reject::custom(InvalidUpnpHeaders)
                             })?;
+
+                            // Convert body to string and log content at trace level only
+                            let event_xml = String::from_utf8_lossy(&body).to_string();
+                            if event_xml.len() > TRACE_PREVIEW_BYTES {
+                                trace!(
+                                    event_xml_preview = %preview(&event_xml, TRACE_PREVIEW_BYTES),
+                                    total_length = event_xml.len(),
+                                    "UPnP event XML content (truncated)"
+                                );
+                            } else {
+                                trace!(
+                                    event_xml = %event_xml,
+                                    "UPnP event XML content (full)"
+                                );
+                            }
 
                             // Route the event through the unified event stream.
                             // Events are either delivered immediately (registered SID)
@@ -397,6 +443,18 @@ async fn handle_rejection(
     } else if err.find::<InvalidUpnpHeaders>().is_some() {
         code = warp::http::StatusCode::BAD_REQUEST;
         message = "Invalid UPnP headers";
+    } else if err.find::<warp::reject::PayloadTooLarge>().is_some() {
+        error!(
+            limit_bytes = MAX_NOTIFY_BODY_BYTES,
+            "Rejected NOTIFY body exceeding size limit"
+        );
+        code = warp::http::StatusCode::PAYLOAD_TOO_LARGE;
+        message = "NOTIFY body too large";
+    } else if err.find::<warp::reject::LengthRequired>().is_some() {
+        // Sonos always sends Content-Length; a missing one means we cannot
+        // bound the body before reading it, so refuse.
+        code = warp::http::StatusCode::LENGTH_REQUIRED;
+        message = "Content-Length header is required";
     } else {
         code = warp::http::StatusCode::INTERNAL_SERVER_ERROR;
         message = "Internal server error";
@@ -478,6 +536,37 @@ mod tests {
             &Some("upnp:event".to_string()),
             &Some("wrong".to_string()),
         ));
+    }
+
+    /// Slicing event XML at a fixed byte offset panics when that offset lands
+    /// inside a multi-byte codepoint — very reachable for non-Latin track titles.
+    #[test]
+    fn test_event_xml_preview_handles_multibyte_boundary() {
+        // 198 ASCII bytes + a 3-byte codepoint occupying bytes 198..201, so byte
+        // index 200 is *not* a char boundary.
+        let xml = format!("{}日本語", "a".repeat(198));
+        assert!(!xml.is_char_boundary(TRACE_PREVIEW_BYTES));
+
+        let out = preview(&xml, TRACE_PREVIEW_BYTES);
+
+        // Snapped back to the boundary at 198, still valid UTF-8, still a prefix.
+        assert_eq!(out.len(), 198);
+        assert!(xml.starts_with(out));
+        assert!(std::str::from_utf8(out.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn test_event_xml_preview_short_and_exact_inputs() {
+        // Shorter than the limit is returned whole.
+        assert_eq!(preview("<event/>", TRACE_PREVIEW_BYTES), "<event/>");
+        // Exactly at the limit is returned whole.
+        let exact = "a".repeat(TRACE_PREVIEW_BYTES);
+        assert_eq!(
+            preview(&exact, TRACE_PREVIEW_BYTES).len(),
+            TRACE_PREVIEW_BYTES
+        );
+        // A single wide codepoint over the limit truncates to empty, not a panic.
+        assert_eq!(preview("日", 1), "");
     }
 
     #[tokio::test]
