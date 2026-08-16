@@ -578,8 +578,66 @@ for event in manager.iter() {
 | Reuse `PropertyChange` as the payload | A new value-carrying enum, or `ChangeEvent<P>` | `PropertyChange` is already the typed, closed, decoder-produced representation of exactly these values. A parallel type would need the same 12 variants and could drift from the decoder; a generic `ChangeEvent<P>` would make the channel generic and force one channel per property type |
 | Derive `property_key()` / `service()` from the payload | Keep them as struct fields | Two sources of truth for "which property is this" can disagree; derivation makes that impossible |
 | Keep the store as well | Events only | A full repaint legitimately wants current state, not one property's history. Both readings now exist |
-| `std::sync::mpsc` | `tokio::sync::broadcast` | No runtime needed; blocking `recv()` is exactly what a sync render loop wants |
-| Shared receiver behind a `Mutex` | Receiver per clone | `mpsc::Receiver` is not cloneable, and one drain point matches one render loop. Still a known limitation — see 14.1 |
+| `std::sync::mpsc` | `tokio::sync::broadcast` | No runtime needed; blocking `recv()` is exactly what a sync render loop wants. `broadcast::Receiver::blocking_recv()` additionally *panics* inside a Tokio runtime and offers no `recv_timeout` — see 4.1b |
+| One unbounded queue per subscriber, fanned out | One shared receiver behind a `Mutex` | A shared receiver made concurrent `iter()` calls *compete*: each event went to whichever consumer won the lock, so each saw a random subset, silently. See 4.1b |
+
+### 4.1b Feature: per-subscriber event fan-out
+
+#### What
+
+Every `iter()` call returns an **independent** `ChangeIterator` with its own unbounded queue.
+All subscribers receive all events. `EventFanout` (`src/iter.rs`) owns the registry of senders;
+`StateManager` holds one `Arc<EventFanout>` in place of the former `event_tx`/`event_rx` pair.
+
+#### Why
+
+`iter()` used to hand every caller a clone of one `Arc<Mutex<mpsc::Receiver>>`. Two
+`for event in system.iter()` loops therefore *split* the stream between them — each event went
+to whichever consumer happened to win the mutex. But `iter()` returning an independent iterator
+is the universal Rust idiom for "iterate the whole thing", so the API read as a broadcast and
+behaved as a work queue. Nothing errored, nothing was logged, and each consumer simply saw a
+random subset: a dashboard that added a second event loop in a background thread started
+dropping roughly half its updates with no signal at all. Silence instead of an error is exactly
+the failure class this campaign exists to remove.
+
+#### How
+
+```rust
+pub(crate) fn send(&self, event: ChangeEvent) -> usize {
+    let mut inner = self.inner.lock();
+    let mut delivered = 0;
+    inner.subscribers.retain(|(_, tx)| match tx.send(event.clone()) {
+        Ok(()) => { delivered += 1; true }
+        Err(_) => false,   // receiver gone: reap the dead sender
+    });
+    delivered
+}
+```
+
+Four properties make this safe:
+
+- **Nothing is dropped.** Each subscriber owns an *unbounded* `std::sync::mpsc` queue, so a slow
+  consumer neither loses events nor blocks a fast one. There is no lag state for a consumer to
+  detect because there is no lag — which is why no lag-detection API is offered. The cost is
+  unchanged from before: a subscriber that never drains grows its own queue (see 14.1).
+- **Order is preserved per subscriber.** All sends happen under one lock in emit order, so every
+  subscriber observes the same sequence the emitter produced, keeping 4.1a meaningful downstream.
+- **Two independent cleanup paths.** `ChangeIterator::drop` deregisters by id immediately; `send`
+  additionally reaps any subscriber whose receiver has gone. The registry cannot accumulate dead
+  senders, and a departing consumer never stalls the survivors.
+- **`ChangeIterator` holds a `Weak<EventFanout>`, not an `Arc`.** A strong reference would keep
+  the fan-out — and so the iterator's own `Sender` — alive exactly as long as the iterator, so
+  the channel could never close and `recv()` would block forever after the manager was dropped.
+  `Weak` preserves the pre-fan-out behaviour: dropping the manager makes `recv()` return `None`.
+
+#### Trade-offs
+
+| Decision | Alternative Considered | Why We Chose This |
+|----------|----------------------|-------------------|
+| Hand-rolled sync fan-out | `tokio::sync::broadcast` | This crate is sync-first and assumes no runtime. `blocking_recv()` **panics** ("Cannot block the current thread from within a runtime") when the caller's thread is already inside a runtime — the same runtime-within-runtime failure tracked against `sonos-stream` in `docs/STATUS.md` — and `broadcast::Receiver` has no `recv_timeout`, which `ChangeIterator` needs. Its fixed ring also drops events for slow consumers |
+| Broadcast to all | Enforce a single consumer (`Result`/panic/compile-time move) | Cheaper and honest, but it forecloses the multi-consumer case instead of serving it. Two event loops is a reasonable thing for a dashboard to want |
+| Unbounded per-subscriber queues | Bounded queues with a drop policy | Dropping events silently would recreate the very bug being fixed. Bounded-with-detection is possible later without changing the API shape, since nothing is dropped today |
+| No replay for late subscribers | Buffer recent events for replay | The store already answers "what is the current state"; an event stream answers "what changed since I started listening". A replay buffer would need a retention policy and would blur the two |
 
 ### 4.1a Feature: monotonic write ordering
 
@@ -853,8 +911,10 @@ fixed-tick loop wants a bounded wait.
 
 #### How
 
-`TryIter` (`src/iter.rs:126`) and `TimeoutIter` (`:139`) are thin borrows over the same
-receiver, so no variant takes ownership and all can be used against one `StateManager`.
+`TryIter` and `TimeoutIter` are thin borrows over *one* `ChangeIterator`'s own queue, so no
+variant takes ownership and all can be used against one iterator. They are views, not new
+subscribers: they consume the same events `recv()` would. Call `iter()` again for an independent
+stream — see 4.1b.
 
 ### 4.6 Feature: per-event panic containment
 
@@ -1316,10 +1376,10 @@ The workspace versions together; breaking changes ride the `sonos-sdk` version.
 
 | Limitation | Impact | Workaround | Planned Fix |
 |------------|--------|------------|-------------|
-| Single shared `ChangeIterator` receiver | Concurrent iterators compete for events instead of each seeing all | Drain from one place and fan out in application code | Would need a broadcast primitive |
 | Properties start as `None` | First `get()` before any event returns nothing | Use the SDK's `fetch()` or `watch_or_fetch()` | — |
 | `DeviceProperties` and `GroupManagement` decode to empty | No properties from those services | — | Tracked in `docs/STATUS.md` |
-| Unbounded notification channel | A never-draining consumer grows memory. `ChangeEvent` now carries a payload (~168 bytes vs. ~48 before, plus heap strings for `CurrentTrack`), so a stalled consumer accumulates roughly 3.5x faster than it used to. Nothing is dropped, which is the intended tradeoff | Drain, or use `try_iter()` per frame | Bounded channel with a drop policy |
+| Unbounded notification queues, now one per subscriber | A never-draining consumer grows memory, and each extra `iter()` adds its own queue plus a `ChangeEvent` clone (~168 bytes, plus heap strings for `CurrentTrack`) per event. Nothing is dropped, which is the intended tradeoff | Drain, or use `try_iter()` per frame; drop iterators you no longer read | Bounded queues with a *detectable* drop policy — a silent drop would reintroduce the bug 4.1b fixed |
+| A `ChangeIterator` receives only events emitted after it was created | Taking an iterator after a write misses that write; there is no replay | Subscribe before the writes you want to observe; read current state from `get_property()` | None planned — see 4.1b trade-offs |
 | `cleanup_timeout` unused | Builder option has no effect | Ignore it | Remove or wire through |
 | `system_props` write-only in practice | `Topology` is stored by `initialize()` (`src/state.rs:681`) but has no public system-scoped getter | Use `groups()` / `speaker_infos()` | Add a system-scope accessor |
 | An empty `ZoneGroupTopology` snapshot cannot express "no groups" | A hypothetical genuine all-groups-dissolved event would be ignored (`src/event_worker.rs:270`) | None needed — Sonos always reports at least one single-member group per speaker | Diff against the previous snapshot instead of replacing |

@@ -562,6 +562,18 @@ impl SonosSystem {
     ///
     /// Only emits events for properties that have been `watch()`ed.
     ///
+    /// Each call returns an **independent** iterator, and every iterator
+    /// receives every event. Two event loops — say a UI thread and a logger —
+    /// therefore both see the whole stream instead of splitting it between them.
+    ///
+    /// An iterator only receives events emitted *after* it was created, so take
+    /// it before the writes you want to observe. For current state rather than
+    /// changes, use `speaker.volume.get()` and friends.
+    ///
+    /// Each iterator owns an unbounded queue: a slow consumer never loses an
+    /// event and never blocks a fast one, but one that never drains will grow.
+    /// Drop iterators you no longer read.
+    ///
     /// # Example
     ///
     /// ```rust,ignore
