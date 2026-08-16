@@ -129,15 +129,6 @@ impl EventDetector {
             .unwrap_or(false)
     }
 
-    /// Check whether polling fallback is currently active for a registration
-    pub async fn is_polling_active(&self, registration_id: RegistrationId) -> bool {
-        let registrations = self.registrations.read().await;
-        registrations
-            .get(&registration_id)
-            .map(|reg| reg.polling_reason.is_some())
-            .unwrap_or(false)
-    }
-
     /// Mark polling as active for a registration without going through the
     /// timeout path (e.g. polling started eagerly from firewall detection).
     ///
@@ -152,6 +143,17 @@ impl EventDetector {
         let mut registrations = self.registrations.write().await;
         if let Some(reg) = registrations.get_mut(&registration_id) {
             reg.polling_reason = Some(reason);
+        }
+    }
+
+    /// Force a registration's `last_event_time` far into the past, so it is
+    /// unambiguously past any `event_timeout`. Test-only: lets tests establish the
+    /// "events have stopped" precondition without a load-sensitive real sleep.
+    #[cfg(test)]
+    pub(crate) async fn backdate_last_event_for_test(&self, registration_id: RegistrationId) {
+        let mut registrations = self.registrations.write().await;
+        if let Some(reg) = registrations.get_mut(&registration_id) {
+            reg.last_event_time = Instant::now() - Duration::from_secs(3600);
         }
     }
 
@@ -506,7 +508,6 @@ mod tests {
         detector
             .mark_polling_active(registration_id, PollingReason::FirewallBlocked)
             .await;
-        assert!(detector.is_polling_active(registration_id).await);
 
         // UPnP events resume -> Stop, carrying the reason polling began.
         detector.record_event(registration_id).await;
@@ -518,7 +519,6 @@ mod tests {
 
         // Polling state is cleared, so timeout detection is re-armed and no
         // duplicate Stop is emitted for the next event.
-        assert!(!detector.is_polling_active(registration_id).await);
         detector.record_event(registration_id).await;
         assert!(receiver.try_recv().is_err(), "Stop must not repeat");
     }

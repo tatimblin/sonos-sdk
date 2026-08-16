@@ -20,8 +20,13 @@ pub struct BrokerConfig {
     /// Default: 30 seconds
     pub event_timeout: Duration,
 
-    /// Delay after proactive firewall detection before activating polling
+    /// Delay after proactive firewall detection before activating polling.
     /// Default: 5 seconds
+    ///
+    /// **Currently has no effect.** Its only reader was
+    /// `EventDetector::should_stop_polling`, a time-based heuristic replaced by an
+    /// explicit polling-state machine (see `docs/specs/sonos-stream.md` §3.2). Retained
+    /// for API compatibility; scheduled for removal.
     pub polling_activation_delay: Duration,
 
     /// Base interval for polling operations

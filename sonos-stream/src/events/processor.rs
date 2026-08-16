@@ -12,7 +12,7 @@ use sonos_api::events::EventProcessor as ApiEventProcessor;
 
 use crate::error::{EventProcessingError, EventProcessingResult};
 use crate::events::types::{EnrichedEvent, EventData, EventSource};
-use crate::registry::RegistrationId;
+use crate::registry::{RegistrationId, SpeakerServicePair};
 use crate::subscription::event_detector::EventDetector;
 use crate::subscription::manager::SubscriptionManager;
 
@@ -93,8 +93,36 @@ impl EventProcessor {
             .record_event_received(&payload.subscription_id)
             .await;
 
-        // Report liveness to the event detector.
-        self.record_event_liveness(registration_id).await;
+        // Everything from here on needs only the registration context, not the
+        // subscription wrapper, so it lives in a separately testable function.
+        self.process_notification_for_registration(
+            registration_id,
+            pair,
+            payload.subscription_id,
+            &payload.event_xml,
+        )
+        .await
+    }
+
+    /// Handle a UPnP notification once its registration context is known.
+    ///
+    /// Split out of [`Self::process_upnp_notification`] purely for testability. The
+    /// only step it does not cover is the SID → subscription lookup, which requires a
+    /// real `ManagedSubscription` — constructible only by an actual UPnP SUBSCRIBE
+    /// round-trip against a device. Everything that was historically broken, notably
+    /// the `EventDetector::record_event` liveness report, is inside this function and
+    /// is therefore reachable from unit tests.
+    async fn process_notification_for_registration(
+        &self,
+        registration_id: RegistrationId,
+        pair: &SpeakerServicePair,
+        subscription_id: String,
+        event_xml: &str,
+    ) -> EventProcessingResult<()> {
+        // Report liveness to the event detector. This suppresses the false
+        // "UPnP is dead" timeout and, if polling fallback is currently active for
+        // this registration, triggers a request to stop polling.
+        self.event_detector.record_event(registration_id).await;
 
         // Notify firewall coordinator that an event was received
         if let Some(coordinator) = &self.firewall_coordinator {
@@ -107,8 +135,8 @@ impl EventProcessor {
             .process_upnp_event(
                 pair.speaker_ip, // speaker_ip is already an IpAddr
                 pair.service,
-                payload.subscription_id.clone(),
-                &payload.event_xml,
+                subscription_id.clone(),
+                event_xml,
             )
             .map_err(|e| EventProcessingError::Parsing(format!("API processing failed: {e}")))?;
 
@@ -121,9 +149,7 @@ impl EventProcessor {
             registration_id,
             pair.speaker_ip,
             pair.service,
-            EventSource::UPnPNotification {
-                subscription_id: payload.subscription_id,
-            },
+            EventSource::UPnPNotification { subscription_id },
             event_data,
         );
 
@@ -145,20 +171,6 @@ impl EventProcessor {
         }
 
         Ok(())
-    }
-
-    /// Report to the [`EventDetector`] that a UPnP event arrived for a registration.
-    ///
-    /// Extracted from `process_upnp_notification` so it can be exercised without a
-    /// live subscription: everything before this point in that method requires a
-    /// real `ManagedSubscription`, which can only be built by an actual UPnP
-    /// SUBSCRIBE round-trip against a device.
-    ///
-    /// Reporting liveness suppresses the false "UPnP is dead" timeout and, when
-    /// polling fallback is currently active for the registration, triggers a request
-    /// to stop polling.
-    pub(crate) async fn record_event_liveness(&self, registration_id: RegistrationId) {
-        self.event_detector.record_event(registration_id).await;
     }
 
     /// Process a synthetic event from polling (already enriched)
@@ -491,39 +503,76 @@ mod tests {
         (processor, detector, event_receiver)
     }
 
+    /// A real AVTransport UPnP NOTIFY body, so the test drives the actual parse and
+    /// enrichment path rather than a stub.
+    const AVTRANSPORT_NOTIFY_XML: &str = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0">
+            <e:property>
+                <LastChange>&lt;Event xmlns="urn:schemas-upnp-org:metadata-1-0/AVT/"&gt;
+                    &lt;InstanceID val="0"&gt;
+                        &lt;TransportState val="PLAYING"/&gt;
+                        &lt;TransportStatus val="OK"/&gt;
+                        &lt;CurrentTrack val="1"/&gt;
+                        &lt;NumberOfTracks val="5"/&gt;
+                    &lt;/InstanceID&gt;
+                &lt;/Event&gt;</LastChange>
+            </e:property>
+        </e:propertyset>"#;
+
     /// Regression test for the headline defect: `EventDetector::record_event` had no
     /// production caller, so `last_event_time` never advanced and every registration
     /// was declared timed out — activating polling on top of working UPnP events.
     ///
-    /// Feeding a UPnP event through the processor must leave the detector reporting
-    /// that polling is NOT needed, even though the configured timeout has elapsed.
+    /// This drives the real notification-handling path with a real UPnP event body,
+    /// so deleting the `record_event` call from that path fails the test. The only
+    /// production step not covered is the SID → subscription lookup, which needs a
+    /// live `ManagedSubscription`.
     #[tokio::test]
     async fn test_processor_records_event_with_detector() {
-        // Timeout so short that a registration is "timed out" almost immediately.
-        let (processor, detector, _rx) = test_processor(Duration::from_millis(1));
+        // Long timeout, and the registration is backdated past it below. Deterministic:
+        // a short timeout plus a real sleep is load-sensitive and does flake.
+        let (processor, detector, mut rx) = test_processor(Duration::from_secs(30));
 
         let registration_id = RegistrationId::new(1);
         let pair = SpeakerServicePair::new(
             "192.168.1.100".parse().unwrap(),
             sonos_api::Service::AVTransport,
         );
-        detector.register_subscription(registration_id, pair).await;
+        detector
+            .register_subscription(registration_id, pair.clone())
+            .await;
 
-        // Let the 1ms timeout lapse: without a recorded event, polling is due.
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        // Backdate the last event time so the registration is unambiguously timed out.
+        detector.backdate_last_event_for_test(registration_id).await;
         assert!(
             detector.should_start_polling(registration_id).await,
             "precondition: registration should look timed out before any event"
         );
 
-        // A UPnP event arrives and the processor reports it.
-        processor.record_event_liveness(registration_id).await;
+        // A UPnP notification arrives and is processed for real.
+        processor
+            .process_notification_for_registration(
+                registration_id,
+                &pair,
+                "uuid:sub-1".to_string(),
+                AVTRANSPORT_NOTIFY_XML,
+            )
+            .await
+            .expect("notification should process");
 
         assert!(
             !detector.should_start_polling(registration_id).await,
-            "processor must record the event with the detector, otherwise polling \
-             is activated on top of healthy UPnP events"
+            "processing a UPnP notification must record the event with the detector, \
+             otherwise polling is activated on top of healthy UPnP events"
         );
+
+        // Sanity check that the event really flowed through, so the assertion above
+        // cannot pass via an early return.
+        let event = rx.try_recv().expect("enriched event should be emitted");
+        assert_eq!(event.registration_id, registration_id);
+        assert!(matches!(
+            event.event_source,
+            EventSource::UPnPNotification { .. }
+        ));
     }
 
     #[test]

@@ -336,102 +336,154 @@ impl EventBroker {
         let polling_scheduler = Arc::clone(&self.polling_scheduler);
         let subscription_manager = Arc::clone(&self.subscription_manager);
         let event_detector = Arc::clone(&self.event_detector);
+        let registry = Arc::clone(&self.registry);
 
-        // Requests are handled strictly in order on a single task. Stop awaits the
-        // polling task's shutdown (bounded by one poll interval), which is slower
-        // than Start, but serialising is deliberate: concurrent handling could apply
-        // a Start and a Stop for the same registration out of order.
+        // Requests are handled strictly in order on a single task. Serialising is
+        // deliberate: concurrent handling could apply a Start and a Stop for the same
+        // registration out of order.
+        //
+        // A Stop can block this loop for a long time. `PollingTask::shutdown` only
+        // sets an AtomicBool that the polling loop checks at the top of each
+        // iteration, so an in-flight iteration must finish first: up to
+        // `current_interval` of sleep, plus a full poll (4-5 sequential SOAP calls,
+        // each with the ureq timeout), plus — on the error path — a backoff sleep
+        // capped at `max_polling_interval` that is *not* guarded by the shutdown
+        // flag. Against an unreachable speaker that is tens of seconds. Requests
+        // queued behind a Stop can therefore be stale by the time they are handled,
+        // which is why `handle_polling_request` re-checks liveness.
         let task = tokio::spawn(async move {
             info!("Starting polling request processing");
 
             while let Some(request) = receiver.recv().await {
-                match request.action {
-                    PollingAction::Start => {
-                        debug!(
-                            speaker_ip = %request.speaker_service_pair.speaker_ip,
-                            service = ?request.speaker_service_pair.service,
-                            reason = ?request.reason,
-                            registration_id = %request.registration_id,
-                            "Starting polling for speaker service"
-                        );
-
-                        if let Err(e) = polling_scheduler
-                            .start_polling(
-                                request.registration_id,
-                                request.speaker_service_pair.clone(),
-                            )
-                            .await
-                        {
-                            error!(
-                                registration_id = %request.registration_id,
-                                speaker_ip = %request.speaker_service_pair.speaker_ip,
-                                service = ?request.speaker_service_pair.service,
-                                error = %e,
-                                "Failed to start polling"
-                            );
-                            // The detector marked this registration as polling when it
-                            // sent the request. Polling never started, so clear the
-                            // marker or timeout detection stays suppressed forever.
-                            event_detector
-                                .clear_polling_active(request.registration_id)
-                                .await;
-                        } else {
-                            // Mark polling as active in subscription
-                            if let Some(subscription) = subscription_manager
-                                .get_subscription(request.registration_id)
-                                .await
-                            {
-                                subscription.set_polling_active(true);
-                            }
-                        }
-                    }
-                    PollingAction::Stop => {
-                        debug!(
-                            speaker_ip = %request.speaker_service_pair.speaker_ip,
-                            service = ?request.speaker_service_pair.service,
-                            registration_id = %request.registration_id,
-                            reason = ?request.reason,
-                            "UPnP events resumed; stopping polling for speaker service"
-                        );
-
-                        // `stop_polling` removes the task from the scheduler map before
-                        // awaiting its shutdown, so a failure here still means the task
-                        // is gone from the scheduler's view. Clear the subscription flag
-                        // either way, otherwise stats would report polling forever.
-                        if let Err(e) = polling_scheduler
-                            .stop_polling(request.registration_id)
-                            .await
-                        {
-                            error!(
-                                registration_id = %request.registration_id,
-                                speaker_ip = %request.speaker_service_pair.speaker_ip,
-                                service = ?request.speaker_service_pair.service,
-                                error = %e,
-                                "Error while stopping polling task"
-                            );
-                        }
-
-                        if let Some(subscription) = subscription_manager
-                            .get_subscription(request.registration_id)
-                            .await
-                        {
-                            subscription.set_polling_active(false);
-                        }
-
-                        info!(
-                            registration_id = %request.registration_id,
-                            speaker_ip = %request.speaker_service_pair.speaker_ip,
-                            service = ?request.speaker_service_pair.service,
-                            "Polling stopped; back to UPnP events"
-                        );
-                    }
-                }
+                Self::handle_polling_request(
+                    request,
+                    &polling_scheduler,
+                    &subscription_manager,
+                    &event_detector,
+                    &registry,
+                )
+                .await;
             }
 
             info!("Polling request processing stopped");
         });
 
         self.background_tasks.push(task);
+    }
+
+    /// Apply a single [`PollingRequest`].
+    ///
+    /// A free-standing associated function taking its collaborators explicitly so the
+    /// start/stop transitions can be unit-tested without a live broker (which needs a
+    /// bound callback server and a reachable device).
+    async fn handle_polling_request(
+        request: PollingRequest,
+        polling_scheduler: &PollingScheduler,
+        subscription_manager: &SubscriptionManager,
+        event_detector: &EventDetector,
+        registry: &SpeakerServiceRegistry,
+    ) {
+        match request.action {
+            PollingAction::Start => {
+                // Re-check liveness before spawning anything. This request may have
+                // been queued behind a slow Stop (see the comment in
+                // `start_polling_request_processing`) and the registration may have
+                // been unregistered in the meantime. `start_polling` validates only
+                // "already polling" and the concurrency cap — it will happily spawn a
+                // task for a registration that no longer exists anywhere, and nothing
+                // could then stop it: no UPnP event can arrive without a subscription,
+                // the detector has no entry, and `unregister_speaker_service` returns
+                // NotFound before touching the scheduler. Only `shutdown_all()` would
+                // ever reap it.
+                if registry.get_pair(request.registration_id).await.is_none() {
+                    debug!(
+                        registration_id = %request.registration_id,
+                        speaker_ip = %request.speaker_service_pair.speaker_ip,
+                        service = ?request.speaker_service_pair.service,
+                        "Dropping stale polling start: registration no longer exists"
+                    );
+                    return;
+                }
+
+                debug!(
+                    speaker_ip = %request.speaker_service_pair.speaker_ip,
+                    service = ?request.speaker_service_pair.service,
+                    reason = ?request.reason,
+                    registration_id = %request.registration_id,
+                    "Starting polling for speaker service"
+                );
+
+                if let Err(e) = polling_scheduler
+                    .start_polling(
+                        request.registration_id,
+                        request.speaker_service_pair.clone(),
+                    )
+                    .await
+                {
+                    error!(
+                        registration_id = %request.registration_id,
+                        speaker_ip = %request.speaker_service_pair.speaker_ip,
+                        service = ?request.speaker_service_pair.service,
+                        error = %e,
+                        "Failed to start polling"
+                    );
+                    // The detector marked this registration as polling when it
+                    // sent the request. Polling never started, so clear the
+                    // marker or timeout detection stays suppressed forever.
+                    event_detector
+                        .clear_polling_active(request.registration_id)
+                        .await;
+                } else {
+                    // Mark polling as active in subscription
+                    if let Some(subscription) = subscription_manager
+                        .get_subscription(request.registration_id)
+                        .await
+                    {
+                        subscription.set_polling_active(true);
+                    }
+                }
+            }
+            PollingAction::Stop => {
+                debug!(
+                    speaker_ip = %request.speaker_service_pair.speaker_ip,
+                    service = ?request.speaker_service_pair.service,
+                    registration_id = %request.registration_id,
+                    reason = ?request.reason,
+                    "UPnP events resumed; stopping polling for speaker service"
+                );
+
+                // `stop_polling` removes the task from the scheduler map before
+                // awaiting its shutdown, so a failure here still means the task
+                // is gone from the scheduler's view. Clear the subscription flag
+                // either way, otherwise stats would report polling forever.
+                if let Err(e) = polling_scheduler
+                    .stop_polling(request.registration_id)
+                    .await
+                {
+                    error!(
+                        registration_id = %request.registration_id,
+                        speaker_ip = %request.speaker_service_pair.speaker_ip,
+                        service = ?request.speaker_service_pair.service,
+                        error = %e,
+                        "Error while stopping polling task"
+                    );
+                }
+
+                if let Some(subscription) = subscription_manager
+                    .get_subscription(request.registration_id)
+                    .await
+                {
+                    subscription.set_polling_active(false);
+                }
+
+                info!(
+                    registration_id = %request.registration_id,
+                    speaker_ip = %request.speaker_service_pair.speaker_ip,
+                    service = ?request.speaker_service_pair.service,
+                    "Polling stopped; back to UPnP events"
+                );
+            }
+        }
     }
 
     /// Start subscription renewal monitoring
@@ -574,36 +626,17 @@ impl EventBroker {
                         .await;
 
                     // Evaluate firewall status for immediate polling decision
-                    if let Some(request) = self
-                        .event_detector
-                        .evaluate_firewall_status(registration_id, &pair)
-                        .await
-                    {
-                        polling_reason = Some(request.reason.clone());
-
-                        // Start polling immediately
-                        if let Err(e) = self
-                            .polling_scheduler
-                            .start_polling(registration_id, pair.clone())
-                            .await
-                        {
-                            error!(
-                                registration_id = %registration_id,
-                                error = %e,
-                                "Failed to start immediate polling"
-                            );
-                        } else {
+                    let eager = Self::activate_eager_polling(
+                        registration_id,
+                        &pair,
+                        &self.event_detector,
+                        &self.polling_scheduler,
+                    )
+                    .await;
+                    if let Some((reason, started)) = eager {
+                        polling_reason = Some(reason);
+                        if started {
                             subscription.set_polling_active(true);
-                            // Tell the detector this registration is polling, so the
-                            // first UPnP event that does arrive emits a Stop.
-                            self.event_detector
-                                .mark_polling_active(registration_id, request.reason.clone())
-                                .await;
-                            debug!(
-                                registration_id = %registration_id,
-                                reason = ?request.reason,
-                                "Started immediate polling"
-                            );
                         }
                     }
                 }
@@ -669,8 +702,107 @@ impl EventBroker {
             BrokerError::Registry(crate::error::RegistryError::NotFound(registration_id))
         })?;
 
+        // Capture the UPnP subscription ID before the subscription is dropped — it is
+        // needed to release the SID from the EventRouter during teardown. Resolving it
+        // here, and passing it in, is what guarantees the read happens before
+        // `remove_subscription` destroys the wrapper.
+        let subscription_id = self
+            .subscription_manager
+            .get_subscription(registration_id)
+            .await
+            .map(|s| s.subscription_id().to_string());
+
+        let removed_pair = Self::teardown_registration(
+            registration_id,
+            subscription_id.as_deref(),
+            &self.polling_scheduler,
+            &self.subscription_manager,
+            self.event_router.as_deref(),
+            &self.event_detector,
+            &self.registry,
+        )
+        .await?;
+
+        debug!(
+            speaker_ip = %pair.speaker_ip,
+            service = ?pair.service,
+            registration_id = %registration_id,
+            "Unregistration completed"
+        );
+
+        Ok(removed_pair)
+    }
+
+    /// Decide whether firewall status warrants starting polling immediately, and if so
+    /// start it and record the fact with the detector.
+    ///
+    /// Returns `Some((reason, started))` when polling was called for, where `started`
+    /// says whether the polling task actually began. Marking the detector is what makes
+    /// the later `PollingAction::Stop` possible: without it the detector has no idea
+    /// this registration is polling and would never emit a stop when events resume.
+    ///
+    /// Split out of `register_speaker_service`, and taking its collaborators
+    /// explicitly, because the call site sits in the `Ok(subscription)` branch and is
+    /// otherwise reachable only with a real `ManagedSubscription` from a live UPnP
+    /// SUBSCRIBE.
+    async fn activate_eager_polling(
+        registration_id: RegistrationId,
+        pair: &SpeakerServicePair,
+        event_detector: &EventDetector,
+        polling_scheduler: &PollingScheduler,
+    ) -> Option<(PollingReason, bool)> {
+        let request = event_detector
+            .evaluate_firewall_status(registration_id, pair)
+            .await?;
+
+        if let Err(e) = polling_scheduler
+            .start_polling(registration_id, pair.clone())
+            .await
+        {
+            error!(
+                registration_id = %registration_id,
+                error = %e,
+                "Failed to start immediate polling"
+            );
+            return Some((request.reason, false));
+        }
+
+        // Tell the detector this registration is polling, so the first UPnP event
+        // that does arrive emits a Stop.
+        event_detector
+            .mark_polling_active(registration_id, request.reason.clone())
+            .await;
+        debug!(
+            registration_id = %registration_id,
+            reason = ?request.reason,
+            "Started immediate polling"
+        );
+
+        Some((request.reason, true))
+    }
+
+    /// Tear down all state for a registration, given its already-resolved SID.
+    ///
+    /// Split out of [`Self::unregister_speaker_service`], and taking its collaborators
+    /// explicitly, so the teardown sequence — including the EventRouter SID release
+    /// that used to be missing entirely — is reachable from unit tests without
+    /// constructing a broker (which binds a real callback-server socket).
+    ///
+    /// The SID is a parameter rather than looked up here both because obtaining a real
+    /// one requires a live `ManagedSubscription` and because it must be read before
+    /// `remove_subscription` drops the wrapper.
+    #[allow(clippy::too_many_arguments)]
+    async fn teardown_registration(
+        registration_id: RegistrationId,
+        subscription_id: Option<&str>,
+        polling_scheduler: &PollingScheduler,
+        subscription_manager: &SubscriptionManager,
+        event_router: Option<&callback_server::router::EventRouter>,
+        event_detector: &EventDetector,
+        registry: &SpeakerServiceRegistry,
+    ) -> BrokerResult<SpeakerServicePair> {
         // Stop polling if active
-        if let Err(e) = self.polling_scheduler.stop_polling(registration_id).await {
+        if let Err(e) = polling_scheduler.stop_polling(registration_id).await {
             warn!(
                 registration_id = %registration_id,
                 error = %e,
@@ -678,17 +810,8 @@ impl EventBroker {
             );
         }
 
-        // Capture the UPnP subscription ID before the subscription is dropped —
-        // it's needed to release the SID from the EventRouter below.
-        let subscription_id = self
-            .subscription_manager
-            .get_subscription(registration_id)
-            .await
-            .map(|s| s.subscription_id().to_string());
-
         // Remove subscription
-        if let Err(e) = self
-            .subscription_manager
+        if let Err(e) = subscription_manager
             .remove_subscription(registration_id)
             .await
         {
@@ -700,24 +823,15 @@ impl EventBroker {
         }
 
         // Release the SID from the EventRouter.
-        release_router_sid(self.event_router.as_deref(), subscription_id.as_deref()).await;
+        release_router_sid(event_router, subscription_id).await;
 
         // Unregister from event detector
-        self.event_detector
+        event_detector
             .unregister_subscription(registration_id)
             .await;
 
         // Remove from registry
-        let removed_pair = self.registry.unregister(registration_id).await?;
-
-        debug!(
-            speaker_ip = %pair.speaker_ip,
-            service = ?pair.service,
-            registration_id = %registration_id,
-            "Unregistration completed"
-        );
-
-        Ok(removed_pair)
+        Ok(registry.unregister(registration_id).await?)
     }
 
     /// Get an event iterator for consuming events
@@ -848,6 +962,7 @@ impl std::fmt::Display for BrokerStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[tokio::test]
     async fn test_broker_creation() {
@@ -874,34 +989,305 @@ mod tests {
         assert!(!result.was_duplicate);
     }
 
-    /// `unregister_speaker_service` used to tear down its own state but never call
-    /// `EventRouter::unregister`, so SIDs accumulated for the process lifetime and
-    /// the router kept routing events for dead subscriptions.
+    /// The unregistration path used to tear down its own state but never call
+    /// `EventRouter::unregister`, so SIDs accumulated for the process lifetime and the
+    /// router kept routing events for subscriptions that no longer existed.
+    ///
+    /// This drives the broker's real teardown sequence. The SID is supplied as an
+    /// argument because obtaining a genuine one needs a live `ManagedSubscription`
+    /// (only `ManagedSubscription::create()` builds one, via a real UPnP SUBSCRIBE);
+    /// the release call site itself is inside `teardown_registration` and is therefore
+    /// covered.
     #[tokio::test]
     async fn test_unregister_releases_router_sid() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let router = callback_server::router::EventRouter::new(tx);
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        let scheduler = PollingScheduler::new(
+            event_tx,
+            Duration::from_secs(5),
+            Duration::from_secs(30),
+            false,
+            50,
+        );
+        let subscription_manager =
+            Arc::new(SubscriptionManager::new("http://callback.url".to_string()));
+        let detector = EventDetector::new(Duration::from_secs(30));
+        let registry = SpeakerServiceRegistry::new(100);
+
+        // A router whose channel this test owns, standing in for the broker's.
+        let (router_tx, mut router_rx) = mpsc::unbounded_channel();
+        let router = callback_server::router::EventRouter::new(router_tx);
 
         let sid = "uuid:leak-check";
         router.register(sid.to_string()).await;
 
-        // While registered, events for the SID are routed.
-        router
-            .route_event(sid.to_string(), "<event>live</event>".to_string())
-            .await;
-        assert!(rx.try_recv().is_ok(), "registered SID should route events");
+        let speaker_ip: IpAddr = "203.0.113.10".parse().unwrap();
+        let registration_id = registry
+            .register(speaker_ip, Service::AVTransport)
+            .await
+            .unwrap();
 
-        // Unregistration path releases the SID.
-        release_router_sid(Some(&router), Some(sid)).await;
+        // Real teardown sequence, with the SID resolved the way
+        // unregister_speaker_service resolves it.
+        EventBroker::teardown_registration(
+            registration_id,
+            Some(sid),
+            &scheduler,
+            &subscription_manager,
+            Some(&router),
+            &detector,
+            &registry,
+        )
+        .await
+        .expect("teardown should succeed");
 
-        // The SID is gone: events are no longer routed to the processor.
+        // A registered SID is forwarded to the channel immediately; an unregistered
+        // one is only buffered. So the discriminator is *whether the event arrives
+        // now*: if teardown released the SID, nothing is forwarded.
         router
             .route_event(sid.to_string(), "<event>stale</event>".to_string())
             .await;
         assert!(
-            rx.try_recv().is_err(),
-            "SID should be removed from the router's active set"
+            router_rx.try_recv().is_err(),
+            "teardown must remove the SID from the router's active set, so events for \
+             it are no longer forwarded"
         );
+
+        // And it really was buffered rather than dropped: re-registering replays it.
+        // This also proves the assertion above cannot pass by the event vanishing.
+        router.register(sid.to_string()).await;
+        let replayed = router_rx
+            .try_recv()
+            .expect("buffered event should replay on re-register");
+        assert_eq!(replayed.subscription_id, sid);
+        assert!(replayed.event_xml.contains("stale"));
+    }
+
+    /// A `Start` can be queued behind a slow `Stop` and drain after its registration
+    /// has been unregistered. `start_polling` validates only "already polling" and the
+    /// concurrency cap, so without a staleness check it spawns a polling task that
+    /// nothing can ever stop: no subscription exists so no UPnP event can arrive, the
+    /// detector has no entry, and `unregister_speaker_service` returns NotFound before
+    /// reaching the scheduler. It would poll until process exit.
+    #[tokio::test]
+    async fn test_stale_start_does_not_spawn_polling_task() {
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        let scheduler = PollingScheduler::new(
+            event_tx,
+            Duration::from_secs(5),
+            Duration::from_secs(30),
+            false,
+            50,
+        );
+        let subscription_manager =
+            Arc::new(SubscriptionManager::new("http://callback.url".to_string()));
+        let detector = EventDetector::new(Duration::from_secs(30));
+        let registry = SpeakerServiceRegistry::new(100);
+
+        let speaker_ip: IpAddr = "203.0.113.20".parse().unwrap();
+        let pair = SpeakerServicePair::new(speaker_ip, Service::AVTransport);
+
+        // A registration that was unregistered before the queued Start drained: the
+        // registry has no entry for this ID.
+        let stale_id = RegistrationId::new(999);
+
+        EventBroker::handle_polling_request(
+            PollingRequest {
+                registration_id: stale_id,
+                speaker_service_pair: pair.clone(),
+                action: PollingAction::Start,
+                reason: PollingReason::EventTimeout,
+            },
+            &scheduler,
+            &subscription_manager,
+            &detector,
+            &registry,
+        )
+        .await;
+
+        assert!(
+            !scheduler.is_polling(stale_id).await,
+            "a Start for an unregistered registration must not spawn a polling task"
+        );
+
+        // A live registration is still honoured, so the guard is not simply blocking
+        // every Start.
+        let live_id = registry
+            .register(speaker_ip, Service::AVTransport)
+            .await
+            .unwrap();
+        EventBroker::handle_polling_request(
+            PollingRequest {
+                registration_id: live_id,
+                speaker_service_pair: pair,
+                action: PollingAction::Start,
+                reason: PollingReason::EventTimeout,
+            },
+            &scheduler,
+            &subscription_manager,
+            &detector,
+            &registry,
+        )
+        .await;
+
+        assert!(
+            scheduler.is_polling(live_id).await,
+            "a Start for a live registration must still start polling"
+        );
+
+        scheduler.shutdown_all().await.unwrap();
+    }
+
+    /// Eagerly-started (firewall-driven) polling must be recorded with the detector.
+    /// Without it the detector has no entry saying this registration is polling, so the
+    /// first resumed UPnP event would never emit a `PollingAction::Stop` and the
+    /// fallback would run forever — fix (b) would cover only the timeout path.
+    #[tokio::test]
+    async fn test_eager_polling_is_recorded_with_detector() {
+        // A coordinator with a tiny wait timeout reaches `Blocked` without any network:
+        // detection starts, no event arrives, and it times out as blocked.
+        let coordinator = Arc::new(FirewallDetectionCoordinator::new(FirewallDetectionConfig {
+            event_wait_timeout: Duration::from_millis(50),
+            enable_caching: true,
+            max_cached_devices: 16,
+        }));
+
+        let speaker_ip: IpAddr = "203.0.113.40".parse().unwrap();
+        coordinator.on_first_subscription(speaker_ip).await;
+
+        // Wait for detection to conclude "blocked".
+        let mut status = coordinator.get_device_status(speaker_ip).await;
+        for _ in 0..40 {
+            if status == FirewallStatus::Blocked {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            status = coordinator.get_device_status(speaker_ip).await;
+        }
+        assert_eq!(
+            status,
+            FirewallStatus::Blocked,
+            "precondition: detection should time out as blocked"
+        );
+
+        let mut detector = EventDetector::new(Duration::from_secs(30));
+        detector.set_firewall_coordinator(Arc::clone(&coordinator));
+        let (req_tx, mut req_rx) = mpsc::unbounded_channel();
+        detector.set_polling_request_sender(req_tx);
+
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        let scheduler = PollingScheduler::new(
+            event_tx,
+            Duration::from_secs(60),
+            Duration::from_secs(120),
+            false,
+            50,
+        );
+
+        let registration_id = RegistrationId::new(1);
+        let pair = SpeakerServicePair::new(speaker_ip, Service::AVTransport);
+        detector
+            .register_subscription(registration_id, pair.clone())
+            .await;
+
+        let outcome =
+            EventBroker::activate_eager_polling(registration_id, &pair, &detector, &scheduler)
+                .await;
+        assert_eq!(
+            outcome,
+            Some((PollingReason::FirewallBlocked, true)),
+            "blocked firewall should start polling immediately"
+        );
+
+        // The detector must now consider this registration to be polling, which is
+        // observable as a Stop on the next UPnP event.
+        detector.record_event(registration_id).await;
+        let request = req_rx
+            .try_recv()
+            .expect("eager polling must be recorded, otherwise no Stop is ever emitted");
+        assert!(matches!(request.action, PollingAction::Stop));
+        assert_eq!(request.reason, PollingReason::FirewallBlocked);
+
+        scheduler.shutdown_all().await.unwrap();
+    }
+
+    /// When a `Start` fails, the detector's polling marker must be cleared. The
+    /// detector set it when it sent the request; leaving it set would suppress timeout
+    /// detection for that registration forever, so it could never get another polling
+    /// fallback. Failure is induced with the concurrency cap — no network needed.
+    #[tokio::test]
+    async fn test_failed_start_clears_polling_marker() {
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        // Concurrency cap of 0: `start_polling` checks `tasks.len() >= cap` before
+        // spawning, so every request fails and no polling task is ever created. That
+        // exercises the failure branch with no network and no waiting.
+        let scheduler = PollingScheduler::new(
+            event_tx,
+            Duration::from_secs(5),
+            Duration::from_secs(30),
+            false,
+            0,
+        );
+        let subscription_manager =
+            Arc::new(SubscriptionManager::new("http://callback.url".to_string()));
+        // Short timeout plus a request sender, so the monitoring sweep can be used as
+        // the observable for whether the polling marker was cleared.
+        let mut detector = EventDetector::new(Duration::from_millis(50));
+        let (req_tx, mut req_rx) = mpsc::unbounded_channel();
+        detector.set_polling_request_sender(req_tx);
+        let registry = SpeakerServiceRegistry::new(100);
+
+        // The registration whose Start will fail.
+        let victim_ip: IpAddr = "203.0.113.31".parse().unwrap();
+        let victim_pair = SpeakerServicePair::new(victim_ip, Service::RenderingControl);
+        let victim_id = registry
+            .register(victim_ip, Service::RenderingControl)
+            .await
+            .unwrap();
+        detector
+            .register_subscription(victim_id, victim_pair.clone())
+            .await;
+        detector
+            .mark_polling_active(victim_id, PollingReason::EventTimeout)
+            .await;
+
+        EventBroker::handle_polling_request(
+            PollingRequest {
+                registration_id: victim_id,
+                speaker_service_pair: victim_pair,
+                action: PollingAction::Start,
+                reason: PollingReason::EventTimeout,
+            },
+            &scheduler,
+            &subscription_manager,
+            &detector,
+            &registry,
+        )
+        .await;
+
+        assert!(
+            !scheduler.is_polling(victim_id).await,
+            "precondition: the Start should have failed on the concurrency cap"
+        );
+
+        // Marker cleared => the timeout sweep can request polling again. The sweep
+        // skips registrations whose `polling_reason` is set, so a fresh Start request
+        // arriving is the observable proof the marker was cleared.
+        detector.backdate_last_event_for_test(victim_id).await;
+        let detector = Arc::new(detector);
+        let sweep = detector.start_monitoring().await;
+
+        let request = tokio::time::timeout(Duration::from_secs(2), req_rx.recv())
+            .await
+            .expect(
+                "a failed Start must clear the polling marker, otherwise the sweep \
+                     skips this registration and timeout detection stays suppressed forever",
+            )
+            .expect("channel should deliver a request");
+        assert_eq!(request.registration_id, victim_id);
+        assert!(matches!(request.action, PollingAction::Start));
+
+        sweep.abort();
+        scheduler.shutdown_all().await.unwrap();
     }
 
     #[test]
