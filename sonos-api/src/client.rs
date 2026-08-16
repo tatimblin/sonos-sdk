@@ -97,7 +97,7 @@ impl SonosClient {
             .map_err(|e| match e {
                 soap_client::SoapError::Network(msg) => ApiError::NetworkError(msg),
                 soap_client::SoapError::Parse(msg) => ApiError::ParseError(msg),
-                soap_client::SoapError::Fault(code) => ApiError::SoapFault(code),
+                soap_client::SoapError::Fault { code, .. } => ApiError::SoapFault(code),
             })?;
 
         Op::parse_response(&xml)
@@ -162,7 +162,7 @@ impl SonosClient {
             .map_err(|e| match e {
                 soap_client::SoapError::Network(msg) => ApiError::NetworkError(msg),
                 soap_client::SoapError::Parse(msg) => ApiError::ParseError(msg),
-                soap_client::SoapError::Fault(code) => ApiError::SoapFault(code),
+                soap_client::SoapError::Fault { code, .. } => ApiError::SoapFault(code),
             })?;
 
         operation.parse_response(&xml)
