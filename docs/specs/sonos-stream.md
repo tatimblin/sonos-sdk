@@ -241,9 +241,11 @@ pub struct RegistrationId(u64);
    - Registers subscription ID with EventRouter for event routing
    - Wraps in ManagedSubscriptionWrapper with additional context
 
-4. **Event Arrival** (`src/events/processor.rs:51-126`):
+4. **Event Arrival** (`src/events/processor.rs`):
    - Callback server receives UPnP NOTIFY message
    - EventProcessor looks up subscription by SID
+   - **Reports liveness to the EventDetector via `record_event()`** — this is what
+     keeps timeout detection honest (see 3.2)
    - Parses XML using sonos-api event framework
    - Enriches with registration context
    - Sends through unified event channel
@@ -284,11 +286,89 @@ pub struct RegistrationId(u64);
 
 **Step-by-step**:
 
-1. **Detection Trigger** (`src/broker.rs:441-458`): Firewall status triggers immediate polling decision
-2. **Polling Start** (`src/polling/scheduler.rs:466-504`): PollingScheduler creates new PollingTask
-3. **State Polling** (`src/polling/scheduler.rs:104-259`): PollingTask runs loop with configurable interval
-4. **Change Detection** (`src/polling/strategies.rs:97-160`): Service-specific pollers detect state changes
-5. **Event Generation** (`src/polling/scheduler.rs:183-209`): State changes converted to EnrichedEvents with PollingDetection source
+1. **Detection Trigger**: Firewall status triggers immediate polling decision
+2. **Polling Start** (`src/polling/scheduler.rs`): PollingScheduler creates new PollingTask
+3. **State Polling** (`src/polling/scheduler.rs`): PollingTask runs loop with configurable interval
+4. **Change Detection** (`src/polling/strategies.rs`): Service-specific pollers detect state changes
+5. **Event Generation** (`src/polling/scheduler.rs`): State changes converted to EnrichedEvents with PollingDetection source
+
+#### Polling Fallback Lifecycle (start AND stop)
+
+Polling fallback is a **reversible** state. The full lifecycle is driven by
+`EventDetector`, which owns one `polling_reason: Option<PollingReason>` per
+registration — `Some` means polling is active and a `Stop` is owed.
+
+```
+                     ┌──────────────────────────┐
+                     │  UPnP events (healthy)   │  polling_reason = None
+                     └────────────┬─────────────┘
+       no event for               │              UPnP event arrives
+       `event_timeout`, OR        │              (EventProcessor calls
+       firewall detected blocked  │               record_event)
+                     ▼            │                        ▲
+        PollingRequest{Start}     │           PollingRequest{Stop}
+                     │            │                        │
+                     ▼            ▼                        │
+                     ┌──────────────────────────┐          │
+                     │  Polling fallback active │──────────┘
+                     └──────────────────────────┘  polling_reason = Some(reason)
+```
+
+**Entering polling** — `polling_reason` is set to `Some(..)` in exactly two places, and
+setting it is what suppresses duplicate `Start` requests:
+- `start_monitoring()`'s timeout sweep, on `event_timeout` elapsing → `EventTimeout`
+- `mark_polling_active()`, called by the broker after an eager firewall-driven start
+  → `FirewallBlocked` / `NetworkIssues`
+
+It is deliberately *not* set for `force_polling_mode` or subscription-creation failure:
+those paths never register with the detector at all, because no UPnP event can ever
+arrive to stop them. Such registrations poll unconditionally until unregistered.
+
+**Leaving polling** — `EventProcessor::process_upnp_notification` calls
+`EventDetector::record_event()` for **every** UPnP notification. That call:
+1. advances `last_event_time`, which is the only thing preventing the timeout sweep
+   from firing on a healthy registration; and
+2. if `polling_reason` is `Some`, takes it and emits `PollingRequest{Stop}`,
+   carrying the original reason for diagnostics.
+
+The broker's polling-request task handles `Stop` by calling
+`PollingScheduler::stop_polling()` (which removes the task and awaits its shutdown)
+and clearing the subscription's `polling_active` flag.
+
+**Why `record_event` is load-bearing.** Both properties above depend on it being
+called on the hot path. When it was not (it had no production caller at all), every
+registration's `last_event_time` was frozen at registration time, so *every*
+registration was declared timed out after `event_timeout` and began polling on top
+of perfectly working UPnP events — and because `Stop` was never constructed, it
+never stopped.
+
+Any future refactor that moves event handling must preserve this call.
+`events::processor::tests::test_processor_records_event_with_detector` guards it by
+driving `process_notification_for_registration` — the real path — with a real UPnP
+event body, and has been verified to fail when the `record_event` call is deleted. Note
+that a test calling a thin one-line delegator instead would *not* catch that deletion;
+the guard is only meaningful because it exercises the production call site.
+
+**Failure handling.** If a requested `Start` fails, the broker calls
+`clear_polling_active()`. Without that the registration would keep
+`polling_reason = Some(..)` forever, permanently suppressing timeout detection and
+denying it any future fallback.
+
+**Staleness rule for queued `Start`s.** Polling requests are handled in order by a
+single task, and a `Stop` can block that task for a long time: `PollingTask::shutdown`
+only sets an `AtomicBool` checked at the top of the polling loop, so an in-flight
+iteration must finish first — up to `current_interval` of sleep, plus a full poll (4-5
+sequential SOAP calls), plus, on the error path, a backoff sleep capped at
+`max_polling_interval` that is *not* guarded by the shutdown flag. Against an
+unreachable speaker that is tens of seconds.
+
+A `Start` queued behind such a `Stop` can therefore drain *after* its registration was
+unregistered. `PollingScheduler::start_polling` validates only "already polling" and
+the concurrency cap, so it would happily spawn a task for a registration that exists
+nowhere — and nothing could stop it: no subscription means no UPnP event can arrive,
+the detector has no entry, and `unregister_speaker_service` returns `NotFound` before
+reaching the scheduler. Only `shutdown_all()` would reap it. The handler therefore
+re-checks `registry.get_pair(..)` immediately before starting and drops stale requests.
 
 ### 3.3 Error Flow
 
@@ -455,7 +535,7 @@ pub struct BrokerConfig {
     pub callback_port_range: (u16, u16),
     /// Timeout before considering UPnP events failed (default: 30s)
     pub event_timeout: Duration,
-    /// Delay before activating polling after firewall detection (default: 5s)
+    /// Currently has no effect — retained for API compatibility (see 14.2)
     pub polling_activation_delay: Duration,
     /// Base polling interval (default: 5s)
     pub base_polling_interval: Duration,
@@ -524,11 +604,29 @@ pub enum EventData {
 ```
 
 **Invariants per state**:
-- **Unregistered**: No registry entry, no subscription, no polling
-- **Registered/UPnP Only**: Active UPnP subscription, no polling task
-- **Registered/Polling Only**: May have failed subscription, active polling task
+- **Unregistered**: No registry entry, no subscription, no polling, SID not in EventRouter
+- **Registered/UPnP Only**: Active UPnP subscription, no polling task, EventDetector
+  `polling_reason == None`
+- **Registered/Polling Only**: Active polling task. Two sub-cases, which differ in
+  whether the fallback is reversible:
+  - *Reversible* (UPnP subscription exists, events merely stopped or the firewall was
+    detected as blocking): the registration has an EventDetector entry with
+    `polling_reason == Some(reason)`, and a resumed UPnP event stops polling.
+  - *Irreversible* (`force_polling_mode`, or subscription creation failed): there is
+    **no** EventDetector entry at all, so no `polling_reason` exists and polling
+    continues until the registration is unregistered. No UPnP event can arrive to end
+    it, which is exactly why these paths skip detector registration.
 - **Registered/Both**: Transitioning states, temporary condition
 - **Failed**: Registration exists but no event source active
+
+The UPnP-Only ↔ Polling transition is bidirectional for the reversible sub-case only,
+and is driven entirely by `EventDetector::record_event`; see "Polling Fallback
+Lifecycle" in 3.2.
+
+**Unregistration ordering** (`EventBroker::unregister_speaker_service`): the UPnP
+subscription ID must be read *before* `remove_subscription()` drops the
+subscription, because it is needed to call `EventRouter::unregister()`. Skipping
+that call leaks the SID in the router's active set for the process lifetime.
 
 ---
 
@@ -664,12 +762,34 @@ pub enum PollingError {
 **Location**: Inline `#[cfg(test)]` modules in each source file
 
 **What to test**:
-- [x] Configuration validation (`src/config.rs:231-289`)
-- [x] Registration duplicate detection (`src/registry.rs:305-316`)
-- [x] Event type creation and service mapping (`src/events/types.rs:318-389`)
-- [x] Iterator statistics tracking (`src/events/iterator.rs:569-582`)
-- [x] Adaptive interval calculation (`src/polling/scheduler.rs:660-674`)
-- [x] Change detection for AVTransport/RenderingControl (`src/polling/strategies.rs:432-498`)
+- [x] Configuration validation (`src/config.rs`)
+- [x] Registration duplicate detection (`src/registry.rs`)
+- [x] Event type creation and service mapping (`src/events/types.rs`)
+- [x] Iterator statistics tracking (`src/events/iterator.rs`)
+- [x] Adaptive interval calculation (`src/polling/scheduler.rs`)
+- [x] Change detection for AVTransport/RenderingControl (`src/polling/strategies.rs`)
+- [x] Polling fallback lifecycle, all offline (see 3.2). One test per production call
+      site, each verified to fail when that call site is deleted:
+  - `events::processor::tests::test_processor_records_event_with_detector` — the
+    processor reports event liveness, so a healthy registration is never declared
+    timed out
+  - `subscription::event_detector::tests::test_stop_emitted_when_events_resume_during_polling`
+    — `PollingAction::Stop` is emitted exactly once when events resume
+  - `broker::tests::test_unregister_releases_router_sid` — unregistration removes
+    the SID from the EventRouter
+  - `broker::tests::test_eager_polling_is_recorded_with_detector` — firewall-driven
+    polling is recorded, so a later event can stop it
+  - `broker::tests::test_stale_start_does_not_spawn_polling_task` — a `Start` whose
+    registration has been unregistered is dropped rather than spawning an unstoppable
+    poller
+  - `broker::tests::test_failed_start_clears_polling_marker` — a failed `Start` clears
+    the marker so timeout detection is not suppressed forever
+
+**Mutation-testing note.** These guards are only meaningful because they drive the real
+call sites. A test that exercises a thin extracted helper directly can pass with the
+production call to that helper deleted — which is the same "code that is never called"
+failure this crate already shipped once. When adding coverage here, delete the call site
+and confirm the test actually fails.
 
 **Example**:
 ```rust
@@ -708,6 +828,7 @@ async fn test_duplicate_detection() {
 | `SonosClient` | Real client in tests | No mocking needed for unit tests |
 | `CallbackServer` | Skipped in unit tests | Broker creation may fail gracefully |
 | Network | Test with real devices | Examples require real Sonos |
+| `ManagedSubscription` | Not constructible offline | Only `ManagedSubscription::create()` builds one, and it performs a real UPnP SUBSCRIBE. Logic that would otherwise need one is extracted into functions taking plain arguments (`EventProcessor::record_event_liveness`, `broker::release_router_sid`) so it can be unit-tested with no network. |
 
 ---
 
@@ -740,7 +861,8 @@ async fn test_duplicate_detection() {
 |----------|-------------|---------|---------|
 | HTTP connections | Via SonosClient singleton | On request completion | Yes - shared soap-client |
 | UPnP subscriptions | On registration | On unregistration/shutdown | No - per-registration |
-| Polling tasks | On fallback trigger | On explicit stop or error | No - per-registration |
+| EventRouter SIDs | On subscription creation | On unregistration (`EventRouter::unregister`) | No - per-subscription |
+| Polling tasks | On fallback trigger | On `PollingAction::Stop` (events resumed), unregistration, error, or shutdown | No - per-registration |
 | Event channels | On broker creation | On broker shutdown | No - single channel |
 
 ---
@@ -880,6 +1002,7 @@ BrokerConfig::firewall_simulation()
 
 | Debt Item | Location | Severity | Remediation Plan |
 |-----------|----------|----------|------------------|
+| `BrokerConfig::polling_activation_delay` is unused | `config.rs` | Low | Its only reader was `EventDetector::should_stop_polling`, a dead time-based heuristic replaced by the explicit `polling_reason` state machine (3.2). The field is still public and settable but has no effect; remove it in a follow-up that owns `config.rs`. |
 | eprintln! instead of tracing | Throughout | Low | Replace with tracing macros |
 | Incomplete position info polling | `strategies.rs:84-90` | Medium | Add get_position_info_operation call |
 | Hardcoded error thresholds | `scheduler.rs:239` | Low | Move to BrokerConfig |
@@ -927,3 +1050,4 @@ BrokerConfig::firewall_simulation()
 | Date | Author | Change |
 |------|--------|--------|
 | 2025-01-14 | Claude Code | Initial specification |
+| 2026-08-15 | Claude Code | Documented the polling-fallback lifecycle as reversible (3.2, 5.2): `record_event` liveness reporting, `PollingAction::Stop` on event resumption, and EventRouter SID release on unregistration. Noted `polling_activation_delay` is now unread. |

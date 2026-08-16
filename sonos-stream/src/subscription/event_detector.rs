@@ -19,7 +19,12 @@ use crate::registry::{RegistrationId, SpeakerServicePair};
 struct MonitoredRegistration {
     last_event_time: Instant,
     pair: SpeakerServicePair,
-    polling_activated: bool,
+    /// `Some(reason)` while polling fallback is active for this registration,
+    /// `None` while UPnP events are believed to be working.
+    ///
+    /// This is both the "don't ask for polling twice" guard and the signal that
+    /// a `PollingAction::Stop` is owed once events resume.
+    polling_reason: Option<PollingReason>,
 }
 
 /// Monitors event activity and detects when polling fallback is needed
@@ -29,9 +34,6 @@ pub struct EventDetector {
 
     /// Event timeout threshold - if no events received within this time, consider switching to polling
     event_timeout: Duration,
-
-    /// Delay before activating polling after proactive firewall detection
-    polling_activation_delay: Duration,
 
     /// Integration with firewall detection coordinator
     firewall_coordinator: Option<Arc<FirewallDetectionCoordinator>>,
@@ -57,11 +59,10 @@ pub enum PollingAction {
 
 impl EventDetector {
     /// Create a new EventDetector
-    pub fn new(event_timeout: Duration, polling_activation_delay: Duration) -> Self {
+    pub fn new(event_timeout: Duration) -> Self {
         Self {
             registrations: Arc::new(RwLock::new(HashMap::new())),
             event_timeout,
-            polling_activation_delay,
             firewall_coordinator: None,
             polling_request_sender: None,
         }
@@ -77,11 +78,45 @@ impl EventDetector {
         self.polling_request_sender = Some(sender);
     }
 
-    /// Record that an event was received for a registration
+    /// Record that a UPnP event was received for a registration.
+    ///
+    /// This is the liveness signal that keeps `start_monitoring` from concluding
+    /// UPnP is dead. It **must** be called for every UPnP notification: without it
+    /// `last_event_time` never advances past registration, every registration times
+    /// out after `event_timeout`, and polling is activated on top of perfectly
+    /// healthy UPnP event delivery.
+    ///
+    /// If polling is currently active for this registration, receiving an event
+    /// means UPnP has recovered, so a `PollingAction::Stop` request is emitted and
+    /// the registration returns to event-driven monitoring.
     pub async fn record_event(&self, registration_id: RegistrationId) {
-        let mut registrations = self.registrations.write().await;
-        if let Some(reg) = registrations.get_mut(&registration_id) {
+        // Take the stop request out under the lock, send it after releasing.
+        let stop_request = {
+            let mut registrations = self.registrations.write().await;
+            let Some(reg) = registrations.get_mut(&registration_id) else {
+                return;
+            };
             reg.last_event_time = Instant::now();
+
+            // Clearing `polling_reason` here re-arms timeout detection: if UPnP goes
+            // quiet again, `start_monitoring` is free to request polling once more.
+            reg.polling_reason.take().map(|reason| PollingRequest {
+                registration_id,
+                speaker_service_pair: reg.pair.clone(),
+                action: PollingAction::Stop,
+                reason,
+            })
+        };
+
+        if let Some(request) = stop_request {
+            if let Some(sender) = &self.polling_request_sender {
+                if sender.send(request).is_ok() {
+                    debug!(
+                        registration_id = %registration_id,
+                        "UPnP events resumed, sent request to stop polling"
+                    );
+                }
+            }
         }
     }
 
@@ -94,13 +129,44 @@ impl EventDetector {
             .unwrap_or(false)
     }
 
-    /// Check if a registration should stop polling (events have resumed)
-    pub async fn should_stop_polling(&self, registration_id: RegistrationId) -> bool {
-        let registrations = self.registrations.read().await;
-        registrations
-            .get(&registration_id)
-            .map(|reg| reg.last_event_time.elapsed() <= self.polling_activation_delay)
-            .unwrap_or(false)
+    /// Mark polling as active for a registration without going through the
+    /// timeout path (e.g. polling started eagerly from firewall detection).
+    ///
+    /// Recording this is what makes the later `PollingAction::Stop` possible —
+    /// otherwise the detector has no idea the registration is polling and would
+    /// never emit a stop when events resume.
+    pub async fn mark_polling_active(
+        &self,
+        registration_id: RegistrationId,
+        reason: PollingReason,
+    ) {
+        let mut registrations = self.registrations.write().await;
+        if let Some(reg) = registrations.get_mut(&registration_id) {
+            reg.polling_reason = Some(reason);
+        }
+    }
+
+    /// Force a registration's `last_event_time` far into the past, so it is
+    /// unambiguously past any `event_timeout`. Test-only: lets tests establish the
+    /// "events have stopped" precondition without a load-sensitive real sleep.
+    #[cfg(test)]
+    pub(crate) async fn backdate_last_event_for_test(&self, registration_id: RegistrationId) {
+        let mut registrations = self.registrations.write().await;
+        if let Some(reg) = registrations.get_mut(&registration_id) {
+            reg.last_event_time = Instant::now() - Duration::from_secs(3600);
+        }
+    }
+
+    /// Clear the polling-active marker without emitting a `Stop` request.
+    ///
+    /// Used when a requested polling start failed: leaving the marker set would
+    /// permanently suppress timeout detection for the registration, so it would
+    /// never get another chance at a polling fallback.
+    pub async fn clear_polling_active(&self, registration_id: RegistrationId) {
+        let mut registrations = self.registrations.write().await;
+        if let Some(reg) = registrations.get_mut(&registration_id) {
+            reg.polling_reason = None;
+        }
     }
 
     /// Evaluate firewall status and make immediate polling decision
@@ -170,7 +236,7 @@ impl EventDetector {
                     let regs = registrations.read().await;
                     regs.iter()
                         .filter(|(_, reg)| {
-                            !reg.polling_activated
+                            reg.polling_reason.is_none()
                                 && now.duration_since(reg.last_event_time) > event_timeout
                         })
                         .map(|(id, reg)| (*id, reg.pair.clone()))
@@ -187,10 +253,11 @@ impl EventDetector {
                         };
 
                         if sender.send(request).is_ok() {
-                            // Mark as activated to avoid duplicate requests
+                            // Mark as activated to avoid duplicate requests, and to
+                            // record that a Stop is owed once events resume.
                             let mut regs = registrations.write().await;
                             if let Some(reg) = regs.get_mut(&registration_id) {
-                                reg.polling_activated = true;
+                                reg.polling_reason = Some(PollingReason::EventTimeout);
                             }
 
                             debug!(
@@ -216,7 +283,7 @@ impl EventDetector {
             MonitoredRegistration {
                 last_event_time: Instant::now(),
                 pair,
-                polling_activated: false,
+                polling_reason: None,
             },
         );
     }
@@ -286,15 +353,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_event_detector_creation() {
-        let detector = EventDetector::new(Duration::from_secs(30), Duration::from_secs(5));
+        let detector = EventDetector::new(Duration::from_secs(30));
 
         assert_eq!(detector.event_timeout, Duration::from_secs(30));
-        assert_eq!(detector.polling_activation_delay, Duration::from_secs(5));
     }
 
     #[tokio::test]
     async fn test_event_recording() {
-        let detector = EventDetector::new(Duration::from_secs(30), Duration::from_secs(5));
+        let detector = EventDetector::new(Duration::from_secs(30));
 
         let registration_id = RegistrationId::new(1);
         let pair = SpeakerServicePair::new(
@@ -315,7 +381,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_subscription_registration() {
-        let detector = EventDetector::new(Duration::from_secs(30), Duration::from_secs(5));
+        let detector = EventDetector::new(Duration::from_secs(30));
 
         let registration_id = RegistrationId::new(1);
         let pair = SpeakerServicePair::new(
@@ -338,7 +404,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_register_and_unregister() {
-        let detector = EventDetector::new(Duration::from_secs(30), Duration::from_secs(5));
+        let detector = EventDetector::new(Duration::from_secs(30));
 
         let registration_id = RegistrationId::new(1);
         let pair = SpeakerServicePair::new(
@@ -369,7 +435,7 @@ mod tests {
         use tokio::sync::mpsc;
 
         // Very short timeout so we can trigger it quickly
-        let mut detector = EventDetector::new(Duration::from_millis(50), Duration::from_secs(5));
+        let mut detector = EventDetector::new(Duration::from_millis(50));
 
         let (sender, mut receiver) = mpsc::unbounded_channel();
         detector.set_polling_request_sender(sender);
@@ -409,5 +475,51 @@ mod tests {
         assert_eq!(request.speaker_service_pair.speaker_ip, pair.speaker_ip);
         assert!(matches!(request.action, PollingAction::Start));
         assert_eq!(request.reason, PollingReason::EventTimeout);
+    }
+
+    /// Once a registration has fallen back to polling, a resumed UPnP event must
+    /// emit `PollingAction::Stop`. Before this existed, `Stop` was never
+    /// constructed anywhere in the crate and a registration polled forever.
+    #[tokio::test]
+    async fn test_stop_emitted_when_events_resume_during_polling() {
+        let mut detector = EventDetector::new(Duration::from_secs(30));
+
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        detector.set_polling_request_sender(sender);
+
+        let registration_id = RegistrationId::new(7);
+        let pair = SpeakerServicePair::new(
+            "192.168.1.100".parse().unwrap(),
+            sonos_api::Service::AVTransport,
+        );
+
+        detector
+            .register_subscription(registration_id, pair.clone())
+            .await;
+
+        // A healthy (non-polling) registration must not emit anything on an event.
+        detector.record_event(registration_id).await;
+        assert!(
+            receiver.try_recv().is_err(),
+            "no polling request expected while UPnP is already healthy"
+        );
+
+        // Simulate the fallback having been activated.
+        detector
+            .mark_polling_active(registration_id, PollingReason::FirewallBlocked)
+            .await;
+
+        // UPnP events resume -> Stop, carrying the reason polling began.
+        detector.record_event(registration_id).await;
+        let request = receiver.try_recv().expect("expected a Stop request");
+        assert_eq!(request.registration_id, registration_id);
+        assert_eq!(request.speaker_service_pair.speaker_ip, pair.speaker_ip);
+        assert!(matches!(request.action, PollingAction::Stop));
+        assert_eq!(request.reason, PollingReason::FirewallBlocked);
+
+        // Polling state is cleared, so timeout detection is re-armed and no
+        // duplicate Stop is emitted for the next event.
+        detector.record_event(registration_id).await;
+        assert!(receiver.try_recv().is_err(), "Stop must not repeat");
     }
 }
