@@ -595,7 +595,7 @@ Callers stamp at the right moment:
 
 | Path | Stamp | Rationale |
 |------|-------|-----------|
-| Event worker | `WriteStamp::now(Event)` before applying | Approximates observation; see the limitation below |
+| Event worker (UPnP NOTIFY) | `WriteStamp::observed_at(Event, event.observed_at)` | The NOTIFY's arrival instant at the callback server, threaded down |
 | `set_property` (local action) | `WriteStamp::now(LocalAction)` | The device just acknowledged the action |
 | `fetch()` | `WriteStamp::observed_at(Fetch, t_before_request)` | The read describes the device at request time |
 
@@ -606,26 +606,49 @@ A rejected `fetch()` still returns its value to its caller — it just does not 
 cache entry. Staleness is tracked per property (`stamps: HashMap<TypeId, WriteStamp>` inside each
 `PropertyBag`), so a slow volume fetch cannot stale out an unrelated mute write.
 
-#### Known limitation: events are stamped at apply time, not observation time
+#### Where an event's observation instant comes from
 
-`apply_property_change` calls `WriteStamp::now(Event)` when the change reaches the worker —
-*after* the NOTIFY has traversed callback-server → broker → worker thread. The true observation
-instant is available as `EnrichedEvent.timestamp` (a `SystemTime` set at ingest) but is not used.
+`handle_event` takes one stamp per event from `EnrichedEvent::observed_at` — a monotonic
+`Instant` — and passes it to every write and notification the event produces, so a whole
+topology snapshot or a multi-property NOTIFY cannot order against itself.
 
-So an event's `observed_at` is systematically *later* than its real observation, while a
-`fetch()`'s is exact. Two consequences remain open:
+`observed_at` is set upstream at the earliest point the process could have known the values:
 
-- A genuinely current `fetch()` can be rejected as `Stale` in favour of an older NOTIFY that
-  reached the worker later. Nothing subsequently corrects this, so `get()` can disagree with
-  `fetch()` indefinitely.
-- A late-arriving stale NOTIFY still outranks a fresh `LocalAction` write, which is the
-  "volume snaps back" symptom this ordering is meant to prevent.
+1. `EventRouter::route_event` stamps `NotificationPayload::received_at` when the HTTP NOTIFY
+   lands, before taking its own lock. An event buffered during the SUBSCRIBE/NOTIFY race keeps
+   its *original* arrival instant when replayed, not the replay instant.
+2. `EventProcessor::process_notification_for_registration` threads that instant into
+   `EnrichedEvent::observed_at`, so the SID lookup, the XML parse, and the channel hop are not
+   counted as part of the observation.
+3. The worker stamps from it rather than from `Instant::now()`.
 
-This ordering is therefore strictly better than the unordered behaviour it replaces — which lost
-both races — but it closes only the `fetch()`-clobbers-event direction. Fixing the remainder
-requires deriving `observed_at` from `EnrichedEvent.timestamp` (a `SystemTime` → `Instant`
-conversion) and giving polling events the same request-time treatment as `fetch()`. Tracked as a
-follow-up, not delivered here.
+`EnrichedEvent` carries both clocks on purpose. `timestamp: SystemTime` remains for display and
+logging; `observed_at: Instant` is what ordering uses. The wall clock is unusable for ordering
+because an NTP correction can step it backwards, which would invert the comparison. Deriving an
+`Instant` from the existing `SystemTime` was rejected for the same reason: it needs a captured
+(`SystemTime`, `Instant`) reference pair, and any backwards wall-clock jump between capture and
+conversion yields a negative delta that must be clamped — a lossy fallback to guessing "now" in
+exactly the case the ordering exists to survive. Capturing the monotonic instant directly at
+ingest removes the conversion, and with it the failure mode. A logical/sequence clock was also
+rejected: `fetch()` observations originate outside the event pipeline and there is no single
+point that could allocate sequence numbers covering both.
+
+#### Known limitation: polling events are still stamped on arrival
+
+Polling-derived synthetic events have the same request/response gap as `fetch()` — a poll
+response describes the device as of when the request went out — but they are still stamped when
+`EnrichedEvent::new` is called after the response returns, in
+`sonos-stream/src/polling/scheduler.rs`. They therefore look newer than they are by roughly one
+poll round-trip, and a slow poll can still displace a `LocalAction` or `fetch()` write observed
+during that window.
+
+The fix is mechanical: capture an `Instant` before `poll_device_state` and construct the event
+with `EnrichedEvent::observed_at`. The plumbing this needs (`EnrichedEvent::observed_at`, the
+worker's use of it) is already in place; only the scheduler call site is outstanding.
+
+The UPnP NOTIFY path — which is the default and covers every household without a firewall
+problem — is closed. Both symptoms this ordering exists to prevent ("volume snaps back", and
+`get()` permanently disagreeing with `fetch()`) no longer occur for NOTIFY-sourced events.
 
 ### 4.2 Feature: watched-set gating
 
@@ -1294,7 +1317,7 @@ The workspace versions together; breaking changes ride the `sonos-sdk` version.
 | Properties start as `None` | First `get()` before any event returns nothing | Use the SDK's `fetch()` or `watch_or_fetch()` | — |
 | `DeviceProperties` and `GroupManagement` decode to empty | No properties from those services | — | Tracked in `docs/STATUS.md` |
 | Unbounded notification channel | A never-draining consumer grows memory. `ChangeEvent` now carries a payload (~168 bytes vs. ~48 before, plus heap strings for `CurrentTrack`), so a stalled consumer accumulates roughly 3.5x faster than it used to. Nothing is dropped, which is the intended tradeoff | Drain, or use `try_iter()` per frame | Bounded channel with a drop policy |
-| Events stamped at apply time, not observation time | A current `fetch()` can lose to an older NOTIFY, and a late stale NOTIFY can still overwrite a fresh local write | None | Derive `observed_at` from `EnrichedEvent.timestamp` — see 4.1a |
+| Polling events stamped on response, not at poll request | A poll-sourced value looks newer than it is by one poll round-trip, so it can still displace a local write or `fetch()` observed during that window. UPnP NOTIFY events are unaffected | Prefer UPnP events (the default; polling is only a firewall fallback) | Construct the event with `EnrichedEvent::observed_at` in `sonos-stream/src/polling/scheduler.rs` — see 4.1a |
 | `cleanup_timeout` unused | Builder option has no effect | Ignore it | Remove or wire through |
 | `system_props` write-only in practice | `Topology` is stored by `initialize()` (`src/state.rs:681`) but has no public system-scoped getter | Use `groups()` / `speaker_infos()` | Add a system-scope accessor |
 | An empty `ZoneGroupTopology` snapshot cannot express "no groups" | A hypothetical genuine all-groups-dissolved event would be ignored (`src/event_worker.rs:270`) | None needed — Sonos always reports at least one single-member group per speaker | Diff against the previous snapshot instead of replacing |

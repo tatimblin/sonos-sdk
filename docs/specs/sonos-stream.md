@@ -163,6 +163,7 @@ pub struct EnrichedEvent {
     pub service: Service,
     pub event_source: EventSource,
     pub timestamp: SystemTime,
+    pub observed_at: Instant,
     pub event_data: EventData,
 }
 ```
@@ -171,8 +172,19 @@ pub struct EnrichedEvent {
 
 **Invariants**:
 - `registration_id` always maps to a valid registration in the registry
-- `timestamp` reflects when the event was processed, not when it occurred on the device
+- `timestamp` reflects when the event was constructed, not when it occurred on the device.
+  Display and logging only — it is a `SystemTime` and can step backwards under NTP correction,
+  so it must never be used to order two events
+- `observed_at` is the monotonic instant the values were *observed*, and is what consumers order
+  writes by. For a UPnP NOTIFY it is the arrival instant at the callback server, threaded down
+  from `NotificationPayload::received_at`; a buffered event replayed after late SID registration
+  keeps its original arrival instant. For a poll it should be the instant the poll request was
+  issued — see the polling limitation in `sonos-state` spec §4.1a, which is still outstanding
 - `event_source` accurately identifies whether this came from UPnP or polling
+
+**Construction**: `EnrichedEvent::new` stamps `observed_at` as "now" and is correct only when
+construction and observation coincide. `EnrichedEvent::observed_at` takes the instant explicitly
+and is what the UPnP path uses.
 
 **Ownership**: Created by EventProcessor, passed through channels, consumed by sonos-state.
 

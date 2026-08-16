@@ -134,11 +134,25 @@ fn handle_event(
         panic!("injected test panic while decoding event");
     }
 
+    // One stamp for the whole event, taken from when the event was *observed*
+    // upstream — not from `Instant::now()`. Everything between observation and
+    // this line (HTTP receive, parse, two channel hops, worker scheduling) is
+    // latency, not new information, and stamping here would make a stale NOTIFY
+    // outrank a local write or a `fetch()` that genuinely saw the device later.
+    let stamp = WriteStamp::observed_at(ChangeSource::Event, event.observed_at);
+
     // Handle ZoneGroupTopology events specially - they affect all speakers
     if let EventData::ZoneGroupTopology(ref zgt_event) = event.event_data {
         tracing::debug!("Processing ZoneGroupTopology event");
         let topology_changes = decode_topology_event(zgt_event);
-        apply_topology_changes(store, watched, event_tx, ip_to_speaker, topology_changes);
+        apply_topology_changes(
+            store,
+            watched,
+            event_tx,
+            ip_to_speaker,
+            topology_changes,
+            stamp,
+        );
         return;
     }
 
@@ -218,7 +232,7 @@ fn handle_event(
     // Apply changes to the originating speaker (coordinator)
     for change in &decoded.changes {
         tracing::debug!("Applying change: {:?}", change);
-        apply_property_change(store, watched, event_tx, &speaker_id, change);
+        apply_property_change(store, watched, event_tx, &speaker_id, change, stamp);
     }
 
     // For PerCoordinator services, notify group members who are watching
@@ -231,15 +245,10 @@ fn handle_event(
         };
         if !members.is_empty() {
             // A notification, not a write, so nothing is ordered against this
-            // stamp — but it is still an event-sourced observation and is
-            // labelled as one.
-            notify_group_members(
-                watched,
-                event_tx,
-                &members,
-                &decoded.changes,
-                WriteStamp::now(ChangeSource::Event),
-            );
+            // stamp — but consumers read `ChangeEvent::timestamp` from it, and a
+            // member must be told the same observation time as the coordinator,
+            // so it reuses the event's stamp rather than taking a fresh one.
+            notify_group_members(watched, event_tx, &members, &decoded.changes, stamp);
         }
     }
 }
@@ -255,12 +264,17 @@ fn handle_event(
 ///
 /// A topology event with no groups is treated as a *partial* event and ignored,
 /// not as "the household has no groups" — see the early return below.
+///
+/// `stamp` is the observation stamp of the originating event and covers the whole
+/// snapshot: every membership in a single topology event was observed at the same
+/// moment, so they must not be able to order against each other.
 fn apply_topology_changes(
     store: &Arc<RwLock<StateStore>>,
     watched: &Arc<RwLock<WatchCounts>>,
     event_tx: &mpsc::Sender<ChangeEvent>,
     ip_to_speaker: &Arc<RwLock<std::collections::HashMap<IpAddr, SpeakerId>>>,
     changes: TopologyChanges,
+    stamp: WriteStamp,
 ) {
     tracing::debug!(
         "Applying topology changes: {} groups, {} memberships",
@@ -288,11 +302,6 @@ fn apply_topology_changes(
         );
         return;
     }
-
-    // One stamp for the whole snapshot: every membership in a single topology
-    // event was observed at the same moment, so they must not be able to order
-    // against each other.
-    let stamp = WriteStamp::now(ChangeSource::Event);
 
     // Apply all changes within a single write lock
     let (membership_changes, ip_updates) = {
@@ -432,19 +441,21 @@ fn notify_group_members(
     }
 }
 
-/// Apply a single property change to the store
+/// Apply a single property change to the store.
+///
+/// `stamp` comes from the originating event's observation instant and is reused
+/// for the notification, so the stored entry and the emitted `ChangeEvent` agree
+/// on when this value was observed. It is a parameter rather than taken here
+/// because this function runs arbitrarily long after the observation.
 fn apply_property_change(
     store: &Arc<RwLock<StateStore>>,
     watched: &Arc<RwLock<WatchCounts>>,
     event_tx: &mpsc::Sender<ChangeEvent>,
     speaker_id: &SpeakerId,
     change: &PropertyChange,
+    stamp: WriteStamp,
 ) {
     let key = change.key();
-
-    // Stamped once, before the write, and reused for the event, so the stored
-    // entry and the notification agree on when this value was observed.
-    let stamp = WriteStamp::now(ChangeSource::Event);
 
     let outcome = {
         let mut store = store.write();
@@ -514,6 +525,7 @@ mod tests {
             &tx,
             &speaker_id,
             &PropertyChange::Volume(Volume(50)),
+            test_stamp(),
         );
 
         // No event should be emitted (not watched)
@@ -558,6 +570,7 @@ mod tests {
             &tx,
             &speaker_id,
             &PropertyChange::Volume(Volume(75)),
+            test_stamp(),
         );
 
         // Event should be emitted
@@ -617,6 +630,7 @@ mod tests {
             &tx,
             &speaker_id,
             &PropertyChange::GroupVolume(crate::property::GroupVolume(75)),
+            test_stamp(),
         );
 
         // Verify value was stored in group_props
@@ -650,6 +664,7 @@ mod tests {
             &tx,
             &speaker_id,
             &PropertyChange::GroupVolume(crate::property::GroupVolume(50)),
+            test_stamp(),
         );
 
         // No crash, no stored value
@@ -701,7 +716,7 @@ mod tests {
         };
 
         let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::new()));
-        apply_topology_changes(&store, &watched, &tx, &ip_to_speaker, changes);
+        apply_topology_changes(&store, &watched, &tx, &ip_to_speaker, changes, test_stamp());
 
         // Verify groups are updated
         let s = store.read();
@@ -757,7 +772,7 @@ mod tests {
         };
 
         let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::new()));
-        apply_topology_changes(&store, &watched, &tx, &ip_to_speaker, changes);
+        apply_topology_changes(&store, &watched, &tx, &ip_to_speaker, changes, test_stamp());
 
         // Verify GroupMembership is updated for each speaker
         let s = store.read();
@@ -822,7 +837,7 @@ mod tests {
         };
 
         let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::new()));
-        apply_topology_changes(&store, &watched, &tx, &ip_to_speaker, changes);
+        apply_topology_changes(&store, &watched, &tx, &ip_to_speaker, changes, test_stamp());
 
         // Should receive event for speaker1 (watched) but not speaker2 (not watched)
         let event = rx.try_recv().unwrap();
@@ -893,7 +908,7 @@ mod tests {
         };
 
         let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::new()));
-        apply_topology_changes(&store, &watched, &tx, &ip_to_speaker, changes);
+        apply_topology_changes(&store, &watched, &tx, &ip_to_speaker, changes, test_stamp());
 
         // Verify old group is gone, new group exists
         let s = store.read();
@@ -946,7 +961,7 @@ mod tests {
         };
 
         let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::new()));
-        apply_topology_changes(&store, &watched, &tx, &ip_to_speaker, changes);
+        apply_topology_changes(&store, &watched, &tx, &ip_to_speaker, changes, test_stamp());
 
         // Verify speaker_to_group mapping is updated
         let s = store.read();
@@ -994,7 +1009,7 @@ mod tests {
         };
 
         let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::new()));
-        apply_topology_changes(&store, &watched, &tx, &ip_to_speaker, partial);
+        apply_topology_changes(&store, &watched, &tx, &ip_to_speaker, partial, test_stamp());
 
         // The seeded group, its properties, and the speaker→group mapping survive
         let s = store.read();
@@ -1008,6 +1023,213 @@ mod tests {
 
         // And no spurious notification was emitted
         assert!(rx.try_recv().is_err());
+    }
+
+    // ========================================================================
+    // Observation-time stamping of events
+    //
+    // These drive `handle_event` rather than `apply_property_change`, because
+    // the thing under test is precisely *where the stamp comes from* — and only
+    // `handle_event` makes that choice. Calling `apply_property_change` with a
+    // hand-made stamp would test the store's ordering, which is already covered,
+    // and would pass regardless of the bug.
+    // ========================================================================
+
+    /// A RenderingControl volume NOTIFY observed at `observed_at`.
+    fn volume_event(ip: IpAddr, volume: u8, observed_at: std::time::Instant) -> EnrichedEvent {
+        use sonos_stream::events::RenderingControlState;
+        use sonos_stream::{EventSource, RegistrationId};
+
+        EnrichedEvent::observed_at(
+            RegistrationId::new(1),
+            ip,
+            Service::RenderingControl,
+            EventSource::UPnPNotification {
+                subscription_id: "uuid:test".to_string(),
+            },
+            EventData::RenderingControl(RenderingControlState {
+                master_volume: Some(volume.to_string()),
+                master_mute: None,
+                bass: None,
+                treble: None,
+                loudness: None,
+                lf_volume: None,
+                rf_volume: None,
+                lf_mute: None,
+                rf_mute: None,
+                balance: None,
+                other_channels: std::collections::HashMap::new(),
+            }),
+            observed_at,
+        )
+    }
+
+    /// A store, watch set, channel and IP map wired up for one speaker.
+    #[allow(clippy::type_complexity)]
+    fn one_speaker_worker_fixture() -> (
+        Arc<RwLock<StateStore>>,
+        Arc<RwLock<WatchCounts>>,
+        mpsc::Sender<ChangeEvent>,
+        mpsc::Receiver<ChangeEvent>,
+        Arc<RwLock<std::collections::HashMap<IpAddr, SpeakerId>>>,
+        SpeakerId,
+        IpAddr,
+    ) {
+        let store = Arc::new(RwLock::new(StateStore::new()));
+        let watched = Arc::new(RwLock::new(WatchCounts::new()));
+        let (tx, rx) = mpsc::channel();
+
+        let speaker_id = SpeakerId::new("RINCON_111");
+        // RFC 5737 TEST-NET-1: documentation-only, never routed.
+        let speaker_ip: IpAddr = "192.0.2.11".parse().unwrap();
+
+        store
+            .write()
+            .add_speaker(make_speaker_info("RINCON_111", "Living Room", "192.0.2.11"));
+
+        let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::from([(
+            speaker_ip,
+            speaker_id.clone(),
+        )])));
+
+        (
+            store,
+            watched,
+            tx,
+            rx,
+            ip_to_speaker,
+            speaker_id,
+            speaker_ip,
+        )
+    }
+
+    /// Advance the monotonic clock far enough that two `Instant`s taken either
+    /// side of this call are unambiguously ordered.
+    ///
+    /// These tests deliberately use *real* instants in real program order rather
+    /// than synthetic future ones. A future-dated stamp would make the buggy
+    /// `WriteStamp::now()` look older than the fixture and the test would pass
+    /// against the bug it exists to catch.
+    fn tick() {
+        thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    #[test]
+    fn test_late_notify_does_not_clobber_fresher_local_action() {
+        // The "volume snaps back" regression. A NOTIFY describing the *old*
+        // volume 10 is observed on the wire first; the user then sets volume 40;
+        // only afterwards does the NOTIFY reach the worker. Stamping the event at
+        // apply time made it look newer than the local write, and the volume
+        // visibly reverted to 10.
+        let (store, watched, tx, _rx, ip_to_speaker, speaker_id, speaker_ip) =
+            one_speaker_worker_fixture();
+
+        // 1. The NOTIFY is observed at the callback server.
+        let event = volume_event(speaker_ip, 10, std::time::Instant::now());
+        tick();
+
+        // 2. The user's local action lands, strictly later.
+        store.write().set(
+            &speaker_id,
+            Volume(40),
+            WriteStamp::now(ChangeSource::LocalAction),
+        );
+        tick();
+
+        // 3. Only now does the already-stale NOTIFY reach the worker.
+        handle_event(&event, &store, &watched, &tx, &ip_to_speaker);
+
+        assert_eq!(
+            store.read().get::<Volume>(&speaker_id),
+            Some(Volume(40)),
+            "a NOTIFY observed before a local write must not overwrite it — \
+             this is the volume-snaps-back symptom"
+        );
+    }
+
+    #[test]
+    fn test_current_fetch_not_rejected_by_older_notify() {
+        // A NOTIFY is observed, then a `fetch()` request goes out — so the fetch
+        // holds strictly newer truth — but the NOTIFY reaches the worker before
+        // the fetch response lands. Stamping the event at apply time made it look
+        // newer than the fetch, so the fetch was dropped as `Stale` and `get()`
+        // disagreed with `fetch()` indefinitely.
+        let (store, watched, tx, _rx, ip_to_speaker, speaker_id, speaker_ip) =
+            one_speaker_worker_fixture();
+
+        // 1. The NOTIFY is observed at the callback server.
+        let event = volume_event(speaker_ip, 10, std::time::Instant::now());
+        tick();
+
+        // 2. The fetch request goes out, observing the device strictly later.
+        let fetch_observed = std::time::Instant::now();
+        tick();
+
+        // 3. The NOTIFY reaches the worker first and is applied.
+        handle_event(&event, &store, &watched, &tx, &ip_to_speaker);
+        assert_eq!(
+            store.read().get::<Volume>(&speaker_id),
+            Some(Volume(10)),
+            "precondition: the event should have been applied"
+        );
+
+        // 4. Then the slower fetch response finally lands.
+        let outcome = store.write().set(
+            &speaker_id,
+            Volume(40),
+            WriteStamp::observed_at(ChangeSource::Fetch, fetch_observed),
+        );
+
+        assert_eq!(
+            outcome,
+            crate::state::WriteOutcome::Changed,
+            "a fetch that observed the device after the event must be accepted, \
+             not rejected as stale"
+        );
+        assert_eq!(store.read().get::<Volume>(&speaker_id), Some(Volume(40)));
+    }
+
+    #[test]
+    fn test_genuinely_newer_event_still_wins() {
+        // The inverse-failure guard: correcting the stamp must not start
+        // discarding events that really are newer than the stored value. Here the
+        // local write happens first and the NOTIFY is observed after it, so the
+        // event must win — on the instant, not merely on the `Event` >
+        // `LocalAction` tie-break.
+        let (store, watched, tx, rx, ip_to_speaker, speaker_id, speaker_ip) =
+            one_speaker_worker_fixture();
+        retain_direct_watch(&watched, &speaker_id, Volume::KEY);
+
+        store.write().set(
+            &speaker_id,
+            Volume(40),
+            WriteStamp::now(ChangeSource::LocalAction),
+        );
+        tick();
+
+        let event_observed = std::time::Instant::now();
+        handle_event(
+            &volume_event(speaker_ip, 10, event_observed),
+            &store,
+            &watched,
+            &tx,
+            &ip_to_speaker,
+        );
+
+        assert_eq!(
+            store.read().get::<Volume>(&speaker_id),
+            Some(Volume(10)),
+            "an event observed after the stored write must still be applied"
+        );
+
+        // And it must still notify — a dropped notification is as bad as a
+        // dropped write.
+        let notified = rx.try_recv().expect("newer event must still notify");
+        assert_eq!(notified.property_key(), Volume::KEY);
+        assert_eq!(
+            notified.timestamp, event_observed,
+            "the emitted event must carry the observation instant, not the apply instant"
+        );
     }
 
     #[test]
@@ -1121,7 +1343,7 @@ mod tests {
         };
 
         let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::new()));
-        apply_topology_changes(&store, &watched, &tx, &ip_to_speaker, changes);
+        apply_topology_changes(&store, &watched, &tx, &ip_to_speaker, changes, test_stamp());
 
         // No event should be emitted since membership didn't change
         assert!(rx.try_recv().is_err());
@@ -1172,7 +1394,7 @@ mod tests {
 
         // Apply to coordinator only
         for change in &changes {
-            apply_property_change(&store, &watched, &tx, &coordinator, change);
+            apply_property_change(&store, &watched, &tx, &coordinator, change, test_stamp());
         }
 
         // Notify group members (notification only, no data copy)
@@ -1251,7 +1473,7 @@ mod tests {
         // Apply change to the standalone speaker
         let changes = vec![PropertyChange::PlaybackState(PlaybackState::Playing)];
         for change in &changes {
-            apply_property_change(&store, &watched, &tx, &speaker, change);
+            apply_property_change(&store, &watched, &tx, &speaker, change, test_stamp());
         }
 
         // resolve_group_members should return empty for standalone
@@ -1310,6 +1532,7 @@ mod tests {
             &tx,
             &coordinator,
             &PropertyChange::Volume(Volume(80)),
+            test_stamp(),
         );
 
         // RenderingControl is PerSpeaker, so we do NOT notify members.
