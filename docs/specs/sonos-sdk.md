@@ -213,6 +213,8 @@ pub struct VolumeHandle {
 6. **Speaker creation** (`src/system.rs:29-41`): Creates `Speaker` instances for each device with property handles
 7. **Return** (`src/system.rs:44-48`): Returns the initialized `SonosSystem` with all speakers registered
 
+**Shared vs. network-dependent construction**: The in-memory portion of steps 2-6 lives in `SonosSystem::assemble()`, which performs no I/O. `from_devices_inner()` calls `assemble()` and then layers on the three network-dependent steps: topology prefetch, satellite filtering, and IP refresh. This split exists so the offline test constructor (§8.5) can reuse the exact same Arc wiring instead of maintaining a divergent copy — the Arc graph here is subtle, and a second copy would drift.
+
 ### 3.2 Secondary Flow: Property Fetch (API Call + State Update)
 
 ```
@@ -570,6 +572,86 @@ pub enum SdkError {
 | `sonos-api` | Mock SOAP responses | Not yet implemented |
 | `sonos-state` | In-memory StateStore | Not yet implemented |
 
+### 8.5 Offline Construction (`test-support`)
+
+#### What
+
+`SonosSystem::from_devices_offline(devices)` builds a fully-formed `SonosSystem` from a caller-supplied device list while guaranteeing zero network I/O. It is gated behind the `test-support` feature. `with_speakers()` and `with_groups()` share the same guarantee via the `offline: bool` field on `SonosSystem`.
+
+#### Why
+
+`SonosSystem` has exactly **two** paths that reach the network without the caller asking for it, and both are catastrophic in a test process where the device IPs are synthetic:
+
+1. **Construction** — `from_devices_inner()` calls `ensure_topology()`, which SOAP-polls `zone_group_topology::state::poll` against every known speaker IP whenever `group_count() == 0`. Each unreachable IP costs soap-client's 5s connect + 10s read timeout, serially.
+2. **Lookup miss** — `speaker(name)` that misses calls `try_rediscover()`, which runs a 3s SSDP sweep, rate-limited by `REDISCOVERY_COOLDOWN_SECS = 30`. Property tests generating random names paid the full 30s cooldown per test binary.
+
+Neither timeout is a real failure — the IPs simply don't exist — so the suite was spending minutes proving nothing. Property tests that only exercise in-memory name/ID bookkeeping have no reason to pay for either. Before this constructor existed, `cargo test --workspace --features sonos-sdk/test-support` took 22+ minutes and CI took 32; afterwards it is well under two.
+
+#### How
+
+`offline: bool` is consulted at the top of both network entry points, so it closes both paths with one flag rather than requiring each test to remember which methods are safe:
+
+```rust
+fn ensure_topology(&self) {
+    if self.offline || self.state_manager.group_count() > 0 { return; }
+    // ... SOAP poll every speaker IP ...
+}
+
+fn try_rediscover(&self, name: &str) {
+    if self.offline { return; }
+    // ... 3s SSDP sweep ...
+}
+```
+
+Production paths (`new()` → `from_devices_inner()`) leave `offline = false`, so behavior there is byte-for-byte unchanged.
+
+`from_devices_offline` skips the three post-`assemble()` steps in §3.1 because all three are downstream of topology having been fetched: satellite filtering reads `get_satellite_ids()` (populated only by `ensure_topology`), and the IP refresh re-reads IPs that only topology would have changed. Tests that need groups call `state_manager.initialize(topology)` directly with the topology they want to assert against.
+
+#### Trade-offs
+
+| Decision | Alternative Considered | Why We Chose This |
+|----------|----------------------|-------------------|
+| `offline: bool` field | Separate `OfflineSonosSystem` type or a trait-abstracted transport | One flag, two call sites, no API surface duplication; a mock transport is the right long-term fix but far larger |
+| Offline flag closes *both* paths | Only skip `ensure_topology()` in the constructor | Skipping construction alone leaves the 30s rediscovery cooldown on every lookup miss — the larger of the two costs |
+| Reuse `assemble()` for both paths | Copy the constructor body | The Arc wiring (init closure capturing the `Arc<StateManager>` it is stored on) has a known cycle bug; two copies would mean two fixes |
+| Wall-clock bound to prove no I/O | Mock transport / network namespace | Without a mock transport, a time bound is the only pure-unit assertion available; the 500ms threshold is ~10x headroom over the real cost and ~10x below the cheapest timeout it guards |
+| Signature assertions as never-called `fn`s | `#[test]` fns that invoke each action | Invoking an action to check its *type* pays a real 5s connect timeout per call for zero added coverage. A never-called `#[allow(dead_code)] fn` is still type-checked, so it fails the build identically if a signature drifts, at 0s. See §8.6. |
+| Tests keep building explicit `Device` lists | Route property tests through `with_speakers()` | `with_speakers()` hardcodes `RINCON_{i:03}` / `192.168.1.{100+i}`, discarding proptest-generated IDs, names and IPs. Round-trip assertions would still pass while testing nothing. Vacuous-but-green is worse than slow. |
+
+### 8.6 Signature Assertions
+
+#### What
+
+Action methods that require a live speaker are type-checked by never-called functions rather than executed by `#[test]` fns:
+
+```rust
+#[allow(dead_code)]
+fn _assert_action_signatures(speaker: &Speaker) {
+    fn void<T>(_: Result<T, SdkError>) {}
+    void(speaker.play());
+    void(speaker.pause());
+    // ...
+}
+```
+
+Four of these exist: `_assert_action_signatures` (`src/speaker.rs`), `_assert_group_action_signatures` and `_assert_group_lifecycle_signatures` (`src/group.rs`), and `_assert_create_group_signature` (`src/system.rs`).
+
+#### Why
+
+These assertions are about **types, not behavior** — the original versions said so in their own comments ("will fail at network level but prove signatures compile"). Executing them was pure cost: each call opened a real TCP connection to a synthetic IP and waited out soap-client's 5s connect timeout, and the returned `Result` was discarded unexamined. The four together accounted for ~55s of a ~60s `sonos-sdk` unit-test run.
+
+Rust type-checks the body of a function even when nothing calls it, so a never-called `fn` fails the build the instant a signature drifts — the exact guarantee the `#[test]` version provided — while contributing 0s of runtime. The `_` prefix and `#[allow(dead_code)]` document the intent and silence the unused warning under `-D warnings`.
+
+#### Trade-offs
+
+| Decision | Alternative Considered | Why We Chose This |
+|----------|----------------------|-------------------|
+| Never-called fn | Delete the assertions | Signature drift in a public API should break the build; the assertion has real value, only its execution was worthless |
+| Never-called fn | `let _ = ...` inside a `#[test]` | Still executes the call and still pays the timeout — the cost is the invocation, not the assertion |
+| Take params by reference | Construct fixtures inside the fn | Nothing constructs them, so params keep the fn free of fixture setup and avoid dragging helpers into the dead-code graph |
+
+**Boundary**: this pattern applies *only* where the assertion is purely about types. Tests that assert real behavior on paths returning before any network call — `test_group_set_volume_rejects_over_100`, `test_add_speaker_rejects_coordinator_self_add`, `test_remove_speaker_rejects_coordinator_removal`, `test_dissolve_standalone_returns_empty_result`, and the `set_*_rejects_invalid` family — remain executing `#[test]` fns. Validation and guard-clause logic must keep running.
+
 ---
 
 ## 9. Performance
@@ -761,5 +843,6 @@ None required.
 
 | Date | Author | Change |
 |------|--------|--------|
+| 2026-08-15 | Claude Opus 5 | Added §8.5 offline construction (`from_devices_offline`, `offline` flag), §8.6 signature assertions, and the `assemble()` split in §3.1 |
 | 2026-03-11 | Claude Opus 4.6 | Updated for v0.2.0: lazy event init, method renames, fluent navigation, prelude, #[non_exhaustive] |
 | 2026-01-14 | Claude Opus 4.5 | Initial specification created |

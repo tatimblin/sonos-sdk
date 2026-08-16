@@ -715,15 +715,17 @@ mod tests {
         assert!(matches!(result, Err(SdkError::ValidationFailed(_))));
     }
 
-    #[test]
-    fn test_speaker_action_methods_exist() {
-        // Compile-time assertion that all method signatures are correct
+    /// Compile-time assertion that all action method signatures are correct.
+    ///
+    /// Never called: each of these calls would open a real TCP connection and
+    /// wait out soap-client's 5s connect timeout, yet the assertion is purely
+    /// about types. Type-checking a never-called function still fails the
+    /// build if a signature changes, at zero runtime cost.
+    #[allow(dead_code)]
+    fn _assert_action_signatures(speaker: &Speaker) {
         fn assert_void(_r: Result<(), SdkError>) {}
         fn assert_response<T>(_r: Result<T, SdkError>) {}
 
-        let speaker = create_test_speaker();
-
-        // AVTransport — these will fail at network level but prove signatures compile
         assert_void(speaker.play());
         assert_void(speaker.pause());
         assert_void(speaker.stop());
@@ -771,11 +773,12 @@ mod tests {
         assert_void(speaker.set_loudness(true));
 
         // Group convenience methods
-        let group = create_test_group_for_speaker(&speaker);
+        let group = create_test_group_for_speaker(speaker);
         assert_void(speaker.join_group(&group));
         assert_response::<BecomeCoordinatorOfStandaloneGroupResponse>(speaker.leave_group());
     }
 
+    #[allow(dead_code)]
     fn create_test_group_for_speaker(speaker: &Speaker) -> crate::Group {
         use sonos_state::{GroupId, GroupInfo};
         let state_manager = Arc::new(StateManager::new().unwrap());

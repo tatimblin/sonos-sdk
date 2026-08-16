@@ -621,14 +621,19 @@ mod tests {
         assert!(matches!(result, Err(SdkError::ValidationFailed(_))));
     }
 
-    #[test]
-    fn test_group_action_methods_exist() {
+    /// Compile-time assertion that the GroupRenderingControl action signatures
+    /// are correct.
+    ///
+    /// Never called: every call here would open a real TCP connection and wait
+    /// out soap-client's 5s connect timeout, yet the assertion is purely about
+    /// types. Type-checking a never-called function still fails the build if a
+    /// signature changes, at zero runtime cost. Actual behavior is covered by
+    /// `test_group_set_volume_rejects_over_100`.
+    #[allow(dead_code)]
+    fn _assert_group_action_signatures(group: &Group) {
         fn assert_void(_r: Result<(), SdkError>) {}
         fn assert_response<T>(_r: Result<T, SdkError>) {}
 
-        let group = create_test_group();
-
-        // These will fail at network level but prove signatures compile
         assert_void(group.set_volume(50));
         assert_response::<SetRelativeGroupVolumeResponse>(group.set_relative_volume(5));
         assert_void(group.set_mute(true));
@@ -680,16 +685,21 @@ mod tests {
         assert!(matches!(result, Err(SdkError::InvalidOperation(_))));
     }
 
-    #[test]
-    fn test_group_lifecycle_methods_exist() {
+    /// Compile-time assertion that the group lifecycle signatures are correct.
+    ///
+    /// Never called, for the same reason as `_assert_group_action_signatures`.
+    /// Actual behavior is covered by
+    /// `test_add_speaker_rejects_coordinator_self_add`,
+    /// `test_remove_speaker_rejects_coordinator_removal` and
+    /// `test_dissolve_standalone_returns_empty_result`, all of which assert on
+    /// paths that return before any network call.
+    #[allow(dead_code)]
+    fn _assert_group_lifecycle_signatures(group: &Group, member: &Speaker) {
         fn assert_void(_r: Result<(), SdkError>) {}
         fn assert_change_result(_r: GroupChangeResult) {}
 
-        let (group, member) = create_test_group_with_member();
-
-        // These will fail at network level but prove signatures compile
-        assert_void(group.add_speaker(&member));
-        assert_void(group.remove_speaker(&member));
+        assert_void(group.add_speaker(member));
+        assert_void(group.remove_speaker(member));
         assert_change_result(group.dissolve());
     }
 
