@@ -84,27 +84,40 @@ impl PropertyChange {
             PropertyChange::GroupMembership(v) => store.set(speaker_id, v.clone()),
             // Group-scoped properties: resolve speaker→group, store in group_props
             PropertyChange::GroupVolume(v) => {
-                if let Some(group_id) = store.speaker_to_group.get(speaker_id).cloned() {
-                    store.set_group(&group_id, v.clone())
-                } else {
-                    false
+                match store.speaker_to_group.get(speaker_id).cloned() {
+                    Some(group_id) => store.set_group(&group_id, v.clone()),
+                    None => self.log_unmapped_group_change(speaker_id),
                 }
             }
-            PropertyChange::GroupMute(v) => {
-                if let Some(group_id) = store.speaker_to_group.get(speaker_id).cloned() {
-                    store.set_group(&group_id, v.clone())
-                } else {
-                    false
-                }
-            }
+            PropertyChange::GroupMute(v) => match store.speaker_to_group.get(speaker_id).cloned() {
+                Some(group_id) => store.set_group(&group_id, v.clone()),
+                None => self.log_unmapped_group_change(speaker_id),
+            },
             PropertyChange::GroupVolumeChangeable(v) => {
-                if let Some(group_id) = store.speaker_to_group.get(speaker_id).cloned() {
-                    store.set_group(&group_id, v.clone())
-                } else {
-                    false
+                match store.speaker_to_group.get(speaker_id).cloned() {
+                    Some(group_id) => store.set_group(&group_id, v.clone()),
+                    None => self.log_unmapped_group_change(speaker_id),
                 }
             }
         }
+    }
+
+    /// Report a group-scoped change that could not be stored because the speaker
+    /// has no `speaker_to_group` mapping yet.
+    ///
+    /// This used to be a bare `else { false }`. It is a legitimate state — a
+    /// GroupRenderingControl event can arrive before the first topology snapshot
+    /// — but it is also what a wiped `speaker_to_group` map looks like, so it
+    /// must be observable rather than silent. Always returns `false` (nothing
+    /// was stored, so nothing changed).
+    fn log_unmapped_group_change(&self, speaker_id: &SpeakerId) -> bool {
+        tracing::warn!(
+            "Dropping group-scoped {} change for {}: speaker has no group mapping \
+             (no topology snapshot applied yet, or group state was cleared)",
+            self.key(),
+            speaker_id.as_str()
+        );
+        false
     }
 
     /// Get the property key for this change
@@ -240,15 +253,29 @@ fn decode_av_transport(event: &AVTransportState) -> Vec<PropertyChange> {
     }
 
     // Position
+    //
+    // Only emit when `rel_time` actually parses. The previous `unwrap_or(0)`
+    // turned an unparseable or missing position into 0:00, which a consumer
+    // cannot tell apart from a track that genuinely just started — so a garbage
+    // value would visibly rewind the playhead. `track_duration` keeps its
+    // `unwrap_or(0)` because "unknown duration" is a real, common state for
+    // live streams and 0 is how the SDK already represents it.
     if event.rel_time.is_some() || event.track_duration.is_some() {
-        let position_ms = parse_duration_ms(event.rel_time.as_deref()).unwrap_or(0);
-        let duration_ms = parse_duration_ms(event.track_duration.as_deref()).unwrap_or(0);
-
-        let position = Position {
-            position_ms,
-            duration_ms,
-        };
-        changes.push(PropertyChange::Position(position));
+        match parse_duration_ms(event.rel_time.as_deref()) {
+            Some(position_ms) => {
+                let duration_ms = parse_duration_ms(event.track_duration.as_deref()).unwrap_or(0);
+                changes.push(PropertyChange::Position(Position {
+                    position_ms,
+                    duration_ms,
+                }));
+            }
+            None => {
+                tracing::debug!(
+                    "Skipping Position update: RelTime {:?} is missing or unparseable",
+                    event.rel_time
+                );
+            }
+        }
     }
 
     // CurrentTrack
@@ -399,7 +426,16 @@ fn parse_duration_ms(duration: Option<&str>) -> Option<u64> {
         .and_then(|m| m.parse().ok())
         .unwrap_or(0);
 
-    Some((hours * 3600 + minutes * 60 + seconds) * 1000 + millis)
+    // Checked arithmetic throughout: the components come straight off the wire,
+    // so a device (or a forged event) can supply values near `u64::MAX` that
+    // overflow the multiply. Unchecked math panics in debug and silently wraps
+    // to a nonsense position in release; `None` correctly means "unparseable".
+    hours
+        .checked_mul(3600)?
+        .checked_add(minutes.checked_mul(60)?)?
+        .checked_add(seconds)?
+        .checked_mul(1000)?
+        .checked_add(millis)
 }
 
 /// Parse DIDL-Lite track metadata XML
@@ -465,6 +501,45 @@ mod tests {
         assert_eq!(parse_duration_ms(Some("NOT_IMPLEMENTED")), None);
         assert_eq!(parse_duration_ms(None), None);
         assert_eq!(parse_duration_ms(Some("")), None);
+    }
+
+    #[test]
+    fn test_parse_duration_ms_overflow_returns_none() {
+        // Components near u64::MAX overflow the seconds→millis multiply.
+        // Unchecked arithmetic would panic in debug and wrap in release.
+        assert_eq!(parse_duration_ms(Some("18446744073709551615:00:00")), None);
+        assert_eq!(parse_duration_ms(Some("0:0:18446744073709551615")), None);
+    }
+
+    #[test]
+    fn test_decode_av_transport_skips_position_when_rel_time_garbage() {
+        // Garbage RelTime must not silently become position 0:00, which is
+        // indistinguishable from a track that just started.
+        let event = AVTransportState {
+            transport_state: None,
+            transport_status: None,
+            speed: None,
+            current_track_uri: None,
+            track_duration: Some("0:03:45".to_string()),
+            rel_time: Some("garbage".to_string()),
+            abs_time: None,
+            rel_count: None,
+            abs_count: None,
+            play_mode: None,
+            track_metadata: None,
+            next_track_uri: None,
+            next_track_metadata: None,
+            queue_length: None,
+        };
+
+        let changes = decode_av_transport(&event);
+
+        assert!(
+            !changes
+                .iter()
+                .any(|c| matches!(c, PropertyChange::Position(_))),
+            "expected no Position change, got {changes:?}"
+        );
     }
 
     #[test]

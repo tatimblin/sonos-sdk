@@ -108,8 +108,9 @@ non-generic type regardless of how many property types exist.
                      ^                                     |
      apply() + emit  |                                     |
 +--------------------+-------------------------------------+------------------+
-|            event worker thread  (src/event_worker.rs:38, std::thread)        |
-|  for event in SonosEventManager::iter()   <-- blocking, not async            |
+|            event worker thread  (src/event_worker.rs:31, std::thread)        |
+|  run_event_loop (:69): for event in SonosEventManager::iter()  <-- blocking  |
+|    each event body wrapped in catch_unwind (:97) -> a panic skips one event  |
 |    ZoneGroupTopology -> decode_topology_event -> apply_topology_changes      |
 |    otherwise         -> ip_to_speaker -> coordinator gate -> decode_event    |
 |                      -> PropertyChange::apply -> maybe emit ChangeEvent      |
@@ -315,24 +316,27 @@ type carried inside `Topology`, not a property. Constructors clamp: `Volume::new
 SonosEventManager::iter()          sonos-event-manager/src/manager.rs:483
         |  EnrichedEvent (blocking)
         v
-event worker thread                src/event_worker.rs:38
+run_event_loop                     src/event_worker.rs:69
+        |  catch_unwind per event -> panic logs at error! and skips one event
+        v
+handle_event                       src/event_worker.rs:117
         |
         +-- EventData::ZoneGroupTopology? --> 3.2
         |
-        +-- ip_to_speaker lookup                    src/event_worker.rs:64
+        +-- ip_to_speaker lookup                    src/event_worker.rs:150
         |     miss -> warn + skip
         |
-        +-- PerCoordinator + not coordinator?       src/event_worker.rs:95
+        +-- PerCoordinator + not coordinator?       src/event_worker.rs:177
         |     yes -> skip (member events carry empty defaults)
         |
-        +-- decode_event()                          src/decoder.rs:169
+        +-- decode_event()                          src/decoder.rs:182
         |     -> DecodedChanges { Vec<PropertyChange> }
         |
-        +-- apply_property_change() per change      src/event_worker.rs:298
+        +-- apply_property_change() per change      src/event_worker.rs:413
         |     PropertyChange::apply() -> bool       src/decoder.rs:73
         |     changed && watched -> event_tx.send(ChangeEvent)
         |
-        +-- PerCoordinator? notify_group_members()   src/event_worker.rs:272
+        +-- PerCoordinator? notify_group_members()   src/event_worker.rs:387
               emits ChangeEvents for members, copies nothing
                               |
                               v
@@ -344,42 +348,47 @@ event worker thread                src/event_worker.rs:38
 
 **Step-by-step**:
 
-1. **Blocking drain** (`src/event_worker.rs:42`): a plain `std::thread` iterates
+1. **Blocking drain** (`src/event_worker.rs:69`): a plain `std::thread` iterates
    `SonosEventManager::iter()`. No tokio runtime is created or required by this crate.
-2. **Identity resolution** (`src/event_worker.rs:64`): the event's `speaker_ip` is mapped
+2. **Panic containment** (`src/event_worker.rs:97`): the body for each event runs inside
+   `std::panic::catch_unwind`. See 4.6 for why this exists and why it is sound.
+3. **Identity resolution** (`src/event_worker.rs:150`): the event's `speaker_ip` is mapped
    through `ip_to_speaker`. An unknown IP is logged and skipped rather than guessed at.
-3. **Coordinator gate** (`src/event_worker.rs:95`): for `PerCoordinator` services
+4. **Coordinator gate** (`src/event_worker.rs:177`): for `PerCoordinator` services
    (`sonos-api/src/service.rs:101`), events from non-coordinators are dropped. With no group
    data yet, the speaker is treated as its own coordinator — the safe default for a
-   standalone speaker.
-4. **Decode** (`src/decoder.rs:169`): dispatches on `EventData` to
-   `decode_rendering_control` (:188), `decode_av_transport` (:228), or
-   `decode_group_rendering_control` (:284). `DeviceProperties` and `GroupManagement` decode to
-   an empty vec (`:174`, `:177`) — the former has no API layer yet, the latter is action-only
+   standalone speaker — and that fallback is logged at `debug` (`:191`), because it is also
+   what an incomplete topology looks like and it silently promotes every member to
+   coordinator.
+5. **Decode** (`src/decoder.rs:182`): dispatches on `EventData` to
+   `decode_rendering_control` (:201), `decode_av_transport` (:241), or
+   `decode_group_rendering_control` (:311). `DeviceProperties` and `GroupManagement` decode to
+   an empty vec (`:187`, `:190`) — the former has no API layer yet, the latter is action-only
    and surfaces its effects through topology events instead.
-5. **Apply** (`src/decoder.rs:73`): `PropertyChange::apply` routes by scope —
+6. **Apply** (`src/decoder.rs:73`): `PropertyChange::apply` routes by scope —
    speaker-scoped variants to `store.set()`, group-scoped variants resolve
-   `speaker_to_group` first and write to `store.set_group()`, returning `false` if the speaker
-   has no group yet.
-6. **Emit if watched** (`src/event_worker.rs:313`): only when `apply` reported a real change
+   `speaker_to_group` first and write to `store.set_group()`. A group-scoped change for a
+   speaker with no group mapping returns `false` and is logged at `warn`
+   (`log_unmapped_group_change`, `src/decoder.rs:113`) rather than dropped silently.
+7. **Emit if watched** (`src/event_worker.rs:428`): only when `apply` reported a real change
    *and* `(speaker_id, key)` is in `watched`. Both conditions must hold.
-7. **Fan out to members** (`src/event_worker.rs:272`): for `PerCoordinator` services,
-   `resolve_group_members` (`:252`) returns the non-coordinator members (empty for a
+8. **Fan out to members** (`src/event_worker.rs:387`): for `PerCoordinator` services,
+   `resolve_group_members` (`:367`) returns the non-coordinator members (empty for a
    standalone speaker or a non-coordinator), and each watching member gets its own
    `ChangeEvent`. No value is duplicated — the member's later `get_property` resolves back to
    the coordinator's bag.
 
 ### 3.2 Secondary Flow: topology replacement
 
-`ZoneGroupTopology` is handled before the IP lookup (`src/event_worker.rs:50`) because it
+`ZoneGroupTopology` is handled before the IP lookup (`src/event_worker.rs:138`) because it
 describes every speaker at once rather than the one that sent it.
 
-`decode_topology_event()` (`src/decoder.rs:314`) returns a `TopologyChanges`
+`decode_topology_event()` (`src/decoder.rs:341`) returns a `TopologyChanges`
 (`src/decoder.rs:36`) carrying groups, per-speaker `GroupMembership`, `boot_seq` values,
-current IPs parsed out of each `location` URL (`extract_ip_from_location`, `:370`), and the
+current IPs parsed out of each `location` URL (`extract_ip_from_location`, `:397`), and the
 IDs of speakers marked `Invisible="1"` (satellites).
 
-`apply_topology_changes()` (`src/event_worker.rs:155`) then, under one write lock:
+`apply_topology_changes()` (`src/event_worker.rs:249`) then, under one write lock:
 `clear_groups()`, re-add every group, `set` each `GroupMembership` while recording which
 actually changed, update `boot_seq`, apply IP changes, and replace `satellite_ids`. It
 releases the store lock before touching `ip_to_speaker` and before emitting, so the two
@@ -388,7 +397,22 @@ releases the store lock before touching `ip_to_speaker` and before emitting, so 
 **Why replace instead of diff**: a topology event is a full snapshot. Rebuilding is
 straightforwardly correct; diffing would risk stale groups surviving a regrouping. The cost of
 correctness is bounded — `GroupMembership` emissions are still gated on real change
-(`src/event_worker.rs:232`), so rebuilding does not spam the consumer.
+(`src/event_worker.rs:352`), so rebuilding does not spam the consumer.
+
+**Why an empty snapshot is ignored** (`src/event_worker.rs:270`): "replace" is only correct
+when the event actually carries a snapshot, and a `ZoneGroupTopology` NOTIFY does not have to.
+Sonos sends topology events for other evented variables too — `AlarmRunSequence`,
+`ThirdPartyMediaServersX`, and (observed on real hardware) a bare
+`<VanishedDevices></VanishedDevices>` — and `ZoneGroupTopologyEvent::zone_groups()`
+(`sonos-api/src/services/zone_group_topology/events.rs:261`) returns an empty `Vec` whenever
+the `ZoneGroupState` variable is absent. Clearing on that would drop `groups`, `group_props`,
+and `speaker_to_group` in response to an unrelated update, so `groups()` would report nothing
+and coordinator resolution would fall back to "every speaker is its own coordinator" until the
+next full snapshot arrived. `apply_topology_changes` therefore treats `changes.groups.is_empty()`
+as a *partial* event: it logs at `warn` with the other field counts and returns without
+touching the store. The cost is that a genuine "all groups dissolved" snapshot cannot be
+expressed by an empty event — but Sonos never sends one, because a speaker that is playing
+nothing is still its own single-member group.
 
 **Why `boot_seq` is stored**: GroupManagement's `AddMember` requires it, and topology events
 are the only place it appears. `get_boot_seq()` (`src/state.rs:495`) exposes it to the SDK.
@@ -417,7 +441,12 @@ Writes from the SDK land via `set_property()` (`src/state.rs:558`) and
 sonos-api            --> StateError::Api            (From impl, src/error.rs:82)
 unparseable IP       --> StateError::InvalidIpAddress   (src/state.rs:422)
 subscribe failure    --> tracing::warn, watch degrades (src/state.rs:622)
-unknown speaker IP   --> tracing::warn, event skipped   (src/event_worker.rs:76)
+unknown speaker IP   --> tracing::warn, event skipped   (src/event_worker.rs:159)
+groupless group prop --> tracing::warn, change dropped  (src/decoder.rs:113)
+empty topology event --> tracing::warn, event ignored   (src/event_worker.rs:270)
+unparseable RelTime  --> tracing::debug, no Position emitted (src/decoder.rs:272)
+overflowing duration --> None from parse_duration_ms     (src/decoder.rs:427)
+panic in one event   --> tracing::error + counter, next event runs (src/event_worker.rs:97)
 undecodable field    --> field omitted from Vec<PropertyChange>
 closed channel       --> ChangeIterator returns None    (src/iter.rs:53)
 ```
@@ -426,7 +455,14 @@ closed channel       --> ChangeIterator returns None    (src/iter.rs:53)
 means the caller has bad data and nothing useful can be cached. Everything on the event path
 degrades instead of failing: a bad field is dropped, a bad event is skipped, a failed
 subscription is logged and leaves the property readable from cache. A single malformed event
-must not stop a long-running dashboard.
+must not stop a long-running dashboard — which is also why a *panicking* event no longer stops
+one (see 4.6).
+
+**Degrade loudly, not silently**: every one of those fallbacks logs. The distinction matters
+because several of them are indistinguishable from a real value at the API surface — a dropped
+group property looks like "no group volume yet", a defaulted position looks like 0:00, and a
+dead worker looks like a household where nothing ever changes. The log line is the only way a
+consumer can tell the difference, so no fallback on the event path is allowed to be quiet.
 
 ---
 
@@ -537,8 +573,8 @@ pub(crate) fn get_resolved<P: SonosProperty>(&self, speaker_id: &SpeakerId) -> O
 ```
 
 - **Writes**: the worker drops `PerCoordinator` events from non-coordinators
-  (`src/event_worker.rs:95`).
-- **Notifications**: `notify_group_members()` (`src/event_worker.rs:272`) emits a
+  (`src/event_worker.rs:177`).
+- **Notifications**: `notify_group_members()` (`src/event_worker.rs:387`) emits a
   `ChangeEvent` per watching member and copies nothing.
 - **Subscriptions**: `resolve_subscription_target()` (`src/state.rs:736`) points the
   member's subscription at the coordinator's IP.
@@ -600,6 +636,55 @@ fixed-tick loop wants a bounded wait.
 `TryIter` (`src/iter.rs:126`) and `TimeoutIter` (`:139`) are thin borrows over the same
 receiver, so no variant takes ownership and all can be used against one `StateManager`.
 
+### 4.6 Feature: per-event panic containment
+
+#### What
+
+`run_event_loop` (`src/event_worker.rs:69`) wraps the body for each event — and only the body,
+never the loop — in `std::panic::catch_unwind`. A panic logs at `error!` with the event's IP and
+service, increments a per-worker counter, and the loop moves to the next event.
+
+#### Why
+
+The worker is a bare `thread::spawn` whose `JoinHandle` is never joined (`_worker` on
+`StateManager`). Without this guard, a single panic anywhere in decoding — a slice index, an
+arithmetic overflow in a debug build, a `unwrap` on a malformed field — terminated the thread
+and with it *every* subsequent state update for the whole process. There was no log, no `Err`,
+and no panic surfacing to the user; watches simply went quiet forever and a TUI kept rendering
+its last known values as though the household had frozen. That failure mode is strictly worse
+than dropping one event, and it is exactly the failure mode a long-running dashboard cannot
+detect.
+
+#### How
+
+Two facts make recovery sound rather than merely optimistic:
+
+- **`parking_lot::RwLock` does not poison.** Unlike `std::sync::RwLock`, a guard dropped during
+  unwind simply releases the lock; there is no poisoned flag and no `PoisonError` on the next
+  acquisition. So the store, the watched set, and the IP map are all still usable after a panic.
+  This is the non-poisoning property already listed as a P1 design goal in 1.2, now load-bearing.
+- **Events are independent.** `PropertyChange::apply` takes the write lock per change, so an
+  aborted event leaves the store partially updated but internally consistent, and the next event
+  for that service overwrites it. Nothing spans two events.
+
+`catch_unwind` requires `UnwindSafe`, which `&Arc<RwLock<..>>` is not (interior mutability), so
+the closure is wrapped in `AssertUnwindSafe`. The assertion is justified by the two facts above
+and stated in a comment at the call site rather than left implicit.
+
+**Guarding against masked bugs**: `catch_unwind` can turn a crash into a slow leak of dropped
+updates, so panics are never swallowed. Every panic logs at `error!` individually, and every
+`PANIC_ESCALATION_INTERVAL` (10) panics logs an additional escalated `error!` naming the running
+total. There is deliberately no health-check API — the log is the interface.
+
+#### Trade-offs
+
+| Decision | Alternative Considered | Why We Chose This |
+|----------|----------------------|-------------------|
+| Wrap the per-event body | Wrap the whole loop | Wrapping the loop only relocates the problem: the first panic still ends event processing |
+| Recover and continue | Let the thread die, surface it via `JoinHandle` | Nothing joins the handle, and a sync API has no place to report it; a dropped event is a far smaller loss than a dead worker |
+| Count and log loudly | Silent recovery | Recovery must not hide the bug that caused the panic |
+| No health-check API | `is_healthy()` / panic count accessor | Out of scope; would add public surface to an internal crate for a condition that should be fixed, not polled |
+
 ---
 
 ## 5. Data Model
@@ -642,7 +727,7 @@ field that changes after insertion.
 A 12-variant enum, one per decodable property, with `apply` (:73), `key` (:111), `scope`
 (:130), and `service` (:149). It exists so a decoded batch can be moved out of the decoder
 without generics and without holding the store lock during decode — the worker decodes first,
-then takes the write lock per change (`src/event_worker.rs:308`).
+then takes the write lock per change (`src/event_worker.rs:423`).
 
 ### 5.2 State Transitions
 
@@ -670,8 +755,8 @@ does return is subscription state, managed by `sonos-event-manager` after its gr
 | Format | Use Case | Library | Notes |
 |--------|----------|---------|-------|
 | Serde derive | Property values, `SpeakerInfo`, `Topology`, `GroupInfo` | `serde` | For consumer persistence; not used internally |
-| DIDL-Lite XML | Track metadata | Hand-rolled | `parse_track_metadata` (`src/decoder.rs:406`) via `extract_xml_element` (`:430`) |
-| `HH:MM:SS[.mmm]` | Positions and durations | Hand-rolled | `parse_duration_ms` (`src/decoder.rs:378`); rejects `NOT_IMPLEMENTED` |
+| DIDL-Lite XML | Track metadata | Hand-rolled | `parse_track_metadata` (`src/decoder.rs:442`) via `extract_xml_element` (`:466`) |
+| `HH:MM:SS[.mmm]` | Positions and durations | Hand-rolled | `parse_duration_ms` (`src/decoder.rs:405`); rejects `NOT_IMPLEMENTED` and returns `None` on overflow |
 
 `Scope` and `SonosProperty` are deliberately not serializable — they are compile-time metadata.
 
@@ -764,7 +849,7 @@ remain for consumers and for paths that predate the current design.
 
 ### 8.1 Testing Philosophy
 
-97 inline unit tests, no `tests/` directory and no network access. Everything the crate does
+103 inline unit tests, no `tests/` directory and no network access. Everything the crate does
 is a pure function over in-memory state plus one channel, so behaviour is testable by
 constructing a store, applying changes, and asserting on both the store and the channel.
 
@@ -773,11 +858,11 @@ constructing a store, applying changes, and asserting on both the store and the 
                     | Live verification |  examples/minimal_example.rs (manual)
                     +--------+----------+
            +-----------------+------------------+
-           |    Worker + store integration      |  event_worker.rs (15)
+           |    Worker + store integration      |  event_worker.rs (17)
            +-----------------+------------------+
     +------+------+------+------+------+------+------+
-    |               Unit tests                        |  state 33, decoder 25,
-    +-------------------------------------------------+  property 15, iter 7, speaker 2
+    |               Unit tests                        |  state 33, decoder 27,
+    +-------------------------------------------------+  property 15, iter 7, model 2, speaker 2
 ```
 
 ### 8.2 Unit Tests
@@ -787,27 +872,45 @@ constructing a store, applying changes, and asserting on both the store and the 
 **What is covered**:
 - [x] Constructor clamping — `test_volume_clamping` (`src/property.rs:527`), `test_bass_clamping` (:534)
 - [x] Property metadata constants — `test_property_constants` (`src/property.rs:601`)
-- [x] Per-service decoding — `test_decode_rendering_control` (`src/decoder.rs:565`), `test_decode_av_transport` (:600), `test_decode_group_rendering_control` (:631)
-- [x] Topology decode incl. IPs, satellites, `boot_seq` — `src/decoder.rs:513`, :951, :984
-- [x] `PropertyChange` key/service/scope mapping — `src/decoder.rs:699`, :713, :731
+- [x] Per-service decoding — `test_decode_rendering_control` (`src/decoder.rs:640`), `test_decode_av_transport` (:675), `test_decode_group_rendering_control` (:706)
+- [x] Topology decode incl. IPs, satellites, `boot_seq` — `src/decoder.rs:588`, :1026, :1059
+- [x] `PropertyChange` key/service/scope mapping — `src/decoder.rs:774`, :788, :806
 - [x] Channel semantics — `test_channel_closed` (`src/iter.rs:269`), `test_try_iter` (:233)
 - [x] Coordinator resolution — `test_get_resolved_per_coordinator_reads_from_coordinator` (`src/state.rs:1687`), `test_get_resolved_per_speaker_reads_own_props` (:1735)
 - [x] Watch gating — `test_change_event_emission` (`src/state.rs:1040`), `test_set_group_property_no_event_when_unwatched` (:1116)
 - [x] Registry unregistration — `test_state_watch_registry_register_and_unregister` (`src/state.rs:1526`)
 - [x] IP updates — `test_update_speaker_ip` (`src/state.rs:1783`)
+- [x] Duration overflow — `test_parse_duration_ms_overflow_returns_none` (`src/decoder.rs:507`)
+      proves `parse_duration_ms` returns `None` instead of panicking on components that
+      overflow `u64`
+- [x] Garbage position — `test_decode_av_transport_skips_position_when_rel_time_garbage`
+      (`src/decoder.rs:515`) proves no `Position` change is emitted when `RelTime` will not
+      parse, so 0:00 never masquerades as a real reading
 
 ### 8.3 Component Tests
 
-`src/event_worker.rs:327` exercises the worker's helpers directly against a real
+`src/event_worker.rs:443` exercises the worker's helpers directly against a real
 `StateStore`, a real `watched` set, and a real `mpsc` pair — no mocking, since all three are
 cheap to construct.
 
-Notable cases: `test_apply_property_change_with_watch` (`:376`) asserts an event fires only
-when watched; `test_apply_topology_changes_no_event_when_membership_unchanged` (`:812`) pins
-the change-detection gate; `test_per_coordinator_notifies_members_without_data_copy` (`:865`)
+Notable cases: `test_apply_property_change_with_watch` (`:496`) asserts an event fires only
+when watched; `test_apply_topology_changes_no_event_when_membership_unchanged` (`:1061`) pins
+the change-detection gate; `test_per_coordinator_notifies_members_without_data_copy` (`:1114`)
 asserts the member is notified *and* that nothing was written to its bag;
-`test_per_speaker_service_not_notified` (`:996`) asserts the inverse for `PerSpeaker`
+`test_per_speaker_service_not_notified` (`:1245`) asserts the inverse for `PerSpeaker`
 services.
+
+`test_partial_topology_event_does_not_clear_groups` (`:932`) is the regression test for 3.2's
+empty-snapshot guard: it seeds a group plus a group-scoped property, applies a
+`TopologyChanges` with no groups, and asserts the group, its `group_props`, and its
+`speaker_to_group` entry all survive with no notification emitted.
+
+`test_worker_survives_decoder_panic` (`:991`) drives `run_event_loop` directly with two
+events — one that panics, one valid — and asserts the valid event's `ChangeEvent` still
+arrives and its value reached the store. The panic is injected through a `#[cfg(test)]`
+sentinel IP (`PANIC_TRIGGER_IP`) checked at the top of `handle_event`, deliberately in place of
+a permanent fault-injection API on an internal crate. A panic backtrace on stderr during this
+test is expected output, not a failure.
 
 ### 8.4 Integration Tests
 
@@ -843,12 +946,12 @@ fallback).
    hash lookups (coordinator resolution adds one), then a clone. Called per notification per
    frame, so the clone cost is the property's own clone cost; keeping property types small
    matters.
-2. **Worker apply loop** (`src/event_worker.rs:124`) — takes the store write lock *per
+2. **Worker apply loop** (`src/event_worker.rs:219`) — takes the store write lock *per
    change* rather than once per event. Simpler and it shortens the window the render loop can
    be blocked, at the cost of re-locking a few times per event.
-3. **`notify_group_members`** (`src/event_worker.rs:272`) — O(members x changes) with the
+3. **`notify_group_members`** (`src/event_worker.rs:387`) — O(members x changes) with the
    `watched` read lock held. Bounded by real group sizes.
-4. **Topology apply** (`src/event_worker.rs:169`) — the single largest write-lock hold: it
+4. **Topology apply** (`src/event_worker.rs:284`) — the single largest write-lock hold: it
    rebuilds all groups under one lock. Frequency is low (regrouping is user-driven), so the
    duration is acceptable.
 
@@ -873,9 +976,9 @@ event-manager iterator terminates.
 
 | Threat | Likelihood | Impact | Mitigation |
 |--------|------------|--------|------------|
-| Forged UPnP event on the LAN | Low | Medium (wrong displayed state) | Events from IPs absent from `ip_to_speaker` are dropped (`src/event_worker.rs:76`) |
+| Forged UPnP event on the LAN | Low | Medium (wrong displayed state) | Events from IPs absent from `ip_to_speaker` are dropped (`src/event_worker.rs:159`) |
 | Event flooding | Low | Low | Unbounded `mpsc` grows but never blocks the worker; unwatched properties never enqueue at all |
-| Malformed XML in track metadata | Medium | Low | Index-based extraction (`src/decoder.rs:430`) returns `None` rather than panicking |
+| Malformed XML in track metadata | Medium | Low | Index-based extraction (`src/decoder.rs:466`) returns `None` rather than panicking |
 
 ### 10.2 Sensitive Data
 
@@ -889,11 +992,11 @@ event-manager iterator terminates.
 | Input Source | Validation | Location |
 |--------------|------------|----------|
 | `Device.ip_address` | Must parse as `IpAddr` | `src/state.rs:419` |
-| Event source IP | Must be a known speaker | `src/event_worker.rs:73` |
-| Volume strings | `parse::<u8>()`, then `.min(100)` | `src/decoder.rs:193` |
-| Group volume | `.min(100)` | `src/decoder.rs:288` |
-| Durations | Requires exactly three `:`-separated parts | `src/decoder.rs:378` |
-| Topology `location` | Requires `http://` prefix and a parseable host | `src/decoder.rs:370` |
+| Event source IP | Must be a known speaker | `src/event_worker.rs:150` |
+| Volume strings | `parse::<u8>()`, then `.min(100)` | `src/decoder.rs:206` |
+| Group volume | `.min(100)` | `src/decoder.rs:315` |
+| Durations | Exactly three `:`-separated parts, and checked arithmetic so an overflowing component yields `None` | `src/decoder.rs:405` |
+| Topology `location` | Requires `http://` prefix and a parseable host | `src/decoder.rs:397` |
 
 ---
 
@@ -903,9 +1006,9 @@ event-manager iterator terminates.
 
 | Level | What's Logged | Example |
 |-------|--------------|---------|
-| `warn` | Unknown speaker IP, failed subscribe/unsubscribe, event-manager device registration failure | "Received event from unknown speaker IP" (`src/event_worker.rs:76`) |
-| `info` | Manager creation, worker start/stop, speaker IP changes | "State event worker started" (`src/event_worker.rs:39`) |
-| `debug` | Per-event receipt, decode counts, per-change application, emissions | "Decoded {} property changes from event" (`src/event_worker.rs:118`) |
+| `warn` | Unknown speaker IP, failed subscribe/unsubscribe, event-manager device registration failure | "Received event from unknown speaker IP" (`src/event_worker.rs:159`); empty topology snapshot (`:270`); unmappable group-scoped change (`src/decoder.rs:113`) |
+| `info` | Manager creation, worker start/stop, speaker IP changes | "State event worker started" (`src/event_worker.rs:39`); `error` is reserved for contained panics (`:97`) |
+| `debug` | Per-event receipt, decode counts, per-change application, emissions | "Decoded {} property changes from event" (`src/event_worker.rs:213`); skipped Position and coordinator-lookup misses |
 | `trace` | Iterator yields | `ChangeIterator::recv` (`src/iter.rs:55`) |
 
 The `debug` level is the intended level for diagnosing "why did my watch not fire?" — it
@@ -973,6 +1076,8 @@ The workspace versions together; breaking changes ride the `sonos-sdk` version.
 | Unbounded notification channel | A never-draining consumer grows memory | Drain, or use `try_iter()` per frame | Bounded channel with a drop policy |
 | `cleanup_timeout` unused | Builder option has no effect | Ignore it | Remove or wire through |
 | `system_props` write-only in practice | `Topology` is stored by `initialize()` (`src/state.rs:681`) but has no public system-scoped getter | Use `groups()` / `speaker_infos()` | Add a system-scope accessor |
+| An empty `ZoneGroupTopology` snapshot cannot express "no groups" | A hypothetical genuine all-groups-dissolved event would be ignored (`src/event_worker.rs:270`) | None needed — Sonos always reports at least one single-member group per speaker | Diff against the previous snapshot instead of replacing |
+| Contained panics drop the event that caused them | A recurring panic silently loses updates for one service while the rest keep working | Watch the `error!` log; the escalated line names the running total | Fix the panicking decode path; there is deliberately no health-check API |
 
 ### 14.2 Technical Debt
 
@@ -980,9 +1085,10 @@ The workspace versions together; breaking changes ride the `sonos-sdk` version.
 |-----------|----------|----------|------------------|
 | Two overlapping watch paths: `watch_property_with_subscription` vs. the SDK's guard-based `acquire_watch` | `src/state.rs:610`, `:636` | Medium | Remove the pre-guard path once nothing depends on it |
 | Unconstructed `StateError` variants | `src/error.rs:10` | Low | Prune to the variants actually produced |
-| Hand-rolled XML extraction while `sonos-stream` already depends on `quick-xml` | `src/decoder.rs:430` | Low | Move DIDL parsing into `sonos-stream` or adopt `quick-xml` here |
+| Hand-rolled XML extraction while `sonos-stream` already depends on `quick-xml` | `src/decoder.rs:466` | Low | Move DIDL parsing into `sonos-stream` or adopt `quick-xml` here |
 | `software_version` hardcoded to `"unknown"` | `src/state.rs:437` | Low | Read from the device description |
-| Write lock retaken per change inside one event | `src/event_worker.rs:308` | Low | Batch under one lock if profiling shows it matters |
+| Write lock retaken per change inside one event | `src/event_worker.rs:423` | Low | Batch under one lock if profiling shows it matters |
+| Panic containment is a net, not a fix | `src/event_worker.rs:97` | Low | Any `error!` from it marks a real bug to be fixed at its source |
 
 ---
 
@@ -1023,6 +1129,7 @@ The workspace versions together; breaking changes ride the `sonos-sdk` version.
 | Coordinator | The speaker owning playback state for its group |
 | Satellite | A speaker marked `Invisible="1"` in topology (surround, sub) |
 | Event worker | The `std::thread` draining `SonosEventManager::iter()` |
+| Partial topology event | A `ZoneGroupTopology` NOTIFY that carries no `ZoneGroupState`, so it decodes to zero groups and is ignored rather than applied (3.2) |
 
 ### B. References
 
@@ -1039,3 +1146,4 @@ The workspace versions together; breaking changes ride the `sonos-sdk` version.
 |------|--------|--------|
 | 2026-01-14 | Claude Opus 4.5 | Initial specification created |
 | 2026-08-15 | Claude Opus 5 | Rewritten to match the implemented sync-first design. The prior revision documented an async `tokio::sync::watch` architecture (`reactive.rs`, `store.rs`, `watcher.rs`, `change_iterator.rs`, `decoders/*`, `PropertyWatcher<P>`, async `watch_property()`) that does not exist in the code |
+| 2026-08-15 | Claude Opus 5 | Documented the empty-topology-snapshot guard (3.2), per-event panic containment (4.6 and step 2 of 3.1), the "degrade loudly" rule in 3.4, and checked duration arithmetic; refreshed line references and test counts |
