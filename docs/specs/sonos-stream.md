@@ -226,12 +226,36 @@ pub struct RegistrationId(u64);
 
 1. **Registration** (`src/broker.rs`): User calls `register_speaker_service()` which:
    - Registers the speaker/service pair in the registry
+   - **Returns immediately if the pair was already registered** (see below)
    - Checks if this is the first subscription for this device
    - On the first subscription, warns via `warn_if_speaker_unreachable` when the
      speaker is on no subnet we hold an address on (see below)
    - Triggers firewall detection if enabled
    - Creates a UPnP subscription via SubscriptionManager
    - Evaluates whether to start immediate polling based on firewall status
+
+**Duplicate registration is idempotent, and `was_duplicate` is computed under the
+registry's own lock.** `SpeakerServiceRegistry::register_reporting_duplicate` decides the
+duplicate verdict inside the critical section that performs the insert, and
+`register_speaker_service` returns straight away when it is `true`.
+
+Two defects made this wrong. The verdict was computed as `registry.register(..)` followed
+by `registry.is_registered(..)` — asked *after* the insert, so it always answered `true`:
+`RegistrationResult::was_duplicate` was `true` for every registration, including
+brand-new ones. And nothing short-circuited on it, so a repeat registration re-ran the
+whole subscribe path: a second UPnP SUBSCRIBE producing a **new SID**, with
+`subscriptions.insert(registration_id, wrapper)` overwriting the wrapper that held the
+old one. The superseded SID was then unnameable by any code path yet remained in the
+`EventRouter`'s active set for the process lifetime — the router kept accepting and
+forwarding its events — and a later `unregister_speaker_service` released only the
+newest. That is the duplicate-registration counterpart to the unregistration leak in
+§5.2.
+
+Deciding the verdict under the insert's own lock is what makes it race-free: a "check,
+then register" pair in the caller would report two genuinely concurrent
+first-registrations as both new. The duplicate return reports `polling_reason: None`,
+because the call activated nothing; whether the reused registration is *currently*
+polling is a separate question answered by `stats()`.
 
 **Callback URL: one authoritative source.** `subscription_callback_url()` returns
 `CallbackServer::base_url()` verbatim, and `SubscriptionManager` is constructed
@@ -251,7 +275,7 @@ assumption would be wrong here: this project's network is one flat
 and a /24 check would emit a false warning for half the household. See
 `docs/specs/callback-server.md` §4.5.
 
-2. **Firewall Detection** (`src/broker.rs:406-417`): Per-device firewall detection:
+2. **Firewall Detection** (`src/broker.rs:625-640`): Per-device firewall detection:
    - First subscription triggers proactive detection
    - Subsequent subscriptions use cached status
    - Detection runs concurrently with subscription creation
@@ -283,11 +307,11 @@ and a /24 check would emit a false warning for half the household. See
 │   Blocked       │     │                 │     │   Scheduler     │
 └─────────────────┘     └─────────────────┘     └─────────────────┘
          │                                              │
-         │ broker.rs:441-458                           │
+         │ broker.rs:669-684                           │
          │                                              ▼
          │                                     ┌─────────────────┐
          │                                     │  PollingTask    │
-         │                                     │ scheduler.rs:51 │
+         │                                     │scheduler.rs:105 │
          │                                     └────────┬────────┘
          │                                              │
          └──────────────────────────────────────────────┤
@@ -355,6 +379,33 @@ The broker's polling-request task handles `Stop` by calling
 `PollingScheduler::stop_polling()` (which removes the task and awaits its shutdown)
 and clearing the subscription's `polling_active` flag.
 
+**Stopping is prompt, and does not block unrelated callers.** Two properties, both
+previously violated:
+
+1. *Shutdown is signalled, not just flagged.* `PollingTask`'s shutdown signal is an
+   `AtomicBool` **plus a `tokio::sync::Notify`**, and every sleep in the polling loop is
+   a `select!` over the sleep and that notify. Previously the flag was read only at the
+   *top* of the loop, so a stop had to wait out the whole in-flight iteration:
+   `current_interval` (≤5s by default), a full poll (several sequential SOAP calls, each
+   with a 5s connect / 10s read timeout), and — worst — an error-backoff sleep capped at
+   `max_polling_interval` (30s) that was **not guarded at all**. Against an unreachable
+   speaker that totalled roughly 85s. Now only the in-flight poll delays shutdown.
+   `notify_one` rather than `notify_waiters` is deliberate: the latter is dropped when no
+   task is parked at that instant, so a stop issued mid-poll would let the *next* sleep
+   run to completion.
+2. *`stop_polling` does not hold `active_tasks` across the await.* `remove()` has already
+   taken the task out of the map, so the write guard protects nothing during
+   `shutdown().await` — it only blocks every other accessor: `start_polling`,
+   `is_polling`, and `stats()`. Because `EventBroker::stats()` calls the last of those, a
+   caller merely asking for statistics could hang for the full shutdown window; and since
+   polling requests are handled by a single serialized task, every queued `Start`/`Stop`
+   behind it stalled too. The guard is now released before awaiting, which is safe
+   precisely because the map no longer references the task: no concurrent caller can
+   observe or re-enter it, and a racing `start_polling` for the same registration
+   correctly sees "not polling" and spawns a fresh task rather than blocking on the
+   outgoing one. `shutdown_all()` drains under the lock and releases it before awaiting,
+   for the same reason.
+
 **Why `record_event` is load-bearing.** Both properties above depend on it being
 called on the hot path. When it was not (it had no production caller at all), every
 registration's `last_event_time` was frozen at registration time, so *every*
@@ -375,12 +426,11 @@ the guard is only meaningful because it exercises the production call site.
 denying it any future fallback.
 
 **Staleness rule for queued `Start`s.** Polling requests are handled in order by a
-single task, and a `Stop` can block that task for a long time: `PollingTask::shutdown`
-only sets an `AtomicBool` checked at the top of the polling loop, so an in-flight
-iteration must finish first — up to `current_interval` of sleep, plus a full poll (4-5
-sequential SOAP calls), plus, on the error path, a backoff sleep capped at
-`max_polling_interval` that is *not* guarded by the shutdown flag. Against an
-unreachable speaker that is tens of seconds.
+single task, and a `Stop` can still block that task: shutdown now interrupts the loop's
+sleeps promptly (see "Stopping is prompt" above), but it must still await the *in-flight
+poll*, which is several sequential SOAP calls each with a 5s connect / 10s read timeout.
+Against an unreachable speaker that remains seconds, not milliseconds — so the queue can
+still fall behind and the staleness rule below is still required.
 
 A `Start` queued behind such a `Stop` can therefore drain *after* its registration was
 unregistered. `PollingScheduler::start_polling` validates only "already polling" and
@@ -484,7 +534,7 @@ Fixed polling intervals waste resources on idle devices while potentially missin
 
 #### How
 
-Adaptive intervals calculated in `src/polling/scheduler.rs:262-280`:
+Adaptive intervals calculated in `src/polling/scheduler.rs:322-340`:
 
 ```rust
 fn calculate_adaptive_interval(
@@ -626,7 +676,10 @@ pub enum EventData {
 **Invariants per state**:
 - **Unregistered**: No registry entry, no subscription, no polling, SID not in EventRouter
 - **Registered/UPnP Only**: Active UPnP subscription, no polling task, EventDetector
-  `polling_reason == None`
+  `polling_reason == None`. **Exactly one SID per registration is in the EventRouter.**
+  A repeat `register_speaker_service` for an already-registered pair returns the existing
+  registration without subscribing again, so it cannot add a second SID and orphan the
+  first (see 3.1).
 - **Registered/Polling Only**: Active polling task. Two sub-cases, which differ in
   whether the fallback is reversible:
   - *Reversible* (UPnP subscription exists, events merely stopped or the firewall was
@@ -804,6 +857,34 @@ pub enum PollingError {
     poller
   - `broker::tests::test_failed_start_clears_polling_marker` — a failed `Start` clears
     the marker so timeout detection is not suppressed forever
+- [x] Duplicate registration and shutdown promptness, all offline (RFC 5737 TEST-NET-3
+      addresses; each verified to fail with its fix reverted):
+  - `registry::tests::test_register_reports_duplicate_only_for_repeats` — the duplicate
+    verdict distinguishes a first registration from a repeat
+  - `broker::tests::test_was_duplicate_distinguishes_first_registration_from_repeat` —
+    drives the real `register_speaker_service`, so it catches the "ask `is_registered`
+    *after* `register`" ordering bug that made `was_duplicate` always `true`. Note the
+    pre-existing `test_registration_result` does **not** catch it: it constructs a
+    `RegistrationResult` literal and asserts the field reads back, never invoking the
+    computation.
+  - `broker::tests::test_duplicate_registration_does_not_resubscribe` — a duplicate
+    short-circuits before the subscribe path, so no second SID is created to orphan the
+    first. The discriminator is `polling_reason`: offline, re-entering the subscribe path
+    reports `Some(SubscriptionFailed)` while the short-circuit reports `None`. Because
+    SUBSCRIBE cannot succeed without a real speaker, this asserts *that the second
+    subscribe never happens* rather than the growth of the router's SID set — with no
+    live SID there is no non-vacuous set assertion available offline.
+  - `polling::scheduler::tests::test_stop_polling_does_not_hold_lock_across_shutdown` —
+    a concurrent `stats()`/`is_polling()` completes while a slow shutdown is in flight;
+    asserts `!stopper.is_finished()` first, so it cannot pass vacuously by the shutdown
+    having already completed
+  - `polling::scheduler::tests::test_shutdown_interrupts_pending_sleep` — a stop cuts
+    short a 60s interval sleep instead of waiting it out
+  - `polling::scheduler::tests::test_shutdown_interrupts_error_backoff` — a stop also
+    cuts short the *error-backoff* sleep, the offender that was previously unguarded
+    entirely. Distinct from the previous test: reverting only the backoff guard leaves
+    that one passing. Timing-sensitive by nature (it distinguishes "returns at once" from
+    "waits ~9s" with a 6s bound), so the timings are chosen with margin on both sides.
 
 **Mutation-testing note.** These guards are only meaningful because they drive the real
 call sites. A test that exercises a thin extracted helper directly can pass with the
@@ -870,7 +951,7 @@ async fn test_duplicate_detection() {
    - **Bottleneck**: XML parsing of large metadata
    - **Optimization**: Uses sonos-api's optimized event framework
 
-2. **Registry Lookup** (`src/registry.rs:191-199`)
+2. **Registry Lookup** (`src/registry.rs:221-229`)
    - **Complexity**: O(1) HashMap lookup
    - **Bottleneck**: Write lock contention under high registration churn
    - **Optimization**: Uses bidirectional HashMap for O(1) both directions
@@ -1026,7 +1107,7 @@ BrokerConfig::firewall_simulation()
 | `BrokerConfig::polling_activation_delay` is unused | `config.rs` | Low | Its only reader was `EventDetector::should_stop_polling`, a dead time-based heuristic replaced by the explicit `polling_reason` state machine (3.2). The field is still public and settable but has no effect; remove it in a follow-up that owns `config.rs`. |
 | eprintln! instead of tracing | Throughout | Low | Replace with tracing macros |
 | Incomplete position info polling | `strategies.rs:84-90` | Medium | Add get_position_info_operation call |
-| Hardcoded error thresholds | `scheduler.rs:239` | Low | Move to BrokerConfig |
+| Hardcoded error thresholds | `scheduler.rs:287` | Low | Move to BrokerConfig |
 
 ---
 
@@ -1073,3 +1154,4 @@ BrokerConfig::firewall_simulation()
 | 2025-01-14 | Claude Code | Initial specification |
 | 2026-08-15 | Claude Code | Deleted `broker::get_local_ip` (a duplicate route-to-8.8.8.8 probe) and made the broker consume `CallbackServer::base_url()` as the single authoritative callback URL (3.1). Added a first-subscription reachability warning based on real netmasks. Recorded the single-callback-URL multi-subnet limitation as a named follow-up (14.1). |
 | 2026-08-15 | Claude Code | Documented the polling-fallback lifecycle as reversible (3.2, 5.2): `record_event` liveness reporting, `PollingAction::Stop` on event resumption, and EventRouter SID release on unregistration. Noted `polling_activation_delay` is now unread. |
+| 2026-08-16 | Claude Code | Closed the duplicate-registration SID leak (3.1, 5.2): `register_speaker_service` now short-circuits an already-registered pair instead of re-subscribing and orphaning the previous SID, and `was_duplicate` is computed by `SpeakerServiceRegistry::register_reporting_duplicate` under the insert's own lock — it was previously an `is_registered` call made *after* `register`, so it always answered `true`. Made polling shutdown prompt and non-blocking (3.2): the shutdown signal now carries a `Notify` that interrupts both the interval sleep and the previously unguarded error-backoff sleep, and `stop_polling`/`shutdown_all` release the `active_tasks` guard before awaiting shutdown so `stats()`, `is_polling` and `start_polling` are no longer blocked. Refreshed stale line references. |

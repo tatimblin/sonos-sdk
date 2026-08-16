@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, Notify, RwLock};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
@@ -15,6 +15,62 @@ use crate::error::{PollingError, PollingResult};
 use crate::events::types::{EnrichedEvent, EventSource};
 use crate::polling::strategies::DeviceStatePoller;
 use crate::registry::{RegistrationId, SpeakerServicePair};
+
+/// Shutdown signal for a polling task: a flag plus a wakeup.
+///
+/// The flag alone is not enough. It was previously only read at the top of the
+/// polling loop, so a requested stop had to wait out whatever the current iteration
+/// was doing: up to `current_interval` of sleep, then a full poll (several sequential
+/// SOAP calls, each with a 10s ureq read timeout), then — on the error path — a
+/// backoff sleep capped at `max_polling_interval` that was not guarded at all.
+/// Against an unreachable speaker that is over a minute.
+///
+/// [`ShutdownSignal::request`] wakes any sleep in progress, so
+/// [`ShutdownSignal::sleep_or_shutdown`] returns as soon as a stop is requested
+/// rather than at the end of the interval.
+#[derive(Debug)]
+struct ShutdownSignal {
+    requested: AtomicBool,
+    wakeup: Notify,
+}
+
+impl ShutdownSignal {
+    fn new() -> Self {
+        Self {
+            requested: AtomicBool::new(false),
+            wakeup: Notify::new(),
+        }
+    }
+
+    /// Request shutdown and wake a sleeping polling loop.
+    fn request(&self) {
+        self.requested.store(true, Ordering::Relaxed);
+        // `notify_waiters` would be lost if no task is parked *right now*; the polling
+        // loop may instead be mid-poll. `notify_one` stores a permit, so the next
+        // `notified().await` returns immediately and the flag is observed.
+        self.wakeup.notify_one();
+    }
+
+    fn is_requested(&self) -> bool {
+        self.requested.load(Ordering::Relaxed)
+    }
+
+    /// Sleep for `duration`, returning early if shutdown is requested.
+    ///
+    /// Returns `true` when shutdown was requested (so the caller should stop) and
+    /// `false` when the full duration elapsed.
+    async fn sleep_or_shutdown(&self, duration: Duration) -> bool {
+        if self.is_requested() {
+            return true;
+        }
+
+        tokio::select! {
+            biased;
+            _ = self.wakeup.notified() => true,
+            _ = tokio::time::sleep(duration) => self.is_requested(),
+        }
+    }
+}
 
 /// A single polling task with state management
 #[derive(Debug)]
@@ -32,7 +88,7 @@ pub struct PollingTask {
     task_handle: JoinHandle<()>,
 
     /// Shutdown signal for graceful termination
-    shutdown_signal: Arc<AtomicBool>,
+    shutdown_signal: Arc<ShutdownSignal>,
 
     /// When this task was started
     started_at: SystemTime,
@@ -55,7 +111,7 @@ impl PollingTask {
         device_poller: Arc<DeviceStatePoller>,
         event_sender: mpsc::UnboundedSender<EnrichedEvent>,
     ) -> Self {
-        let shutdown_signal = Arc::new(AtomicBool::new(false));
+        let shutdown_signal = Arc::new(ShutdownSignal::new());
         let error_count = Arc::new(RwLock::new(0));
         let poll_count = Arc::new(RwLock::new(0));
 
@@ -104,7 +160,7 @@ impl PollingTask {
         adaptive_polling: bool,
         device_poller: Arc<DeviceStatePoller>,
         event_sender: mpsc::UnboundedSender<EnrichedEvent>,
-        shutdown_signal: Arc<AtomicBool>,
+        shutdown_signal: Arc<ShutdownSignal>,
         error_count: Arc<RwLock<u32>>,
         poll_count: Arc<RwLock<u64>>,
     ) {
@@ -120,7 +176,7 @@ impl PollingTask {
 
         loop {
             // Check for shutdown signal
-            if shutdown_signal.load(Ordering::Relaxed) {
+            if shutdown_signal.is_requested() {
                 info!(
                     speaker_ip = %pair.speaker_ip,
                     service = ?pair.service,
@@ -129,8 +185,16 @@ impl PollingTask {
                 break;
             }
 
-            // Sleep for the current interval
-            tokio::time::sleep(current_interval).await;
+            // Sleep for the current interval, but wake immediately on shutdown rather
+            // than making a stop wait out the whole interval.
+            if shutdown_signal.sleep_or_shutdown(current_interval).await {
+                info!(
+                    speaker_ip = %pair.speaker_ip,
+                    service = ?pair.service,
+                    "Polling task shutting down during interval sleep"
+                );
+                break;
+            }
 
             // Increment poll count
             {
@@ -229,10 +293,20 @@ impl PollingTask {
                         break;
                     }
 
-                    // Exponential backoff up to max interval
+                    // Exponential backoff up to max interval. This sleep used to be
+                    // unguarded entirely, making it the single worst contributor to
+                    // shutdown latency: up to `max_interval` (30s by default) on top of
+                    // everything else.
                     let backoff_interval = current_interval * (2_u32.pow(error_count_value.min(6)));
                     let capped_interval = backoff_interval.min(max_interval);
-                    tokio::time::sleep(capped_interval).await;
+                    if shutdown_signal.sleep_or_shutdown(capped_interval).await {
+                        info!(
+                            speaker_ip = %pair.speaker_ip,
+                            service = ?pair.service,
+                            "Polling task shutting down during error backoff"
+                        );
+                        break;
+                    }
                 }
             }
         }
@@ -303,8 +377,9 @@ impl PollingTask {
 
     /// Request graceful shutdown of this polling task
     pub async fn shutdown(self) -> PollingResult<()> {
-        // Signal shutdown
-        self.shutdown_signal.store(true, Ordering::Relaxed);
+        // Signal shutdown *and* wake any sleep in progress, so this await is bounded by
+        // the in-flight poll rather than by a full interval plus error backoff.
+        self.shutdown_signal.request();
 
         // Wait for task to complete
         match self.task_handle.await {
@@ -415,10 +490,26 @@ impl PollingScheduler {
     }
 
     /// Stop polling for a registration ID
+    ///
+    /// The `active_tasks` write guard is released *before* awaiting the task's
+    /// shutdown. `remove` has already taken the task out of the map, so the guard
+    /// protects nothing during the await and holding it only blocks every other
+    /// accessor — `start_polling`, `is_polling` and `stats()`, and through the last of
+    /// those `EventBroker::stats()`. Since the awaited shutdown is bounded by an
+    /// in-flight poll (several sequential SOAP calls against a possibly unreachable
+    /// speaker), that could stall unrelated callers for tens of seconds.
+    ///
+    /// Dropping the guard early is safe: the map no longer references this task, so no
+    /// concurrent caller can observe or re-enter it, and a `start_polling` for the same
+    /// registration that races in now correctly sees "not polling" and spawns a fresh
+    /// task rather than blocking on the outgoing one.
     pub async fn stop_polling(&self, registration_id: RegistrationId) -> PollingResult<()> {
-        let mut tasks = self.active_tasks.write().await;
+        let removed = {
+            let mut tasks = self.active_tasks.write().await;
+            tasks.remove(&registration_id)
+        };
 
-        if let Some(task) = tasks.remove(&registration_id) {
+        if let Some(task) = removed {
             let pair = task.speaker_service_pair().clone();
             // Shutdown happens when task is dropped, but we can explicitly shut it down
             task.shutdown().await?;
@@ -460,10 +551,18 @@ impl PollingScheduler {
     }
 
     /// Shutdown all polling tasks
+    ///
+    /// Drains the map under the lock and releases it before awaiting any shutdown, for
+    /// the same reason as [`Self::stop_polling`]: the drained tasks are no longer
+    /// reachable through the map, so the guard would protect nothing while blocking
+    /// every other accessor for the duration of every in-flight poll.
     pub async fn shutdown_all(&self) -> PollingResult<()> {
-        let mut tasks = self.active_tasks.write().await;
+        let drained: Vec<(RegistrationId, PollingTask)> = {
+            let mut tasks = self.active_tasks.write().await;
+            tasks.drain().collect()
+        };
 
-        for (registration_id, task) in tasks.drain() {
+        for (registration_id, task) in drained {
             match task.shutdown().await {
                 Ok(()) => {
                     debug!(%registration_id, "Shutdown polling task");
@@ -570,6 +669,210 @@ mod tests {
         // Stop polling
         scheduler.stop_polling(registration_id).await.unwrap();
         assert!(!scheduler.is_polling(registration_id).await);
+    }
+
+    /// `stop_polling` must not hold the `active_tasks` write guard while awaiting the
+    /// task's shutdown.
+    ///
+    /// It used to `remove()` and then `shutdown().await` with the guard still alive.
+    /// Shutdown is bounded by the in-flight poll — several sequential SOAP calls, each
+    /// with a 5s connect / 10s read timeout against a possibly unreachable speaker — so
+    /// for that whole window every other accessor of the map blocked: `start_polling`,
+    /// `is_polling`, and `stats()`. `EventBroker::stats()` calls the last of those, so a
+    /// caller merely asking for statistics could hang for over a minute.
+    ///
+    /// The speaker is an RFC 5737 TEST-NET-3 address, so the poll's connect attempt
+    /// stalls without reaching any real device.
+    #[tokio::test]
+    async fn test_stop_polling_does_not_hold_lock_across_shutdown() {
+        let (event_sender, _event_receiver) = mpsc::unbounded_channel();
+        let scheduler = Arc::new(PollingScheduler::new(
+            event_sender,
+            // Enter the first poll almost immediately, so a slow shutdown is in flight
+            // by the time we probe the lock.
+            Duration::from_millis(20),
+            Duration::from_secs(30),
+            false,
+            5,
+        ));
+
+        let registration_id = RegistrationId::new(1);
+        let pair = SpeakerServicePair::new(
+            "203.0.113.60".parse().unwrap(),
+            sonos_api::Service::AVTransport,
+        );
+
+        scheduler
+            .start_polling(registration_id, pair)
+            .await
+            .unwrap();
+
+        // Let the task get past its interval sleep and into the (stalling) poll.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let stopper = {
+            let scheduler = Arc::clone(&scheduler);
+            tokio::spawn(async move { scheduler.stop_polling(registration_id).await })
+        };
+
+        // Give the stopper time to take the lock and begin awaiting shutdown.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // The load-bearing assertion: readers must not be blocked by the in-flight
+        // shutdown. With the guard held across the await these both block until the
+        // stalling poll finishes.
+        tokio::time::timeout(Duration::from_secs(2), scheduler.stats())
+            .await
+            .expect("stats() must not block on an in-flight stop_polling");
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            scheduler.is_polling(registration_id),
+        )
+        .await
+        .expect("is_polling() must not block on an in-flight stop_polling");
+
+        // Proves the overlap was real: had the shutdown already completed, the
+        // assertions above would be vacuous.
+        assert!(
+            !stopper.is_finished(),
+            "precondition: shutdown should still be in flight, otherwise this test \
+             proves nothing about lock scope"
+        );
+
+        stopper.await.unwrap().unwrap();
+    }
+
+    /// A requested shutdown must interrupt a pending interval sleep rather than waiting
+    /// it out.
+    ///
+    /// The shutdown flag used to be read only at the *top* of the polling loop, so a
+    /// stop issued while the task slept had to wait for the full `current_interval`
+    /// first (and, on the error path, an unguarded backoff sleep capped at
+    /// `max_polling_interval` on top). Here the interval is 60s: if the sleep is not
+    /// interruptible, `stop_polling` cannot return within the timeout.
+    ///
+    /// Fully offline — the task is stopped during its very first sleep, so it never
+    /// reaches a poll and contacts nothing.
+    #[tokio::test]
+    async fn test_shutdown_interrupts_pending_sleep() {
+        let (event_sender, _event_receiver) = mpsc::unbounded_channel();
+        let scheduler = PollingScheduler::new(
+            event_sender,
+            // Far longer than the assertion timeout below, so passing requires the
+            // sleep to actually be cut short.
+            Duration::from_secs(60),
+            Duration::from_secs(120),
+            false,
+            5,
+        );
+
+        let registration_id = RegistrationId::new(1);
+        let pair = SpeakerServicePair::new(
+            "203.0.113.61".parse().unwrap(),
+            sonos_api::Service::RenderingControl,
+        );
+
+        scheduler
+            .start_polling(registration_id, pair)
+            .await
+            .unwrap();
+
+        // Let the task reach its interval sleep.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            scheduler.stop_polling(registration_id),
+        )
+        .await
+        .expect("shutdown must interrupt the interval sleep, not wait out all 60s")
+        .expect("stop_polling should succeed");
+
+        assert!(!scheduler.is_polling(registration_id).await);
+    }
+
+    /// Shutdown must also interrupt the **error-backoff** sleep, which was previously
+    /// unguarded entirely and is the worst single contributor to shutdown latency.
+    ///
+    /// Distinct from `test_shutdown_interrupts_pending_sleep`: the stop is issued once
+    /// the first poll has already *failed*, so the loop is parked in the backoff sleep
+    /// rather than in its interval sleep. Reverting only the backoff guard leaves that
+    /// other test passing, so this is the one that pins it.
+    ///
+    /// The timings are set so the backoff is unmistakably long. Backoff is
+    /// `current_interval * 2^error_count` capped at `max_polling_interval`, so it scales
+    /// off the *base* interval — a short base interval yields a backoff of milliseconds
+    /// and would make this test vacuous. With a 5s base: the interval sleep runs
+    /// t=0..5s, the poll fails at t≈10s (5s ureq connect timeout against an unreachable
+    /// address), and the backoff then covers t≈10..20s. The stop is issued at t=11s, so
+    /// an unguarded backoff makes it wait ~9s while a guarded one returns at once.
+    ///
+    /// **Timing-sensitive**, deliberately loosely bounded: the 6s assertion timeout sits
+    /// between those two outcomes with margin on both sides. Offline throughout — RFC
+    /// 5737 TEST-NET-3, so the poll fails by connect timeout without reaching a device.
+    #[tokio::test]
+    async fn test_shutdown_interrupts_error_backoff() {
+        let (event_sender, _event_receiver) = mpsc::unbounded_channel();
+        let scheduler = PollingScheduler::new(
+            event_sender,
+            // Backoff derives from this, so it must not be tiny.
+            Duration::from_secs(5),
+            // High enough that the cap never shortens the backoff.
+            Duration::from_secs(300),
+            false,
+            5,
+        );
+
+        let registration_id = RegistrationId::new(1);
+        let pair = SpeakerServicePair::new(
+            "203.0.113.62".parse().unwrap(),
+            sonos_api::Service::AVTransport,
+        );
+
+        scheduler
+            .start_polling(registration_id, pair)
+            .await
+            .unwrap();
+
+        // Past the first poll's failure (t≈10s), so the loop is in error backoff.
+        tokio::time::sleep(Duration::from_secs(11)).await;
+
+        tokio::time::timeout(
+            Duration::from_secs(6),
+            scheduler.stop_polling(registration_id),
+        )
+        .await
+        .expect("shutdown must interrupt the error-backoff sleep rather than waiting it out")
+        .expect("stop_polling should succeed");
+
+        assert!(!scheduler.is_polling(registration_id).await);
+    }
+
+    /// The shutdown request must be observable even when it is issued while the polling
+    /// loop is *not* parked in a sleep.
+    ///
+    /// This pins the choice of `notify_one` over `notify_waiters`: the latter is dropped
+    /// when no task is currently waiting, so a stop requested mid-poll would leave the
+    /// *next* sleep to run to completion. `notify_one` stores a permit, so the following
+    /// `notified()` returns at once.
+    #[tokio::test]
+    async fn test_shutdown_signal_wakes_a_later_sleep() {
+        let signal = ShutdownSignal::new();
+
+        // Requested before anyone waits — the flag short-circuits immediately.
+        signal.request();
+        assert!(
+            signal.sleep_or_shutdown(Duration::from_secs(600)).await,
+            "an already-requested shutdown must not sleep at all"
+        );
+
+        // A signal with no request outstanding does sleep, and reports "not shutting
+        // down" when the duration elapses.
+        let fresh = ShutdownSignal::new();
+        assert!(
+            !fresh.sleep_or_shutdown(Duration::from_millis(10)).await,
+            "without a shutdown request the sleep should run to completion"
+        );
     }
 
     #[test]
