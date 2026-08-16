@@ -68,7 +68,9 @@ fn main() -> Result<(), SdkError> {
             if let Some(vol) = handle.value() {
                 println!("   Current volume: {}%", vol.0);
             }
-            println!("   (Changes will appear in system.iter() while handle is alive)");
+            println!("   (Changes will appear in system.iter() while handle is alive,");
+            println!("    and handle.value() re-reads the current value each call —");
+            println!("    hold this one handle rather than re-watching)");
             // handle is dropped here — starts 50ms grace period
         }
         Err(e) => println!("   Error starting volume watcher: {e}"),

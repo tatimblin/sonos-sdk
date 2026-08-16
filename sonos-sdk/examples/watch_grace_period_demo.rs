@@ -1,9 +1,10 @@
 //! Grace Period Demo - Visualizing the 50ms Grace Period Feature
 //!
-//! This example demonstrates the key innovation of the RAII WatchHandle:
-//! - Rapid watch creation/dropping without subscription churn
-//! - Grace period behavior preventing unnecessary unsubscribes
-//! - TUI-style usage pattern (watching inside draw loops)
+//! This example demonstrates the RAII WatchHandle:
+//! - One handle held across a whole draw loop, reading live each frame
+//! - Grace period behavior preventing unnecessary unsubscribes when a handle
+//!   really does have to be dropped and reacquired
+//! - Overlapping handles sharing a single subscription
 //! - Visual timing demonstration
 //!
 //! Run with: cargo run -p sonos-sdk --example watch_grace_period_demo
@@ -100,22 +101,25 @@ fn demo_normal_usage(speaker: &Speaker) -> Result<(), SdkError> {
 }
 
 fn demo_tui_pattern(speaker: &Speaker) -> Result<(), SdkError> {
-    println!("🖥️  Demo 2: TUI Pattern (Rapid Watch Creation/Dropping)");
+    println!("🖥️  Demo 2: TUI Pattern (One Handle, Many Frames)");
     println!("--------------------------------------------------------");
-    println!("Simulating a TUI app calling watch() inside draw() method...");
-    println!("This would cause subscription churn WITHOUT the grace period.");
+    println!("Simulating a TUI app rendering at ~60 FPS.");
+    println!("The handle is acquired ONCE, outside the draw loop: value() reads");
+    println!("the store on each call, so one handle reports every change.");
     println!();
 
     let start = Instant::now();
 
-    // Simulate 10 rapid draw() calls
+    // Acquired once, outside the loop. Re-watching per frame is not needed to
+    // refresh the value — the handle is a lease on the subscription, and reading
+    // through it is a live read.
+    let handle = speaker.volume.watch()?;
+
+    // Simulate 10 draw() calls
     for frame in 1..=10 {
         let frame_start = Instant::now();
 
-        // This is the TUI pattern: watch() called inside draw()
-        let handle = speaker.volume.watch()?;
-
-        // Simulate some drawing work
+        // Live read: whatever the device last reported.
         let volume_text = if let Some(vol) = handle.value() {
             format!("Volume: {}%", vol.0)
         } else {
@@ -127,9 +131,6 @@ fn demo_tui_pattern(speaker: &Speaker) -> Result<(), SdkError> {
             handle.mode()
         );
 
-        // Handle automatically drops at end of scope
-        // Grace period prevents unsubscribe churn
-
         let frame_time = frame_start.elapsed();
         println!("      ⏱️  Frame rendered in {:?}", frame_time);
 
@@ -140,7 +141,7 @@ fn demo_tui_pattern(speaker: &Speaker) -> Result<(), SdkError> {
     let total_time = start.elapsed();
     println!();
     println!("   ✅ 10 frames rendered in {:?}", total_time);
-    println!("   🎯 Grace period prevented 9 unnecessary unsubscribe/resubscribe cycles!");
+    println!("   🎯 One subscription for the whole loop, and never a stale value.");
     println!();
 
     Ok(())

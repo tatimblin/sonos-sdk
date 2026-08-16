@@ -62,15 +62,18 @@ let volume: u8 = speaker.volume.fetch()?;
 Subscribes to real-time changes via UPnP events. Returns a `WatchHandle` that keeps the subscription alive. Events arrive through `sonos.iter()`.
 
 ```rust
-for event in sonos.iter() {
-    let volume = speaker.volume.watch()?;
-    let mute = speaker.mute.watch()?;
+// Acquire once, outside the loop, and hold the handles.
+let volume = speaker.volume.watch()?;
+let mute = speaker.mute.watch()?;
 
+for _event in sonos.iter() {
     println!("Volume: {:?}, Mute: {:?}", volume.value(), mute.value());
 }
 ```
 
-`watch()` returns a `WatchHandle` containing the current snapshot. The subscription initializes on the first call and persists across iterations via a 50ms grace period.
+`WatchHandle` is a live view, not a snapshot: `value()` reads the current value on every call, so one handle held across a whole loop reports every change. It returns `Option<P>` by value — `None` if nothing has been observed yet.
+
+Hold the handle for as long as you want updates. The subscription starts on the first `watch()` and is torn down 50ms after the last handle drops, so a handle that genuinely must be dropped and reacquired does not churn the subscription.
 
 **Use when:**
 - Building a live dashboard or TUI
@@ -101,12 +104,14 @@ A common pattern is to `fetch()` for initial state, then `watch()` for updates:
 let initial = speaker.volume.fetch()?;
 println!("Current volume: {}%", initial);
 
-// Then react to changes — re-watch to get updated snapshots
-for event in sonos.iter() {
-    let volume = speaker.volume.watch()?;
+// Then react to changes through the one handle
+let volume = speaker.volume.watch()?;
+for _event in sonos.iter() {
     println!("Volume changed to: {:?}", volume.value());
 }
 ```
+
+`watch_or_fetch()` does both in one call: it subscribes, and fetches once if nothing has been observed yet.
 
 ## Setting properties
 
