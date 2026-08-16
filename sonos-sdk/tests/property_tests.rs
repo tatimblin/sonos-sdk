@@ -660,7 +660,7 @@ proptest! {
             model_name: "Sonos One".to_string(),
         }];
 
-        let system = SonosSystem::from_discovered_devices(devices).unwrap();
+        let system = SonosSystem::from_devices_offline(devices).unwrap();
 
         // Look up by room name (display_name prefers room_name)
         let found_speaker = system.speaker(&speaker_name);
@@ -701,7 +701,7 @@ proptest! {
             model_name: "Sonos One".to_string(),
         }];
 
-        let system = SonosSystem::from_discovered_devices(devices).unwrap();
+        let system = SonosSystem::from_devices_offline(devices).unwrap();
 
         // Look up by unknown name
         let found_speaker = system.speaker(&unknown_name);
@@ -738,7 +738,7 @@ proptest! {
             model_name: "Sonos One".to_string(),
         }];
 
-        let system = SonosSystem::from_discovered_devices(devices).unwrap();
+        let system = SonosSystem::from_devices_offline(devices).unwrap();
 
         // Look up by ID
         let lookup_id = SpeakerId::new(&speaker_id);
@@ -779,7 +779,7 @@ proptest! {
             model_name: "Sonos One".to_string(),
         }];
 
-        let system = SonosSystem::from_discovered_devices(devices).unwrap();
+        let system = SonosSystem::from_devices_offline(devices).unwrap();
 
         // Look up by unknown ID
         let lookup_id = SpeakerId::new(&unknown_id);
@@ -819,7 +819,7 @@ proptest! {
             .collect();
 
         let expected_count = devices.len();
-        let system = SonosSystem::from_discovered_devices(devices).unwrap();
+        let system = SonosSystem::from_devices_offline(devices).unwrap();
 
         let actual_count = system.speakers().len();
 
@@ -835,7 +835,7 @@ proptest! {
     #[test]
     fn prop_empty_system_has_no_speakers(_dummy in Just(())) {
         let devices: Vec<Device> = vec![];
-        let system = SonosSystem::from_discovered_devices(devices).unwrap();
+        let system = SonosSystem::from_devices_offline(devices).unwrap();
 
         let count = system.speakers().len();
 
@@ -865,7 +865,7 @@ proptest! {
             })
             .collect();
 
-        let system = SonosSystem::from_discovered_devices(devices.clone()).unwrap();
+        let system = SonosSystem::from_devices_offline(devices.clone()).unwrap();
 
         // Verify each device is accessible by both room name and ID
         for device in &devices {

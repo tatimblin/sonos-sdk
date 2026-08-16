@@ -89,6 +89,14 @@ pub struct SonosSystem {
 
     /// Timestamp of last rediscovery attempt (seconds since UNIX_EPOCH, 0 = never)
     last_rediscovery: AtomicU64,
+
+    /// When true, this system never touches the network on its own: topology
+    /// prefetch (`ensure_topology`) and lookup-miss rediscovery
+    /// (`try_rediscover`) both become no-ops.
+    ///
+    /// Set by the test constructors only; production paths leave it `false` so
+    /// behavior is unchanged.
+    offline: bool,
 }
 
 const REDISCOVERY_COOLDOWN_SECS: u64 = 30;
@@ -158,7 +166,63 @@ impl SonosSystem {
         Self::from_devices_inner(devices)
     }
 
+    /// Create a SonosSystem from pre-discovered devices WITHOUT any network I/O.
+    ///
+    /// Identical to the normal constructor except that it skips the topology
+    /// prefetch (and the satellite filtering / IP refresh that depend on it),
+    /// and marks the system `offline` so a lookup miss cannot trigger SSDP
+    /// rediscovery.
+    ///
+    /// Exists because the two network paths in the normal constructor
+    /// (topology SOAP poll, rediscovery SSDP) dominate test wall time: each
+    /// unreachable speaker IP costs a 5s connect + 10s read timeout, and a
+    /// single lookup miss costs a 3s SSDP sweep. Tests that only exercise
+    /// in-memory bookkeeping should pay none of that.
+    ///
+    /// Only available when the `test-support` feature is enabled (or when
+    /// compiling this crate's own test harness).
+    #[cfg(any(feature = "test-support", test))]
+    pub fn from_devices_offline(devices: Vec<Device>) -> Result<Self, SdkError> {
+        Self::assemble(devices, true)
+    }
+
     fn from_devices_inner(devices: Vec<Device>) -> Result<Self, SdkError> {
+        let system = Self::assemble(devices, false)?;
+
+        // Prefetch topology before any subscriptions can start.
+        // This ensures group structure is known when the first AVTransport
+        // events arrive, so PerCoordinator suppression/propagation works
+        // from the very first event.
+        system.ensure_topology();
+
+        // Filter satellite speakers (surrounds/subs marked Invisible="1").
+        // Depends on topology having been fetched above.
+        let satellite_ids = system.state_manager.get_satellite_ids();
+        if !satellite_ids.is_empty() {
+            if let Ok(mut speakers) = system.speakers.write() {
+                speakers.retain(|_name, speaker| !satellite_ids.contains(&speaker.id));
+            }
+            tracing::debug!("Filtered {} satellite speakers", satellite_ids.len());
+        }
+
+        // Refresh Speaker handle IPs from state store (topology may have updated them)
+        if let Ok(mut speakers) = system.speakers.write() {
+            for speaker in speakers.values_mut() {
+                if let Some(info) = system.state_manager.speaker_info(&speaker.id) {
+                    speaker.ip = info.ip_address;
+                }
+            }
+        }
+
+        Ok(system)
+    }
+
+    /// Build the in-memory system: state manager, lazy event-init closure,
+    /// API client and Speaker handles. Performs no network I/O.
+    ///
+    /// Shared by [`Self::from_devices_inner`] and [`Self::from_devices_offline`]
+    /// so the Arc wiring below has exactly one definition.
+    fn assemble(devices: Vec<Device>, offline: bool) -> Result<Self, SdkError> {
         // 1. Create shared state FIRST — no event manager yet (lazy init)
         let state_manager = Arc::new(StateManager::new().map_err(SdkError::StateError)?);
         state_manager
@@ -201,7 +265,7 @@ impl SonosSystem {
         let speakers = Self::build_speakers(&devices, &state_manager, &api_client)?;
 
         // 4. Assemble struct from the SAME Arcs
-        let system = Self {
+        Ok(Self {
             state_manager,
             event_manager: Arc::try_unwrap(event_manager).unwrap_or_else(|arc| {
                 let inner = arc.lock().unwrap().clone();
@@ -210,33 +274,8 @@ impl SonosSystem {
             api_client,
             speakers: RwLock::new(speakers),
             last_rediscovery: AtomicU64::new(0),
-        };
-
-        // 5. Prefetch topology before any subscriptions can start.
-        //    This ensures group structure is known when the first AVTransport
-        //    events arrive, so PerCoordinator suppression/propagation works
-        //    from the very first event.
-        system.ensure_topology();
-
-        // 6. Filter satellite speakers (surrounds/subs marked Invisible="1")
-        let satellite_ids = system.state_manager.get_satellite_ids();
-        if !satellite_ids.is_empty() {
-            if let Ok(mut speakers) = system.speakers.write() {
-                speakers.retain(|_name, speaker| !satellite_ids.contains(&speaker.id));
-            }
-            tracing::debug!("Filtered {} satellite speakers", satellite_ids.len());
-        }
-
-        // 7. Refresh Speaker handle IPs from state store (topology may have updated them)
-        if let Ok(mut speakers) = system.speakers.write() {
-            for speaker in speakers.values_mut() {
-                if let Some(info) = system.state_manager.speaker_info(&speaker.id) {
-                    speaker.ip = info.ip_address;
-                }
-            }
-        }
-
-        Ok(system)
+            offline,
+        })
     }
 
     /// Create a test SonosSystem with named speakers and no network access.
@@ -286,6 +325,7 @@ impl SonosSystem {
             api_client,
             speakers: RwLock::new(speakers),
             last_rediscovery: AtomicU64::new(0),
+            offline: true,
         }
     }
 
@@ -387,7 +427,14 @@ impl SonosSystem {
     }
 
     /// Run SSDP rediscovery with cooldown. Updates internal speaker map and cache.
+    ///
+    /// No-op for offline systems (test constructors) so a lookup miss never
+    /// costs a 3s SSDP sweep.
     fn try_rediscover(&self, name: &str) {
+        if self.offline {
+            return;
+        }
+
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -494,8 +541,11 @@ impl SonosSystem {
     /// Tries all known speaker IPs sequentially until one responds with topology.
     /// Topology data is identical from any speaker, so first success wins.
     /// Also refreshes speaker IPs and records satellite IDs from the topology.
+    ///
+    /// No-op for offline systems (test constructors), which supply topology
+    /// directly via `state_manager.initialize()` instead of polling speakers.
     fn ensure_topology(&self) {
-        if self.state_manager.group_count() > 0 {
+        if self.offline || self.state_manager.group_count() > 0 {
             return;
         }
 
@@ -729,13 +779,14 @@ mod tests {
     use super::*;
     use sonos_state::GroupInfo;
 
-    /// Create a test SonosSystem with the given devices
+    /// Create a test SonosSystem with the given devices.
     ///
-    /// Note: This requires network access for the event manager.
-    /// Tests using this helper should be run with actual network connectivity
-    /// or mocked appropriately.
+    /// Uses the offline constructor: no topology SOAP poll, no SSDP
+    /// rediscovery. Tests below supply topology explicitly via
+    /// `state_manager.initialize()`, which is what the online path would have
+    /// fetched anyway.
     fn create_test_system(devices: Vec<Device>) -> Result<SonosSystem, SdkError> {
-        SonosSystem::from_discovered_devices(devices)
+        SonosSystem::from_devices_offline(devices)
     }
 
     #[test]
@@ -1063,6 +1114,37 @@ mod tests {
 
         // Will fail at network level but proves signature compiles
         assert_change_result(system.create_group(&coordinator, &[&member]));
+    }
+
+    /// Guards the whole point of `from_devices_offline`: no network I/O.
+    ///
+    /// The device IP is in RFC 5737 TEST-NET-3, which is guaranteed
+    /// unroutable. If construction ever polls it again, soap-client's 5s
+    /// connect timeout blows the bound; a lookup miss re-enabling SSDP costs
+    /// 3s more. A wall-clock bound is the only way to assert absence of I/O
+    /// without a mock transport.
+    #[test]
+    fn test_from_devices_offline_makes_no_network_calls() {
+        let devices = vec![Device {
+            id: "RINCON_111".to_string(),
+            name: "Living Room".to_string(),
+            room_name: "Living Room".to_string(),
+            ip_address: "203.0.113.1".to_string(),
+            port: 1400,
+            model_name: "Sonos One".to_string(),
+        }];
+
+        let start = std::time::Instant::now();
+        let system = SonosSystem::from_devices_offline(devices).unwrap();
+        assert!(system.speaker("Living Room").is_some());
+        assert!(system.speaker("Nonexistent").is_none());
+        assert!(system.groups().is_empty());
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "offline construction and lookups should not touch the network, took {elapsed:?}"
+        );
     }
 
     #[test]

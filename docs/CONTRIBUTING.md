@@ -75,7 +75,7 @@ To auto-fix formatting: `cargo fmt --all`
 
 **Key flags explained**:
 - `--locked` — uses the committed `Cargo.lock`, fails if it's out of date
-- `--features sonos-sdk/test-support` — enables test helpers (e.g., `with_groups()`)
+- `--features sonos-sdk/test-support` — enables test helpers (e.g., `with_groups()`, `from_devices_offline()`)
 - `-D warnings` — treats all warnings as errors (both `RUSTFLAGS` and `RUSTDOCFLAGS`)
 - `--workspace` — runs against all crates in the workspace
 
