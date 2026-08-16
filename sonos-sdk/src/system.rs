@@ -1072,48 +1072,22 @@ mod tests {
         assert!(system.group("Nonexistent").is_none());
     }
 
-    #[test]
-    fn test_create_group_method_exists() {
-        // Compile-time assertion that method signature is correct
+    /// Compile-time assertion that `create_group`'s signature is correct.
+    ///
+    /// Never called: `create_group` forwards to `Group::add_speaker`, which
+    /// would open a real TCP connection and wait out soap-client's 5s connect
+    /// timeout, yet the assertion is purely about types. Type-checking a
+    /// never-called function still fails the build if the signature changes, at
+    /// zero runtime cost.
+    #[allow(dead_code)]
+    fn _assert_create_group_signature(
+        system: &SonosSystem,
+        coordinator: &Speaker,
+        member: &Speaker,
+    ) {
         fn assert_change_result(_r: Result<crate::group::GroupChangeResult, SdkError>) {}
 
-        let devices = vec![
-            Device {
-                id: "RINCON_111".to_string(),
-                name: "Living Room".to_string(),
-                room_name: "Living Room".to_string(),
-                ip_address: "192.168.1.100".to_string(),
-                port: 1400,
-                model_name: "Sonos One".to_string(),
-            },
-            Device {
-                id: "RINCON_222".to_string(),
-                name: "Kitchen".to_string(),
-                room_name: "Kitchen".to_string(),
-                ip_address: "192.168.1.101".to_string(),
-                port: 1400,
-                model_name: "Sonos One".to_string(),
-            },
-        ];
-
-        let system = create_test_system(devices).unwrap();
-
-        // Initialize topology so group_for_speaker works
-        let speaker1 = SpeakerId::new("RINCON_111");
-        let speaker2 = SpeakerId::new("RINCON_222");
-        let group = GroupInfo::new(
-            GroupId::new("RINCON_111:1"),
-            speaker1.clone(),
-            vec![speaker1.clone()],
-        );
-        let topology = Topology::new(system.state_manager.speaker_infos(), vec![group]);
-        system.state_manager.initialize(topology);
-
-        let coordinator = system.speaker_by_id(&speaker1).unwrap();
-        let member = system.speaker_by_id(&speaker2).unwrap();
-
-        // Will fail at network level but proves signature compiles
-        assert_change_result(system.create_group(&coordinator, &[&member]));
+        assert_change_result(system.create_group(coordinator, &[member]));
     }
 
     /// Guards the whole point of `from_devices_offline`: no network I/O.

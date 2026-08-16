@@ -615,7 +615,42 @@ Production paths (`new()` → `from_devices_inner()`) leave `offline = false`, s
 | Offline flag closes *both* paths | Only skip `ensure_topology()` in the constructor | Skipping construction alone leaves the 30s rediscovery cooldown on every lookup miss — the larger of the two costs |
 | Reuse `assemble()` for both paths | Copy the constructor body | The Arc wiring (init closure capturing the `Arc<StateManager>` it is stored on) has a known cycle bug; two copies would mean two fixes |
 | Wall-clock bound to prove no I/O | Mock transport / network namespace | Without a mock transport, a time bound is the only pure-unit assertion available; the 500ms threshold is ~10x headroom over the real cost and ~10x below the cheapest timeout it guards |
+| Signature assertions as never-called `fn`s | `#[test]` fns that invoke each action | Invoking an action to check its *type* pays a real 5s connect timeout per call for zero added coverage. A never-called `#[allow(dead_code)] fn` is still type-checked, so it fails the build identically if a signature drifts, at 0s. See §8.6. |
 | Tests keep building explicit `Device` lists | Route property tests through `with_speakers()` | `with_speakers()` hardcodes `RINCON_{i:03}` / `192.168.1.{100+i}`, discarding proptest-generated IDs, names and IPs. Round-trip assertions would still pass while testing nothing. Vacuous-but-green is worse than slow. |
+
+### 8.6 Signature Assertions
+
+#### What
+
+Action methods that require a live speaker are type-checked by never-called functions rather than executed by `#[test]` fns:
+
+```rust
+#[allow(dead_code)]
+fn _assert_action_signatures(speaker: &Speaker) {
+    fn void<T>(_: Result<T, SdkError>) {}
+    void(speaker.play());
+    void(speaker.pause());
+    // ...
+}
+```
+
+Four of these exist: `_assert_action_signatures` (`src/speaker.rs`), `_assert_group_action_signatures` and `_assert_group_lifecycle_signatures` (`src/group.rs`), and `_assert_create_group_signature` (`src/system.rs`).
+
+#### Why
+
+These assertions are about **types, not behavior** — the original versions said so in their own comments ("will fail at network level but prove signatures compile"). Executing them was pure cost: each call opened a real TCP connection to a synthetic IP and waited out soap-client's 5s connect timeout, and the returned `Result` was discarded unexamined. The four together accounted for ~55s of a ~60s `sonos-sdk` unit-test run.
+
+Rust type-checks the body of a function even when nothing calls it, so a never-called `fn` fails the build the instant a signature drifts — the exact guarantee the `#[test]` version provided — while contributing 0s of runtime. The `_` prefix and `#[allow(dead_code)]` document the intent and silence the unused warning under `-D warnings`.
+
+#### Trade-offs
+
+| Decision | Alternative Considered | Why We Chose This |
+|----------|----------------------|-------------------|
+| Never-called fn | Delete the assertions | Signature drift in a public API should break the build; the assertion has real value, only its execution was worthless |
+| Never-called fn | `let _ = ...` inside a `#[test]` | Still executes the call and still pays the timeout — the cost is the invocation, not the assertion |
+| Take params by reference | Construct fixtures inside the fn | Nothing constructs them, so params keep the fn free of fixture setup and avoid dragging helpers into the dead-code graph |
+
+**Boundary**: this pattern applies *only* where the assertion is purely about types. Tests that assert real behavior on paths returning before any network call — `test_group_set_volume_rejects_over_100`, `test_add_speaker_rejects_coordinator_self_add`, `test_remove_speaker_rejects_coordinator_removal`, `test_dissolve_standalone_returns_empty_result`, and the `set_*_rejects_invalid` family — remain executing `#[test]` fns. Validation and guard-clause logic must keep running.
 
 ---
 
@@ -808,6 +843,6 @@ None required.
 
 | Date | Author | Change |
 |------|--------|--------|
-| 2026-08-15 | Claude Opus 5 | Added §8.5 offline construction (`from_devices_offline`, `offline` flag) and the `assemble()` split in §3.1 |
+| 2026-08-15 | Claude Opus 5 | Added §8.5 offline construction (`from_devices_offline`, `offline` flag), §8.6 signature assertions, and the `assemble()` split in §3.1 |
 | 2026-03-11 | Claude Opus 4.6 | Updated for v0.2.0: lazy event init, method renames, fluent navigation, prelude, #[non_exhaustive] |
 | 2026-01-14 | Claude Opus 4.5 | Initial specification created |
