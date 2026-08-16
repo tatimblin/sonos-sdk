@@ -69,7 +69,11 @@ impl From<SoapError> for ApiError {
         match error {
             SoapError::Network(msg) => ApiError::NetworkError(msg),
             SoapError::Parse(msg) => ApiError::ParseError(msg),
-            SoapError::Fault(code) => ApiError::SoapFault(code),
+            // The device's `<errorDescription>` is intentionally dropped here:
+            // widening the public `SoapFault` variant to carry it would be a
+            // breaking change to this semver-checked crate. The description
+            // remains available on `SoapError::Fault` for internal consumers.
+            SoapError::Fault { code, .. } => ApiError::SoapFault(code),
         }
     }
 }
@@ -125,9 +129,17 @@ mod tests {
         let api_error: ApiError = soap_error.into();
         assert!(matches!(api_error, ApiError::ParseError(_)));
 
-        let soap_error = SoapError::Fault(500);
+        let soap_error = SoapError::fault(500);
         let api_error: ApiError = soap_error.into();
         assert!(matches!(api_error, ApiError::SoapFault(500)));
+
+        // A described fault still maps to the code; description is dropped.
+        let soap_error = SoapError::Fault {
+            code: 402,
+            description: Some("Invalid Args".to_string()),
+        };
+        let api_error: ApiError = soap_error.into();
+        assert!(matches!(api_error, ApiError::SoapFault(402)));
     }
 
     #[test]

@@ -14,6 +14,17 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use xmltree::Element;
 
+/// Element name carrying UPnP fault details, as spelled in the UPnP Device
+/// Architecture specification.
+const UPNP_ERROR_ELEMENT: &str = "UPnPError";
+
+/// Historical misspelling of [`UPNP_ERROR_ELEMENT`]. Accepted on read only, so
+/// that devices (or older firmware) emitting it still produce a usable code.
+const UPNP_ERROR_ELEMENT_LEGACY: &str = "UpnPError";
+
+/// UPnP error code reported when a fault body is present but unparseable.
+const UNKNOWN_FAULT_CODE: u16 = 500;
+
 /// Response from a UPnP subscription request
 #[derive(Debug, Clone)]
 pub struct SubscriptionResponse {
@@ -105,7 +116,7 @@ impl SoapClient {
             .set("Content-Type", "text/xml; charset=\"utf-8\"")
             .set("SOAPACTION", &soap_action)
             .send_string(&body)
-            .map_err(|e| SoapError::Network(e.to_string()))?;
+            .map_err(|e| map_ureq_error(e, action))?;
 
         let xml_text = response
             .into_string()
@@ -148,9 +159,9 @@ impl SoapClient {
             .set("NT", "upnp:event")
             .set("TIMEOUT", &format!("Second-{timeout_seconds}"))
             .call()
-            .map_err(|e| SoapError::Network(e.to_string()))?;
+            .map_err(|e| map_subscription_error("SUBSCRIBE", e))?;
 
-        if response.status() != 200 {
+        if !is_success(response.status()) {
             return Err(SoapError::Network(format!(
                 "SUBSCRIBE failed: HTTP {}",
                 response.status()
@@ -213,9 +224,9 @@ impl SoapClient {
             .set("SID", sid)
             .set("TIMEOUT", &format!("Second-{timeout_seconds}"))
             .call()
-            .map_err(|e| SoapError::Network(e.to_string()))?;
+            .map_err(|e| map_subscription_error("SUBSCRIBE renewal", e))?;
 
-        if response.status() != 200 {
+        if !is_success(response.status()) {
             return Err(SoapError::Network(format!(
                 "SUBSCRIBE renewal failed: HTTP {}",
                 response.status()
@@ -260,9 +271,9 @@ impl SoapClient {
             .set("HOST", &host)
             .set("SID", sid)
             .call()
-            .map_err(|e| SoapError::Network(e.to_string()))?;
+            .map_err(|e| map_subscription_error("UNSUBSCRIBE", e))?;
 
-        if response.status() != 200 {
+        if !is_success(response.status()) {
             return Err(SoapError::Network(format!(
                 "UNSUBSCRIBE failed: HTTP {}",
                 response.status()
@@ -273,27 +284,7 @@ impl SoapClient {
     }
 
     fn extract_response(&self, xml: &Element, action: &str) -> Result<Element, SoapError> {
-        let body = xml
-            .get_child("Body")
-            .ok_or_else(|| SoapError::Parse("Missing SOAP Body".to_string()))?;
-
-        // Check for SOAP fault first
-        if let Some(fault) = body.get_child("Fault") {
-            let error_code = fault
-                .get_child("detail")
-                .and_then(|d| d.get_child("UpnPError"))
-                .and_then(|e| e.get_child("errorCode"))
-                .and_then(|c| c.get_text())
-                .and_then(|t| t.parse::<u16>().ok())
-                .unwrap_or(500);
-            return Err(SoapError::Fault(error_code));
-        }
-
-        // Extract the action response
-        let response_name = format!("{action}Response");
-        body.get_child(response_name.as_str())
-            .cloned()
-            .ok_or_else(|| SoapError::Parse(format!("Missing {response_name} element")))
+        extract_response(xml, action)
     }
 }
 
@@ -301,6 +292,99 @@ impl Default for SoapClient {
     fn default() -> Self {
         Self::get().clone()
     }
+}
+
+/// Whether an HTTP status should be treated as success.
+///
+/// `ureq` already converts any status >= 400 into `Error::Status`, so the only
+/// codes reaching a `Result::Ok` are 1xx-3xx. A strict `== 200` check would
+/// therefore reject spec-legal successes such as `201 Created`, never actual
+/// failures.
+fn is_success(status: u16) -> bool {
+    (200..300).contains(&status)
+}
+
+/// Map a `ureq` error from a SOAP control request into a [`SoapError`].
+///
+/// UPnP devices report action failures as **HTTP 500 with a SOAP fault body**.
+/// `ureq` surfaces any status >= 400 as `Error::Status(code, Response)`, so the
+/// fault body must be read out of the response here; otherwise every device
+/// rejection is indistinguishable from an unreachable speaker.
+fn map_ureq_error(error: ureq::Error, action: &str) -> SoapError {
+    match error {
+        ureq::Error::Status(status, response) => match response.into_string() {
+            Ok(body) => match Element::parse(body.as_bytes()) {
+                // A parseable envelope tells us why the device refused.
+                Ok(xml) => match extract_response(&xml, action) {
+                    // Not a fault after all - the device sent an error status
+                    // with a non-fault body. Report it as a transport failure.
+                    Ok(_) => SoapError::Network(format!("HTTP {status}")),
+                    Err(err) => err,
+                },
+                Err(_) => SoapError::Network(format!("HTTP {status}: {body}")),
+            },
+            Err(e) => SoapError::Network(format!("HTTP {status}: failed to read body: {e}")),
+        },
+        ureq::Error::Transport(transport) => SoapError::Network(transport.to_string()),
+    }
+}
+
+/// Map a `ureq` error from a SUBSCRIBE/UNSUBSCRIBE request into a [`SoapError`].
+///
+/// Subscription endpoints do not return SOAP envelopes, so there is no fault to
+/// parse. The HTTP status is still the actionable detail (e.g. `412 Precondition
+/// Failed` for an expired SID), so it is preserved in the message rather than
+/// collapsed into an opaque `ureq` string.
+fn map_subscription_error(operation: &str, error: ureq::Error) -> SoapError {
+    match error {
+        ureq::Error::Status(status, _) => {
+            SoapError::Network(format!("{operation} failed: HTTP {status}"))
+        }
+        ureq::Error::Transport(transport) => {
+            SoapError::Network(format!("{operation} failed: {transport}"))
+        }
+    }
+}
+
+/// Extract the action response element from a SOAP envelope, or the fault it carries.
+fn extract_response(xml: &Element, action: &str) -> Result<Element, SoapError> {
+    let body = xml
+        .get_child("Body")
+        .ok_or_else(|| SoapError::Parse("Missing SOAP Body".to_string()))?;
+
+    // Check for SOAP fault first
+    if let Some(fault) = body.get_child("Fault") {
+        return Err(parse_fault(fault));
+    }
+
+    // Extract the action response
+    let response_name = format!("{action}Response");
+    body.get_child(response_name.as_str())
+        .cloned()
+        .ok_or_else(|| SoapError::Parse(format!("Missing {response_name} element")))
+}
+
+/// Parse a `<s:Fault>` element into [`SoapError::Fault`].
+fn parse_fault(fault: &Element) -> SoapError {
+    let upnp_error = fault.get_child("detail").and_then(|detail| {
+        detail
+            .get_child(UPNP_ERROR_ELEMENT)
+            .or_else(|| detail.get_child(UPNP_ERROR_ELEMENT_LEGACY))
+    });
+
+    let code = upnp_error
+        .and_then(|e| e.get_child("errorCode"))
+        .and_then(|c| c.get_text())
+        .and_then(|t| t.trim().parse::<u16>().ok())
+        .unwrap_or(UNKNOWN_FAULT_CODE);
+
+    let description = upnp_error
+        .and_then(|e| e.get_child("errorDescription"))
+        .and_then(|d| d.get_text())
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty());
+
+    SoapError::Fault { code, description }
 }
 
 #[cfg(test)]
@@ -371,10 +455,10 @@ mod tests {
                         <faultcode>s:Client</faultcode>
                         <faultstring>UPnPError</faultstring>
                         <detail>
-                            <UpnPError xmlns="urn:schemas-upnp-org:control-1-0">
+                            <UPnPError xmlns="urn:schemas-upnp-org:control-1-0">
                                 <errorCode>401</errorCode>
                                 <errorDescription>Invalid Action</errorDescription>
-                            </UpnPError>
+                            </UPnPError>
                         </detail>
                     </s:Fault>
                 </s:Body>
@@ -386,9 +470,94 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            SoapError::Fault(code) => assert_eq!(code, 401),
-            _ => panic!("Expected SoapError::Fault"),
+            SoapError::Fault { code, description } => {
+                assert_eq!(code, 401);
+                assert_eq!(description.as_deref(), Some("Invalid Action"));
+            }
+            other => panic!("Expected SoapError::Fault, got {other:?}"),
         }
+    }
+
+    /// Regression: devices spelling the element the legacy way must still work.
+    #[test]
+    fn test_extract_response_with_legacy_upnperror_spelling() {
+        let xml_str = r#"
+            <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+                <s:Body>
+                    <s:Fault>
+                        <faultcode>s:Client</faultcode>
+                        <faultstring>UPnPError</faultstring>
+                        <detail>
+                            <UpnPError xmlns="urn:schemas-upnp-org:control-1-0">
+                                <errorCode>701</errorCode>
+                                <errorDescription>Transition not available</errorDescription>
+                            </UpnPError>
+                        </detail>
+                    </s:Fault>
+                </s:Body>
+            </s:Envelope>
+        "#;
+
+        let xml = Element::parse(xml_str.as_bytes()).unwrap();
+        match extract_response(&xml, "Play").unwrap_err() {
+            SoapError::Fault { code, description } => {
+                assert_eq!(code, 701);
+                assert_eq!(description.as_deref(), Some("Transition not available"));
+            }
+            other => panic!("Expected SoapError::Fault, got {other:?}"),
+        }
+    }
+
+    /// Regression: `ureq` reports UPnP faults as `Error::Status(500, ..)`. The
+    /// fault body must be read so callers see `Fault`, not `Network`.
+    #[test]
+    fn test_status_500_with_fault_body_yields_fault() {
+        let fault_body = r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+                <s:Body>
+                    <s:Fault>
+                        <faultcode>s:Client</faultcode>
+                        <faultstring>UPnPError</faultstring>
+                        <detail>
+                            <UPnPError xmlns="urn:schemas-upnp-org:control-1-0">
+                                <errorCode>402</errorCode>
+                                <errorDescription>Invalid Args</errorDescription>
+                            </UPnPError>
+                        </detail>
+                    </s:Fault>
+                </s:Body>
+            </s:Envelope>"#;
+
+        let response = ureq::Response::new(500, "Internal Server Error", fault_body).unwrap();
+        let error = ureq::Error::Status(500, response);
+
+        match map_ureq_error(error, "SetVolume") {
+            SoapError::Fault { code, description } => {
+                assert_eq!(code, 402);
+                assert_eq!(description.as_deref(), Some("Invalid Args"));
+            }
+            other => panic!("Expected SoapError::Fault, got {other:?}"),
+        }
+    }
+
+    /// An error status with a non-SOAP body has no fault to report, so it stays
+    /// a transport-level failure.
+    #[test]
+    fn test_status_error_without_fault_body_yields_network() {
+        let response = ureq::Response::new(503, "Service Unavailable", "device busy").unwrap();
+        let error = ureq::Error::Status(503, response);
+
+        match map_ureq_error(error, "Play") {
+            SoapError::Network(msg) => assert!(msg.contains("503"), "unexpected message: {msg}"),
+            other => panic!("Expected SoapError::Network, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_is_success_accepts_non_200_success_codes() {
+        // ureq errors on >= 400, so these checks only ever see 1xx-3xx.
+        assert!(is_success(200));
+        assert!(is_success(201));
+        assert!(!is_success(302));
     }
 
     #[test]
@@ -451,8 +620,25 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            SoapError::Fault(code) => assert_eq!(code, 500), // Default error code
-            _ => panic!("Expected SoapError::Fault"),
+            SoapError::Fault { code, description } => {
+                assert_eq!(code, UNKNOWN_FAULT_CODE);
+                assert_eq!(description, None);
+            }
+            other => panic!("Expected SoapError::Fault, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_subscription_error_preserves_http_status() {
+        let response = ureq::Response::new(412, "Precondition Failed", "").unwrap();
+        let error = ureq::Error::Status(412, response);
+
+        match map_subscription_error("SUBSCRIBE", error) {
+            SoapError::Network(msg) => {
+                assert!(msg.contains("SUBSCRIBE"), "unexpected message: {msg}");
+                assert!(msg.contains("412"), "unexpected message: {msg}");
+            }
+            other => panic!("Expected SoapError::Network, got {other:?}"),
         }
     }
 }

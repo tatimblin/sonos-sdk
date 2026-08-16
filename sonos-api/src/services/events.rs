@@ -68,7 +68,7 @@ impl SubscribeOperation {
             .map_err(|e| match e {
                 soap_client::SoapError::Network(msg) => ApiError::NetworkError(msg),
                 soap_client::SoapError::Parse(msg) => ApiError::ParseError(msg),
-                soap_client::SoapError::Fault(code) => ApiError::SoapFault(code),
+                soap_client::SoapError::Fault { code, .. } => ApiError::SoapFault(code),
             })?;
 
         Ok(SubscribeResponse {
@@ -127,7 +127,7 @@ impl UnsubscribeOperation {
             .map_err(|e| match e {
                 soap_client::SoapError::Network(msg) => ApiError::NetworkError(msg),
                 soap_client::SoapError::Parse(msg) => ApiError::ParseError(msg),
-                soap_client::SoapError::Fault(code) => ApiError::SoapFault(code),
+                soap_client::SoapError::Fault { code, .. } => ApiError::SoapFault(code),
             })?;
 
         Ok(UnsubscribeResponse)
@@ -189,7 +189,7 @@ impl RenewOperation {
             .map_err(|e| match e {
                 soap_client::SoapError::Network(msg) => ApiError::NetworkError(msg),
                 soap_client::SoapError::Parse(msg) => ApiError::ParseError(msg),
-                soap_client::SoapError::Fault(code) => ApiError::SoapFault(code),
+                soap_client::SoapError::Fault { code, .. } => ApiError::SoapFault(code),
             })?;
 
         Ok(RenewResponse {
