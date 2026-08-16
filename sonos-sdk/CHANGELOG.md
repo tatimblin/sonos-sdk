@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/tatimblin/sonos-sdk/compare/sonos-sdk-v0.5.3...sonos-sdk-v0.6.0) - 2026-08-16
+
+### Fixed
+
+- break SDK Arc cycle and stop one watcher release silencing others ([#93](https://github.com/tatimblin/sonos-sdk/pull/93))
+- correct AVTransport request element names and escape queue URIs ([#87](https://github.com/tatimblin/sonos-sdk/pull/87))
+- parse RenderingControl EQ variables as per-channel ([#85](https://github.com/tatimblin/sonos-sdk/pull/85))
+- detect SOAP faults instead of reporting them as network errors ([#88](https://github.com/tatimblin/sonos-sdk/pull/88))
+- stop unrelated topology events from wiping all group state ([#90](https://github.com/tatimblin/sonos-sdk/pull/90))
+- select callback URL per interface instead of by default route ([#92](https://github.com/tatimblin/sonos-sdk/pull/92))
+- stop polling fallback from running forever on healthy UPnP events ([#91](https://github.com/tatimblin/sonos-sdk/pull/91))
+- harden unauthenticated UPnP callback endpoint against resource exhaustion ([#86](https://github.com/tatimblin/sonos-sdk/pull/86))
+
+### Other
+
+- make SDK unit and property tests fully offline ([#83](https://github.com/tatimblin/sonos-sdk/pull/83))
+- prune unused dependencies and fix stale docs ([#84](https://github.com/tatimblin/sonos-sdk/pull/84))
+
 ## [0.5.3](https://github.com/tatimblin/sonos-sdk/compare/sonos-sdk-v0.5.2...sonos-sdk-v0.5.3) - 2026-08-15
 
 ### Fixed
