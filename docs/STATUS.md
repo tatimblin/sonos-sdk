@@ -109,4 +109,5 @@ Adding entirely new services end-to-end using the [4-layer pattern](adding-servi
 ### Tier 5: Quality and Testing
 
 - [ ] Fix 2 pre-existing test failures in `sonos-stream` iterator tests (runtime-within-runtime panic)
-- [ ] Add integration tests for polling fallback paths
+- [ ] Add integration tests for polling fallback paths (start/stop lifecycle now has
+      offline unit coverage; see `specs/sonos-stream.md` 3.2)

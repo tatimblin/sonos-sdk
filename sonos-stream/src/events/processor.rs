@@ -7,14 +7,13 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, trace, warn};
 
-use callback_server::{
-    router::{EventRouter, NotificationPayload},
-    FirewallDetectionCoordinator,
-};
+use callback_server::{router::NotificationPayload, FirewallDetectionCoordinator};
 use sonos_api::events::EventProcessor as ApiEventProcessor;
 
 use crate::error::{EventProcessingError, EventProcessingResult};
 use crate::events::types::{EnrichedEvent, EventData, EventSource};
+use crate::registry::RegistrationId;
+use crate::subscription::event_detector::EventDetector;
 use crate::subscription::manager::SubscriptionManager;
 
 /// Simplified event processor that delegates to sonos-api event framework
@@ -33,6 +32,14 @@ pub struct EventProcessor {
 
     /// Firewall detection coordinator for event arrival notifications
     firewall_coordinator: Option<Arc<FirewallDetectionCoordinator>>,
+
+    /// Event activity detector.
+    ///
+    /// The processor is the only place in the crate that knows a UPnP event
+    /// actually arrived, so it owns the job of reporting liveness to the detector.
+    /// Without this the detector's `last_event_time` never advances and every
+    /// registration is wrongly declared dead after `event_timeout`.
+    event_detector: Arc<EventDetector>,
 }
 
 impl EventProcessor {
@@ -41,6 +48,7 @@ impl EventProcessor {
         subscription_manager: Arc<SubscriptionManager>,
         event_sender: mpsc::UnboundedSender<EnrichedEvent>,
         firewall_coordinator: Option<Arc<FirewallDetectionCoordinator>>,
+        event_detector: Arc<EventDetector>,
     ) -> Self {
         Self {
             api_processor: ApiEventProcessor::with_default_parsers(),
@@ -48,6 +56,7 @@ impl EventProcessor {
             event_sender,
             stats: Arc::new(RwLock::new(EventProcessorStats::new())),
             firewall_coordinator,
+            event_detector,
         }
     }
 
@@ -83,6 +92,9 @@ impl EventProcessor {
         self.subscription_manager
             .record_event_received(&payload.subscription_id)
             .await;
+
+        // Report liveness to the event detector.
+        self.record_event_liveness(registration_id).await;
 
         // Notify firewall coordinator that an event was received
         if let Some(coordinator) = &self.firewall_coordinator {
@@ -133,6 +145,20 @@ impl EventProcessor {
         }
 
         Ok(())
+    }
+
+    /// Report to the [`EventDetector`] that a UPnP event arrived for a registration.
+    ///
+    /// Extracted from `process_upnp_notification` so it can be exercised without a
+    /// live subscription: everything before this point in that method requires a
+    /// real `ManagedSubscription`, which can only be built by an actual UPnP
+    /// SUBSCRIBE round-trip against a device.
+    ///
+    /// Reporting liveness suppresses the false "UPnP is dead" timeout and, when
+    /// polling fallback is currently active for the registration, triggers a request
+    /// to stop polling.
+    pub(crate) async fn record_event_liveness(&self, registration_id: RegistrationId) {
+        self.event_detector.record_event(registration_id).await;
     }
 
     /// Process a synthetic event from polling (already enriched)
@@ -438,30 +464,76 @@ impl std::fmt::Display for EventProcessorStats {
     }
 }
 
-/// Helper function to create an EventRouter integrated with EventProcessor
-pub async fn create_integrated_event_router(
-    _event_processor: Arc<EventProcessor>,
-) -> (
-    Arc<EventRouter>,
-    mpsc::UnboundedReceiver<NotificationPayload>,
-) {
-    let (upnp_sender, upnp_receiver) = mpsc::unbounded_channel();
-    let router = Arc::new(EventRouter::new(upnp_sender));
-
-    (router, upnp_receiver)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::registry::SpeakerServicePair;
+    use std::time::Duration;
+
+    /// Build a processor wired to a fresh detector, with no network involved.
+    fn test_processor(
+        event_timeout: Duration,
+    ) -> (
+        EventProcessor,
+        Arc<EventDetector>,
+        mpsc::UnboundedReceiver<EnrichedEvent>,
+    ) {
+        let (event_sender, event_receiver) = mpsc::unbounded_channel();
+        let subscription_manager =
+            Arc::new(SubscriptionManager::new("http://callback.url".to_string()));
+        let detector = Arc::new(EventDetector::new(event_timeout));
+        let processor = EventProcessor::new(
+            subscription_manager,
+            event_sender,
+            None,
+            Arc::clone(&detector),
+        );
+        (processor, detector, event_receiver)
+    }
+
+    /// Regression test for the headline defect: `EventDetector::record_event` had no
+    /// production caller, so `last_event_time` never advanced and every registration
+    /// was declared timed out — activating polling on top of working UPnP events.
+    ///
+    /// Feeding a UPnP event through the processor must leave the detector reporting
+    /// that polling is NOT needed, even though the configured timeout has elapsed.
+    #[tokio::test]
+    async fn test_processor_records_event_with_detector() {
+        // Timeout so short that a registration is "timed out" almost immediately.
+        let (processor, detector, _rx) = test_processor(Duration::from_millis(1));
+
+        let registration_id = RegistrationId::new(1);
+        let pair = SpeakerServicePair::new(
+            "192.168.1.100".parse().unwrap(),
+            sonos_api::Service::AVTransport,
+        );
+        detector.register_subscription(registration_id, pair).await;
+
+        // Let the 1ms timeout lapse: without a recorded event, polling is due.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            detector.should_start_polling(registration_id).await,
+            "precondition: registration should look timed out before any event"
+        );
+
+        // A UPnP event arrives and the processor reports it.
+        processor.record_event_liveness(registration_id).await;
+
+        assert!(
+            !detector.should_start_polling(registration_id).await,
+            "processor must record the event with the detector, otherwise polling \
+             is activated on top of healthy UPnP events"
+        );
+    }
 
     #[test]
     fn test_event_processor_creation() {
         let (event_sender, _event_receiver) = mpsc::unbounded_channel();
         let subscription_manager =
             Arc::new(SubscriptionManager::new("http://callback.url".to_string()));
+        let detector = Arc::new(EventDetector::new(Duration::from_secs(30)));
 
-        let processor = EventProcessor::new(subscription_manager, event_sender, None);
+        let processor = EventProcessor::new(subscription_manager, event_sender, None, detector);
 
         // Should have the supported services from sonos-api
         assert_eq!(processor.supported_services().len(), 5); // AVTransport, RenderingControl, GroupRenderingControl, ZoneGroupTopology, GroupManagement
@@ -474,11 +546,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_event_processor_stats() {
-        let (event_sender, _event_receiver) = mpsc::unbounded_channel();
-        let subscription_manager =
-            Arc::new(SubscriptionManager::new("http://callback.url".to_string()));
-
-        let processor = EventProcessor::new(subscription_manager, event_sender, None);
+        let (processor, _detector, _rx) = test_processor(Duration::from_secs(30));
 
         let stats = processor.stats().await;
         assert_eq!(stats.events_processed, 0);

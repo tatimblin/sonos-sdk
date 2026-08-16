@@ -132,6 +132,28 @@ fn get_local_ip() -> Result<Ipv4Addr, std::io::Error> {
     }
 }
 
+/// Release a UPnP subscription ID from the [`EventRouter`]'s active set.
+///
+/// Without this the router's SID set grows for the entire process lifetime and
+/// keeps accepting events for subscriptions that no longer exist. It is called
+/// unconditionally on the captured SID: even if the UPnP UNSUBSCRIBE failed, the
+/// local subscription is gone, so routing its events serves no purpose.
+///
+/// A free function taking `Option`s so the leak can be tested without standing up
+/// a broker (which needs a bound callback server and a real device).
+async fn release_router_sid(
+    router: Option<&callback_server::router::EventRouter>,
+    subscription_id: Option<&str>,
+) {
+    if let (Some(router), Some(sid)) = (router, subscription_id) {
+        router.unregister(sid).await;
+        debug!(
+            subscription_id = %sid,
+            "Unregistered subscription from EventRouter"
+        );
+    }
+}
+
 impl EventBroker {
     /// Create a new EventBroker with the specified configuration
     pub async fn new(config: BrokerConfig) -> BrokerResult<Self> {
@@ -186,11 +208,29 @@ impl EventBroker {
             None
         };
 
-        // Initialize event processor with the correct subscription manager and firewall coordinator
+        // Create polling request channel (sender kept alive for EventDetector)
+        let (polling_request_sender, polling_request_receiver) = mpsc::unbounded_channel();
+
+        // Initialize event detector and connect to firewall coordinator + polling channel.
+        //
+        // This must be built BEFORE the EventProcessor: the processor holds an
+        // Arc<EventDetector> so it can report UPnP event liveness. Both only depend
+        // on `config` and `firewall_coordinator`, which already exist, so the
+        // detector is safe to construct here.
+        let mut event_detector = EventDetector::new(config.event_timeout);
+        if let Some(ref coordinator) = firewall_coordinator {
+            event_detector.set_firewall_coordinator(Arc::clone(coordinator));
+        }
+        event_detector.set_polling_request_sender(polling_request_sender);
+        let event_detector = Arc::new(event_detector);
+
+        // Initialize event processor with the correct subscription manager, firewall
+        // coordinator, and event detector
         let event_processor = Arc::new(EventProcessor::new(
             Arc::clone(&subscription_manager),
             event_sender.clone(),
             firewall_coordinator.clone(),
+            Arc::clone(&event_detector),
         ));
 
         // Initialize polling scheduler
@@ -201,18 +241,6 @@ impl EventBroker {
             config.adaptive_polling,
             config.max_concurrent_polls,
         ));
-
-        // Create polling request channel (sender kept alive for EventDetector)
-        let (polling_request_sender, polling_request_receiver) = mpsc::unbounded_channel();
-
-        // Initialize event detector and connect to firewall coordinator + polling channel
-        let mut event_detector =
-            EventDetector::new(config.event_timeout, config.polling_activation_delay);
-        if let Some(ref coordinator) = firewall_coordinator {
-            event_detector.set_firewall_coordinator(Arc::clone(coordinator));
-        }
-        event_detector.set_polling_request_sender(polling_request_sender);
-        let event_detector = Arc::new(event_detector);
 
         let mut broker = Self {
             registry,
@@ -307,7 +335,12 @@ impl EventBroker {
     ) {
         let polling_scheduler = Arc::clone(&self.polling_scheduler);
         let subscription_manager = Arc::clone(&self.subscription_manager);
+        let event_detector = Arc::clone(&self.event_detector);
 
+        // Requests are handled strictly in order on a single task. Stop awaits the
+        // polling task's shutdown (bounded by one poll interval), which is slower
+        // than Start, but serialising is deliberate: concurrent handling could apply
+        // a Start and a Stop for the same registration out of order.
         let task = tokio::spawn(async move {
             info!("Starting polling request processing");
 
@@ -336,6 +369,12 @@ impl EventBroker {
                                 error = %e,
                                 "Failed to start polling"
                             );
+                            // The detector marked this registration as polling when it
+                            // sent the request. Polling never started, so clear the
+                            // marker or timeout detection stays suppressed forever.
+                            event_detector
+                                .clear_polling_active(request.registration_id)
+                                .await;
                         } else {
                             // Mark polling as active in subscription
                             if let Some(subscription) = subscription_manager
@@ -351,9 +390,14 @@ impl EventBroker {
                             speaker_ip = %request.speaker_service_pair.speaker_ip,
                             service = ?request.speaker_service_pair.service,
                             registration_id = %request.registration_id,
-                            "Stopping polling for speaker service"
+                            reason = ?request.reason,
+                            "UPnP events resumed; stopping polling for speaker service"
                         );
 
+                        // `stop_polling` removes the task from the scheduler map before
+                        // awaiting its shutdown, so a failure here still means the task
+                        // is gone from the scheduler's view. Clear the subscription flag
+                        // either way, otherwise stats would report polling forever.
                         if let Err(e) = polling_scheduler
                             .stop_polling(request.registration_id)
                             .await
@@ -363,17 +407,23 @@ impl EventBroker {
                                 speaker_ip = %request.speaker_service_pair.speaker_ip,
                                 service = ?request.speaker_service_pair.service,
                                 error = %e,
-                                "Failed to stop polling"
+                                "Error while stopping polling task"
                             );
-                        } else {
-                            // Mark polling as inactive in subscription
-                            if let Some(subscription) = subscription_manager
-                                .get_subscription(request.registration_id)
-                                .await
-                            {
-                                subscription.set_polling_active(false);
-                            }
                         }
+
+                        if let Some(subscription) = subscription_manager
+                            .get_subscription(request.registration_id)
+                            .await
+                        {
+                            subscription.set_polling_active(false);
+                        }
+
+                        info!(
+                            registration_id = %request.registration_id,
+                            speaker_ip = %request.speaker_service_pair.speaker_ip,
+                            service = ?request.speaker_service_pair.service,
+                            "Polling stopped; back to UPnP events"
+                        );
                     }
                 }
             }
@@ -544,6 +594,11 @@ impl EventBroker {
                             );
                         } else {
                             subscription.set_polling_active(true);
+                            // Tell the detector this registration is polling, so the
+                            // first UPnP event that does arrive emits a Stop.
+                            self.event_detector
+                                .mark_polling_active(registration_id, request.reason.clone())
+                                .await;
                             debug!(
                                 registration_id = %registration_id,
                                 reason = ?request.reason,
@@ -623,6 +678,14 @@ impl EventBroker {
             );
         }
 
+        // Capture the UPnP subscription ID before the subscription is dropped —
+        // it's needed to release the SID from the EventRouter below.
+        let subscription_id = self
+            .subscription_manager
+            .get_subscription(registration_id)
+            .await
+            .map(|s| s.subscription_id().to_string());
+
         // Remove subscription
         if let Err(e) = self
             .subscription_manager
@@ -635,6 +698,9 @@ impl EventBroker {
                 "Failed to remove subscription during unregistration"
             );
         }
+
+        // Release the SID from the EventRouter.
+        release_router_sid(self.event_router.as_deref(), subscription_id.as_deref()).await;
 
         // Unregister from event detector
         self.event_detector
@@ -806,6 +872,36 @@ mod tests {
         assert_eq!(result.firewall_status, FirewallStatus::Accessible);
         assert_eq!(result.polling_reason, Some(PollingReason::FirewallBlocked));
         assert!(!result.was_duplicate);
+    }
+
+    /// `unregister_speaker_service` used to tear down its own state but never call
+    /// `EventRouter::unregister`, so SIDs accumulated for the process lifetime and
+    /// the router kept routing events for dead subscriptions.
+    #[tokio::test]
+    async fn test_unregister_releases_router_sid() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let router = callback_server::router::EventRouter::new(tx);
+
+        let sid = "uuid:leak-check";
+        router.register(sid.to_string()).await;
+
+        // While registered, events for the SID are routed.
+        router
+            .route_event(sid.to_string(), "<event>live</event>".to_string())
+            .await;
+        assert!(rx.try_recv().is_ok(), "registered SID should route events");
+
+        // Unregistration path releases the SID.
+        release_router_sid(Some(&router), Some(sid)).await;
+
+        // The SID is gone: events are no longer routed to the processor.
+        router
+            .route_event(sid.to_string(), "<event>stale</event>".to_string())
+            .await;
+        assert!(
+            rx.try_recv().is_err(),
+            "SID should be removed from the router's active set"
+        );
     }
 
     #[test]
