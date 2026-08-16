@@ -47,7 +47,13 @@ pub struct TopologyChanges {
 }
 
 /// A single property change
+///
+/// `#[non_exhaustive]` because this enum is public API (re-exported from
+/// `sonos-sdk`) and gains a variant every time a property is added. Without it,
+/// every consumer `match` would be exhaustive-by-default and adding a property
+/// would be a breaking change; consumers must include a `_ =>` arm.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum PropertyChange {
     Volume(Volume),
     Mute(Mute),

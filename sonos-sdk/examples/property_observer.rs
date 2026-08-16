@@ -472,6 +472,9 @@ fn format_change(change: &PropertyChange) -> String {
         PropertyChange::GroupVolume(v) => format!("{}", v.0),
         PropertyChange::GroupMute(m) => format!("{}", m.0),
         PropertyChange::GroupVolumeChangeable(v) => format!("{}", v.0),
+        // `PropertyChange` is `#[non_exhaustive]`, so a property added in a
+        // later release reaches here instead of breaking this example.
+        _ => "<unrecognized property>".to_string(),
     }
 }
 

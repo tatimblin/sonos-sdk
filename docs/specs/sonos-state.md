@@ -80,7 +80,7 @@ authoritative for "what changed", the store for "what is true now".
 - [x] A queued `Playing -> Transitioning -> Playing` burst is fully observable through `iter()`
 - [x] A `fetch()` observed before a stored event is rejected rather than applied
 - [x] Unwatched property updates mutate the cache without emitting an event
-- [x] Setting a property to its existing value emits nothing (`PropertyBag::set` returns `false`)
+- [x] Setting a property to its existing value emits nothing (`PropertyBag::set` returns `WriteOutcome::Unchanged`)
 - [x] `PerCoordinator` events from non-coordinators are dropped, not stored
 - [x] Group members watching a coordinator-owned property are notified without copying data
 - [x] `set_property()` writes to the bag `get_property()` reads from, for every property
@@ -425,11 +425,11 @@ handle_event                       src/event_worker.rs:117
 6. **Apply** (`src/decoder.rs`): `PropertyChange::apply(.., stamp)` routes by scope —
    speaker-scoped variants to `store.set()`, group-scoped variants resolve
    `speaker_to_group` first and write to `store.set_group()`. A group-scoped change for a
-   speaker with no group mapping returns `false` and is logged at `warn`
+   speaker with no group mapping returns `WriteOutcome::Unchanged` and is logged at `warn`
    (`log_unmapped_group_change`, `src/decoder.rs:113`) rather than dropped silently.
-7. **Emit if watched** (`src/event_worker.rs:428`): only when `apply` reported a real change
+7. **Emit if watched** (`src/event_worker.rs`): only when `apply` reported a real change
    *and* `(speaker_id, key)` is in `watched`. Both conditions must hold.
-8. **Fan out to members** (`src/event_worker.rs:387`): for `PerCoordinator` services,
+8. **Fan out to members** (`src/event_worker.rs`): for `PerCoordinator` services,
    `resolve_group_members` (`:367`) returns the non-coordinator members (empty for a
    standalone speaker or a non-coordinator), and each watching member gets its own
    `ChangeEvent` carrying the coordinator's value. The *store* still holds one copy — the
@@ -595,7 +595,7 @@ Callers stamp at the right moment:
 
 | Path | Stamp | Rationale |
 |------|-------|-----------|
-| Event worker | `WriteStamp::now(Event)` before applying | Observation and write coincide |
+| Event worker | `WriteStamp::now(Event)` before applying | Approximates observation; see the limitation below |
 | `set_property` (local action) | `WriteStamp::now(LocalAction)` | The device just acknowledged the action |
 | `fetch()` | `WriteStamp::observed_at(Fetch, t_before_request)` | The read describes the device at request time |
 
@@ -603,7 +603,29 @@ Ties on an exact `Instant` break by `ChangeSource` authority (`Event` > `LocalAc
 so an event cannot be displaced by a `fetch()` that happens to share its timestamp.
 
 A rejected `fetch()` still returns its value to its caller — it just does not overwrite a newer
-cache entry.
+cache entry. Staleness is tracked per property (`stamps: HashMap<TypeId, WriteStamp>` inside each
+`PropertyBag`), so a slow volume fetch cannot stale out an unrelated mute write.
+
+#### Known limitation: events are stamped at apply time, not observation time
+
+`apply_property_change` calls `WriteStamp::now(Event)` when the change reaches the worker —
+*after* the NOTIFY has traversed callback-server → broker → worker thread. The true observation
+instant is available as `EnrichedEvent.timestamp` (a `SystemTime` set at ingest) but is not used.
+
+So an event's `observed_at` is systematically *later* than its real observation, while a
+`fetch()`'s is exact. Two consequences remain open:
+
+- A genuinely current `fetch()` can be rejected as `Stale` in favour of an older NOTIFY that
+  reached the worker later. Nothing subsequently corrects this, so `get()` can disagree with
+  `fetch()` indefinitely.
+- A late-arriving stale NOTIFY still outranks a fresh `LocalAction` write, which is the
+  "volume snaps back" symptom this ordering is meant to prevent.
+
+This ordering is therefore strictly better than the unordered behaviour it replaces — which lost
+both races — but it closes only the `fetch()`-clobbers-event direction. Fixing the remainder
+requires deriving `observed_at` from `EnrichedEvent.timestamp` (a `SystemTime` → `Instant`
+conversion) and giving polling events the same request-time treatment as `fetch()`. Tracked as a
+follow-up, not delivered here.
 
 ### 4.2 Feature: watched-set gating
 
@@ -1271,7 +1293,8 @@ The workspace versions together; breaking changes ride the `sonos-sdk` version.
 | Single shared `ChangeIterator` receiver | Concurrent iterators compete for events instead of each seeing all | Drain from one place and fan out in application code | Would need a broadcast primitive |
 | Properties start as `None` | First `get()` before any event returns nothing | Use the SDK's `fetch()` or `watch_or_fetch()` | — |
 | `DeviceProperties` and `GroupManagement` decode to empty | No properties from those services | — | Tracked in `docs/STATUS.md` |
-| Unbounded notification channel | A never-draining consumer grows memory | Drain, or use `try_iter()` per frame | Bounded channel with a drop policy |
+| Unbounded notification channel | A never-draining consumer grows memory. `ChangeEvent` now carries a payload (~168 bytes vs. ~48 before, plus heap strings for `CurrentTrack`), so a stalled consumer accumulates roughly 3.5x faster than it used to. Nothing is dropped, which is the intended tradeoff | Drain, or use `try_iter()` per frame | Bounded channel with a drop policy |
+| Events stamped at apply time, not observation time | A current `fetch()` can lose to an older NOTIFY, and a late stale NOTIFY can still overwrite a fresh local write | None | Derive `observed_at` from `EnrichedEvent.timestamp` — see 4.1a |
 | `cleanup_timeout` unused | Builder option has no effect | Ignore it | Remove or wire through |
 | `system_props` write-only in practice | `Topology` is stored by `initialize()` (`src/state.rs:681`) but has no public system-scoped getter | Use `groups()` / `speaker_infos()` | Add a system-scope accessor |
 | An empty `ZoneGroupTopology` snapshot cannot express "no groups" | A hypothetical genuine all-groups-dissolved event would be ignored (`src/event_worker.rs:270`) | None needed — Sonos always reports at least one single-member group per speaker | Diff against the previous snapshot instead of replacing |
