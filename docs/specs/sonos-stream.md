@@ -178,13 +178,16 @@ pub struct EnrichedEvent {
 - `observed_at` is the monotonic instant the values were *observed*, and is what consumers order
   writes by. For a UPnP NOTIFY it is the arrival instant at the callback server, threaded down
   from `NotificationPayload::received_at`; a buffered event replayed after late SID registration
-  keeps its original arrival instant. For a poll it should be the instant the poll request was
-  issued — see the polling limitation in `sonos-state` spec §4.1a, which is still outstanding
+  keeps its original arrival instant. For a poll it is the instant the poll *request* was issued,
+  captured by the polling loop before `poll_device_state` — a poll response describes the device
+  as of the request, exactly like `fetch()`. See `sonos-state` spec §4.1a for the ordering rule
+  these stamps feed
 - `event_source` accurately identifies whether this came from UPnP or polling
 
 **Construction**: `EnrichedEvent::new` stamps `observed_at` as "now" and is correct only when
-construction and observation coincide. `EnrichedEvent::observed_at` takes the instant explicitly
-and is what the UPnP path uses.
+construction and observation coincide — no production path in this crate qualifies, since both
+sources observe before they construct. `EnrichedEvent::observed_at` takes the instant explicitly
+and is what both the UPnP and polling paths use.
 
 **Ownership**: Created by EventProcessor, passed through channels, consumed by sonos-state.
 
@@ -602,6 +605,14 @@ pub trait ServicePoller: Send + Sync {
 ```
 
 Implemented for: AVTransport, RenderingControl, ZoneGroupTopology (stub), GroupManagement (stub)
+
+**Observation stamping.** The polling loop captures an `Instant` immediately before
+`poll_device_state` and passes it to `EnrichedEvent::observed_at`, so the synthetic event is
+ordered by when the device was *read*, not when the response came back. Stamping on return made
+a poll look one round trip newer than the state it described — seconds against a slow speaker,
+enough to wrongly supersede a fresher UPnP event or local write. The capture stays below the
+interval sleep: hoisting it above would backdate a legitimately newer poll into being dropped as
+stale, which loses real data rather than merely mis-ordering it.
 
 ---
 
