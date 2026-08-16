@@ -596,6 +596,7 @@ Callers stamp at the right moment:
 | Path | Stamp | Rationale |
 |------|-------|-----------|
 | Event worker (UPnP NOTIFY) | `WriteStamp::observed_at(Event, event.observed_at)` | The NOTIFY's arrival instant at the callback server, threaded down |
+| Event worker (polling) | `WriteStamp::observed_at(Event, event.observed_at)` | The poll *request* instant, threaded down the same field |
 | `set_property` (local action) | `WriteStamp::now(LocalAction)` | The device just acknowledged the action |
 | `fetch()` | `WriteStamp::observed_at(Fetch, t_before_request)` | The read describes the device at request time |
 
@@ -612,7 +613,8 @@ cache entry. Staleness is tracked per property (`stamps: HashMap<TypeId, WriteSt
 `Instant` — and passes it to every write and notification the event produces, so a whole
 topology snapshot or a multi-property NOTIFY cannot order against itself.
 
-`observed_at` is set upstream at the earliest point the process could have known the values:
+`observed_at` is set upstream at the earliest point the process could have known the values.
+For a **UPnP NOTIFY**:
 
 1. `EventRouter::route_event` stamps `NotificationPayload::received_at` when the HTTP NOTIFY
    lands, before taking its own lock. An event buffered during the SUBSCRIBE/NOTIFY race keeps
@@ -621,6 +623,14 @@ topology snapshot or a multi-property NOTIFY cannot order against itself.
    `EnrichedEvent::observed_at`, so the SID lookup, the XML parse, and the channel hop are not
    counted as part of the observation.
 3. The worker stamps from it rather than from `Instant::now()`.
+
+For a **poll**, the polling loop in `sonos-stream/src/polling/scheduler.rs` captures the instant
+immediately before `poll_device_state` and threads it into `EnrichedEvent::observed_at`. A poll
+response describes the device as of the request, exactly like `fetch()`, so the SOAP round trip,
+the change comparison, and `state_to_event_data` all fall *after* the observation. The capture
+sits inside the loop iteration and below the interval sleep, not above it: backdating past the
+sleep would make a legitimately newer poll look older than it is and get dropped as stale —
+the inverse failure, and the more damaging one.
 
 `EnrichedEvent` carries both clocks on purpose. `timestamp: SystemTime` remains for display and
 logging; `observed_at: Instant` is what ordering uses. The wall clock is unusable for ordering
@@ -633,22 +643,10 @@ ingest removes the conversion, and with it the failure mode. A logical/sequence 
 rejected: `fetch()` observations originate outside the event pipeline and there is no single
 point that could allocate sequence numbers covering both.
 
-#### Known limitation: polling events are still stamped on arrival
-
-Polling-derived synthetic events have the same request/response gap as `fetch()` — a poll
-response describes the device as of when the request went out — but they are still stamped when
-`EnrichedEvent::new` is called after the response returns, in
-`sonos-stream/src/polling/scheduler.rs`. They therefore look newer than they are by roughly one
-poll round-trip, and a slow poll can still displace a `LocalAction` or `fetch()` write observed
-during that window.
-
-The fix is mechanical: capture an `Instant` before `poll_device_state` and construct the event
-with `EnrichedEvent::observed_at`. The plumbing this needs (`EnrichedEvent::observed_at`, the
-worker's use of it) is already in place; only the scheduler call site is outstanding.
-
-The UPnP NOTIFY path — which is the default and covers every household without a firewall
-problem — is closed. Both symptoms this ordering exists to prevent ("volume snaps back", and
-`get()` permanently disagreeing with `fetch()`) no longer occur for NOTIFY-sourced events.
+Every write source now stamps at observation rather than at application, so both symptoms this
+ordering exists to prevent ("volume snaps back", and `get()` permanently disagreeing with
+`fetch()`) are addressed for UPnP-sourced, poll-sourced, `fetch()`, and local-action writes
+alike.
 
 ### 4.2 Feature: watched-set gating
 
@@ -1317,7 +1315,6 @@ The workspace versions together; breaking changes ride the `sonos-sdk` version.
 | Properties start as `None` | First `get()` before any event returns nothing | Use the SDK's `fetch()` or `watch_or_fetch()` | — |
 | `DeviceProperties` and `GroupManagement` decode to empty | No properties from those services | — | Tracked in `docs/STATUS.md` |
 | Unbounded notification channel | A never-draining consumer grows memory. `ChangeEvent` now carries a payload (~168 bytes vs. ~48 before, plus heap strings for `CurrentTrack`), so a stalled consumer accumulates roughly 3.5x faster than it used to. Nothing is dropped, which is the intended tradeoff | Drain, or use `try_iter()` per frame | Bounded channel with a drop policy |
-| Polling events stamped on response, not at poll request | A poll-sourced value looks newer than it is by one poll round-trip, so it can still displace a local write or `fetch()` observed during that window. UPnP NOTIFY events are unaffected | Prefer UPnP events (the default; polling is only a firewall fallback) | Construct the event with `EnrichedEvent::observed_at` in `sonos-stream/src/polling/scheduler.rs` — see 4.1a |
 | `cleanup_timeout` unused | Builder option has no effect | Ignore it | Remove or wire through |
 | `system_props` write-only in practice | `Topology` is stored by `initialize()` (`src/state.rs:681`) but has no public system-scoped getter | Use `groups()` / `speaker_infos()` | Add a system-scope accessor |
 | An empty `ZoneGroupTopology` snapshot cannot express "no groups" | A hypothetical genuine all-groups-dissolved event would be ignored (`src/event_worker.rs:270`) | None needed — Sonos always reports at least one single-member group per speaker | Diff against the previous snapshot instead of replacing |

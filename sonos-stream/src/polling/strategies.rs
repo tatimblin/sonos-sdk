@@ -293,6 +293,21 @@ impl DeviceStatePoller {
         }
     }
 
+    /// Replace the poller registered for `service`.
+    ///
+    /// Test-only. Lets a test drive the real polling loop with a poller that performs no
+    /// network I/O but has a controllable request/response gap, which is what the
+    /// scheduler's observation stamping has to be measured against.
+    #[cfg(test)]
+    pub(crate) fn with_service_poller(
+        mut self,
+        service: Service,
+        poller: Box<dyn ServicePoller>,
+    ) -> Self {
+        self.service_pollers.insert(service, poller);
+        self
+    }
+
     /// Get list of supported service types
     pub fn supported_services(&self) -> Vec<Service> {
         self.service_pollers.keys().cloned().collect()

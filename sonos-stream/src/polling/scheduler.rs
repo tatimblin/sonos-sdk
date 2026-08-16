@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::{mpsc, Notify, RwLock};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
@@ -202,6 +202,21 @@ impl PollingTask {
                 *count += 1;
             }
 
+            // Capture the observation instant *before* the request goes out.
+            //
+            // A poll response describes the device as of the request, exactly like
+            // `fetch()` — everything after this point (the SOAP round trip, the JSON
+            // change comparison, `state_to_event_data`) happens after the device was
+            // observed and must not be counted as part of the observation. Stamping on
+            // return would make the event look one round trip newer than the state it
+            // describes, and against a slow speaker that round trip is seconds — long
+            // enough to wrongly supersede a genuinely fresher UPnP event or local write.
+            //
+            // Deliberately *not* hoisted above the interval sleep: the sleep is not part
+            // of the request, and stamping before it would make a legitimately newer poll
+            // look older than it is and get dropped as stale.
+            let observed_at = Instant::now();
+
             // Poll the device state
             match device_poller.poll_device_state(&pair).await {
                 Ok(current_state) => {
@@ -228,7 +243,7 @@ impl PollingTask {
                         // Convert JSON snapshot to EventData and emit full-state event
                         match device_poller.state_to_event_data(&pair.service, &current_state) {
                             Ok(event_data) => {
-                                let enriched_event = EnrichedEvent::new(
+                                let enriched_event = EnrichedEvent::observed_at(
                                     registration_id,
                                     pair.speaker_ip,
                                     pair.service,
@@ -236,6 +251,7 @@ impl PollingTask {
                                         poll_interval: current_interval,
                                     },
                                     event_data,
+                                    observed_at,
                                 );
 
                                 if event_sender.send(enriched_event).is_err() {
@@ -623,7 +639,127 @@ impl std::fmt::Display for PollingSchedulerStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::events::types::{EventData, RenderingControlState};
+    use crate::polling::strategies::ServicePoller;
+    use async_trait::async_trait;
+    use sonos_api::{Service, SonosClient};
+    use std::sync::atomic::AtomicU32;
+    use std::sync::Mutex;
     use tokio::sync::mpsc;
+
+    /// Instants recorded around one simulated poll request.
+    #[derive(Debug, Clone, Copy)]
+    struct PollTiming {
+        /// When the poller was entered — i.e. when the request effectively went out.
+        entered: Instant,
+        /// Halfway through the round trip: stands in for a UPnP NOTIFY or local write
+        /// observed *while* the poll was still in flight.
+        midpoint: Instant,
+        /// When the response came back.
+        returned: Instant,
+    }
+
+    /// A `ServicePoller` with a controllable request/response gap and no network I/O.
+    ///
+    /// The scheduler's observation stamping can only be measured against a poll whose
+    /// request and response are distinguishable in time, which a real poller against a
+    /// reachable speaker is not (and an unreachable one never returns a state at all).
+    /// Each poll reports a different volume so the scheduler's change detection fires
+    /// every time.
+    struct FakePoller {
+        round_trip: Duration,
+        timings: Arc<Mutex<Vec<PollTiming>>>,
+        polls: AtomicU32,
+    }
+
+    impl FakePoller {
+        fn new(round_trip: Duration) -> (Self, Arc<Mutex<Vec<PollTiming>>>) {
+            let timings = Arc::new(Mutex::new(Vec::new()));
+            (
+                Self {
+                    round_trip,
+                    timings: Arc::clone(&timings),
+                    polls: AtomicU32::new(0),
+                },
+                timings,
+            )
+        }
+    }
+
+    #[async_trait]
+    impl ServicePoller for FakePoller {
+        async fn poll_state(
+            &self,
+            _client: &SonosClient,
+            _pair: &SpeakerServicePair,
+        ) -> PollingResult<String> {
+            let entered = Instant::now();
+            tokio::time::sleep(self.round_trip / 2).await;
+            let midpoint = Instant::now();
+            tokio::time::sleep(self.round_trip / 2).await;
+            self.timings.lock().unwrap().push(PollTiming {
+                entered,
+                midpoint,
+                returned: Instant::now(),
+            });
+
+            let volume = self.polls.fetch_add(1, Ordering::Relaxed);
+            let state = RenderingControlState {
+                master_volume: Some(volume.to_string()),
+                master_mute: None,
+                lf_volume: None,
+                rf_volume: None,
+                lf_mute: None,
+                rf_mute: None,
+                bass: None,
+                treble: None,
+                loudness: None,
+                balance: None,
+                other_channels: HashMap::new(),
+            };
+            serde_json::to_string(&state).map_err(|e| PollingError::StateParsing(e.to_string()))
+        }
+
+        fn state_to_event_data(&self, json_state: &str) -> PollingResult<EventData> {
+            let state: RenderingControlState = serde_json::from_str(json_state)
+                .map_err(|e| PollingError::StateParsing(e.to_string()))?;
+            Ok(EventData::RenderingControl(state))
+        }
+
+        fn service_type(&self) -> Service {
+            Service::RenderingControl
+        }
+    }
+
+    /// Start a real polling task backed by [`FakePoller`].
+    fn start_faked_task(
+        interval: Duration,
+        round_trip: Duration,
+    ) -> (
+        PollingTask,
+        mpsc::UnboundedReceiver<EnrichedEvent>,
+        Arc<Mutex<Vec<PollTiming>>>,
+    ) {
+        let (poller, timings) = FakePoller::new(round_trip);
+        let device_poller = Arc::new(
+            DeviceStatePoller::new()
+                .with_service_poller(Service::RenderingControl, Box::new(poller)),
+        );
+        let (event_sender, event_receiver) = mpsc::unbounded_channel();
+
+        let task = PollingTask::start(
+            RegistrationId::new(1),
+            // RFC 5737 TEST-NET-3; never contacted, the poller is faked.
+            SpeakerServicePair::new("203.0.113.70".parse().unwrap(), Service::RenderingControl),
+            interval,
+            Duration::from_secs(600),
+            false,
+            device_poller,
+            event_sender,
+        );
+
+        (task, event_receiver, timings)
+    }
 
     #[tokio::test]
     async fn test_polling_scheduler_creation() {
@@ -872,6 +1008,97 @@ mod tests {
         assert!(
             !fresh.sleep_or_shutdown(Duration::from_millis(10)).await,
             "without a shutdown request the sleep should run to completion"
+        );
+    }
+
+    /// The write-ordering rule consumers apply (`sonos-state`'s `WriteStamp`): a value
+    /// observed no later than the stored one is rejected as stale. Restated here because
+    /// `sonos-state` depends on this crate, not the other way round.
+    fn supersedes(candidate: Instant, stored: Instant) -> bool {
+        candidate > stored
+    }
+
+    /// A polling event's `observed_at` must come from before its request, not after its
+    /// response.
+    ///
+    /// The scheduler used to call `EnrichedEvent::new`, which stamps "now" at
+    /// construction — after the SOAP round trip and after `state_to_event_data`. The
+    /// event then looked one round trip newer than the state it actually described.
+    ///
+    /// Offline: the poller is faked, so nothing is sent to the TEST-NET-3 address.
+    #[tokio::test]
+    async fn test_polling_event_observed_before_its_request() {
+        // A round trip far wider than scheduling jitter, so "before request" and "after
+        // response" cannot be confused for each other.
+        let (task, mut events, timings) =
+            start_faked_task(Duration::from_millis(10), Duration::from_millis(400));
+
+        let event = events.recv().await.expect("polling event");
+        task.shutdown().await.unwrap();
+
+        let timing = timings.lock().unwrap()[0];
+        assert!(
+            event.observed_at <= timing.entered,
+            "observed_at must precede the poll request, but it was {:?} after it",
+            event.observed_at - timing.entered
+        );
+        assert!(
+            event.observed_at < timing.returned,
+            "observed_at must not be stamped on the response"
+        );
+    }
+
+    /// A polling event must not supersede a value observed *during* its round trip.
+    ///
+    /// This is the user-visible symptom: a volume change seen via UPnP NOTIFY (or a local
+    /// `set_volume`) while a slow poll is in flight would be overwritten by the poll's
+    /// older reading — "volume snaps back". Distinct from the test above, which checks the
+    /// stamp's provenance; this one checks the ordering decision that stamp drives.
+    #[tokio::test]
+    async fn test_polling_event_does_not_supersede_a_fresher_observation() {
+        let (task, mut events, timings) =
+            start_faked_task(Duration::from_millis(10), Duration::from_millis(400));
+
+        let event = events.recv().await.expect("polling event");
+        task.shutdown().await.unwrap();
+
+        // Stands in for a NOTIFY arrival or local write observed mid-round-trip.
+        let fresher_observation = timings.lock().unwrap()[0].midpoint;
+
+        assert!(
+            !supersedes(event.observed_at, fresher_observation),
+            "a poll observed before a competing write must not overwrite it"
+        );
+    }
+
+    /// The inverse-failure guard: a genuinely newer polling event must still win.
+    ///
+    /// Backdating too far — hoisting the capture above the interval sleep, or out of the
+    /// loop entirely so every event shares the task's start instant — would satisfy both
+    /// tests above while silently discarding real device changes. Here a competing value
+    /// is observed *after* the first polling event lands; the second poll genuinely
+    /// observes the device later than that, so it must supersede it.
+    #[tokio::test]
+    async fn test_newer_polling_event_still_supersedes() {
+        let (task, mut events, _timings) =
+            start_faked_task(Duration::from_millis(10), Duration::from_millis(100));
+
+        let first = events.recv().await.expect("first polling event");
+
+        // Observed between the two polls: after the first event, before the second poll's
+        // request goes out.
+        let competing_observation = Instant::now();
+
+        let second = events.recv().await.expect("second polling event");
+        task.shutdown().await.unwrap();
+
+        assert!(
+            supersedes(second.observed_at, competing_observation),
+            "a poll whose request post-dates a competing write must still overwrite it"
+        );
+        assert!(
+            supersedes(second.observed_at, first.observed_at),
+            "each poll must carry its own observation instant, not a shared one"
         );
     }
 
