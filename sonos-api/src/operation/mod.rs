@@ -265,6 +265,44 @@ pub fn xml_escape(s: &str) -> String {
     result
 }
 
+/// Capitalize the first character of a snake_case field name.
+///
+/// Used by `define_operation_with_response!` to derive the UPnP element name for
+/// single-word request arguments (`channel` -> `Channel`).
+pub fn capitalize_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+    }
+}
+
+/// Compile-time guard rejecting request field names whose UPnP element name cannot be
+/// derived by capitalizing the first character.
+///
+/// UPnP argument names come from each device's SCPD and use casing that snake_case
+/// does not preserve (`object_id` -> `ObjectID`, `enqueued_uri` -> `EnqueuedURI`).
+/// Capitalizing only the first character would emit `<Object_id>`, which devices
+/// reject. Multi-word request fields must therefore declare their element name via
+/// the `request_xml_mapping:` block; this function makes forgetting a compile error
+/// rather than a malformed request discovered at runtime.
+///
+/// # Panics
+///
+/// Panics (at compile time, when used in a `const` context) if `name` contains `_`.
+pub const fn assert_derivable_arg_name(name: &str) {
+    let bytes = name.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        assert!(
+            bytes[i] != b'_',
+            "multi-word request field needs an explicit `request_xml_mapping:` entry: \
+             UPnP element casing cannot be derived from snake_case"
+        );
+        i += 1;
+    }
+}
+
 /// Validate a RenderingControl channel parameter.
 ///
 /// Sonos speakers accept "Master", "LF" (left front), and "RF" (right front) channels.

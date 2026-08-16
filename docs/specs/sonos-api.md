@@ -419,6 +419,54 @@ define_upnp_operation! {
 - Generates `UPnPOperation` implementation
 - Generates convenience function (`play_operation()`)
 
+#### Request element names must be explicit
+
+UPnP argument names come from each device's SCPD, not from a naming convention. Their
+casing is **not recoverable from snake_case field names**:
+
+| Request field | Correct UPnP element | Naive first-char capitalization |
+|---------------|---------------------|---------------------------------|
+| `object_id` | `ObjectID` | `Object_id` |
+| `update_id` | `UpdateID` | `Update_id` |
+| `starting_index` | `StartingIndex` | `Starting_index` |
+| `number_of_tracks` | `NumberOfTracks` | `Number_of_tracks` |
+| `enqueued_uri` | `EnqueuedURI` | `Enqueued_uri` |
+| `enqueued_uri_meta_data` | `EnqueuedURIMetaData` | `Enqueued_uri_meta_data` |
+| `channel` | `Channel` | `Channel` (correct — single word) |
+
+`define_operation_with_response!` therefore accepts an optional `request_xml_mapping:`
+block that mirrors the existing `xml_mapping:` idiom used for response fields:
+
+```rust
+define_operation_with_response! {
+    operation: SaveQueueOperation,
+    action: "SaveQueue",
+    service: AVTransport,
+    request: { title: String, object_id: String },
+    response: SaveQueueResponse { assigned_object_id: String },
+    request_xml_mapping: {
+        title: "Title",
+        object_id: "ObjectID",
+    },
+    xml_mapping: { assigned_object_id: "AssignedObjectID" },
+}
+```
+
+**Why optional**: the macro is `#[macro_export]` and has ~16 call sites, all of which
+predate this block. Making it an additional macro arm keeps the change additive and
+non-breaking.
+
+**Why safe**: the block-less arm now asserts at compile time
+(`operation::assert_derivable_arg_name`) that every request field is a single word.
+A multi-word field without a `request_xml_mapping:` entry is a build failure rather
+than a malformed request discovered against a device. When the block is present it
+must list every request field — the generated `build_payload` destructures the request
+struct exhaustively, so an omission also fails to compile. The block's order
+determines argument order in the SOAP body.
+
+**Escaping**: both macro arms route every argument value through `xml_escape`.
+Hand-written `UPnPOperation` impls must call it explicitly; see §10.3.
+
 ---
 
 ## 5. Data Model
@@ -781,8 +829,32 @@ fn prop_volume_range() {
 | Input Source | Validation | Location |
 |--------------|------------|----------|
 | User parameters | `Validate` trait | `src/operation/mod.rs:127-143` |
+| User parameters | `xml_escape` before SOAP interpolation | `src/operation/mod.rs:253` |
 | Device responses | XML parsing with serde | Service event modules |
 | Subscription IDs | String format check | `src/subscription.rs` |
+
+#### SOAP payload escaping
+
+Every string interpolated into a SOAP payload must pass through
+`operation::xml_escape`. Unescaped values are both a correctness and an injection
+problem:
+
+- Streaming URIs routinely contain `&` (`x-sonosapi-stream:s2846?sid=254&flags=32`),
+  which produces malformed XML that the device rejects.
+- `*MetaData` arguments carry DIDL-Lite, which always contains `<`, `>`, and `&`.
+- A crafted value can close its element early and inject sibling arguments.
+
+Both `define_operation_with_response!` arms and the `request_xml_mapping:` path escape
+automatically. **Only hand-written `UPnPOperation` impls can omit escaping**, so those
+require review when added. Current hand-written impls and their status:
+
+| Impl | String arguments | Escaped |
+|------|-----------------|---------|
+| `AddURIToQueueOperation` | `enqueued_uri`, `enqueued_uri_meta_data` | Yes (fixed; previously raw) |
+| `AddMemberOperation` (GroupManagement) | `member_id` | Yes |
+| `GetMuteOperation` (RenderingControl) | `channel` | No — constrained to `Master`/`LF`/`RF` by `validate_channel` |
+| `GetLoudnessOperation` (RenderingControl) | `channel` | No — same constraint |
+| `GetGroupMuteOperation` | none | N/A |
 
 ---
 
@@ -921,3 +993,4 @@ The crate has `tracing` available as a dependency but does not currently instrum
 |------|--------|--------|
 | 2025-01-14 | Claude Opus 4.5 | Initial specification |
 | 2026-08-15 | Claude Opus 5 | Document RenderingControl per-channel event state variables and master-selection semantics |
+| 2026-08-15 | Claude Opus 5 | Document `request_xml_mapping:` for explicit UPnP request element names (§4.5) and SOAP payload escaping requirements (§10.3) |

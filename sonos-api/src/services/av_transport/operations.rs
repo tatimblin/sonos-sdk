@@ -469,8 +469,8 @@ impl crate::operation::UPnPOperation for AddURIToQueueOperation {
         Ok(format!(
             "<InstanceID>{}</InstanceID><EnqueuedURI>{}</EnqueuedURI><EnqueuedURIMetaData>{}</EnqueuedURIMetaData><DesiredFirstTrackNumberEnqueued>{}</DesiredFirstTrackNumberEnqueued><EnqueueAsNext>{}</EnqueueAsNext>",
             request.instance_id,
-            request.enqueued_uri,
-            request.enqueued_uri_meta_data,
+            crate::operation::xml_escape(&request.enqueued_uri),
+            crate::operation::xml_escape(&request.enqueued_uri_meta_data),
             request.desired_first_track_number_enqueued,
             if request.enqueue_as_next { "1" } else { "0" }
         ))
@@ -547,6 +547,11 @@ define_operation_with_response! {
     response: RemoveTrackRangeFromQueueResponse {
         new_update_id: u32,
     },
+    request_xml_mapping: {
+        update_id: "UpdateID",
+        starting_index: "StartingIndex",
+        number_of_tracks: "NumberOfTracks",
+    },
     xml_mapping: {
         new_update_id: "NewUpdateID",
     },
@@ -577,6 +582,10 @@ define_operation_with_response! {
     response: SaveQueueResponse {
         assigned_object_id: String,
     },
+    request_xml_mapping: {
+        title: "Title",
+        object_id: "ObjectID",
+    },
     xml_mapping: {
         assigned_object_id: "AssignedObjectID",
     },
@@ -598,6 +607,11 @@ define_operation_with_response! {
         new_queue_length: u32,
         assigned_object_id: String,
         new_update_id: u32,
+    },
+    request_xml_mapping: {
+        title: "Title",
+        enqueued_uri: "EnqueuedURI",
+        enqueued_uri_meta_data: "EnqueuedURIMetaData",
     },
     xml_mapping: {
         num_tracks_added: "NumTracksAdded",
@@ -1007,6 +1021,81 @@ mod tests {
     fn test_backup_queue_builder() {
         let op = backup_queue_operation().build().unwrap();
         assert_eq!(op.metadata().action, "BackupQueue");
+    }
+
+    // Element names below are the UPnP SCPD argument names. Snake_case field names
+    // cannot produce this casing mechanically, so these assert the wire format that
+    // devices actually accept (previously emitted <Object_id>, <Update_id>, etc.).
+
+    #[test]
+    fn test_save_queue_payload_element_names() {
+        let request = SaveQueueOperationRequest {
+            instance_id: 0,
+            title: "My Mix".to_string(),
+            object_id: "SQ:12".to_string(),
+        };
+        let payload = SaveQueueOperation::build_payload(&request).unwrap();
+        assert!(payload.contains("<Title>My Mix</Title>"), "{payload}");
+        assert!(payload.contains("<ObjectID>SQ:12</ObjectID>"), "{payload}");
+    }
+
+    #[test]
+    fn test_create_saved_queue_payload_element_names() {
+        let request = CreateSavedQueueOperationRequest {
+            instance_id: 0,
+            title: "Playlist".to_string(),
+            enqueued_uri: "x-file-cifs://nas/song.mp3".to_string(),
+            enqueued_uri_meta_data: "meta".to_string(),
+        };
+        let payload = CreateSavedQueueOperation::build_payload(&request).unwrap();
+        assert!(
+            payload.contains("<EnqueuedURI>x-file-cifs://nas/song.mp3</EnqueuedURI>"),
+            "{payload}"
+        );
+        assert!(
+            payload.contains("<EnqueuedURIMetaData>meta</EnqueuedURIMetaData>"),
+            "{payload}"
+        );
+    }
+
+    #[test]
+    fn test_remove_track_range_payload_element_names() {
+        let request = RemoveTrackRangeFromQueueOperationRequest {
+            instance_id: 0,
+            update_id: 7,
+            starting_index: 2,
+            number_of_tracks: 3,
+        };
+        let payload = RemoveTrackRangeFromQueueOperation::build_payload(&request).unwrap();
+        assert!(payload.contains("<UpdateID>7</UpdateID>"), "{payload}");
+        assert!(
+            payload.contains("<StartingIndex>2</StartingIndex>"),
+            "{payload}"
+        );
+        assert!(
+            payload.contains("<NumberOfTracks>3</NumberOfTracks>"),
+            "{payload}"
+        );
+    }
+
+    #[test]
+    fn test_add_uri_to_queue_escapes_ampersand() {
+        // Real streaming URIs contain `&`; interpolating raw produces malformed SOAP.
+        let request = AddURIToQueueOperationRequest {
+            instance_id: 0,
+            enqueued_uri: "x-sonosapi-stream:s1?sid=254&flags=32".to_string(),
+            enqueued_uri_meta_data: "<DIDL-Lite>x</DIDL-Lite>".to_string(),
+            desired_first_track_number_enqueued: 0,
+            enqueue_as_next: false,
+        };
+        let payload = AddURIToQueueOperation::build_payload(&request).unwrap();
+        assert!(payload.contains("sid=254&amp;flags=32"), "{payload}");
+        assert!(!payload.contains("sid=254&flags=32"), "{payload}");
+        // DIDL-Lite metadata must not close the element early.
+        assert!(
+            payload.contains("&lt;DIDL-Lite&gt;x&lt;/DIDL-Lite&gt;"),
+            "{payload}"
+        );
     }
 
     // --- Group Coordination Tests ---

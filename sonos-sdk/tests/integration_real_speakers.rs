@@ -170,6 +170,34 @@ fn test_api_operations() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Validates the SaveQueue request element names against a real device's SCPD.
+///
+/// UPnP argument names are defined per-device, so only a real speaker can confirm
+/// that `<ObjectID>` (not `<Object_id>`) is what SaveQueue expects. A device that
+/// does not recognize an argument name returns a SOAP fault, so a successful call
+/// is itself the assertion.
+#[test]
+#[ignore] // Requires real hardware - run manually with --ignored
+fn test_save_queue_element_names() -> Result<(), Box<dyn std::error::Error>> {
+    let system = require_real_speakers()?;
+    let speaker = find_reachable_speaker(&system)?;
+
+    // Empty object_id means "save the current queue as a new playlist".
+    let response = speaker.save_queue("SDK Integration Test", "")?;
+    eprintln!(
+        "SaveQueue assigned object id: {}",
+        response.assigned_object_id
+    );
+    assert!(
+        !response.assigned_object_id.is_empty(),
+        "Device should return an AssignedObjectID; an empty value suggests the \
+         request element names were rejected"
+    );
+
+    eprintln!("✅ SaveQueue element names accepted by real device");
+    Ok(())
+}
+
 #[test]
 #[ignore] // Requires real hardware - run manually with --ignored
 fn test_event_streaming() -> Result<(), Box<dyn std::error::Error>> {
