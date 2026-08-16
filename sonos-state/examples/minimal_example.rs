@@ -9,7 +9,8 @@
 use sonos_event_manager::SonosEventManager;
 use sonos_state::property::SonosProperty;
 use sonos_state::{
-    GroupId, GroupInfo, GroupVolume, Property, SpeakerId, StateManager, Topology, Volume,
+    GroupId, GroupInfo, GroupVolume, Property, PropertyChange, SpeakerId, StateManager, Topology,
+    Volume,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -82,29 +83,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         event_count += 1;
         println!(
             "  [{}] Property '{}' changed on {} (service: {:?})",
-            event_count, event.property_key, event.speaker_id, event.service
+            event_count,
+            event.property_key(),
+            event.speaker_id,
+            event.service()
         );
 
-        // Get the new value based on property key
-        match event.property_key {
-            "volume" => {
-                if let Some(vol) = manager.get_property::<Volume>(&event.speaker_id) {
-                    println!("       New speaker volume: {}%", vol.0);
-                }
-            }
-            "group_volume" => {
-                // Group volume is stored per-group; look up the group for this speaker
-                if let Some(group_info) = manager.get_group_for_speaker(&event.speaker_id) {
-                    if let Some(gv) = manager.get_group_property::<GroupVolume>(&group_info.id) {
-                        println!("       New group volume: {}%", gv.0);
-                    }
-                } else {
-                    println!("       (no group mapping for this speaker)");
-                }
-            }
-            other => {
-                println!("       (unhandled property: {other})");
-            }
+        // The new value rides along on the event — no store re-read, so a
+        // burst of queued events shows every value rather than the latest one
+        // repeated.
+        match &event.change {
+            PropertyChange::Volume(v) => println!("       New speaker volume: {}%", v.0),
+            PropertyChange::GroupVolume(v) => println!("       New group volume: {}%", v.0),
+            other => println!("       (unhandled property: {})", other.key()),
         }
 
         // Stop after 10 events or continue listening

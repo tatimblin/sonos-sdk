@@ -142,7 +142,7 @@ fn wait_for_property_event(
         let remaining = deadline.saturating_duration_since(Instant::now());
         let poll_duration = remaining.min(Duration::from_millis(100));
         if let Some(event) = iter.recv_timeout(poll_duration) {
-            if event.speaker_id == *speaker_id && event.property_key == property_key {
+            if event.speaker_id == *speaker_id && event.property_key() == property_key {
                 return Some(event);
             }
         }
@@ -162,11 +162,11 @@ fn drain_events(
         let remaining = deadline.saturating_duration_since(Instant::now());
         let poll = remaining.min(Duration::from_millis(100));
         if let Some(event) = iter.recv_timeout(poll) {
-            if event.property_key == property_key {
+            if event.property_key() == property_key {
                 received += 1;
                 eprintln!(
                     "  [event] {} for {} ({}/{})",
-                    event.property_key,
+                    event.property_key(),
                     event.speaker_id.as_str(),
                     received,
                     count
@@ -538,7 +538,8 @@ fn test_playback_state_transitions() -> Result<(), Box<dyn std::error::Error>> {
                     let remaining = deadline.saturating_duration_since(Instant::now());
                     let poll = remaining.min(Duration::from_millis(100));
                     if let Some(event) = iter.recv_timeout(poll) {
-                        if event.speaker_id == speaker.id && event.property_key == "playback_state"
+                        if event.speaker_id == speaker.id
+                            && event.property_key() == "playback_state"
                         {
                             let cached = speaker.playback_state.get().unwrap();
                             eprintln!("  Event received, state: {cached:?}");

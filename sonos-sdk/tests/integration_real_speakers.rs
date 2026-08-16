@@ -434,13 +434,14 @@ fn test_event_integration() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(event) = iter.recv_timeout(Duration::from_millis(100)) {
             eprintln!(
                 "📡 Received event: {} for speaker {}",
-                event.property_key, event.speaker_id
+                event.property_key(),
+                event.speaker_id
             );
-            if event.property_key == "volume" {
+            if event.property_key() == "volume" {
                 volume_event_received = true;
                 eprintln!(
                     "✅ Volume event received via system.iter(): {}",
-                    event.property_key
+                    event.property_key()
                 );
                 break;
             }
@@ -472,11 +473,11 @@ fn test_event_integration() -> Result<(), Box<dyn std::error::Error>> {
 
     while std::time::Instant::now() < deadline {
         if let Some(event) = iter.recv_timeout(Duration::from_millis(100)) {
-            if event.property_key == "volume" {
+            if event.property_key() == "volume" {
                 restore_event_received = true;
                 eprintln!(
                     "✅ Restore event received via system.iter(): {}",
-                    event.property_key
+                    event.property_key()
                 );
                 break;
             }

@@ -9,7 +9,6 @@ use std::thread::{self, JoinHandle};
 
 use parking_lot::RwLock;
 
-use sonos_api::Service;
 use sonos_event_manager::SonosEventManager;
 use sonos_stream::events::{EnrichedEvent, EventData};
 
@@ -18,7 +17,9 @@ use sonos_api::ServiceScope;
 use crate::decoder::{decode_event, decode_topology_event, PropertyChange, TopologyChanges};
 use crate::model::SpeakerId;
 use crate::property::{GroupMembership, Property, Scope};
-use crate::state::{is_pair_watched, ChangeEvent, StateStore, WatchCounts};
+use crate::state::{
+    is_pair_watched, ChangeEvent, ChangeSource, StateStore, WatchCounts, WriteStamp,
+};
 
 /// Spawns the state event worker thread
 ///
@@ -229,7 +230,16 @@ fn handle_event(
             resolve_group_members(&s, &speaker_id)
         };
         if !members.is_empty() {
-            notify_group_members(watched, event_tx, &members, &decoded.changes);
+            // A notification, not a write, so nothing is ordered against this
+            // stamp — but it is still an event-sourced observation and is
+            // labelled as one.
+            notify_group_members(
+                watched,
+                event_tx,
+                &members,
+                &decoded.changes,
+                WriteStamp::now(ChangeSource::Event),
+            );
         }
     }
 }
@@ -279,6 +289,11 @@ fn apply_topology_changes(
         return;
     }
 
+    // One stamp for the whole snapshot: every membership in a single topology
+    // event was observed at the same moment, so they must not be able to order
+    // against each other.
+    let stamp = WriteStamp::now(ChangeSource::Event);
+
     // Apply all changes within a single write lock
     let (membership_changes, ip_updates) = {
         let mut store = store.write();
@@ -296,11 +311,14 @@ fn apply_topology_changes(
             store.add_group(group);
         }
 
-        // 3. Update GroupMembership for each speaker and track which ones changed
+        // 3. Update GroupMembership for each speaker and track which ones
+        //    changed. The membership value is kept alongside the flag because
+        //    the change event now carries it, and re-reading it afterwards would
+        //    race a subsequent topology event.
         let mut changed_memberships = Vec::new();
         for (speaker_id, membership) in changes.memberships {
-            let changed = store.set(&speaker_id, membership);
-            changed_memberships.push((speaker_id, changed));
+            let outcome = store.set(&speaker_id, membership.clone(), stamp);
+            changed_memberships.push((speaker_id, outcome, membership));
         }
 
         // 4. Update boot_seq for each speaker
@@ -342,16 +360,16 @@ fn apply_topology_changes(
     // Emit change events for watched properties (outside write locks)
     let watched_set = watched.read();
 
-    for (speaker_id, changed) in membership_changes {
-        if changed && is_pair_watched(&watched_set, &speaker_id, GroupMembership::KEY) {
+    for (speaker_id, outcome, membership) in membership_changes {
+        if outcome.changed() && is_pair_watched(&watched_set, &speaker_id, GroupMembership::KEY) {
             tracing::debug!(
                 "GroupMembership changed for {}, emitting event",
                 speaker_id.as_str()
             );
             let _ = event_tx.send(ChangeEvent::new(
                 speaker_id,
-                GroupMembership::KEY,
-                Service::ZoneGroupTopology,
+                PropertyChange::GroupMembership(membership),
+                stamp,
             ));
         }
     }
@@ -381,13 +399,19 @@ fn resolve_group_members(store: &StateStore, speaker_id: &SpeakerId) -> Vec<Spea
 }
 
 /// Notify group members who are watching speaker-scoped properties that changed
-/// on the coordinator. Only emits ChangeEvents — no data is copied. Members
-/// read the coordinator's value at read time via `StateStore::get_resolved()`.
+/// on the coordinator.
+///
+/// Nothing is written to the members' bags — the coordinator's single stored
+/// value stays the only copy, and a member's `get_property` still resolves to it
+/// via `StateStore::get_resolved()`. What the member now receives is the
+/// coordinator's value *on the event*, which is the same value it would resolve
+/// to, delivered without a second lookup.
 fn notify_group_members(
     watched: &Arc<RwLock<WatchCounts>>,
     event_tx: &mpsc::Sender<ChangeEvent>,
     members: &[SpeakerId],
     changes: &[PropertyChange],
+    stamp: WriteStamp,
 ) {
     let watched_set = watched.read();
     for member_id in members {
@@ -401,7 +425,7 @@ fn notify_group_members(
                         key
                     );
                     let _ =
-                        event_tx.send(ChangeEvent::new(member_id.clone(), key, change.service()));
+                        event_tx.send(ChangeEvent::new(member_id.clone(), change.clone(), stamp));
                 }
             }
         }
@@ -417,14 +441,17 @@ fn apply_property_change(
     change: &PropertyChange,
 ) {
     let key = change.key();
-    let service = change.service();
 
-    let changed = {
+    // Stamped once, before the write, and reused for the event, so the stored
+    // entry and the notification agree on when this value was observed.
+    let stamp = WriteStamp::now(ChangeSource::Event);
+
+    let outcome = {
         let mut store = store.write();
-        change.apply(&mut store, speaker_id)
+        change.apply(&mut store, speaker_id, stamp)
     };
 
-    if changed {
+    if outcome.changed() {
         let is_watched = is_pair_watched(&watched.read(), speaker_id, key);
 
         if is_watched {
@@ -433,7 +460,7 @@ fn apply_property_change(
                 key,
                 speaker_id.as_str()
             );
-            let _ = event_tx.send(ChangeEvent::new(speaker_id.clone(), key, service));
+            let _ = event_tx.send(ChangeEvent::new(speaker_id.clone(), change.clone(), stamp));
         }
     }
 }
@@ -450,6 +477,11 @@ mod tests {
     /// `catch_unwind` guard can be tested without a permanent production hook.
     pub(super) const PANIC_TRIGGER_IP: IpAddr =
         IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, 255));
+
+    /// An event-sourced stamp for "now", for tests that only need a valid one.
+    fn test_stamp() -> WriteStamp {
+        WriteStamp::now(ChangeSource::Event)
+    }
 
     #[test]
     fn test_apply_property_change_volume() {
@@ -531,8 +563,8 @@ mod tests {
         // Event should be emitted
         let event = rx.try_recv().unwrap();
         assert_eq!(event.speaker_id, speaker_id);
-        assert_eq!(event.property_key, Volume::KEY);
-        assert_eq!(event.service, Service::RenderingControl);
+        assert_eq!(event.property_key(), Volume::KEY);
+        assert_eq!(event.service(), Service::RenderingControl);
     }
 
     // ========================================================================
@@ -795,8 +827,8 @@ mod tests {
         // Should receive event for speaker1 (watched) but not speaker2 (not watched)
         let event = rx.try_recv().unwrap();
         assert_eq!(event.speaker_id, speaker1);
-        assert_eq!(event.property_key, GroupMembership::KEY);
-        assert_eq!(event.service, Service::ZoneGroupTopology);
+        assert_eq!(event.property_key(), GroupMembership::KEY);
+        assert_eq!(event.service(), Service::ZoneGroupTopology);
 
         // No more events (speaker2 is not watched)
         assert!(rx.try_recv().is_err());
@@ -947,7 +979,7 @@ mod tests {
                 speaker1.clone(),
                 vec![speaker1.clone()],
             ));
-            s.set_group(&group_id, crate::property::GroupVolume(42));
+            s.set_group(&group_id, crate::property::GroupVolume(42), test_stamp());
         }
 
         // Watch GroupMembership so we can also assert nothing is emitted
@@ -1041,7 +1073,7 @@ mod tests {
         // The valid event was still processed and its notification delivered
         let event = rx.try_recv().unwrap();
         assert_eq!(event.speaker_id, speaker_id);
-        assert_eq!(event.property_key, Volume::KEY);
+        assert_eq!(event.property_key(), Volume::KEY);
         assert_eq!(store.read().get::<Volume>(&speaker_id), Some(Volume(37)));
     }
 
@@ -1062,7 +1094,11 @@ mod tests {
                 "Living Room",
                 "192.168.1.101",
             ));
-            s.set(&speaker1, GroupMembership::new(group_id.clone(), true));
+            s.set(
+                &speaker1,
+                GroupMembership::new(group_id.clone(), true),
+                test_stamp(),
+            );
         }
 
         // Watch the property
@@ -1144,16 +1180,27 @@ mod tests {
             let s = store.read();
             resolve_group_members(&s, &coordinator)
         };
-        notify_group_members(&watched, &tx, &members, &changes);
+        notify_group_members(&watched, &tx, &members, &changes, test_stamp());
 
         // Both coordinator and member should have received ChangeEvents
         let event1 = rx.try_recv().unwrap();
         assert_eq!(event1.speaker_id, coordinator);
-        assert_eq!(event1.property_key, PlaybackState::KEY);
+        assert_eq!(event1.property_key(), PlaybackState::KEY);
 
         let event2 = rx.try_recv().unwrap();
         assert_eq!(event2.speaker_id, member);
-        assert_eq!(event2.property_key, PlaybackState::KEY);
+        assert_eq!(event2.property_key(), PlaybackState::KEY);
+
+        // The member's event carries the coordinator's value, so a member-side
+        // consumer needs no store lookup and no coordinator resolution to react.
+        assert!(
+            matches!(
+                event2.change,
+                PropertyChange::PlaybackState(PlaybackState::Playing)
+            ),
+            "member notification must carry the coordinator's value, got {:?}",
+            event2.change
+        );
 
         // No more events
         assert!(rx.try_recv().is_err());
@@ -1269,7 +1316,7 @@ mod tests {
         // Only the coordinator gets the event.
         let event = rx.try_recv().unwrap();
         assert_eq!(event.speaker_id, coordinator);
-        assert_eq!(event.property_key, Volume::KEY);
+        assert_eq!(event.property_key(), Volume::KEY);
 
         // No event for the member
         assert!(rx.try_recv().is_err());
@@ -1330,12 +1377,12 @@ mod tests {
         let changes = vec![PropertyChange::PlaybackState(PlaybackState::Playing)];
         let members = vec![member_watched.clone(), member_unwatched.clone()];
 
-        notify_group_members(&watched, &tx, &members, &changes);
+        notify_group_members(&watched, &tx, &members, &changes, test_stamp());
 
         // Only the watched member should get a notification
         let event = rx.try_recv().unwrap();
         assert_eq!(event.speaker_id, member_watched);
-        assert_eq!(event.property_key, PlaybackState::KEY);
+        assert_eq!(event.property_key(), PlaybackState::KEY);
 
         // No event for the unwatched member
         assert!(rx.try_recv().is_err());

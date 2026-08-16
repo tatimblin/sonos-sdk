@@ -11,14 +11,14 @@
 //! let manager = StateManager::new()?;
 //! // ... add devices and watch properties ...
 //!
-//! // Blocking iteration
+//! // Blocking iteration — the new value rides along on the event
 //! for event in manager.iter() {
-//!     println!("{} changed on {}", event.property_key, event.speaker_id);
+//!     println!("{} changed on {}: {:?}", event.property_key(), event.speaker_id, event.change);
 //! }
 //!
 //! // Non-blocking check
 //! for event in manager.iter().try_iter() {
-//!     println!("{} changed", event.property_key);
+//!     println!("{} changed", event.property_key());
 //! }
 //!
 //! // With timeout
@@ -54,7 +54,7 @@ impl ChangeIterator {
         if let Some(ref e) = event {
             tracing::trace!(
                 "ChangeIterator::recv yielded {} for {}",
-                e.property_key,
+                e.property_key(),
                 e.speaker_id.as_str()
             );
         }
@@ -69,7 +69,7 @@ impl ChangeIterator {
         if let Some(ref e) = event {
             tracing::trace!(
                 "ChangeIterator::recv_timeout yielded {} for {}",
-                e.property_key,
+                e.property_key(),
                 e.speaker_id.as_str()
             );
         }
@@ -84,7 +84,7 @@ impl ChangeIterator {
         if let Some(ref e) = event {
             tracing::trace!(
                 "ChangeIterator::try_recv yielded {} for {}",
-                e.property_key,
+                e.property_key(),
                 e.speaker_id.as_str()
             );
         }
@@ -152,18 +152,19 @@ impl<'a> Iterator for TimeoutIter<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::decoder::PropertyChange;
     use crate::model::SpeakerId;
-    use sonos_api::Service;
+    use crate::property::Volume;
+    use crate::state::{ChangeSource, WriteStamp};
     use std::thread;
     use std::time::Instant;
 
     fn create_test_event() -> ChangeEvent {
-        ChangeEvent {
-            speaker_id: SpeakerId::new("test-speaker"),
-            property_key: "volume",
-            service: Service::RenderingControl,
-            timestamp: Instant::now(),
-        }
+        ChangeEvent::new(
+            SpeakerId::new("test-speaker"),
+            PropertyChange::Volume(Volume::new(42)),
+            WriteStamp::now(ChangeSource::Event),
+        )
     }
 
     #[test]
@@ -188,7 +189,7 @@ mod tests {
 
         // Should receive the event
         let event = iter.try_recv().unwrap();
-        assert_eq!(event.property_key, "volume");
+        assert_eq!(event.property_key(), "volume");
         assert_eq!(event.speaker_id.as_str(), "test-speaker");
 
         // Should return None now
@@ -262,7 +263,7 @@ mod tests {
 
         // Should block and receive
         let event = iter.recv().unwrap();
-        assert_eq!(event.property_key, "volume");
+        assert_eq!(event.property_key(), "volume");
     }
 
     #[test]

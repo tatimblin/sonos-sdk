@@ -39,6 +39,7 @@ use sonos_discovery::Device;
 use sonos_event_manager::{SonosEventManager, WatchRegistry};
 use tracing::info;
 
+use crate::decoder::PropertyChange;
 use crate::event_worker::spawn_state_event_worker;
 use crate::iter::ChangeIterator;
 use crate::model::{GroupId, SpeakerId, SpeakerInfo};
@@ -55,30 +56,171 @@ pub type EventInitFn = Arc<
 >;
 
 // ============================================================================
+// Write provenance - ChangeSource / WriteStamp / WriteOutcome
+// ============================================================================
+
+/// Where a property value came from.
+///
+/// Recorded on every write and carried on every [`ChangeEvent`], for two
+/// reasons: it breaks ties between writes that share an `Instant` (the variant
+/// order below is the tie-break order, most authoritative first), and it lets a
+/// consumer tell a device-pushed value apart from one this process just wrote
+/// optimistically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangeSource {
+    /// Decoded from a UPnP NOTIFY, or from a poll standing in for one.
+    ///
+    /// The most authoritative source: the device volunteered this value, so it
+    /// was true at the moment it was sent.
+    Event,
+    /// Written locally immediately after a control action succeeded.
+    ///
+    /// The device acknowledged the action, so the value is true as of the
+    /// acknowledgement — but it is our inference, not the device's report.
+    LocalAction,
+    /// Returned by an explicit `fetch()` SOAP read.
+    ///
+    /// The least authoritative, because a `fetch()` observes the device at
+    /// *request* time but lands at *response* time — see [`WriteStamp`].
+    Fetch,
+}
+
+impl ChangeSource {
+    /// Tie-break rank for writes bearing the same `observed_at`.
+    ///
+    /// Only consulted on an exact `Instant` collision, which in practice means
+    /// two writes derived from one observation. Higher wins.
+    fn rank(self) -> u8 {
+        match self {
+            ChangeSource::Event => 2,
+            ChangeSource::LocalAction => 1,
+            ChangeSource::Fetch => 0,
+        }
+    }
+}
+
+/// When a value was *observed*, and by what.
+///
+/// The critical word is **observed**, not *written*. A `fetch()` reads the
+/// device at request time but only calls `set_property` when the SOAP response
+/// comes back, which can be hundreds of milliseconds later. If the stamp were
+/// taken at write time, a slow `fetch()` would always look newer than an event
+/// that arrived while it was in flight, and would overwrite a fresher value
+/// with a stale one — the speaker would visibly snap back to its old volume.
+///
+/// So the caller stamps the moment the observation was made
+/// ([`WriteStamp::observed_at`]) and the store rejects any write that is older
+/// than the one already recorded. Event and local-action writes have no such
+/// gap and use [`WriteStamp::now`].
+#[derive(Debug, Clone, Copy)]
+pub struct WriteStamp {
+    /// When the underlying observation was made — *not* when it was written.
+    pub observed_at: Instant,
+    /// What produced the observation.
+    pub source: ChangeSource,
+}
+
+impl WriteStamp {
+    /// Stamp an observation made right now.
+    ///
+    /// Correct for [`ChangeSource::Event`] and [`ChangeSource::LocalAction`],
+    /// where observation and write happen in the same breath.
+    pub fn now(source: ChangeSource) -> Self {
+        Self {
+            observed_at: Instant::now(),
+            source,
+        }
+    }
+
+    /// Stamp an observation made at a known earlier instant.
+    ///
+    /// Use this for `fetch()`: pass the `Instant` captured *before* the SOAP
+    /// request, so a response that lands after a newer event loses to it.
+    pub fn observed_at(source: ChangeSource, observed_at: Instant) -> Self {
+        Self {
+            observed_at,
+            source,
+        }
+    }
+
+    /// Whether this observation is at least as recent as `prev`.
+    ///
+    /// Strictly newer wins outright. On an exact `Instant` collision the more
+    /// authoritative [`ChangeSource`] wins, so an event cannot be displaced by
+    /// a `fetch()` that happens to share its timestamp.
+    fn supersedes(&self, prev: &WriteStamp) -> bool {
+        self.observed_at > prev.observed_at
+            || (self.observed_at == prev.observed_at && self.source.rank() >= prev.source.rank())
+    }
+}
+
+/// Result of attempting to write a property.
+///
+/// Three outcomes rather than the previous `bool`, because "the value is
+/// different" and "this write was allowed to happen at all" are separate
+/// questions once writes are ordered. Only `Changed` emits a notification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteOutcome {
+    /// Accepted, and the stored value is different than before.
+    Changed,
+    /// Accepted, but the value was already what was written.
+    Unchanged,
+    /// Rejected: a strictly newer observation is already stored.
+    Stale,
+}
+
+impl WriteOutcome {
+    /// Whether this write changed the stored value (and so should notify).
+    pub fn changed(self) -> bool {
+        matches!(self, WriteOutcome::Changed)
+    }
+}
+
+// ============================================================================
 // ChangeEvent - for iter()
 // ============================================================================
 
-/// A change event emitted when a watched property changes
+/// A change event emitted when a watched property changes.
+///
+/// Carries the new value as a typed [`PropertyChange`], so a consumer draining
+/// a backlog observes *every* value the property passed through rather than
+/// whatever the store happens to hold by the time it looks. That distinction
+/// matters: a `Playing -> Transitioning -> Playing` sequence is three queued
+/// events but only one final store value, and re-reading the store would make
+/// the middle state — and the fact that anything moved at all — invisible.
+///
+/// `property_key()` and `service()` are derived from the payload rather than
+/// stored beside it, so the two cannot drift apart.
 #[derive(Debug, Clone)]
 pub struct ChangeEvent {
     /// Speaker or entity that changed
     pub speaker_id: SpeakerId,
-    /// Property key that changed
-    pub property_key: &'static str,
-    /// Service the property belongs to
-    pub service: Service,
-    /// When the change occurred
+    /// The new value, typed
+    pub change: PropertyChange,
+    /// What produced this value
+    pub source: ChangeSource,
+    /// When the change was observed
     pub timestamp: Instant,
 }
 
 impl ChangeEvent {
-    pub fn new(speaker_id: SpeakerId, property_key: &'static str, service: Service) -> Self {
+    pub fn new(speaker_id: SpeakerId, change: PropertyChange, stamp: WriteStamp) -> Self {
         Self {
             speaker_id,
-            property_key,
-            service,
-            timestamp: Instant::now(),
+            change,
+            source: stamp.source,
+            timestamp: stamp.observed_at,
         }
+    }
+
+    /// The key of the property that changed.
+    pub fn property_key(&self) -> &'static str {
+        self.change.key()
+    }
+
+    /// The UPnP service the changed property belongs to.
+    pub fn service(&self) -> Service {
+        self.change.service()
     }
 }
 
@@ -333,28 +475,38 @@ impl StateStore {
         self.speaker_props.get(speaker_id)?.get::<P>()
     }
 
-    pub(crate) fn set<P: Property>(&mut self, speaker_id: &SpeakerId, value: P) -> bool {
+    pub(crate) fn set<P: Property>(
+        &mut self,
+        speaker_id: &SpeakerId,
+        value: P,
+        stamp: WriteStamp,
+    ) -> WriteOutcome {
         let bag = self
             .speaker_props
             .entry(speaker_id.clone())
             .or_insert_with(PropertyBag::new);
-        bag.set(value)
+        bag.set(value, stamp)
     }
 
     pub(crate) fn get_group<P: Property>(&self, group_id: &GroupId) -> Option<P> {
         self.group_props.get(group_id)?.get::<P>()
     }
 
-    pub(crate) fn set_group<P: Property>(&mut self, group_id: &GroupId, value: P) -> bool {
+    pub(crate) fn set_group<P: Property>(
+        &mut self,
+        group_id: &GroupId,
+        value: P,
+        stamp: WriteStamp,
+    ) -> WriteOutcome {
         let bag = self
             .group_props
             .entry(group_id.clone())
             .or_insert_with(PropertyBag::new);
-        bag.set(value)
+        bag.set(value, stamp)
     }
 
-    fn set_system<P: Property>(&mut self, value: P) -> bool {
-        self.system_props.set(value)
+    fn set_system<P: Property>(&mut self, value: P, stamp: WriteStamp) -> WriteOutcome {
+        self.system_props.set(value, stamp)
     }
 
     /// Update a speaker's IP address in the store. Returns the old IP if changed.
@@ -393,12 +545,19 @@ impl StateStore {
 pub(crate) struct PropertyBag {
     /// Map<TypeId, Box<dyn Any>> where Any is the property value
     values: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
+    /// Provenance of the value currently stored under each `TypeId`.
+    ///
+    /// Kept in a sibling map rather than boxed alongside the value so the
+    /// existing type-erased `values` layout, and its `downcast_ref` reads, stay
+    /// exactly as they were.
+    stamps: HashMap<TypeId, WriteStamp>,
 }
 
 impl PropertyBag {
     pub(crate) fn new() -> Self {
         Self {
             values: HashMap::new(),
+            stamps: HashMap::new(),
         }
     }
 
@@ -410,18 +569,44 @@ impl PropertyBag {
             .cloned()
     }
 
-    fn set<P: Property>(&mut self, value: P) -> bool {
+    /// Write `value` if `stamp` is not older than what is already stored.
+    ///
+    /// The staleness check comes *first*: a stale write is rejected outright,
+    /// before the equality comparison, so it can neither change the value nor
+    /// advance the stamp. Without that ordering a late `fetch()` response would
+    /// overwrite a newer event-derived value.
+    fn set<P: Property>(&mut self, value: P, stamp: WriteStamp) -> WriteOutcome {
         let type_id = TypeId::of::<P>();
+
+        if let Some(prev) = self.stamps.get(&type_id) {
+            if !stamp.supersedes(prev) {
+                tracing::debug!(
+                    "Rejecting stale {:?} write for {}: observed {:?} before the stored {:?} write",
+                    stamp.source,
+                    P::KEY,
+                    stamp.observed_at,
+                    prev.source,
+                );
+                return WriteOutcome::Stale;
+            }
+        }
+
         let current = self
             .values
             .get(&type_id)
             .and_then(|boxed| boxed.downcast_ref::<P>());
+        let changed = current != Some(&value);
 
-        if current != Some(&value) {
+        // Record the stamp even when the value is unchanged: the observation
+        // *did* happen and is now the most recent one, so a later write must be
+        // ordered against it rather than against some older observation.
+        self.stamps.insert(type_id, stamp);
+
+        if changed {
             self.values.insert(type_id, Box::new(value));
-            true
+            WriteOutcome::Changed
         } else {
-            false
+            WriteOutcome::Unchanged
         }
     }
 }
@@ -675,9 +860,12 @@ impl StateManager {
     /// // First, watch some properties
     /// speaker.volume.watch()?;
     ///
-    /// // Then iterate over changes
+    /// // Then iterate over changes — the new value rides along on the event
     /// for event in manager.iter() {
-    ///     println!("Changed: {} on {}", event.property_key, event.speaker_id);
+    ///     match &event.change {
+    ///         PropertyChange::Volume(v) => println!("volume -> {}%", v.value()),
+    ///         other => println!("{} changed", other.key()),
+    ///     }
     /// }
     /// ```
     pub fn iter(&self) -> ChangeIterator {
@@ -713,27 +901,51 @@ impl StateManager {
     /// The notification is still keyed on the *requesting* speaker, so a member
     /// watching the property is woken by its own write. The coordinator's own
     /// watchers are reached by the worker's group fan-out on the next event.
+    ///
+    /// Stamped [`ChangeSource::LocalAction`] as of now. Use
+    /// [`Self::set_property_stamped`] for a `fetch()` result, whose observation
+    /// predates the write by a full network round trip.
     pub fn set_property<P: SonosProperty>(&self, speaker_id: &SpeakerId, value: P) {
+        self.set_property_stamped(
+            speaker_id,
+            value,
+            WriteStamp::now(ChangeSource::LocalAction),
+        );
+    }
+
+    /// Set a property value with explicit write provenance.
+    ///
+    /// Rejected without effect if `stamp` is older than the observation already
+    /// stored — see [`WriteStamp`]. Returns the outcome so a caller can tell a
+    /// rejected write from an accepted one.
+    pub fn set_property_stamped<P: SonosProperty>(
+        &self,
+        speaker_id: &SpeakerId,
+        value: P,
+        stamp: WriteStamp,
+    ) -> WriteOutcome {
         // Resolve and write under one lock: taking the coordinator from a
         // separate read would leave a window in which a topology event regroups
         // the speaker and the write lands in the wrong bag.
-        let (target_id, changed) = {
+        let (target_id, outcome) = {
             let mut store = self.store.write();
             let target_id = store.resolve_write_target::<P>(speaker_id);
-            let changed = store.set::<P>(&target_id, value);
-            (target_id, changed)
+            let outcome = store.set::<P>(&target_id, value.clone(), stamp);
+            (target_id, outcome)
         };
 
-        if changed {
+        if outcome.changed() {
             // Key the notification on the speaker the caller asked about, so a
             // member watching the property is woken by its own write...
-            self.maybe_emit_change(speaker_id, P::KEY, P::SERVICE);
+            self.maybe_emit_change(speaker_id, &value, stamp);
             // ...and on the coordinator too when they differ, since it is the
             // coordinator's bag that actually changed.
             if target_id != *speaker_id {
-                self.maybe_emit_change(&target_id, P::KEY, P::SERVICE);
+                self.maybe_emit_change(&target_id, &value, stamp);
             }
         }
+
+        outcome
     }
 
     /// Set a group property value
@@ -741,19 +953,42 @@ impl StateManager {
     /// Updates the group property value in the store and emits a change event
     /// if the property is being watched (keyed on the coordinator's speaker ID).
     /// Used by the SDK layer to store group-scoped values fetched via API calls.
+    ///
+    /// Stamped [`ChangeSource::LocalAction`]; see
+    /// [`Self::set_group_property_stamped`] for `fetch()` results.
     pub fn set_group_property<P: SonosProperty>(&self, group_id: &GroupId, value: P) {
-        let coordinator_id = {
+        self.set_group_property_stamped(
+            group_id,
+            value,
+            WriteStamp::now(ChangeSource::LocalAction),
+        );
+    }
+
+    /// Set a group property value with explicit write provenance.
+    ///
+    /// Rejected without effect if `stamp` is older than the observation already
+    /// stored — see [`WriteStamp`].
+    pub fn set_group_property_stamped<P: SonosProperty>(
+        &self,
+        group_id: &GroupId,
+        value: P,
+        stamp: WriteStamp,
+    ) -> WriteOutcome {
+        let (outcome, coordinator_id) = {
             let mut store = self.store.write();
-            let changed = store.set_group::<P>(group_id, value);
-            if !changed {
-                return;
+            let outcome = store.set_group::<P>(group_id, value.clone(), stamp);
+            if !outcome.changed() {
+                return outcome;
             }
-            store.groups.get(group_id).map(|g| g.coordinator_id.clone())
+            let coordinator_id = store.groups.get(group_id).map(|g| g.coordinator_id.clone());
+            (outcome, coordinator_id)
         };
 
         if let Some(coordinator_id) = coordinator_id {
-            self.maybe_emit_change(&coordinator_id, P::KEY, P::SERVICE);
+            self.maybe_emit_change(&coordinator_id, &value, stamp);
         }
+
+        outcome
     }
 
     /// Register a property as watched (called by PropertyHandle::watch)
@@ -832,18 +1067,34 @@ impl StateManager {
     }
 
     /// Emit a change event if the property is being watched
-    fn maybe_emit_change(
+    fn maybe_emit_change<P: SonosProperty>(
         &self,
         speaker_id: &SpeakerId,
-        property_key: &'static str,
-        service: Service,
+        value: &P,
+        stamp: WriteStamp,
     ) {
-        let is_watched = is_pair_watched(&self.watched.read(), speaker_id, property_key);
-
-        if is_watched {
-            let event = ChangeEvent::new(speaker_id.clone(), property_key, service);
-            let _ = self.event_tx.send(event);
+        let is_watched = is_pair_watched(&self.watched.read(), speaker_id, P::KEY);
+        if !is_watched {
+            return;
         }
+
+        // A property with no `PropertyChange` variant cannot be carried in an
+        // event. That is only `Topology` today, which is not watchable through
+        // the SDK, so this is unreachable in practice — but it is a silent
+        // dropped notification if a new watchable property forgets to implement
+        // `to_change`, so it warns rather than returning quietly.
+        let Some(change) = value.to_change() else {
+            tracing::warn!(
+                "Not emitting a change event for {}: no PropertyChange variant \
+                 (SonosProperty::to_change returned None)",
+                P::KEY
+            );
+            return;
+        };
+
+        let _ = self
+            .event_tx
+            .send(ChangeEvent::new(speaker_id.clone(), change, stamp));
     }
 
     /// Initialize from topology data
@@ -855,7 +1106,10 @@ impl StateManager {
         for group in &topology.groups {
             store.add_group(group.clone());
         }
-        store.set_system(topology);
+        // `LocalAction`: topology supplied by the caller (a poll result or a
+        // test fixture), not decoded from a NOTIFY. Nothing orders against the
+        // system bag today, but it is stamped for consistency.
+        store.set_system(topology, WriteStamp::now(ChangeSource::LocalAction));
     }
 
     /// Check if initialized with any speakers
@@ -1126,6 +1380,11 @@ mod tests {
     use crate::property::{GroupVolume, PlaybackState, Volume};
     use sonos_api::Service;
 
+    /// An event-sourced stamp for "now", for tests that only need a valid one.
+    fn test_stamp() -> WriteStamp {
+        WriteStamp::now(ChangeSource::Event)
+    }
+
     #[test]
     fn test_state_manager_creation() {
         let manager = StateManager::new().unwrap();
@@ -1234,7 +1493,7 @@ mod tests {
 
         let event = event.unwrap();
         assert_eq!(event.speaker_id.as_str(), "RINCON_123");
-        assert_eq!(event.property_key, "volume");
+        assert_eq!(event.property_key(), "volume");
     }
 
     #[test]
@@ -1277,8 +1536,8 @@ mod tests {
 
         let event = event.unwrap();
         assert_eq!(event.speaker_id.as_str(), "RINCON_123");
-        assert_eq!(event.property_key, "group_volume");
-        assert_eq!(event.service, Service::GroupRenderingControl);
+        assert_eq!(event.property_key(), "group_volume");
+        assert_eq!(event.service(), Service::GroupRenderingControl);
     }
 
     #[test]
@@ -2043,7 +2302,7 @@ mod tests {
         ));
 
         // Set PlaybackState only on coordinator
-        store.set(&coordinator, PlaybackState::Playing);
+        store.set(&coordinator, PlaybackState::Playing, test_stamp());
 
         // get_resolved on member should return coordinator's value (PerCoordinator + Speaker scope)
         let resolved: Option<PlaybackState> = store.get_resolved(&member);
@@ -2091,7 +2350,7 @@ mod tests {
         ));
 
         // Set Volume on coordinator only (PerSpeaker service)
-        store.set(&coordinator, Volume::new(80));
+        store.set(&coordinator, Volume::new(80), test_stamp());
 
         // get_resolved on member should NOT resolve to coordinator for PerSpeaker
         let resolved: Option<Volume> = store.get_resolved(&member);
@@ -2170,5 +2429,166 @@ mod tests {
         assert_eq!(stored.len(), 2);
         assert!(stored.contains(&SpeakerId::new("RINCON_SAT1")));
         assert!(stored.contains(&SpeakerId::new("RINCON_SAT2")));
+    }
+
+    // ========================================================================
+    // Change events carry values / monotonic write ordering
+    // ========================================================================
+
+    /// The headline win: a queued burst is fully observable.
+    ///
+    /// `Playing -> Transitioning -> Playing` is three events but only one final
+    /// store value. A consumer that drained the queue and re-read the store saw
+    /// `Playing` three times — the `Transitioning` state, and the fact that
+    /// anything moved at all, were unrecoverable. Carrying the value on the
+    /// event makes the whole sequence visible.
+    ///
+    /// Deliberately does *not* assert on the store: the store holding the final
+    /// `Playing` is correct and unchanged. The point is that the channel now
+    /// preserves what the store cannot.
+    #[test]
+    fn test_queued_events_preserve_every_intermediate_value() {
+        let manager = StateManager::new().unwrap();
+        manager
+            .add_devices(vec![Device {
+                id: "RINCON_QUEUE".to_string(),
+                name: "Queue Test".to_string(),
+                room_name: "Test".to_string(),
+                ip_address: "192.0.2.10".to_string(),
+                port: 1400,
+                model_name: "Sonos One".to_string(),
+            }])
+            .unwrap();
+
+        let speaker_id = SpeakerId::new("RINCON_QUEUE");
+        manager.register_watch(&speaker_id, PlaybackState::KEY);
+
+        // Queue all three transitions *before* reading any of them, which is
+        // exactly the render-loop-behind-by-a-frame case.
+        manager.set_property(&speaker_id, PlaybackState::Playing);
+        manager.set_property(&speaker_id, PlaybackState::Transitioning);
+        manager.set_property(&speaker_id, PlaybackState::Playing);
+
+        let iter = manager.iter();
+        let observed: Vec<PlaybackState> = iter
+            .try_iter()
+            .filter_map(|e| match e.change {
+                PropertyChange::PlaybackState(s) => Some(s),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(
+            observed,
+            vec![
+                PlaybackState::Playing,
+                PlaybackState::Transitioning,
+                PlaybackState::Playing,
+            ],
+            "every queued value must be observable from the event stream"
+        );
+
+        // And the store still holds only the final value — which is why the
+        // event payload is the only way to see the middle one.
+        assert_eq!(
+            manager.get_property::<PlaybackState>(&speaker_id),
+            Some(PlaybackState::Playing)
+        );
+    }
+
+    /// A slow `fetch()` must not overwrite a newer event-derived value.
+    ///
+    /// Simulates the real race by timestamp rather than by threads: the fetch
+    /// observation is stamped *before* the event's, as it would be if the SOAP
+    /// request were issued first and its response arrived second.
+    #[test]
+    fn test_stale_fetch_does_not_clobber_newer_event_value() {
+        let manager = StateManager::new().unwrap();
+        manager
+            .add_devices(vec![Device {
+                id: "RINCON_RACE".to_string(),
+                name: "Race Test".to_string(),
+                room_name: "Test".to_string(),
+                ip_address: "192.0.2.11".to_string(),
+                port: 1400,
+                model_name: "Sonos One".to_string(),
+            }])
+            .unwrap();
+
+        let speaker_id = SpeakerId::new("RINCON_RACE");
+
+        // t0: a fetch is issued (observation made), but its response is still
+        // in flight.
+        let fetch_observed_at = Instant::now();
+
+        // t1: an event arrives and lands first with the newer, correct value.
+        let event_outcome = manager.set_property_stamped(
+            &speaker_id,
+            Volume::new(40),
+            WriteStamp::now(ChangeSource::Event),
+        );
+        assert_eq!(event_outcome, WriteOutcome::Changed);
+
+        // t2: the fetch response finally lands, carrying the *older* reading.
+        let fetch_outcome = manager.set_property_stamped(
+            &speaker_id,
+            Volume::new(10),
+            WriteStamp::observed_at(ChangeSource::Fetch, fetch_observed_at),
+        );
+
+        assert_eq!(
+            fetch_outcome,
+            WriteOutcome::Stale,
+            "a fetch observed before the stored event must be rejected"
+        );
+        assert_eq!(
+            manager.get_property::<Volume>(&speaker_id),
+            Some(Volume::new(40)),
+            "the newer event value must survive the late fetch response"
+        );
+    }
+
+    /// The guard must not reject legitimately newer writes — otherwise the
+    /// store would freeze after its first write and the test above would pass
+    /// for the wrong reason.
+    #[test]
+    fn test_newer_write_is_accepted_after_an_earlier_one() {
+        let manager = StateManager::new().unwrap();
+        manager
+            .add_devices(vec![Device {
+                id: "RINCON_FWD".to_string(),
+                name: "Forward Test".to_string(),
+                room_name: "Test".to_string(),
+                ip_address: "192.0.2.12".to_string(),
+                port: 1400,
+                model_name: "Sonos One".to_string(),
+            }])
+            .unwrap();
+
+        let speaker_id = SpeakerId::new("RINCON_FWD");
+        let early = Instant::now();
+
+        assert_eq!(
+            manager.set_property_stamped(
+                &speaker_id,
+                Volume::new(10),
+                WriteStamp::observed_at(ChangeSource::Fetch, early),
+            ),
+            WriteOutcome::Changed
+        );
+
+        // A later fetch, correctly ordered, wins.
+        assert_eq!(
+            manager.set_property_stamped(
+                &speaker_id,
+                Volume::new(20),
+                WriteStamp::now(ChangeSource::Fetch),
+            ),
+            WriteOutcome::Changed
+        );
+        assert_eq!(
+            manager.get_property::<Volume>(&speaker_id),
+            Some(Volume::new(20))
+        );
     }
 }

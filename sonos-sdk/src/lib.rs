@@ -23,7 +23,11 @@
 //!     // ONLY NOW does the event manager lazily initialize
 //!     let _vol = kitchen.volume.watch()?;
 //!     for event in sonos.iter() {
-//!         println!("Changed: {} on {}", event.property_key, event.speaker_id);
+//!         // The new value arrives with the event — no cache re-read needed
+//!         match &event.change {
+//!             PropertyChange::Volume(v) => println!("volume -> {}%", v.value()),
+//!             other => println!("{} changed on {}", other.key(), event.speaker_id),
+//!         }
 //!     }
 //!
 //!     Ok(())
@@ -93,8 +97,9 @@ pub use sonos_discovery;
 
 // Re-export commonly used types from sonos-state
 pub use sonos_state::{
-    ChangeEvent, ChangeIterator, GroupId, GroupMute, GroupVolume, GroupVolumeChangeable,
-    PlaybackState, SpeakerId, Volume,
+    ChangeEvent, ChangeIterator, ChangeSource, GroupId, GroupMute, GroupVolume,
+    GroupVolumeChangeable, PlaybackState, PropertyChange, SpeakerId, Volume, WriteOutcome,
+    WriteStamp,
 };
 
 // Public modules

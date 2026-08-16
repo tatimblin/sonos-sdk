@@ -569,9 +569,14 @@ impl SonosSystem {
     /// speaker.volume.watch()?;
     /// speaker.playback_state.watch()?;
     ///
-    /// // Then iterate over changes (blocking)
+    /// // Then iterate over changes (blocking). Each event carries the new
+    /// // value, so draining a backlog shows every value the property passed
+    /// // through rather than the latest one repeated.
     /// for event in system.iter() {
-    ///     println!("Changed: {} on {}", event.property_key, event.speaker_id);
+    ///     match &event.change {
+    ///         PropertyChange::Volume(v) => println!("volume -> {}%", v.value()),
+    ///         other => println!("{} changed on {}", other.key(), event.speaker_id),
+    ///     }
     /// }
     /// ```
     pub fn iter(&self) -> sonos_state::ChangeIterator {

@@ -16,7 +16,7 @@ use crate::property::{
     Bass, CurrentTrack, GroupInfo, GroupMembership, GroupMute, GroupVolume, GroupVolumeChangeable,
     Loudness, Mute, PlaybackState, Position, Treble, Volume,
 };
-use crate::state::StateStore;
+use crate::state::{StateStore, WriteOutcome, WriteStamp};
 
 /// Decoded changes from a single event
 #[derive(Debug)]
@@ -47,7 +47,13 @@ pub struct TopologyChanges {
 }
 
 /// A single property change
+///
+/// `#[non_exhaustive]` because this enum is public API (re-exported from
+/// `sonos-sdk`) and gains a variant every time a property is added. Without it,
+/// every consumer `match` would be exhaustive-by-default and adding a property
+/// would be a breaking change; consumers must include a `_ =>` arm.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum PropertyChange {
     Volume(Volume),
     Mute(Mute),
@@ -69,33 +75,39 @@ impl PropertyChange {
     /// Speaker-scoped properties are stored in `speaker_props`,
     /// group-scoped properties resolve speaker→group and store in `group_props`.
     ///
-    /// Returns `true` if the value actually changed.
-    pub fn apply(&self, store: &mut StateStore, speaker_id: &SpeakerId) -> bool {
+    /// Returns the [`WriteOutcome`] — `Changed` only if the value actually
+    /// changed *and* `stamp` was not older than the stored observation.
+    pub fn apply(
+        &self,
+        store: &mut StateStore,
+        speaker_id: &SpeakerId,
+        stamp: WriteStamp,
+    ) -> WriteOutcome {
         match self {
             // Speaker-scoped properties
-            PropertyChange::Volume(v) => store.set(speaker_id, v.clone()),
-            PropertyChange::Mute(v) => store.set(speaker_id, v.clone()),
-            PropertyChange::Bass(v) => store.set(speaker_id, v.clone()),
-            PropertyChange::Treble(v) => store.set(speaker_id, v.clone()),
-            PropertyChange::Loudness(v) => store.set(speaker_id, v.clone()),
-            PropertyChange::PlaybackState(v) => store.set(speaker_id, v.clone()),
-            PropertyChange::Position(v) => store.set(speaker_id, v.clone()),
-            PropertyChange::CurrentTrack(v) => store.set(speaker_id, v.clone()),
-            PropertyChange::GroupMembership(v) => store.set(speaker_id, v.clone()),
+            PropertyChange::Volume(v) => store.set(speaker_id, v.clone(), stamp),
+            PropertyChange::Mute(v) => store.set(speaker_id, v.clone(), stamp),
+            PropertyChange::Bass(v) => store.set(speaker_id, v.clone(), stamp),
+            PropertyChange::Treble(v) => store.set(speaker_id, v.clone(), stamp),
+            PropertyChange::Loudness(v) => store.set(speaker_id, v.clone(), stamp),
+            PropertyChange::PlaybackState(v) => store.set(speaker_id, v.clone(), stamp),
+            PropertyChange::Position(v) => store.set(speaker_id, v.clone(), stamp),
+            PropertyChange::CurrentTrack(v) => store.set(speaker_id, v.clone(), stamp),
+            PropertyChange::GroupMembership(v) => store.set(speaker_id, v.clone(), stamp),
             // Group-scoped properties: resolve speaker→group, store in group_props
             PropertyChange::GroupVolume(v) => {
                 match store.speaker_to_group.get(speaker_id).cloned() {
-                    Some(group_id) => store.set_group(&group_id, v.clone()),
+                    Some(group_id) => store.set_group(&group_id, v.clone(), stamp),
                     None => self.log_unmapped_group_change(speaker_id),
                 }
             }
             PropertyChange::GroupMute(v) => match store.speaker_to_group.get(speaker_id).cloned() {
-                Some(group_id) => store.set_group(&group_id, v.clone()),
+                Some(group_id) => store.set_group(&group_id, v.clone(), stamp),
                 None => self.log_unmapped_group_change(speaker_id),
             },
             PropertyChange::GroupVolumeChangeable(v) => {
                 match store.speaker_to_group.get(speaker_id).cloned() {
-                    Some(group_id) => store.set_group(&group_id, v.clone()),
+                    Some(group_id) => store.set_group(&group_id, v.clone(), stamp),
                     None => self.log_unmapped_group_change(speaker_id),
                 }
             }
@@ -108,16 +120,17 @@ impl PropertyChange {
     /// This used to be a bare `else { false }`. It is a legitimate state — a
     /// GroupRenderingControl event can arrive before the first topology snapshot
     /// — but it is also what a wiped `speaker_to_group` map looks like, so it
-    /// must be observable rather than silent. Always returns `false` (nothing
-    /// was stored, so nothing changed).
-    fn log_unmapped_group_change(&self, speaker_id: &SpeakerId) -> bool {
+    /// must be observable rather than silent. Always reports `Unchanged`
+    /// (nothing was stored, so nothing changed) rather than `Stale` — the write
+    /// was not rejected for being out of order, it had nowhere to go.
+    fn log_unmapped_group_change(&self, speaker_id: &SpeakerId) -> WriteOutcome {
         tracing::warn!(
             "Dropping group-scoped {} change for {}: speaker has no group mapping \
              (no topology snapshot applied yet, or group state was cleared)",
             self.key(),
             speaker_id.as_str()
         );
-        false
+        WriteOutcome::Unchanged
     }
 
     /// Get the property key for this change

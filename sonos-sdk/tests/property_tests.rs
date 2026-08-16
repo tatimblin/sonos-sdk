@@ -460,14 +460,14 @@ proptest! {
 
         // Verify property_key matches
         prop_assert_eq!(
-            event.property_key,
+            event.property_key(),
             Volume::KEY,
             "ChangeEvent property_key should match the property's KEY constant"
         );
 
         // Verify service matches
         prop_assert_eq!(
-            event.service,
+            event.service(),
             sonos_api::Service::RenderingControl,
             "ChangeEvent service should match the property's SERVICE constant"
         );
@@ -503,14 +503,14 @@ proptest! {
         prop_assert!(volume_event.is_some(), "Volume event should be emitted");
         let volume_event = volume_event.unwrap();
         prop_assert_eq!(volume_event.speaker_id.as_str(), speaker_id_obj.as_str());
-        prop_assert_eq!(volume_event.property_key, Volume::KEY);
+        prop_assert_eq!(volume_event.property_key(), Volume::KEY);
 
         // Second event should be for mute
         let mute_event = iter.recv_timeout(std::time::Duration::from_millis(100));
         prop_assert!(mute_event.is_some(), "Mute event should be emitted");
         let mute_event = mute_event.unwrap();
         prop_assert_eq!(mute_event.speaker_id.as_str(), speaker_id_obj.as_str());
-        prop_assert_eq!(mute_event.property_key, Mute::KEY);
+        prop_assert_eq!(mute_event.property_key(), Mute::KEY);
     }
 }
 
@@ -616,7 +616,7 @@ proptest! {
         let first_event = iter.recv_timeout(std::time::Duration::from_millis(100));
         prop_assert!(first_event.is_some(), "Volume event should be emitted");
         let first_event = first_event.unwrap();
-        prop_assert_eq!(first_event.property_key, Volume::KEY, "First event should be for volume");
+        prop_assert_eq!(first_event.property_key(), Volume::KEY, "First event should be for volume");
 
         // Should NOT get a second event (mute is not watched)
         let second_event = iter.recv_timeout(std::time::Duration::from_millis(50));
@@ -1472,8 +1472,8 @@ proptest! {
         prop_assert!(event2.is_some(), "GroupMembership change should emit event");
 
         let event2 = event2.unwrap();
+        prop_assert_eq!(event2.property_key(), GroupMembership::KEY);
         prop_assert_eq!(event2.speaker_id, speaker_id_obj);
-        prop_assert_eq!(event2.property_key, GroupMembership::KEY);
     }
 }
 

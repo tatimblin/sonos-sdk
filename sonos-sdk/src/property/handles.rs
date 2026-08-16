@@ -10,11 +10,12 @@ use std::marker::PhantomData;
 use std::net::IpAddr;
 use std::ops::Deref;
 use std::sync::Arc;
+use std::time::Instant;
 
 use sonos_api::operation::{ComposableOperation, UPnPOperation};
 use sonos_api::{ServiceScope, SonosClient};
 use sonos_event_manager::WatchGuard;
-use sonos_state::{property::SonosProperty, SpeakerId, StateManager};
+use sonos_state::{property::SonosProperty, ChangeSource, SpeakerId, StateManager, WriteStamp};
 
 use crate::SdkError;
 
@@ -538,6 +539,13 @@ impl<P: Fetchable> PropertyHandle<P> {
             (self.context.speaker_id.clone(), current_ip)
         };
 
+        // Stamped *before* the request, not after. The device's answer describes
+        // it as of this instant; by the time the response lands, an event may
+        // have already delivered a newer value, and the store must keep that one.
+        // Stamping after the round trip would make this stale read look like the
+        // freshest write and clobber it.
+        let observed_at = Instant::now();
+
         let response = self
             .context
             .api_client
@@ -546,10 +554,14 @@ impl<P: Fetchable> PropertyHandle<P> {
 
         let property_value = P::from_response(response);
 
-        // Store under target_id (coordinator for PerCoordinator, self for PerSpeaker)
-        self.context
-            .state_manager
-            .set_property(&target_id, property_value.clone());
+        // Store under target_id (coordinator for PerCoordinator, self for PerSpeaker).
+        // May be rejected as stale, which is correct — the caller still gets the
+        // value it fetched, it just does not overwrite a newer one in the cache.
+        self.context.state_manager.set_property_stamped(
+            &target_id,
+            property_value.clone(),
+            WriteStamp::observed_at(ChangeSource::Fetch, observed_at),
+        );
 
         Ok(property_value)
     }
@@ -572,6 +584,9 @@ impl PropertyHandle<GroupMembership> {
     pub fn fetch(&self) -> Result<GroupMembership, SdkError> {
         let operation = <GroupMembership as FetchableWithContext>::build_operation()?;
 
+        // Stamped before the request — see `Fetchable::fetch`.
+        let observed_at = Instant::now();
+
         let response = self
             .context
             .api_client
@@ -587,9 +602,11 @@ impl PropertyHandle<GroupMembership> {
                     ))
                 })?;
 
-        self.context
-            .state_manager
-            .set_property(&self.context.speaker_id, property_value.clone());
+        self.context.state_manager.set_property_stamped(
+            &self.context.speaker_id,
+            property_value.clone(),
+            WriteStamp::observed_at(ChangeSource::Fetch, observed_at),
+        );
 
         Ok(property_value)
     }
@@ -1029,6 +1046,9 @@ impl<P: GroupFetchable> GroupPropertyHandle<P> {
     pub fn fetch(&self) -> Result<P, SdkError> {
         let operation = P::build_operation()?;
 
+        // Stamped before the request — see `Fetchable::fetch`.
+        let observed_at = Instant::now();
+
         let response = self
             .context
             .api_client
@@ -1037,9 +1057,11 @@ impl<P: GroupFetchable> GroupPropertyHandle<P> {
 
         let property_value = P::from_response(response);
 
-        self.context
-            .state_manager
-            .set_group_property(&self.context.group_id, property_value.clone());
+        self.context.state_manager.set_group_property_stamped(
+            &self.context.group_id,
+            property_value.clone(),
+            WriteStamp::observed_at(ChangeSource::Fetch, observed_at),
+        );
 
         Ok(property_value)
     }
@@ -1227,11 +1249,11 @@ mod tests {
         let first_event = iter
             .recv_timeout(std::time::Duration::from_millis(100))
             .expect("Volume is still held by `second` and must still emit");
-        assert_eq!(first_event.property_key, Volume::KEY);
+        assert_eq!(first_event.property_key(), Volume::KEY);
         let second_event = iter
             .recv_timeout(std::time::Duration::from_millis(100))
             .expect("Mute is still held and must still emit");
-        assert_eq!(second_event.property_key, Mute::KEY);
+        assert_eq!(second_event.property_key(), Mute::KEY);
 
         // Last holder goes away: now it really stops.
         drop(second);
@@ -1241,6 +1263,42 @@ mod tests {
             iter.recv_timeout(std::time::Duration::from_millis(50))
                 .is_none(),
             "with every Volume handle dropped the property must stop emitting"
+        );
+    }
+
+    /// A watcher reading through the SDK sees the value on the event, and sees
+    /// it attributed to the write that caused it.
+    ///
+    /// Covers the SDK re-export boundary: `ChangeEvent.change` / `.source` must
+    /// be reachable and correct from `sonos_sdk`, not just inside `sonos-state`.
+    #[test]
+    fn test_sdk_change_event_carries_value_and_source() {
+        let state_manager = create_test_state_manager();
+        let speaker_id = SpeakerId::new("RINCON_TEST123");
+
+        let context = create_test_context(Arc::clone(&state_manager));
+        let handle: VolumeHandle = PropertyHandle::new(context);
+        let _wh = handle.watch().unwrap();
+
+        let iter = state_manager.iter();
+        state_manager.set_property(&speaker_id, Volume::new(37));
+
+        let event = iter
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .expect("a watched property write must emit");
+
+        assert!(
+            matches!(
+                event.change,
+                sonos_state::PropertyChange::Volume(Volume(37))
+            ),
+            "the event must carry the written value, got {:?}",
+            event.change
+        );
+        assert_eq!(
+            event.source,
+            ChangeSource::LocalAction,
+            "`set_property` is a local write, not a device report"
         );
     }
 

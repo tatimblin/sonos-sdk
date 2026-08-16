@@ -121,10 +121,17 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     while running.load(std::sync::atomic::Ordering::SeqCst) {
         // Try to receive an event with timeout
         if let Some(event) = iter.recv_timeout(Duration::from_secs(1)) {
+            // The new value rides along on the event, so this line is exact
+            // even when more events for the same property are queued behind it.
+            // The dashboard below still renders from the store, which is the
+            // right choice for a full repaint — it wants current state, not the
+            // history of one property.
             println!(
-                "\n[Event] {} changed for {}",
-                event.property_key,
-                event.speaker_id.as_str()
+                "\n[Event] {} changed for {} -> {:?} (via {:?})",
+                event.property_key(),
+                event.speaker_id.as_str(),
+                event.change,
+                event.source
             );
 
             // Refresh dashboard on change
