@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1](https://github.com/tatimblin/sonos-sdk/compare/sonos-sdk-v0.7.0...sonos-sdk-v0.7.1) - 2026-08-17
+
+### Fixed
+
+- exclude satellites before name-keying so bonded home theaters survive ([#102](https://github.com/tatimblin/sonos-sdk/pull/102))
+
+### Other
+
+- release v0.7.0 ([#101](https://github.com/tatimblin/sonos-sdk/pull/101))
+
 ## [0.7.0](https://github.com/tatimblin/sonos-sdk/compare/sonos-sdk-v0.6.0...sonos-sdk-v0.7.0) - 2026-08-17
 
 ### Added
