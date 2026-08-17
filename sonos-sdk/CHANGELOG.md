@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/tatimblin/sonos-sdk/compare/sonos-sdk-v0.6.0...sonos-sdk-v0.7.0) - 2026-08-17
+
+### Added
+
+- [**breaking**] give every iter() its own event stream instead of splitting one ([#100](https://github.com/tatimblin/sonos-sdk/pull/100))
+- [**breaking**] make WatchHandle a live view instead of a frozen snapshot ([#99](https://github.com/tatimblin/sonos-sdk/pull/99))
+- [**breaking**] carry changed value on ChangeEvent and order writes by observation ([#94](https://github.com/tatimblin/sonos-sdk/pull/94))
+
+### Fixed
+
+- stamp event writes at observation time, not apply time ([#96](https://github.com/tatimblin/sonos-sdk/pull/96))
+- stamp polling events at poll request, not at response ([#98](https://github.com/tatimblin/sonos-sdk/pull/98))
+- close duplicate-registration SID leak and unblock polling stats ([#97](https://github.com/tatimblin/sonos-sdk/pull/97))
+
 ## [0.6.0](https://github.com/tatimblin/sonos-sdk/compare/sonos-sdk-v0.5.3...sonos-sdk-v0.6.0) - 2026-08-16
 
 ### Fixed
