@@ -227,7 +227,15 @@ pub struct VolumeHandle {
 6. **Speaker creation** (`src/system.rs:29-41`): Creates `Speaker` instances for each device with property handles
 7. **Return** (`src/system.rs:44-48`): Returns the initialized `SonosSystem` with all speakers registered
 
-**Shared vs. network-dependent construction**: The in-memory portion of steps 2-6 lives in `SonosSystem::assemble()`, which performs no I/O. `from_devices_inner()` calls `assemble()` and then layers on the three network-dependent steps: topology prefetch, satellite filtering, and IP refresh. This split exists so the offline test constructor (§8.5) can reuse the exact same Arc wiring instead of maintaining a divergent copy — the Arc graph here is subtle, and a second copy would drift.
+**Shared vs. network-dependent construction**: The in-memory portion of steps 2-6 lives in `SonosSystem::assemble()`, which performs no I/O. `SonosSystem::construct()` calls `assemble()` and then layers on the three topology-dependent steps: topology prefetch, satellite re-key, and IP refresh. Both `from_devices_inner()` (production) and the offline test constructors (§8.5) go through `construct()`, so the Arc wiring *and* the order of the topology-dependent steps each have exactly one definition — the Arc graph is subtle, and the step order is load-bearing (see below).
+
+**Satellite exclusion must precede name-keying**: `speakers` is a `HashMap<String, Speaker>` keyed on `display_name()`, which prefers `room_name`. Every device in a bonded home theater — a Playbar plus its surrounds and sub — reports the *same* `room_name`, so all of them hash to one key and only one can survive insertion. Satellites (`Invisible="1"`) are therefore skipped **inside** `build_speakers()`, before insertion, rather than filtered out of the finished map.
+
+Filtering afterwards was a real defect: on a Playbar + 2 Sonos One set all named "Basement", the three devices collided down to one entry, and the post-hoc `retain()` could only inspect whichever device won. When the winner was a surround, `retain()` deleted it and the entire room vanished from `speakers()` — while `groups()`, which reads topology rather than the name map, still showed Basement with a live volume. Skipping first guarantees the visible coordinator (the one that accepts transport and volume commands) is the only candidate for the key.
+
+Satellite identity comes from topology and the key comes from the device list, so the map can only be built correctly once both are known. That point is after `ensure_topology()`, which is why `construct()` *rebuilds* the map from `devices` there instead of mutating the provisional one. `try_rediscover()` re-applies the same exclusion, since it replaces the map wholesale and would otherwise resurrect every satellite.
+
+**Two genuinely visible speakers sharing a room name** are disambiguated rather than dropped: the first keeps the plain room name and later ones are suffixed with their speaker ID (`"Basement (RINCON_…)"`). Sonos prevents duplicate room names in its app, so this state implies something unusual (a rename observed mid-discovery, a stale cache entry for a replaced unit) — but silently discarding a controllable speaker is the worse outcome in every such case, and the old behavior did exactly that with only a `warn!` to show for it. `speakers()` and `speaker_by_id()` consequently see the true device count.
 
 **Why the init closure captures a `Weak<StateManager>`**: the `EventInitFn` built
 in `assemble()` needs the `StateManager` in order to call `set_event_manager()`
@@ -738,7 +746,9 @@ fn try_rediscover(&self, name: &str) {
 
 Production paths (`new()` → `from_devices_inner()`) leave `offline = false`, so behavior there is byte-for-byte unchanged.
 
-`from_devices_offline` skips the three post-`assemble()` steps in §3.1 because all three are downstream of topology having been fetched: satellite filtering reads `get_satellite_ids()` (populated only by `ensure_topology`), and the IP refresh re-reads IPs that only topology would have changed. Tests that need groups call `state_manager.initialize(topology)` directly with the topology they want to assert against.
+`from_devices_offline` runs the same `construct()` sequence as production; only the topology *poll* inside `ensure_topology()` is skipped, via the `offline` flag. The post-topology steps still execute, and with no topology they are no-ops: `get_satellite_ids()` is empty so the satellite re-key returns early, and no IPs have changed. Tests that need groups call `state_manager.initialize(topology)` directly with the topology they want to assert against.
+
+`from_devices_offline_with_topology(devices, seed)` exists for tests that must exercise the topology-dependent steps. The `seed` closure runs after `assemble()` and before the satellite re-key — the exact window `ensure_topology()` occupies in production — so a test can inject the satellite IDs a real poll would have returned. Satellite behavior is defined entirely by topology, so this is the only way to test it without a network. Such tests must **not** reproduce the sequence themselves: the *order* of these steps is the substance of the behavior (§3.2), so a test that re-implements the order cannot detect production's order regressing.
 
 #### Trade-offs
 

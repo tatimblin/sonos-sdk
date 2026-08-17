@@ -2,7 +2,7 @@
 //!
 //! Provides a sync-first, DOM-like API for controlling Sonos devices.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -171,10 +171,14 @@ impl SonosSystem {
 
     /// Create a SonosSystem from pre-discovered devices WITHOUT any network I/O.
     ///
-    /// Identical to the normal constructor except that it skips the topology
-    /// prefetch (and the satellite filtering / IP refresh that depend on it),
-    /// and marks the system `offline` so a lookup miss cannot trigger SSDP
-    /// rediscovery.
+    /// Runs the same construction sequence as the normal constructor, except
+    /// that the topology *poll* is skipped and the system is marked `offline` so
+    /// a lookup miss cannot trigger SSDP rediscovery. The topology-dependent
+    /// steps still execute; with no topology they simply have nothing to do
+    /// (the satellite set is empty, and no IPs have changed).
+    ///
+    /// Use [`Self::from_devices_offline_with_topology`] to supply the topology
+    /// the poll would have returned.
     ///
     /// Exists because the two network paths in the normal constructor
     /// (topology SOAP poll, rediscovery SSDP) dominate test wall time: each
@@ -186,27 +190,58 @@ impl SonosSystem {
     /// compiling this crate's own test harness).
     #[cfg(any(feature = "test-support", test))]
     pub fn from_devices_offline(devices: Vec<Device>) -> Result<Self, SdkError> {
-        Self::assemble(devices, true)
+        Self::construct(devices, true, |_| {})
+    }
+
+    /// Construct offline, but inject the topology `ensure_topology` would have
+    /// polled, so the post-topology construction steps still run.
+    ///
+    /// `seed` is called after the state manager exists and before the
+    /// satellite-aware re-key, which is exactly the window `ensure_topology`
+    /// occupies in production. It is the only way a test can exercise satellite
+    /// filtering — the behavior is defined entirely by topology, and topology
+    /// otherwise arrives only over the network.
+    ///
+    /// Tests go through [`Self::construct`] rather than poking the speaker map
+    /// afterwards on purpose: filtering that runs in the wrong *order* is the
+    /// entire bug, so a test that reproduces the steps itself could not detect
+    /// the production sequence regressing.
+    #[cfg(any(feature = "test-support", test))]
+    pub fn from_devices_offline_with_topology(
+        devices: Vec<Device>,
+        seed: impl FnOnce(&Self),
+    ) -> Result<Self, SdkError> {
+        Self::construct(devices, true, seed)
     }
 
     fn from_devices_inner(devices: Vec<Device>) -> Result<Self, SdkError> {
-        let system = Self::assemble(devices, false)?;
+        Self::construct(devices, false, |_| {})
+    }
+
+    /// The single construction sequence: in-memory wiring, topology, then the
+    /// steps that depend on topology.
+    ///
+    /// Production and the offline test constructors share this body so the
+    /// *order* of the topology-dependent steps has exactly one definition.
+    fn construct(
+        devices: Vec<Device>,
+        offline: bool,
+        seed: impl FnOnce(&Self),
+    ) -> Result<Self, SdkError> {
+        let system = Self::assemble(devices.clone(), offline)?;
+
+        // Tests inject the topology that `ensure_topology` would have fetched.
+        seed(&system);
 
         // Prefetch topology before any subscriptions can start.
         // This ensures group structure is known when the first AVTransport
         // events arrive, so PerCoordinator suppression/propagation works
         // from the very first event.
+        // No-op when offline, or when `seed` already supplied groups.
         system.ensure_topology();
 
-        // Filter satellite speakers (surrounds/subs marked Invisible="1").
-        // Depends on topology having been fetched above.
-        let satellite_ids = system.state_manager.get_satellite_ids();
-        if !satellite_ids.is_empty() {
-            if let Ok(mut speakers) = system.speakers.write() {
-                speakers.retain(|_name, speaker| !satellite_ids.contains(&speaker.id));
-            }
-            tracing::debug!("Filtered {} satellite speakers", satellite_ids.len());
-        }
+        // Re-key the speaker map now that satellites are known.
+        system.rebuild_speakers_excluding_satellites(&devices)?;
 
         // Refresh Speaker handle IPs from state store (topology may have updated them)
         if let Ok(mut speakers) = system.speakers.write() {
@@ -296,8 +331,14 @@ impl SonosSystem {
         };
         state_manager.set_event_init(init_fn);
 
-        // 3. Build speakers (init fn is on StateManager — no per-speaker threading needed)
-        let speakers = Self::build_speakers(&devices, &state_manager, &api_client)?;
+        // 3. Build speakers (init fn is on StateManager — no per-speaker threading needed).
+        //
+        // No topology has been fetched yet, so satellite identity is unknown and
+        // every device is a candidate. `from_devices_inner` rebuilds this map
+        // once `ensure_topology` has run; the offline constructors have no
+        // topology to consult and keep this provisional map as final.
+        let speakers =
+            Self::build_speakers(&devices, &HashSet::new(), &state_manager, &api_client)?;
 
         // 4. Assemble struct from the SAME Arcs
         Ok(Self {
@@ -347,7 +388,7 @@ impl SonosSystem {
             .expect("add_devices should not fail with valid test data");
 
         let api_client = SonosClient::new();
-        let speakers = Self::build_speakers(&devices, &state_manager, &api_client)
+        let speakers = Self::build_speakers(&devices, &HashSet::new(), &state_manager, &api_client)
             .expect("build_speakers should not fail with valid test data");
 
         Self {
@@ -391,37 +432,115 @@ impl SonosSystem {
         system
     }
 
-    /// Build Speaker handles from a list of devices.
+    /// Re-key the name-keyed speaker map with satellite devices excluded.
+    ///
+    /// Satellite identity comes from topology, which is only available *after*
+    /// `ensure_topology()`; the map key comes from the device list, which is
+    /// available from the start. This method is the one place both facts are
+    /// known, so it is where the map can first be built correctly — which is why
+    /// it rebuilds from `devices` instead of filtering the provisional map.
+    ///
+    /// Filtering the provisional map in place was the bug. A bonded home theater
+    /// is one visible coordinator plus N invisible satellites, all reporting the
+    /// same `room_name`, so all of them hash to one key and only one survives
+    /// insertion. When the survivor was a satellite, the filter then deleted it
+    /// and the whole room disappeared — the controllable coordinator having
+    /// already been overwritten. Rebuilding with satellites skipped up front
+    /// means the coordinator is the only candidate for the key.
+    ///
+    /// No-op when no satellites are known, which keeps the offline constructors
+    /// (no topology fetch, empty satellite set) on their existing behavior.
+    fn rebuild_speakers_excluding_satellites(&self, devices: &[Device]) -> Result<(), SdkError> {
+        let satellite_ids: HashSet<SpeakerId> =
+            self.state_manager.get_satellite_ids().into_iter().collect();
+        if satellite_ids.is_empty() {
+            return Ok(());
+        }
+
+        let rebuilt = Self::build_speakers(
+            devices,
+            &satellite_ids,
+            &self.state_manager,
+            &self.api_client,
+        )?;
+        if let Ok(mut speakers) = self.speakers.write() {
+            *speakers = rebuilt;
+        }
+        tracing::debug!("Excluded {} satellite speakers", satellite_ids.len());
+        Ok(())
+    }
+
+    /// Build the name-keyed Speaker map from a list of devices.
+    ///
+    /// `satellite_ids` are devices marked `Invisible="1"` in the topology
+    /// (home-theater surrounds and subs). They are skipped **before** insertion,
+    /// not filtered afterwards, because insertion is what collides: every device
+    /// in a bonded set reports the same `room_name`, so all of them produce the
+    /// same map key. Filtering after the fact can only inspect whichever device
+    /// happened to win that collision, and if the winner was a satellite the
+    /// entire room is deleted along with it. Skipping first guarantees the
+    /// visible coordinator — the one that accepts playback and volume commands —
+    /// is the device that reaches the map.
+    ///
+    /// Pass an empty set when satellite identity is not yet known; every device
+    /// is then a candidate, which is the pre-topology status quo.
+    ///
+    /// Two *genuinely visible* devices sharing a room name remain a real
+    /// conflict. Sonos itself prevents this in the app, so it means unusual
+    /// state (a rename mid-discovery, a stale cache entry for a replaced unit).
+    /// Rather than silently discarding one, both are kept: the first-seen device
+    /// holds the plain room name and later ones are suffixed with their speaker
+    /// ID, so `speaker("Basement")` stays stable and
+    /// `speaker("Basement (RINCON_2)")` reaches the other. Nothing is lost, and
+    /// `speakers()` / `speaker_by_id()` see the true device count.
     fn build_speakers(
         devices: &[Device],
+        satellite_ids: &HashSet<SpeakerId>,
         state_manager: &Arc<StateManager>,
         api_client: &SonosClient,
     ) -> Result<HashMap<String, Speaker>, SdkError> {
         let mut speakers = HashMap::new();
         for device in devices {
             let speaker_id = SpeakerId::new(&device.id);
+
+            // Skip satellites before they can claim the name key.
+            if satellite_ids.contains(&speaker_id) {
+                tracing::debug!(
+                    "skipping satellite speaker {} in room \"{}\"",
+                    device.id,
+                    display_name(device)
+                );
+                continue;
+            }
+
             let ip = device
                 .ip_address
                 .parse()
                 .map_err(|_| SdkError::InvalidIpAddress)?;
 
-            let name = display_name(device);
+            let base_name = display_name(device);
+            let key = if speakers.contains_key(&base_name) {
+                let disambiguated = format!("{base_name} ({})", device.id);
+                tracing::warn!(
+                    "two visible speakers report the name \"{}\"; registering the second as \"{}\"",
+                    base_name,
+                    disambiguated
+                );
+                disambiguated
+            } else {
+                base_name
+            };
+
             let speaker = Speaker::new(
                 speaker_id,
-                name.clone(),
+                key.clone(),
                 ip,
                 device.model_name.clone(),
                 Arc::clone(state_manager),
                 api_client.clone(),
             );
 
-            if speakers.contains_key(&name) {
-                tracing::warn!(
-                    "duplicate speaker name \"{}\", keeping last discovered",
-                    name
-                );
-            }
-            speakers.insert(name, speaker);
+            speakers.insert(key, speaker);
         }
         Ok(speakers)
     }
@@ -488,15 +607,27 @@ impl SonosSystem {
             return;
         }
 
-        // 3. Build new Speaker handles (no lock needed)
-        let new_speakers =
-            match Self::build_speakers(&devices, &self.state_manager, &self.api_client) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!("Failed to build speakers from rediscovery: {}", e);
-                    return;
-                }
-            };
+        // 3. Build new Speaker handles (no lock needed).
+        //
+        // Satellites must be excluded here too: this map *replaces* the one
+        // built at construction, so rebuilding without the exclusion would
+        // resurrect every filtered surround and re-lose its room to the name
+        // collision. Any topology already fetched is reused; before the first
+        // fetch the set is empty, which is the same state construction starts in.
+        let satellite_ids: HashSet<SpeakerId> =
+            self.state_manager.get_satellite_ids().into_iter().collect();
+        let new_speakers = match Self::build_speakers(
+            &devices,
+            &satellite_ids,
+            &self.state_manager,
+            &self.api_client,
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("Failed to build speakers from rediscovery: {}", e);
+                return;
+            }
+        };
 
         // 4. Acquire write lock BRIEFLY for map swap only
         if let Ok(mut map) = self.speakers.write() {
@@ -1339,6 +1470,247 @@ mod tests {
         assert!(system
             .speaker("192.168.1.100 - Sonos One - RINCON_111")
             .is_none());
+    }
+
+    // ========================================================================
+    // Bonded home theater: satellite exclusion vs. name-key collision
+    // ========================================================================
+
+    /// The real hardware that exposed the bug: a Playbar with two Sonos One
+    /// surrounds bonded as one home theater, all three reporting
+    /// `room_name = "Basement"`.
+    ///
+    /// IPs are RFC 5737 TEST-NET-3 so nothing here can reach a real device.
+    fn basement_home_theater() -> Vec<Device> {
+        vec![
+            Device {
+                id: "RINCON_PLAYBAR".to_string(),
+                name: "Basement".to_string(),
+                room_name: "Basement".to_string(),
+                ip_address: "203.0.113.10".to_string(),
+                port: 1400,
+                model_name: "Sonos Playbar".to_string(),
+            },
+            Device {
+                id: "RINCON_SURROUND_L".to_string(),
+                name: "Basement".to_string(),
+                room_name: "Basement".to_string(),
+                ip_address: "203.0.113.11".to_string(),
+                port: 1400,
+                model_name: "Sonos One".to_string(),
+            },
+            Device {
+                id: "RINCON_SURROUND_R".to_string(),
+                name: "Basement".to_string(),
+                room_name: "Basement".to_string(),
+                ip_address: "203.0.113.12".to_string(),
+                port: 1400,
+                model_name: "Sonos One".to_string(),
+            },
+        ]
+    }
+
+    /// Every permutation of a device list, to stand in for arbitrary SSDP
+    /// response order. Device counts here are 2-3, so the factorial is fine.
+    fn all_orderings(devices: &[Device]) -> Vec<Vec<Device>> {
+        if devices.len() <= 1 {
+            return vec![devices.to_vec()];
+        }
+        let mut out = Vec::new();
+        for i in 0..devices.len() {
+            let mut rest = devices.to_vec();
+            let head = rest.remove(i);
+            for mut tail in all_orderings(&rest) {
+                let mut one = vec![head.clone()];
+                one.append(&mut tail);
+                out.push(one);
+            }
+        }
+        out
+    }
+
+    /// Build a system through the real construction sequence, with the topology
+    /// that `ensure_topology` would have polled injected instead.
+    ///
+    /// Deliberately does *not* re-key the map itself: ordering is the bug, so
+    /// the test must let production decide when filtering happens.
+    fn system_with_satellites(devices: &[Device], satellites: &[&str]) -> SonosSystem {
+        SonosSystem::from_devices_offline_with_topology(devices.to_vec(), |system| {
+            system
+                .state_manager
+                .set_satellite_ids(satellites.iter().map(|id| SpeakerId::new(*id)).collect());
+        })
+        .unwrap()
+    }
+
+    /// A bonded home theater must appear as exactly one controllable speaker.
+    ///
+    /// Hardware symptom this pins down: `sonos speakers` logged two "duplicate
+    /// speaker name" warnings and then listed no Basement at all, while `sonos
+    /// groups` showed Basement with a live volume. The name-keyed map collapsed
+    /// all three devices onto one key, and satellite filtering — which ran
+    /// afterwards — deleted whichever one had won, taking the room with it.
+    #[test]
+    fn test_bonded_home_theater_keeps_visible_coordinator() {
+        // SSDP response order is arbitrary — on the real system a surround
+        // answered before the Playbar — and which device wins the name key
+        // depends entirely on it. Assert over every permutation: a fix that only
+        // holds when the coordinator happens to arrive first is not a fix.
+        for order in all_orderings(&basement_home_theater()) {
+            let ids: Vec<&str> = order.iter().map(|d| d.id.as_str()).collect();
+            let system =
+                system_with_satellites(&order, &["RINCON_SURROUND_L", "RINCON_SURROUND_R"]);
+
+            // The room survives, exactly once.
+            assert_eq!(
+                system.speaker_names(),
+                vec!["Basement".to_string()],
+                "bonded home theater should be exactly one speaker named after its room \
+                 (discovery order {ids:?})"
+            );
+
+            // And it is the Playbar — the visible coordinator that accepts
+            // commands — not a surround. This is what `sonos -s Basement volume
+            // 30` reaches.
+            let basement = system
+                .speaker("Basement")
+                .unwrap_or_else(|| panic!("Basement must be reachable by name (order {ids:?})"));
+            assert_eq!(
+                basement.id,
+                SpeakerId::new("RINCON_PLAYBAR"),
+                "survivor must be the visible coordinator, not a satellite (order {ids:?})"
+            );
+            assert_eq!(basement.model_name, "Sonos Playbar");
+            assert_eq!(basement.ip.to_string(), "203.0.113.10");
+
+            // Satellites are not addressable as speakers in their own right.
+            assert!(system
+                .speaker_by_id(&SpeakerId::new("RINCON_SURROUND_L"))
+                .is_none());
+            assert!(system
+                .speaker_by_id(&SpeakerId::new("RINCON_SURROUND_R"))
+                .is_none());
+        }
+    }
+
+    /// No regression for the ordinary case: a room with one visible speaker and
+    /// no satellites anywhere is untouched.
+    #[test]
+    fn test_single_visible_speaker_room_unaffected() {
+        let devices = vec![
+            Device {
+                id: "RINCON_KITCHEN".to_string(),
+                name: "Kitchen".to_string(),
+                room_name: "Kitchen".to_string(),
+                ip_address: "203.0.113.20".to_string(),
+                port: 1400,
+                model_name: "Sonos One".to_string(),
+            },
+            Device {
+                id: "RINCON_OFFICE".to_string(),
+                name: "Office".to_string(),
+                room_name: "Office".to_string(),
+                ip_address: "203.0.113.21".to_string(),
+                port: 1400,
+                model_name: "Sonos Roam".to_string(),
+            },
+        ];
+
+        // No satellites: the rebuild is a no-op and both rooms stand.
+        let system = system_with_satellites(&devices, &[]);
+
+        assert_eq!(system.speakers().len(), 2);
+        assert_eq!(
+            system.speaker("Kitchen").unwrap().id,
+            SpeakerId::new("RINCON_KITCHEN")
+        );
+        assert_eq!(
+            system.speaker("Office").unwrap().id,
+            SpeakerId::new("RINCON_OFFICE")
+        );
+    }
+
+    /// A visible speaker sharing a room with satellites keeps its plain name.
+    ///
+    /// Guards against over-correcting: satellite exclusion must not push the
+    /// coordinator onto a disambiguated key, which would break `sonos -s
+    /// Basement`.
+    #[test]
+    fn test_coordinator_keeps_plain_room_name_not_disambiguated() {
+        let devices = basement_home_theater();
+        let system = system_with_satellites(&devices, &["RINCON_SURROUND_L", "RINCON_SURROUND_R"]);
+
+        assert!(
+            system.speaker("Basement").is_some(),
+            "coordinator must hold the plain room name"
+        );
+        for name in system.speaker_names() {
+            assert!(
+                !name.contains('('),
+                "coordinator should not be disambiguated when the collision was satellites: {name}"
+            );
+        }
+    }
+
+    /// Two *genuinely visible* speakers sharing a room name: both are kept, the
+    /// first under the plain name and the second suffixed with its ID.
+    ///
+    /// The old behavior silently dropped one — real data loss with only a log
+    /// line to show for it. Sonos prevents duplicate room names in the app, so
+    /// this state means something unusual (a rename mid-discovery, a stale cache
+    /// entry for a replaced unit); dropping a controllable speaker is the worse
+    /// answer in every such case.
+    #[test]
+    fn test_two_visible_speakers_same_room_are_both_kept() {
+        let devices = vec![
+            Device {
+                id: "RINCON_DUPE_1".to_string(),
+                name: "Basement".to_string(),
+                room_name: "Basement".to_string(),
+                ip_address: "203.0.113.30".to_string(),
+                port: 1400,
+                model_name: "Sonos One".to_string(),
+            },
+            Device {
+                id: "RINCON_DUPE_2".to_string(),
+                name: "Basement".to_string(),
+                room_name: "Basement".to_string(),
+                ip_address: "203.0.113.31".to_string(),
+                port: 1400,
+                model_name: "Sonos Five".to_string(),
+            },
+        ];
+
+        // Neither is a satellite.
+        let system = system_with_satellites(&devices, &[]);
+
+        // Nothing is lost.
+        assert_eq!(
+            system.speakers().len(),
+            2,
+            "both visible speakers must be retained, not silently overwritten"
+        );
+
+        // The first-seen keeps the plain name, so existing scripts keep working.
+        assert_eq!(
+            system.speaker("Basement").unwrap().id,
+            SpeakerId::new("RINCON_DUPE_1")
+        );
+
+        // The second is reachable under an ID-suffixed name.
+        let second = system
+            .speaker("Basement (RINCON_DUPE_2)")
+            .expect("second visible speaker must be reachable by disambiguated name");
+        assert_eq!(second.id, SpeakerId::new("RINCON_DUPE_2"));
+        assert_eq!(second.model_name, "Sonos Five");
+
+        // Both remain addressable by ID.
+        assert!(system
+            .speaker_by_id(&SpeakerId::new("RINCON_DUPE_1"))
+            .is_some());
+        assert!(system
+            .speaker_by_id(&SpeakerId::new("RINCON_DUPE_2"))
+            .is_some());
     }
 
     #[test]
