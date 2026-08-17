@@ -4,7 +4,7 @@
 //! SonosEventManager and applies them to the StateStore.
 
 use std::net::IpAddr;
-use std::sync::{mpsc, Arc};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
 use parking_lot::RwLock;
@@ -15,6 +15,7 @@ use sonos_stream::events::{EnrichedEvent, EventData};
 use sonos_api::ServiceScope;
 
 use crate::decoder::{decode_event, decode_topology_event, PropertyChange, TopologyChanges};
+use crate::iter::EventFanout;
 use crate::model::SpeakerId;
 use crate::property::{GroupMembership, Property, Scope};
 use crate::state::{
@@ -32,7 +33,7 @@ pub(crate) fn spawn_state_event_worker(
     event_manager: Arc<SonosEventManager>,
     store: Arc<RwLock<StateStore>>,
     watched: Arc<RwLock<WatchCounts>>,
-    event_tx: mpsc::Sender<ChangeEvent>,
+    fanout: Arc<EventFanout>,
     ip_to_speaker: Arc<RwLock<std::collections::HashMap<IpAddr, SpeakerId>>>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
@@ -43,7 +44,7 @@ pub(crate) fn spawn_state_event_worker(
             event_manager.iter(),
             &store,
             &watched,
-            &event_tx,
+            &fanout,
             &ip_to_speaker,
         );
 
@@ -70,7 +71,7 @@ fn run_event_loop<I>(
     events: I,
     store: &Arc<RwLock<StateStore>>,
     watched: &Arc<RwLock<WatchCounts>>,
-    event_tx: &mpsc::Sender<ChangeEvent>,
+    fanout: &EventFanout,
     ip_to_speaker: &Arc<RwLock<std::collections::HashMap<IpAddr, SpeakerId>>>,
 ) where
     I: Iterator<Item = EnrichedEvent>,
@@ -89,7 +90,7 @@ fn run_event_loop<I>(
         //    `PropertyChange` is applied under its own lock acquisition), and
         //    the next topology or service event overwrites it wholesale.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            handle_event(&event, store, watched, event_tx, ip_to_speaker);
+            handle_event(&event, store, watched, fanout, ip_to_speaker);
         }));
 
         if result.is_err() {
@@ -118,7 +119,7 @@ fn handle_event(
     event: &EnrichedEvent,
     store: &Arc<RwLock<StateStore>>,
     watched: &Arc<RwLock<WatchCounts>>,
-    event_tx: &mpsc::Sender<ChangeEvent>,
+    fanout: &EventFanout,
     ip_to_speaker: &Arc<RwLock<std::collections::HashMap<IpAddr, SpeakerId>>>,
 ) {
     tracing::debug!(
@@ -148,7 +149,7 @@ fn handle_event(
         apply_topology_changes(
             store,
             watched,
-            event_tx,
+            fanout,
             ip_to_speaker,
             topology_changes,
             stamp,
@@ -232,7 +233,7 @@ fn handle_event(
     // Apply changes to the originating speaker (coordinator)
     for change in &decoded.changes {
         tracing::debug!("Applying change: {:?}", change);
-        apply_property_change(store, watched, event_tx, &speaker_id, change, stamp);
+        apply_property_change(store, watched, fanout, &speaker_id, change, stamp);
     }
 
     // For PerCoordinator services, notify group members who are watching
@@ -248,7 +249,7 @@ fn handle_event(
             // stamp — but consumers read `ChangeEvent::timestamp` from it, and a
             // member must be told the same observation time as the coordinator,
             // so it reuses the event's stamp rather than taking a fresh one.
-            notify_group_members(watched, event_tx, &members, &decoded.changes, stamp);
+            notify_group_members(watched, fanout, &members, &decoded.changes, stamp);
         }
     }
 }
@@ -271,7 +272,7 @@ fn handle_event(
 fn apply_topology_changes(
     store: &Arc<RwLock<StateStore>>,
     watched: &Arc<RwLock<WatchCounts>>,
-    event_tx: &mpsc::Sender<ChangeEvent>,
+    fanout: &EventFanout,
     ip_to_speaker: &Arc<RwLock<std::collections::HashMap<IpAddr, SpeakerId>>>,
     changes: TopologyChanges,
     stamp: WriteStamp,
@@ -375,7 +376,7 @@ fn apply_topology_changes(
                 "GroupMembership changed for {}, emitting event",
                 speaker_id.as_str()
             );
-            let _ = event_tx.send(ChangeEvent::new(
+            fanout.send(ChangeEvent::new(
                 speaker_id,
                 PropertyChange::GroupMembership(membership),
                 stamp,
@@ -417,7 +418,7 @@ fn resolve_group_members(store: &StateStore, speaker_id: &SpeakerId) -> Vec<Spea
 /// to, delivered without a second lookup.
 fn notify_group_members(
     watched: &Arc<RwLock<WatchCounts>>,
-    event_tx: &mpsc::Sender<ChangeEvent>,
+    fanout: &EventFanout,
     members: &[SpeakerId],
     changes: &[PropertyChange],
     stamp: WriteStamp,
@@ -433,8 +434,7 @@ fn notify_group_members(
                         member_id.as_str(),
                         key
                     );
-                    let _ =
-                        event_tx.send(ChangeEvent::new(member_id.clone(), change.clone(), stamp));
+                    fanout.send(ChangeEvent::new(member_id.clone(), change.clone(), stamp));
                 }
             }
         }
@@ -450,7 +450,7 @@ fn notify_group_members(
 fn apply_property_change(
     store: &Arc<RwLock<StateStore>>,
     watched: &Arc<RwLock<WatchCounts>>,
-    event_tx: &mpsc::Sender<ChangeEvent>,
+    fanout: &EventFanout,
     speaker_id: &SpeakerId,
     change: &PropertyChange,
     stamp: WriteStamp,
@@ -471,7 +471,7 @@ fn apply_property_change(
                 key,
                 speaker_id.as_str()
             );
-            let _ = event_tx.send(ChangeEvent::new(speaker_id.clone(), change.clone(), stamp));
+            fanout.send(ChangeEvent::new(speaker_id.clone(), change.clone(), stamp));
         }
     }
 }
@@ -479,6 +479,7 @@ fn apply_property_change(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::iter::ChangeIterator;
     use crate::model::GroupId;
     use crate::property::{GroupInfo, Property, Volume};
     use crate::state::retain_direct_watch;
@@ -498,7 +499,8 @@ mod tests {
     fn test_apply_property_change_volume() {
         let store = Arc::new(RwLock::new(StateStore::new()));
         let watched = Arc::new(RwLock::new(WatchCounts::new()));
-        let (tx, rx) = mpsc::channel();
+        let fanout = Arc::new(EventFanout::new());
+        let iter = ChangeIterator::new(&fanout);
 
         let speaker_id = SpeakerId::new("test-speaker");
 
@@ -522,14 +524,14 @@ mod tests {
         apply_property_change(
             &store,
             &watched,
-            &tx,
+            &fanout,
             &speaker_id,
             &PropertyChange::Volume(Volume(50)),
             test_stamp(),
         );
 
         // No event should be emitted (not watched)
-        assert!(rx.try_recv().is_err());
+        assert!(iter.try_recv().is_none());
 
         // Verify value was stored
         let stored: Option<Volume> = store.read().get(&speaker_id);
@@ -540,7 +542,8 @@ mod tests {
     fn test_apply_property_change_with_watch() {
         let store = Arc::new(RwLock::new(StateStore::new()));
         let watched = Arc::new(RwLock::new(WatchCounts::new()));
-        let (tx, rx) = mpsc::channel();
+        let fanout = Arc::new(EventFanout::new());
+        let iter = ChangeIterator::new(&fanout);
 
         let speaker_id = SpeakerId::new("test-speaker");
 
@@ -567,14 +570,14 @@ mod tests {
         apply_property_change(
             &store,
             &watched,
-            &tx,
+            &fanout,
             &speaker_id,
             &PropertyChange::Volume(Volume(75)),
             test_stamp(),
         );
 
         // Event should be emitted
-        let event = rx.try_recv().unwrap();
+        let event = iter.try_recv().unwrap();
         assert_eq!(event.speaker_id, speaker_id);
         assert_eq!(event.property_key(), Volume::KEY);
         assert_eq!(event.service(), Service::RenderingControl);
@@ -603,7 +606,7 @@ mod tests {
     fn test_apply_property_change_group_volume() {
         let store = Arc::new(RwLock::new(StateStore::new()));
         let watched = Arc::new(RwLock::new(WatchCounts::new()));
-        let (tx, _rx) = mpsc::channel();
+        let fanout = Arc::new(EventFanout::new());
 
         let speaker_id = SpeakerId::new("RINCON_111");
         let group_id = GroupId::new("RINCON_111:1");
@@ -627,7 +630,7 @@ mod tests {
         apply_property_change(
             &store,
             &watched,
-            &tx,
+            &fanout,
             &speaker_id,
             &PropertyChange::GroupVolume(crate::property::GroupVolume(75)),
             test_stamp(),
@@ -643,7 +646,7 @@ mod tests {
     fn test_apply_property_change_group_volume_no_group() {
         let store = Arc::new(RwLock::new(StateStore::new()));
         let watched = Arc::new(RwLock::new(WatchCounts::new()));
-        let (tx, _rx) = mpsc::channel();
+        let fanout = Arc::new(EventFanout::new());
 
         let speaker_id = SpeakerId::new("RINCON_111");
 
@@ -661,7 +664,7 @@ mod tests {
         apply_property_change(
             &store,
             &watched,
-            &tx,
+            &fanout,
             &speaker_id,
             &PropertyChange::GroupVolume(crate::property::GroupVolume(50)),
             test_stamp(),
@@ -676,7 +679,7 @@ mod tests {
     fn test_apply_topology_changes_updates_groups() {
         let store = Arc::new(RwLock::new(StateStore::new()));
         let watched = Arc::new(RwLock::new(WatchCounts::new()));
-        let (tx, _rx) = mpsc::channel();
+        let fanout = Arc::new(EventFanout::new());
 
         // Add speakers to store
         {
@@ -716,7 +719,14 @@ mod tests {
         };
 
         let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::new()));
-        apply_topology_changes(&store, &watched, &tx, &ip_to_speaker, changes, test_stamp());
+        apply_topology_changes(
+            &store,
+            &watched,
+            &fanout,
+            &ip_to_speaker,
+            changes,
+            test_stamp(),
+        );
 
         // Verify groups are updated
         let s = store.read();
@@ -733,7 +743,7 @@ mod tests {
     fn test_apply_topology_changes_updates_group_membership() {
         let store = Arc::new(RwLock::new(StateStore::new()));
         let watched = Arc::new(RwLock::new(WatchCounts::new()));
-        let (tx, _rx) = mpsc::channel();
+        let fanout = Arc::new(EventFanout::new());
 
         // Add speakers to store
         {
@@ -772,7 +782,14 @@ mod tests {
         };
 
         let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::new()));
-        apply_topology_changes(&store, &watched, &tx, &ip_to_speaker, changes, test_stamp());
+        apply_topology_changes(
+            &store,
+            &watched,
+            &fanout,
+            &ip_to_speaker,
+            changes,
+            test_stamp(),
+        );
 
         // Verify GroupMembership is updated for each speaker
         let s = store.read();
@@ -794,7 +811,8 @@ mod tests {
     fn test_apply_topology_changes_emits_events_for_watched_properties() {
         let store = Arc::new(RwLock::new(StateStore::new()));
         let watched = Arc::new(RwLock::new(WatchCounts::new()));
-        let (tx, rx) = mpsc::channel();
+        let fanout = Arc::new(EventFanout::new());
+        let iter = ChangeIterator::new(&fanout);
 
         let speaker1 = SpeakerId::new("RINCON_111");
         let speaker2 = SpeakerId::new("RINCON_222");
@@ -837,23 +855,30 @@ mod tests {
         };
 
         let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::new()));
-        apply_topology_changes(&store, &watched, &tx, &ip_to_speaker, changes, test_stamp());
+        apply_topology_changes(
+            &store,
+            &watched,
+            &fanout,
+            &ip_to_speaker,
+            changes,
+            test_stamp(),
+        );
 
         // Should receive event for speaker1 (watched) but not speaker2 (not watched)
-        let event = rx.try_recv().unwrap();
+        let event = iter.try_recv().unwrap();
         assert_eq!(event.speaker_id, speaker1);
         assert_eq!(event.property_key(), GroupMembership::KEY);
         assert_eq!(event.service(), Service::ZoneGroupTopology);
 
         // No more events (speaker2 is not watched)
-        assert!(rx.try_recv().is_err());
+        assert!(iter.try_recv().is_none());
     }
 
     #[test]
     fn test_apply_topology_changes_clears_old_groups() {
         let store = Arc::new(RwLock::new(StateStore::new()));
         let watched = Arc::new(RwLock::new(WatchCounts::new()));
-        let (tx, _rx) = mpsc::channel();
+        let fanout = Arc::new(EventFanout::new());
 
         let speaker1 = SpeakerId::new("RINCON_111");
         let speaker2 = SpeakerId::new("RINCON_222");
@@ -908,7 +933,14 @@ mod tests {
         };
 
         let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::new()));
-        apply_topology_changes(&store, &watched, &tx, &ip_to_speaker, changes, test_stamp());
+        apply_topology_changes(
+            &store,
+            &watched,
+            &fanout,
+            &ip_to_speaker,
+            changes,
+            test_stamp(),
+        );
 
         // Verify old group is gone, new group exists
         let s = store.read();
@@ -921,7 +953,7 @@ mod tests {
     fn test_apply_topology_changes_updates_speaker_to_group_mapping() {
         let store = Arc::new(RwLock::new(StateStore::new()));
         let watched = Arc::new(RwLock::new(WatchCounts::new()));
-        let (tx, _rx) = mpsc::channel();
+        let fanout = Arc::new(EventFanout::new());
 
         let speaker1 = SpeakerId::new("RINCON_111");
         let speaker2 = SpeakerId::new("RINCON_222");
@@ -961,7 +993,14 @@ mod tests {
         };
 
         let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::new()));
-        apply_topology_changes(&store, &watched, &tx, &ip_to_speaker, changes, test_stamp());
+        apply_topology_changes(
+            &store,
+            &watched,
+            &fanout,
+            &ip_to_speaker,
+            changes,
+            test_stamp(),
+        );
 
         // Verify speaker_to_group mapping is updated
         let s = store.read();
@@ -976,7 +1015,8 @@ mod tests {
         // decodes to zero groups. It must not wipe cached group state.
         let store = Arc::new(RwLock::new(StateStore::new()));
         let watched = Arc::new(RwLock::new(WatchCounts::new()));
-        let (tx, rx) = mpsc::channel();
+        let fanout = Arc::new(EventFanout::new());
+        let iter = ChangeIterator::new(&fanout);
 
         let speaker1 = SpeakerId::new("RINCON_111");
         let group_id = GroupId::new("RINCON_111:1");
@@ -1009,7 +1049,14 @@ mod tests {
         };
 
         let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::new()));
-        apply_topology_changes(&store, &watched, &tx, &ip_to_speaker, partial, test_stamp());
+        apply_topology_changes(
+            &store,
+            &watched,
+            &fanout,
+            &ip_to_speaker,
+            partial,
+            test_stamp(),
+        );
 
         // The seeded group, its properties, and the speaker→group mapping survive
         let s = store.read();
@@ -1022,7 +1069,7 @@ mod tests {
         );
 
         // And no spurious notification was emitted
-        assert!(rx.try_recv().is_err());
+        assert!(iter.try_recv().is_none());
     }
 
     // ========================================================================
@@ -1069,15 +1116,14 @@ mod tests {
     fn one_speaker_worker_fixture() -> (
         Arc<RwLock<StateStore>>,
         Arc<RwLock<WatchCounts>>,
-        mpsc::Sender<ChangeEvent>,
-        mpsc::Receiver<ChangeEvent>,
+        Arc<EventFanout>,
+        ChangeIterator,
         Arc<RwLock<std::collections::HashMap<IpAddr, SpeakerId>>>,
         SpeakerId,
         IpAddr,
     ) {
         let store = Arc::new(RwLock::new(StateStore::new()));
         let watched = Arc::new(RwLock::new(WatchCounts::new()));
-        let (tx, rx) = mpsc::channel();
 
         let speaker_id = SpeakerId::new("RINCON_111");
         // RFC 5737 TEST-NET-1: documentation-only, never routed.
@@ -1092,11 +1138,14 @@ mod tests {
             speaker_id.clone(),
         )])));
 
+        let fanout = Arc::new(EventFanout::new());
+        let iter = ChangeIterator::new(&fanout);
+
         (
             store,
             watched,
-            tx,
-            rx,
+            fanout,
+            iter,
             ip_to_speaker,
             speaker_id,
             speaker_ip,
@@ -1121,7 +1170,7 @@ mod tests {
         // only afterwards does the NOTIFY reach the worker. Stamping the event at
         // apply time made it look newer than the local write, and the volume
         // visibly reverted to 10.
-        let (store, watched, tx, _rx, ip_to_speaker, speaker_id, speaker_ip) =
+        let (store, watched, fanout, _iter, ip_to_speaker, speaker_id, speaker_ip) =
             one_speaker_worker_fixture();
 
         // 1. The NOTIFY is observed at the callback server.
@@ -1137,7 +1186,7 @@ mod tests {
         tick();
 
         // 3. Only now does the already-stale NOTIFY reach the worker.
-        handle_event(&event, &store, &watched, &tx, &ip_to_speaker);
+        handle_event(&event, &store, &watched, &fanout, &ip_to_speaker);
 
         assert_eq!(
             store.read().get::<Volume>(&speaker_id),
@@ -1154,7 +1203,7 @@ mod tests {
         // the fetch response lands. Stamping the event at apply time made it look
         // newer than the fetch, so the fetch was dropped as `Stale` and `get()`
         // disagreed with `fetch()` indefinitely.
-        let (store, watched, tx, _rx, ip_to_speaker, speaker_id, speaker_ip) =
+        let (store, watched, fanout, _iter, ip_to_speaker, speaker_id, speaker_ip) =
             one_speaker_worker_fixture();
 
         // 1. The NOTIFY is observed at the callback server.
@@ -1166,7 +1215,7 @@ mod tests {
         tick();
 
         // 3. The NOTIFY reaches the worker first and is applied.
-        handle_event(&event, &store, &watched, &tx, &ip_to_speaker);
+        handle_event(&event, &store, &watched, &fanout, &ip_to_speaker);
         assert_eq!(
             store.read().get::<Volume>(&speaker_id),
             Some(Volume(10)),
@@ -1196,7 +1245,7 @@ mod tests {
         // local write happens first and the NOTIFY is observed after it, so the
         // event must win — on the instant, not merely on the `Event` >
         // `LocalAction` tie-break.
-        let (store, watched, tx, rx, ip_to_speaker, speaker_id, speaker_ip) =
+        let (store, watched, fanout, iter, ip_to_speaker, speaker_id, speaker_ip) =
             one_speaker_worker_fixture();
         retain_direct_watch(&watched, &speaker_id, Volume::KEY);
 
@@ -1212,7 +1261,7 @@ mod tests {
             &volume_event(speaker_ip, 10, event_observed),
             &store,
             &watched,
-            &tx,
+            &fanout,
             &ip_to_speaker,
         );
 
@@ -1224,7 +1273,7 @@ mod tests {
 
         // And it must still notify — a dropped notification is as bad as a
         // dropped write.
-        let notified = rx.try_recv().expect("newer event must still notify");
+        let notified = iter.try_recv().expect("newer event must still notify");
         assert_eq!(notified.property_key(), Volume::KEY);
         assert_eq!(
             notified.timestamp, event_observed,
@@ -1239,7 +1288,6 @@ mod tests {
 
         let store = Arc::new(RwLock::new(StateStore::new()));
         let watched = Arc::new(RwLock::new(WatchCounts::new()));
-        let (tx, rx) = mpsc::channel();
 
         let speaker_id = SpeakerId::new("RINCON_111");
         let speaker_ip: IpAddr = "192.168.1.101".parse().unwrap();
@@ -1253,6 +1301,9 @@ mod tests {
             ));
         }
         retain_direct_watch(&watched, &speaker_id, Volume::KEY);
+
+        let fanout = Arc::new(EventFanout::new());
+        let iter = ChangeIterator::new(&fanout);
 
         let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::from([(
             speaker_ip,
@@ -1290,10 +1341,16 @@ mod tests {
             make_event(speaker_ip, "37"),
         ];
 
-        run_event_loop(events.into_iter(), &store, &watched, &tx, &ip_to_speaker);
+        run_event_loop(
+            events.into_iter(),
+            &store,
+            &watched,
+            &fanout,
+            &ip_to_speaker,
+        );
 
         // The valid event was still processed and its notification delivered
-        let event = rx.try_recv().unwrap();
+        let event = iter.try_recv().unwrap();
         assert_eq!(event.speaker_id, speaker_id);
         assert_eq!(event.property_key(), Volume::KEY);
         assert_eq!(store.read().get::<Volume>(&speaker_id), Some(Volume(37)));
@@ -1303,7 +1360,8 @@ mod tests {
     fn test_apply_topology_changes_no_event_when_membership_unchanged() {
         let store = Arc::new(RwLock::new(StateStore::new()));
         let watched = Arc::new(RwLock::new(WatchCounts::new()));
-        let (tx, rx) = mpsc::channel();
+        let fanout = Arc::new(EventFanout::new());
+        let iter = ChangeIterator::new(&fanout);
 
         let speaker1 = SpeakerId::new("RINCON_111");
         let group_id = GroupId::new("RINCON_111:1");
@@ -1343,10 +1401,17 @@ mod tests {
         };
 
         let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::new()));
-        apply_topology_changes(&store, &watched, &tx, &ip_to_speaker, changes, test_stamp());
+        apply_topology_changes(
+            &store,
+            &watched,
+            &fanout,
+            &ip_to_speaker,
+            changes,
+            test_stamp(),
+        );
 
         // No event should be emitted since membership didn't change
-        assert!(rx.try_recv().is_err());
+        assert!(iter.try_recv().is_none());
     }
 
     // ========================================================================
@@ -1359,7 +1424,8 @@ mod tests {
 
         let store = Arc::new(RwLock::new(StateStore::new()));
         let watched = Arc::new(RwLock::new(WatchCounts::new()));
-        let (tx, rx) = mpsc::channel();
+        let fanout = Arc::new(EventFanout::new());
+        let iter = ChangeIterator::new(&fanout);
 
         let coordinator = SpeakerId::new("RINCON_COORD");
         let member = SpeakerId::new("RINCON_MEMBER");
@@ -1394,7 +1460,14 @@ mod tests {
 
         // Apply to coordinator only
         for change in &changes {
-            apply_property_change(&store, &watched, &tx, &coordinator, change, test_stamp());
+            apply_property_change(
+                &store,
+                &watched,
+                &fanout,
+                &coordinator,
+                change,
+                test_stamp(),
+            );
         }
 
         // Notify group members (notification only, no data copy)
@@ -1402,14 +1475,14 @@ mod tests {
             let s = store.read();
             resolve_group_members(&s, &coordinator)
         };
-        notify_group_members(&watched, &tx, &members, &changes, test_stamp());
+        notify_group_members(&watched, &fanout, &members, &changes, test_stamp());
 
         // Both coordinator and member should have received ChangeEvents
-        let event1 = rx.try_recv().unwrap();
+        let event1 = iter.try_recv().unwrap();
         assert_eq!(event1.speaker_id, coordinator);
         assert_eq!(event1.property_key(), PlaybackState::KEY);
 
-        let event2 = rx.try_recv().unwrap();
+        let event2 = iter.try_recv().unwrap();
         assert_eq!(event2.speaker_id, member);
         assert_eq!(event2.property_key(), PlaybackState::KEY);
 
@@ -1425,7 +1498,7 @@ mod tests {
         );
 
         // No more events
-        assert!(rx.try_recv().is_err());
+        assert!(iter.try_recv().is_none());
 
         // Coordinator has the value in its own props
         let s = store.read();
@@ -1447,7 +1520,8 @@ mod tests {
 
         let store = Arc::new(RwLock::new(StateStore::new()));
         let watched = Arc::new(RwLock::new(WatchCounts::new()));
-        let (tx, rx) = mpsc::channel();
+        let fanout = Arc::new(EventFanout::new());
+        let iter = ChangeIterator::new(&fanout);
 
         let speaker = SpeakerId::new("RINCON_STANDALONE");
         let group_id = GroupId::new("RINCON_STANDALONE:1");
@@ -1473,7 +1547,7 @@ mod tests {
         // Apply change to the standalone speaker
         let changes = vec![PropertyChange::PlaybackState(PlaybackState::Playing)];
         for change in &changes {
-            apply_property_change(&store, &watched, &tx, &speaker, change, test_stamp());
+            apply_property_change(&store, &watched, &fanout, &speaker, change, test_stamp());
         }
 
         // resolve_group_members should return empty for standalone
@@ -1484,9 +1558,9 @@ mod tests {
         assert!(members.is_empty());
 
         // Only one event (from the coordinator itself), no extra fan-out
-        let event = rx.try_recv().unwrap();
+        let event = iter.try_recv().unwrap();
         assert_eq!(event.speaker_id, speaker);
-        assert!(rx.try_recv().is_err());
+        assert!(iter.try_recv().is_none());
     }
 
     #[test]
@@ -1495,7 +1569,8 @@ mod tests {
         // notify group members even when a group exists.
         let store = Arc::new(RwLock::new(StateStore::new()));
         let watched = Arc::new(RwLock::new(WatchCounts::new()));
-        let (tx, rx) = mpsc::channel();
+        let fanout = Arc::new(EventFanout::new());
+        let iter = ChangeIterator::new(&fanout);
 
         let coordinator = SpeakerId::new("RINCON_COORD");
         let member = SpeakerId::new("RINCON_MEMBER");
@@ -1529,7 +1604,7 @@ mod tests {
         apply_property_change(
             &store,
             &watched,
-            &tx,
+            &fanout,
             &coordinator,
             &PropertyChange::Volume(Volume(80)),
             test_stamp(),
@@ -1537,12 +1612,12 @@ mod tests {
 
         // RenderingControl is PerSpeaker, so we do NOT notify members.
         // Only the coordinator gets the event.
-        let event = rx.try_recv().unwrap();
+        let event = iter.try_recv().unwrap();
         assert_eq!(event.speaker_id, coordinator);
         assert_eq!(event.property_key(), Volume::KEY);
 
         // No event for the member
-        assert!(rx.try_recv().is_err());
+        assert!(iter.try_recv().is_none());
 
         // Verify member does NOT have the volume value
         let s = store.read();
@@ -1588,7 +1663,8 @@ mod tests {
         use crate::property::PlaybackState;
 
         let watched = Arc::new(RwLock::new(WatchCounts::new()));
-        let (tx, rx) = mpsc::channel();
+        let fanout = Arc::new(EventFanout::new());
+        let iter = ChangeIterator::new(&fanout);
 
         let member_watched = SpeakerId::new("RINCON_WATCHED");
         let member_unwatched = SpeakerId::new("RINCON_UNWATCHED");
@@ -1600,14 +1676,14 @@ mod tests {
         let changes = vec![PropertyChange::PlaybackState(PlaybackState::Playing)];
         let members = vec![member_watched.clone(), member_unwatched.clone()];
 
-        notify_group_members(&watched, &tx, &members, &changes, test_stamp());
+        notify_group_members(&watched, &fanout, &members, &changes, test_stamp());
 
         // Only the watched member should get a notification
-        let event = rx.try_recv().unwrap();
+        let event = iter.try_recv().unwrap();
         assert_eq!(event.speaker_id, member_watched);
         assert_eq!(event.property_key(), PlaybackState::KEY);
 
         // No event for the unwatched member
-        assert!(rx.try_recv().is_err());
+        assert!(iter.try_recv().is_none());
     }
 }

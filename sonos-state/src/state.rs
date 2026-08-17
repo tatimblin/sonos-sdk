@@ -28,7 +28,7 @@
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
-use std::sync::{mpsc, Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -41,7 +41,7 @@ use tracing::info;
 
 use crate::decoder::PropertyChange;
 use crate::event_worker::spawn_state_event_worker;
-use crate::iter::ChangeIterator;
+use crate::iter::{ChangeIterator, EventFanout};
 use crate::model::{GroupId, SpeakerId, SpeakerInfo};
 use crate::property::{GroupInfo, Property, Scope, SonosProperty, Topology};
 use crate::{Result, StateError};
@@ -640,11 +640,13 @@ pub struct StateManager {
     /// Event manager (set-once via OnceLock — enables live events)
     event_manager: OnceLock<Arc<SonosEventManager>>,
 
-    /// Channel for sending change events to iter()
-    event_tx: mpsc::Sender<ChangeEvent>,
-
-    /// Receiver for iter() - wrapped in `Arc<Mutex>` for cloning
-    event_rx: Arc<Mutex<mpsc::Receiver<ChangeEvent>>>,
+    /// Fan-out for change events: every `iter()` is an independent subscriber
+    /// receiving every event.
+    ///
+    /// Replaces the previous single `mpsc::Sender`/shared-`Receiver` pair, under
+    /// which two `iter()` loops silently split the stream between them. See
+    /// [`EventFanout`].
+    fanout: Arc<EventFanout>,
 
     /// Background event processor handle (lazily spawned)
     _worker: Mutex<Option<JoinHandle<()>>>,
@@ -854,6 +856,14 @@ impl StateManager {
     ///
     /// Only emits events for properties that have been watched.
     ///
+    /// Each call returns an **independent** iterator: every iterator receives
+    /// every event, so two event loops both see the whole stream instead of
+    /// splitting it between them. An iterator only receives events emitted after
+    /// it was created, so take it before the writes you want to observe.
+    ///
+    /// Each iterator owns an unbounded queue, so a slow consumer never loses an
+    /// event and never blocks a fast one — and never drains means never bounded.
+    ///
     /// # Example
     ///
     /// ```rust,ignore
@@ -869,7 +879,7 @@ impl StateManager {
     /// }
     /// ```
     pub fn iter(&self) -> ChangeIterator {
-        ChangeIterator::new(Arc::clone(&self.event_rx))
+        ChangeIterator::new(&self.fanout)
     }
 
     /// Get current property value (sync, no subscription)
@@ -1092,8 +1102,7 @@ impl StateManager {
             return;
         };
 
-        let _ = self
-            .event_tx
+        self.fanout
             .send(ChangeEvent::new(speaker_id.clone(), change, stamp));
     }
 
@@ -1231,7 +1240,7 @@ impl StateManager {
             em,
             Arc::clone(&self.store),
             Arc::clone(&self.watched),
-            self.event_tx.clone(),
+            Arc::clone(&self.fanout),
             Arc::clone(&self.ip_to_speaker),
         );
         info!("StateManager event worker started (lazy init)");
@@ -1275,8 +1284,7 @@ impl Clone for StateManager {
             watched: Arc::clone(&self.watched),
             ip_to_speaker: Arc::clone(&self.ip_to_speaker),
             event_manager,
-            event_tx: self.event_tx.clone(),
-            event_rx: Arc::clone(&self.event_rx),
+            fanout: Arc::clone(&self.fanout),
             _worker: Mutex::new(None),
             cleanup_timeout: self.cleanup_timeout,
             key_to_service: Arc::clone(&self.key_to_service),
@@ -1324,7 +1332,7 @@ impl StateManagerBuilder {
 
     /// Build the StateManager
     pub fn build(self) -> Result<StateManager> {
-        let (event_tx, event_rx) = mpsc::channel();
+        let fanout = Arc::new(EventFanout::new());
 
         let store = Arc::new(RwLock::new(StateStore::new()));
         let watched = Arc::new(RwLock::new(WatchCounts::new()));
@@ -1349,7 +1357,7 @@ impl StateManagerBuilder {
                 em,
                 Arc::clone(&store),
                 Arc::clone(&watched),
-                event_tx.clone(),
+                Arc::clone(&fanout),
                 Arc::clone(&ip_to_speaker),
             );
             info!("StateManager event worker started");
@@ -1361,8 +1369,7 @@ impl StateManagerBuilder {
             watched,
             ip_to_speaker,
             event_manager: event_manager_lock,
-            event_tx,
-            event_rx: Arc::new(Mutex::new(event_rx)),
+            fanout,
             _worker: Mutex::new(worker),
             cleanup_timeout: self.cleanup_timeout,
             key_to_service,
@@ -1377,6 +1384,7 @@ impl StateManagerBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::iter::ChangeIterator;
     use crate::property::{GroupVolume, PlaybackState, Volume};
     use sonos_api::Service;
 
@@ -1483,11 +1491,12 @@ mod tests {
         // Register watch
         manager.register_watch(&speaker_id, "volume");
 
+        // Subscribe before writing: an iterator receives events emitted after
+        // it exists, not a replay of everything since the manager was built.
+        let iter = manager.iter();
+
         // Set property (should emit event)
         manager.set_property(&speaker_id, Volume::new(75));
-
-        // Get event via iter
-        let iter = manager.iter();
         let event = iter.recv_timeout(std::time::Duration::from_millis(100));
         assert!(event.is_some());
 
@@ -1526,11 +1535,12 @@ mod tests {
         // Register watch on coordinator for group_volume
         manager.register_watch(&speaker_id, "group_volume");
 
+        let iter = manager.iter();
+
         // Set group property (should emit event via coordinator)
         manager.set_group_property(&group_id, GroupVolume::new(80));
 
         // Verify event was emitted
-        let iter = manager.iter();
         let event = iter.recv_timeout(std::time::Duration::from_millis(100));
         assert!(event.is_some());
 
@@ -1566,10 +1576,10 @@ mod tests {
             ));
         }
 
+        let iter = manager.iter();
+
         // Don't register any watch
         manager.set_group_property(&group_id, GroupVolume::new(50));
-
-        let iter = manager.iter();
         let event = iter.recv_timeout(std::time::Duration::from_millis(100));
         assert!(event.is_none());
     }
@@ -2463,13 +2473,13 @@ mod tests {
         let speaker_id = SpeakerId::new("RINCON_QUEUE");
         manager.register_watch(&speaker_id, PlaybackState::KEY);
 
+        let iter = manager.iter();
+
         // Queue all three transitions *before* reading any of them, which is
         // exactly the render-loop-behind-by-a-frame case.
         manager.set_property(&speaker_id, PlaybackState::Playing);
         manager.set_property(&speaker_id, PlaybackState::Transitioning);
         manager.set_property(&speaker_id, PlaybackState::Playing);
-
-        let iter = manager.iter();
         let observed: Vec<PlaybackState> = iter
             .try_iter()
             .filter_map(|e| match e.change {
@@ -2494,6 +2504,112 @@ mod tests {
             manager.get_property::<PlaybackState>(&speaker_id),
             Some(PlaybackState::Playing)
         );
+    }
+
+    /// A manager with one speaker watched for `Volume`, ready to emit.
+    fn manager_watching_volume() -> (StateManager, SpeakerId) {
+        let manager = StateManager::new().unwrap();
+        manager
+            .add_devices(vec![Device {
+                id: "RINCON_FANOUT".to_string(),
+                name: "Living Room".to_string(),
+                room_name: "Living Room".to_string(),
+                // RFC 5737 TEST-NET-1: documentation-only, never routed.
+                ip_address: "192.0.2.10".to_string(),
+                port: 1400,
+                model_name: "Sonos One".to_string(),
+            }])
+            .unwrap();
+        let speaker_id = SpeakerId::new("RINCON_FANOUT");
+        manager.register_watch(&speaker_id, Volume::KEY);
+        (manager, speaker_id)
+    }
+
+    fn volumes_from(iter: &ChangeIterator) -> Vec<u8> {
+        iter.try_iter()
+            .filter_map(|e| match e.change {
+                PropertyChange::Volume(v) => Some(v.value()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// **The defect this fan-out exists to fix.** Two independent `iter()` loops
+    /// must each see the *whole* stream.
+    ///
+    /// Previously both iterators locked one shared receiver, so every event went
+    /// to whichever consumer won the lock and each saw only a random subset —
+    /// silently, with no error and no log. A dashboard that added a second event
+    /// loop simply started missing half its updates.
+    #[test]
+    fn test_two_iterators_each_receive_every_event() {
+        let (manager, speaker_id) = manager_watching_volume();
+
+        let dashboard = manager.iter();
+        let logger = manager.iter();
+
+        for v in [10u8, 20, 30, 40] {
+            manager.set_property(&speaker_id, Volume::new(v));
+        }
+
+        // Neither consumer is missing anything, and neither stole from the other.
+        assert_eq!(
+            volumes_from(&dashboard),
+            vec![10, 20, 30, 40],
+            "the first iterator must see every event"
+        );
+        assert_eq!(
+            volumes_from(&logger),
+            vec![10, 20, 30, 40],
+            "the second iterator must see every event too, not a subset"
+        );
+    }
+
+    /// No-regression baseline: one consumer still receives every event, in the
+    /// order it was emitted. Fanning out must not reorder or drop anything, which
+    /// is what keeps the observation-time ordering of 4.1a meaningful downstream.
+    #[test]
+    fn test_single_iterator_receives_every_event_in_order() {
+        let (manager, speaker_id) = manager_watching_volume();
+
+        let iter = manager.iter();
+        let sent: Vec<u8> = (1..=25).collect();
+        for &v in &sent {
+            manager.set_property(&speaker_id, Volume::new(v));
+        }
+
+        assert_eq!(volumes_from(&iter), sent);
+    }
+
+    /// Dropping one consumer must neither stall the survivor nor leak its slot.
+    ///
+    /// The departed iterator's queue is released, and the remaining one keeps
+    /// receiving — the sender side does not wedge on a dead subscriber or keep
+    /// feeding it forever.
+    #[test]
+    fn test_dropped_consumer_does_not_stall_survivor() {
+        let (manager, speaker_id) = manager_watching_volume();
+
+        let survivor = manager.iter();
+        let departing = manager.iter();
+
+        manager.set_property(&speaker_id, Volume::new(5));
+        drop(departing);
+
+        // The survivor still gets everything, before and after the departure.
+        manager.set_property(&speaker_id, Volume::new(6));
+        manager.set_property(&speaker_id, Volume::new(7));
+
+        assert_eq!(
+            volumes_from(&survivor),
+            vec![5, 6, 7],
+            "the remaining consumer must keep receiving after a sibling drops"
+        );
+
+        // And a fresh subscriber still works, so the registry is not corrupted.
+        let latecomer = manager.iter();
+        manager.set_property(&speaker_id, Volume::new(8));
+        assert_eq!(volumes_from(&latecomer), vec![8]);
     }
 
     /// A slow `fetch()` must not overwrite a newer event-derived value.

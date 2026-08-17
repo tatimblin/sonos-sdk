@@ -1283,10 +1283,12 @@ mod tests {
         );
 
         // The surviving handle must still receive events, not merely be flagged.
+        // Subscribe first: an iterator receives events emitted after it exists,
+        // not a replay of everything since the manager was built.
+        let iter = state_manager.iter();
         state_manager.set_property(&speaker_id, Volume::new(11));
         state_manager.set_property(&speaker_id, Mute::new(true));
 
-        let iter = state_manager.iter();
         let first_event = iter
             .recv_timeout(std::time::Duration::from_millis(100))
             .expect("Volume is still held by `second` and must still emit");

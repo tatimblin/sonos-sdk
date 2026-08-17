@@ -945,6 +945,7 @@ None required.
 
 | Version | Changes | Migration Guide |
 |---------|---------|-----------------|
+| `0.7.0` | **Breaking**: `system.iter()` now returns an independent iterator per call — every iterator receives every event, instead of concurrent iterators silently splitting the stream between them | An iterator now only receives events emitted *after* it is created, where the single shared queue used to buffer everything since startup. Move `let iter = system.iter()` *before* the writes you want to observe. Code that already drained from one place is unaffected. See `sonos-state.md` 4.1b |
 | `0.7.0` | **Breaking**: `ChangeEvent` carries the changed value (`event.change: PropertyChange`); `property_key` and `service` become methods; `fetch()` writes are ordered by observation time | Replace `event.property_key` with `event.property_key()` and `event.service` with `event.service()`. Prefer matching on `event.change` over re-reading the store — a store re-read cannot see intermediate values in a queued burst |
 | `0.3.0` | RAII `WatchHandle`, remove `unwatch()`, 50ms grace period, `WatchGuard` | Replace `watch()` result handling: hold `WatchHandle`, drop to unsubscribe instead of calling `unwatch()` |
 | `0.2.0` | Lazy event init, method renames, fluent navigation, prelude, `#[non_exhaustive]` | Replace `get_` prefixed methods with short names; use `sonos_sdk::prelude::*` |
@@ -1001,6 +1002,7 @@ None required.
 | Property Handle | Struct providing get/fetch/watch methods for a single property type |
 | DOM-like API | API pattern where properties are accessed as fields, similar to browser DOM |
 | PropertyWatcher | Async iterator for receiving property change events |
+| ChangeIterator | Blocking per-subscriber iterator over change events; each `system.iter()` call returns an independent one that receives every event |
 | StateManager | Central reactive state management component from sonos-state |
 | UPnP | Universal Plug and Play protocol used by Sonos for device communication |
 

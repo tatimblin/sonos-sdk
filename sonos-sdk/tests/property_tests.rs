@@ -398,11 +398,12 @@ proptest! {
         // Register watch for the property
         state_manager.register_watch(&speaker_id_obj, Volume::KEY);
 
+        // Subscribe before the triggering write: each iterator receives events
+        // emitted after it exists, not a replay since the manager was built.
+        let iter = state_manager.iter();
+
         // Change the property value
         state_manager.set_property(&speaker_id_obj, Volume::new(updated_volume));
-
-        // Get the iterator and check for the event
-        let iter = state_manager.iter();
         let event = iter.recv_timeout(std::time::Duration::from_millis(100));
 
         prop_assert!(
@@ -441,11 +442,12 @@ proptest! {
         // Register watch for the property
         state_manager.register_watch(&speaker_id_obj, Volume::KEY);
 
+        // Subscribe before the triggering write: each iterator receives events
+        // emitted after it exists, not a replay since the manager was built.
+        let iter = state_manager.iter();
+
         // Change the property value
         state_manager.set_property(&speaker_id_obj, Volume::new(updated_volume));
-
-        // Get the iterator and check the event data
-        let iter = state_manager.iter();
         let event = iter.recv_timeout(std::time::Duration::from_millis(100));
 
         prop_assert!(event.is_some(), "Event should be emitted");
@@ -489,14 +491,15 @@ proptest! {
         state_manager.register_watch(&speaker_id_obj, Volume::KEY);
         state_manager.register_watch(&speaker_id_obj, Mute::KEY);
 
+        // Subscribe before the triggering write: each iterator receives events
+        // emitted after it exists, not a replay since the manager was built.
+        let iter = state_manager.iter();
+
         // Change volume
         state_manager.set_property(&speaker_id_obj, Volume::new(volume_value));
 
         // Change mute
         state_manager.set_property(&speaker_id_obj, Mute::new(mute_value));
-
-        // Get the iterator and collect events
-        let iter = state_manager.iter();
 
         // First event should be for volume
         let volume_event = iter.recv_timeout(std::time::Duration::from_millis(100));
@@ -540,11 +543,14 @@ proptest! {
         // Set initial value (NOT watched)
         state_manager.set_property(&speaker_id_obj, Volume::new(initial_volume));
 
+        // Subscribe before the triggering write: each iterator receives events
+        // emitted after it exists, not a replay since the manager was built.
+        let iter = state_manager.iter();
+
         // Change the property value WITHOUT watching it
         state_manager.set_property(&speaker_id_obj, Volume::new(updated_volume));
 
-        // Get the iterator and check that NO event was emitted
-        let iter = state_manager.iter();
+        // Check that NO event was emitted
         let event = iter.recv_timeout(std::time::Duration::from_millis(50));
 
         prop_assert!(
@@ -577,11 +583,14 @@ proptest! {
         // Unwatch the property
         state_manager.unregister_watch(&speaker_id_obj, Volume::KEY);
 
+        // Subscribe before the triggering write: each iterator receives events
+        // emitted after it exists, not a replay since the manager was built.
+        let iter = state_manager.iter();
+
         // Change the property value (now unwatched)
         state_manager.set_property(&speaker_id_obj, Volume::new(updated_volume));
 
-        // Get the iterator and check that NO event was emitted
-        let iter = state_manager.iter();
+        // Check that NO event was emitted
         let event = iter.recv_timeout(std::time::Duration::from_millis(50));
 
         prop_assert!(
@@ -605,12 +614,13 @@ proptest! {
         // Only watch volume, NOT mute
         state_manager.register_watch(&speaker_id_obj, Volume::KEY);
 
+        // Subscribe before the triggering write: each iterator receives events
+        // emitted after it exists, not a replay since the manager was built.
+        let iter = state_manager.iter();
+
         // Change both properties
         state_manager.set_property(&speaker_id_obj, Volume::new(volume_value));
         state_manager.set_property(&speaker_id_obj, Mute::new(mute_value));
-
-        // Get the iterator
-        let iter = state_manager.iter();
 
         // Should get exactly one event (for volume)
         let first_event = iter.recv_timeout(std::time::Duration::from_millis(100));
@@ -1454,12 +1464,15 @@ proptest! {
         // Watch GroupMembership
         state_manager.register_watch(&speaker_id_obj, GroupMembership::KEY);
 
+        // Subscribe before the triggering write: each iterator receives events
+        // emitted after it exists, not a replay since the manager was built.
+        let iter = state_manager.iter();
+
         // Set initial GroupMembership
         let group_id1 = GroupId::new(format!("{speaker_id}:1"));
         state_manager.set_property(&speaker_id_obj, GroupMembership::new(group_id1.clone(), true));
 
-        // Get iterator and consume the first event
-        let iter = state_manager.iter();
+        // Consume the first event
         let event1 = iter.recv_timeout(std::time::Duration::from_millis(100));
         prop_assert!(event1.is_some(), "First GroupMembership change should emit event");
 
