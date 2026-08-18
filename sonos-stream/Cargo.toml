@@ -13,8 +13,8 @@ name = "sonos_stream"
 
 [dependencies]
 # Local workspace dependencies
-callback-server = { package = "sonos-sdk-callback-server", path = "../callback-server", version = "0.7.2" }
-sonos-api = { path = "../sonos-api", version = "0.7.2" }
+callback-server = { package = "sonos-sdk-callback-server", path = "../callback-server", version = "0.8.0" }
+sonos-api = { path = "../sonos-api", version = "0.8.0" }
 
 # Async runtime and utilities
 tokio = { workspace = true }
@@ -32,7 +32,7 @@ async-trait = "0.1"
 tracing = { workspace = true }
 
 [dev-dependencies]
-sonos-discovery = { package = "sonos-sdk-discovery", path = "../sonos-discovery", version = "0.7.2" }
+sonos-discovery = { package = "sonos-sdk-discovery", path = "../sonos-discovery", version = "0.8.0" }
 # Used by the `live_demo` example, which CI compiles via `--all-targets`.
 tracing-subscriber = { workspace = true }
 

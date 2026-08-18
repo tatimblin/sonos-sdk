@@ -11,10 +11,10 @@ description = "Sync-first, DOM-like SDK for controlling Sonos speakers via UPnP"
 readme = "README.md"
 
 [dependencies]
-sonos-state = { package = "sonos-sdk-state", path = "../sonos-state", version = "0.7.2" }
-sonos-api = { path = "../sonos-api", version = "0.7.2" }
-sonos-discovery = { package = "sonos-sdk-discovery", path = "../sonos-discovery", version = "0.7.2" }
-sonos-event-manager = { package = "sonos-sdk-event-manager", path = "../sonos-event-manager", version = "0.7.2" }
+sonos-state = { package = "sonos-sdk-state", path = "../sonos-state", version = "0.8.0" }
+sonos-api = { path = "../sonos-api", version = "0.8.0" }
+sonos-discovery = { package = "sonos-sdk-discovery", path = "../sonos-discovery", version = "0.8.0" }
+sonos-event-manager = { package = "sonos-sdk-event-manager", path = "../sonos-event-manager", version = "0.8.0" }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
