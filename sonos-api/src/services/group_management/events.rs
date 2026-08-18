@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 
-use crate::events::{xml_utils, EnrichedEvent, EventParser, EventSource};
+use crate::events::{EnrichedEvent, EventParser, EventSource};
 use crate::{ApiError, Result, Service};
 
 /// GroupManagement event - direct serde mapping from UPnP event XML
@@ -91,8 +91,7 @@ impl GroupManagementEvent {
 
     /// Parse from UPnP event XML using serde
     pub fn from_xml(xml: &str) -> Result<Self> {
-        let clean_xml = xml_utils::strip_namespaces(xml);
-        quick_xml::de::from_str(&clean_xml)
+        quick_xml::de::from_str(xml)
             .map_err(|e| ApiError::ParseError(format!("Failed to parse GroupManagement XML: {e}")))
     }
 }

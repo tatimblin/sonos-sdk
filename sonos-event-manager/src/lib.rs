@@ -64,6 +64,10 @@
 //!
 //! This approach is similar to RxJS's `refCount()` operator or connection pooling with reference counting.
 
+// This workspace contains no `unsafe` code. Asserted here so a future
+// addition is a hard compile error, not a silent change in guarantees.
+#![forbid(unsafe_code)]
+
 pub mod error;
 pub mod iter;
 pub mod manager;

@@ -85,20 +85,13 @@ impl SonosClient {
         let service_info = Op::SERVICE.info();
         let payload = Op::build_payload(request);
 
-        let xml = self
-            .soap_client
-            .call(
-                ip,
-                service_info.endpoint,
-                service_info.service_uri,
-                Op::ACTION,
-                &payload,
-            )
-            .map_err(|e| match e {
-                soap_client::SoapError::Network(msg) => ApiError::NetworkError(msg),
-                soap_client::SoapError::Parse(msg) => ApiError::ParseError(msg),
-                soap_client::SoapError::Fault { code, .. } => ApiError::SoapFault(code),
-            })?;
+        let xml = self.soap_client.call(
+            ip,
+            service_info.endpoint,
+            service_info.service_uri,
+            Op::ACTION,
+            &payload,
+        )?;
 
         Op::parse_response(&xml)
     }
@@ -150,20 +143,13 @@ impl SonosClient {
         }
 
         // Execute SOAP call
-        let xml = self
-            .soap_client
-            .call(
-                ip,
-                service_info.endpoint,
-                service_info.service_uri,
-                Op::ACTION,
-                &payload,
-            )
-            .map_err(|e| match e {
-                soap_client::SoapError::Network(msg) => ApiError::NetworkError(msg),
-                soap_client::SoapError::Parse(msg) => ApiError::ParseError(msg),
-                soap_client::SoapError::Fault { code, .. } => ApiError::SoapFault(code),
-            })?;
+        let xml = self.soap_client.call(
+            ip,
+            service_info.endpoint,
+            service_info.service_uri,
+            Op::ACTION,
+            &payload,
+        )?;
 
         operation.parse_response(&xml)
     }

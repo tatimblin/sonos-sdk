@@ -291,14 +291,16 @@ pub struct SonosSystem {
 ## Verification
 
 ```bash
-# Run all tests
-cargo test
+# Run all tests. The feature flag is required: sonos-sdk's
+# tests/property_tests.rs does not compile without it, so bare
+# `cargo test` fails. See docs/CONTRIBUTING.md.
+cargo test --workspace --features sonos-sdk/test-support --locked
 
 # Test specific crate
 cargo test -p sonos-api
 
 # Check for errors
-cargo check
+cargo check --workspace
 
 # Lint
 cargo clippy

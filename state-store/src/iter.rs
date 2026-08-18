@@ -206,8 +206,7 @@ mod tests {
         }
 
         // Should get all events via try_iter
-        let events: Vec<_> = iter.try_iter().collect();
-        assert_eq!(events.len(), 3);
+        assert_eq!(iter.try_iter().count(), 3);
 
         // Should be empty now
         assert!(iter.try_recv().is_none());

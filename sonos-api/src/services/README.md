@@ -255,11 +255,14 @@ impl MyServiceEvent {
         self.property.last_change.instance.my_field.as_ref().map(|v| v.val.clone())
     }
 
-    /// Parse from UPnP event XML using serde
+    /// Parse from UPnP event XML using serde.
+    ///
+    /// No namespace preprocessing is needed: quick-xml's serde deserializer
+    /// matches on element *local* names, so `<e:propertyset>` deserializes as
+    /// `propertyset`. Write `rename` values without prefixes.
     pub fn from_xml(xml: &str) -> Result<Self> {
-        let clean_xml = xml_utils::strip_namespaces(xml);
-        quick_xml::de::from_str(&clean_xml)
-            .map_err(|e| ApiError::ParseError(format!("Failed to parse MyService XML: {}", e)))
+        quick_xml::de::from_str(xml)
+            .map_err(|e| ApiError::ParseError(format!("Failed to parse MyService XML: {e}")))
     }
 }
 
@@ -384,9 +387,14 @@ Events follow the UPnP eventing specification:
 
 Use serde for type-safe XML deserialization:
 
-- `xml_utils::strip_namespaces()` - Remove XML namespace prefixes
+- `quick_xml::de::from_str()` - Deserialize the raw NOTIFY body directly. **No namespace
+  stripping**: quick-xml matches on element *local* names, so `<e:property>` deserializes as
+  `property` and `<dc:title>` as `title`. Write `#[serde(rename = "...")]` values without
+  prefixes — `rename = "dc:title"` can never match
+- `xml_utils::parse()` - The same thing, wrapping the error as `ApiError::ParseError`
 - `xml_utils::deserialize_nested()` - Handle nested escaped XML content
 - `xml_utils::ValueAttribute` - Parse elements with `val` attributes
+- `xml_utils::NestedAttribute<T>` - A `val` attribute whose content is escaped XML
 
 ### Channel-Based Fields
 

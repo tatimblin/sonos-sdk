@@ -262,10 +262,15 @@ impl MyServiceEvent {
             .map(|v| v.val.clone())
     }
 
+    /// Parse a raw UPnP NOTIFY body.
+    ///
+    /// No namespace preprocessing: quick-xml's serde deserializer matches on
+    /// *local* names only, so `<e:propertyset>` deserializes as `propertyset` and
+    /// `<dc:title>` as `title`. Write `rename` values without prefixes —
+    /// `rename = "e:property"` would never match.
     pub fn from_xml(xml: &str) -> Result<Self> {
-        let clean_xml = xml_utils::strip_namespaces(xml);
-        quick_xml::de::from_str(&clean_xml)
-            .map_err(|e| ApiError::ParseError(format!("Failed to parse MyService XML: {}", e)))
+        quick_xml::de::from_str(xml)
+            .map_err(|e| ApiError::ParseError(format!("Failed to parse MyService XML: {e}")))
     }
 }
 

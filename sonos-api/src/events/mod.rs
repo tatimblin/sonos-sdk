@@ -51,10 +51,7 @@ pub mod xml_utils;
 
 // Re-export common types for convenience
 pub use processor::EventProcessor;
-pub use types::{
-    extract_xml_value, EnrichedEvent, EventParser, EventParserDyn, EventParserRegistry, EventSource,
-};
+pub use types::{EnrichedEvent, EventParser, EventParserDyn, EventParserRegistry, EventSource};
 pub use xml_utils::{
-    deserialize_nested, parse, strip_namespaces, DidlItem, DidlLite, DidlResource, NestedAttribute,
-    ValueAttribute,
+    deserialize_nested, parse, DidlItem, DidlLite, DidlResource, NestedAttribute, ValueAttribute,
 };

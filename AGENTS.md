@@ -4,7 +4,7 @@
 
 ## Standard Development Workflow
 
-1. If you are working on a crate first read the SPEC file located in `/docs/spec/[CRATE_NAME].md` and any other service required for the task.
+1. If you are working on a crate first read the SPEC file located in `/docs/specs/[CRATE_NAME].md` and any other service required for the task.
 2. Always update the appropriate README.md or SPEC file when you make changes that impact the accuracy of these documents.
 3. Do not create additional markdown files in the repository unless you are explicitly instructed to do so.
 4. When writing unit tests, make concise and easy to read unit tests.
@@ -33,4 +33,4 @@ A multi-crate rust project to provide a sonos SDK capable of live updates and fu
 
 - **`/docs/SPEC_TEMPLATE.md`** - A template for writing specs. Specs live in each service and answer the "WHY"" for each technical detail in the system. Knowing the "WHY" is important for staying true to the intent of a system.
 - **`/docs/SUMMARY.md`** - Index of each crate in the system and how they fit together.
-- **`/docs/spec/[CRATE_NAME]`** - A living spec for a crate. It's accuracy is as important as the accuracy of the code.
+- **`/docs/specs/[CRATE_NAME].md`** - A living spec for a crate. It's accuracy is as important as the accuracy of the code.

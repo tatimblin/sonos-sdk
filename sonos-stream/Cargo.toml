@@ -17,28 +17,24 @@ callback-server = { package = "sonos-sdk-callback-server", path = "../callback-s
 sonos-api = { path = "../sonos-api", version = "0.7.2" }
 
 # Async runtime and utilities
-tokio = { version = "1.0", features = ["full"] }
+tokio = { workspace = true }
 futures = "0.3"
 
 # Serialization and data handling
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-quick-xml = { version = "0.31", features = ["serialize"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 # Error handling and utilities
-thiserror = "1.0"
+thiserror = { workspace = true }
 async-trait = "0.1"
 
 # Logging
-tracing = "0.1"
-tracing-subscriber = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 sonos-discovery = { package = "sonos-sdk-discovery", path = "../sonos-discovery", version = "0.7.2" }
-rstest = "0.18"
-proptest = "1.0"
-tokio-test = "0.4"
-mockall = "0.11"
+# Used by the `live_demo` example, which CI compiles via `--all-targets`.
+tracing-subscriber = { workspace = true }
 
 [features]
 default = ["firewall-detection"]
@@ -68,3 +64,6 @@ required-features = ["firewall-detection"]
 name = "live_demo"
 path = "examples/live_demo.rs"
 required-features = ["firewall-detection"]
+
+[lints]
+workspace = true

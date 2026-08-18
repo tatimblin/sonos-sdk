@@ -13,13 +13,20 @@ exclude = ["tests/"]
 name = "sonos_discovery"
 
 [dependencies]
-reqwest = { version = "0.11", features = ["blocking"] }
-quick-xml = { version = "0.31", features = ["serialize"] }
-serde = { version = "1.0", features = ["derive"] }
-if-addrs = "0.15"
-tracing = "0.1"
+ureq = "3.4"
+quick-xml = { workspace = true }
+serde = { workspace = true }
+if-addrs = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
 rstest = "0.18"
 mockito = "1.2"
-serde_json = "1.0"
+serde_json = { workspace = true }
+# Test-only HTTP client used by the fixture-based integration tests.
+reqwest = { workspace = true, features = ["blocking"] }
+
+[lints]
+workspace = true

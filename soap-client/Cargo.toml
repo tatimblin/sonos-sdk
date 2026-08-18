@@ -12,6 +12,11 @@ readme = "README.md"
 name = "soap_client"
 
 [dependencies]
+# Pinned to 2.x: 3.x removes `Agent::request`, `Error::Status` and
+# `Error::Transport`, all of which this crate still uses.
 ureq = { version = "2.9", features = ["json"] }
-xmltree = "0.10"
-thiserror = "1.0"
+quick-xml = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

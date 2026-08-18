@@ -198,8 +198,7 @@ pub struct SatelliteInfo {
 /// Shared by UPnP event processing and polling for parity.
 /// The XML should be the inner `<ZoneGroupState>` content, e.g. from `GetZoneGroupState` response.
 pub fn parse_zone_group_state_xml(raw_xml: &str) -> Result<Vec<ZoneGroupInfo>> {
-    let clean_xml = xml_utils::strip_namespaces(raw_xml);
-    let state: ZoneGroupState = quick_xml::de::from_str(&clean_xml)
+    let state: ZoneGroupState = quick_xml::de::from_str(raw_xml)
         .map_err(|e| ApiError::ParseError(format!("ZoneGroupState parse error: {e}")))?;
     Ok(convert_zone_groups(&state))
 }
@@ -286,8 +285,7 @@ impl ZoneGroupTopologyEvent {
 
     /// Parse from UPnP event XML using serde
     pub fn from_xml(xml: &str) -> Result<Self> {
-        let clean_xml = xml_utils::strip_namespaces(xml);
-        quick_xml::de::from_str(&clean_xml).map_err(|e| {
+        quick_xml::de::from_str(xml).map_err(|e| {
             ApiError::ParseError(format!("Failed to parse ZoneGroupTopology XML: {e}"))
         })
     }

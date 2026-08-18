@@ -45,6 +45,10 @@
 //! - [`polling`] - Intelligent polling system with service-specific strategies
 //! - [`events`] - Event processing, enrichment, and iterator interfaces
 
+// This workspace contains no `unsafe` code. Asserted here so a future
+// addition is a hard compile error, not a silent change in guarantees.
+#![forbid(unsafe_code)]
+
 pub mod broker;
 pub mod config;
 pub mod error;

@@ -476,23 +476,12 @@ impl crate::operation::UPnPOperation for AddURIToQueueOperation {
         ))
     }
 
-    fn parse_response(xml: &xmltree::Element) -> Result<Self::Response, crate::error::ApiError> {
+    fn parse_response(xml: &str) -> Result<Self::Response, crate::error::ApiError> {
+        use crate::operation::response_field;
         Ok(AddURIToQueueResponse {
-            first_track_number_enqueued: xml
-                .get_child("FirstTrackNumberEnqueued")
-                .and_then(|e| e.get_text())
-                .and_then(|s| s.parse().ok())
-                .unwrap_or_default(),
-            num_tracks_added: xml
-                .get_child("NumTracksAdded")
-                .and_then(|e| e.get_text())
-                .and_then(|s| s.parse().ok())
-                .unwrap_or_default(),
-            new_queue_length: xml
-                .get_child("NewQueueLength")
-                .and_then(|e| e.get_text())
-                .and_then(|s| s.parse().ok())
-                .unwrap_or_default(),
+            first_track_number_enqueued: response_field(xml, "FirstTrackNumberEnqueued"),
+            num_tracks_added: response_field(xml, "NumTracksAdded"),
+            new_queue_length: response_field(xml, "NewQueueLength"),
         })
     }
 }

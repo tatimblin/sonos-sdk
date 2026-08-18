@@ -137,6 +137,10 @@
 //! This crate is intended for internal use within the workspace and is not published
 //! to crates.io. It provides the foundation for device-specific event handling layers.
 
+// This workspace contains no `unsafe` code. Asserted here so a future
+// addition is a hard compile error, not a silent change in guarantees.
+#![forbid(unsafe_code)]
+
 pub mod firewall_detection;
 pub mod router;
 mod server;

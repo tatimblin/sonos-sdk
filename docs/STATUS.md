@@ -2,7 +2,7 @@
 
 Service completion matrix and development roadmap for the Sonos SDK.
 
-**Last updated:** 2026-08-15
+**Last updated:** 2026-08-17
 
 ## Service Completion Matrix
 
@@ -108,6 +108,16 @@ Adding entirely new services end-to-end using the [4-layer pattern](adding-servi
 
 ### Tier 5: Quality and Testing
 
-- [ ] Fix 2 pre-existing test failures in `sonos-stream` iterator tests (runtime-within-runtime panic)
+- [x] Fix 2 pre-existing test failures in `sonos-stream` iterator tests (runtime-within-runtime
+      panic) — fixed by constructing the iterator inside `block_on` to capture the runtime
+      handle, then sync-iterating *outside* `block_on` so `SyncEventIterator::block_on()` never
+      nests runtimes. All 9 `events::iterator` tests pass. See the comments in
+      `sonos-stream/src/events/iterator.rs` (`test_sync_iteration`). The same
+      runtime-within-runtime hazard is why `sonos-state` uses `std::sync::mpsc` rather than
+      `tokio::sync::broadcast` (`sonos-state/src/iter.rs`)
 - [ ] Add integration tests for polling fallback paths (start/stop lifecycle now has
       offline unit coverage; see `specs/sonos-stream.md` 3.2)
+- [x] Replace the hand-rolled XML and HTTP helpers with public crates: deleted
+      `strip_namespaces`, `extract_xml_value` and `extract_xml_element`; `quick-xml` is now
+      the only XML parser, `url::Url` parses every URL, `axum` replaces `warp`, and all error
+      types are `thiserror`-derived. `xmltree` and `warp` are gone from the tree

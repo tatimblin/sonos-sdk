@@ -1,0 +1,143 @@
+# cargo-deny configuration. Enforced by the `deny` CI job.
+#
+# Scope note: this workspace ships nine library crates and no binary, so the
+# license question is "what may we link into a downstream user's build", not
+# "what ships in our artifact". Dev-dependency-only licenses are therefore held
+# to a looser bar than build-graph licenses, and each exception below records
+# which of the two it is.
+
+[graph]
+# Check the platforms this SDK is actually used on. Sonos control is a LAN
+# activity; there is no wasm or mobile target.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+all-features = true
+
+[output]
+feature-depth = 1
+
+# ---------------------------------------------------------------------------
+# Security advisories
+# ---------------------------------------------------------------------------
+[advisories]
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# Fail on anything with a fix available; unmaintained crates are a warning so a
+# newly-flagged transitive dep does not break an unrelated PR.
+yanked = "deny"
+unmaintained = "workspace"
+# No blanket ignores. Every entry names an ID and states why it is tolerable
+# *here*, so a reviewer can re-check the argument instead of trusting the list.
+#
+# Everything that a lockfile bump could fix has already been fixed: `bytes`
+# 1.11.0 -> 1.12.1 (RUSTSEC-2026-0007) and `rustls-webpki` 0.103.8 -> 0.103.14
+# (RUSTSEC-2026-0049/0098/0099/0104). The three below cannot be, and each is
+# accompanied by the reason it does not apply.
+ignore = [
+    { id = "RUSTSEC-2024-0436", reason = """
+`paste` is unmaintained, not vulnerable. It is a compile-time-only proc macro
+used by sonos-api's operation macros to build identifiers; it contributes no
+runtime code and cannot be reached by device input. No advisory, and no drop-in
+replacement at the same API. Tracked for removal (the macros can be rewritten
+with `concat_idents!`-style helpers) rather than pinned forever.""" },
+
+    { id = "RUSTSEC-2026-0194", reason = """
+Quadratic time checking a start tag for duplicate attribute names in `quick-xml`
+0.31. Fixed in 0.41, which is a breaking API change this workspace cannot absorb
+in the same round as the xmltree -> quick-xml migration (0.41 removes
+`BytesText::unescape` and reworks `Reader` borrowing; verified by attempting the
+bump). Mitigation: the only attacker-influenced XML enters through the UPnP
+callback endpoint, which is capped at 64 KiB by `DefaultBodyLimit`
+(MAX_NOTIFY_BODY_BYTES in callback-server/src/server.rs), bounding the blowup.
+Track the 0.41 upgrade as its own change.""" },
+
+    { id = "RUSTSEC-2026-0195", reason = """
+Unbounded namespace-declaration allocation in `quick-xml`'s `NsReader`. Not
+reachable: this workspace never constructs an `NsReader`, and neither does
+quick-xml's serde deserializer (`quick_xml::de`), which is the only other
+quick-xml entry point used here. Ignored on reachability grounds, and cleared by
+the same 0.41 upgrade as RUSTSEC-2026-0194.""" },
+]
+
+# ---------------------------------------------------------------------------
+# Licenses
+# ---------------------------------------------------------------------------
+[licenses]
+# This workspace is `MIT OR Apache-2.0`. The allow-list is the standard
+# permissive set that a dual-MIT/Apache crate can depend on without imposing
+# obligations on downstream users.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "Unlicense",
+    "BSL-1.0",
+    # Unicode data tables, pulled in via `idna` -> `url`. Permissive; carries an
+    # attribution requirement only.
+    "Unicode-3.0",
+    # `webpki-roots` (Mozilla's CA bundle, via rustls). Permissive data license.
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.9
+
+# Weak copyleft (MPL-2.0) exceptions. MPL's obligations are per-file on the
+# licensed crate's own sources, so linking one does not affect this workspace's
+# licensing. Both are recorded individually rather than adding "MPL-2.0" to the
+# global allow-list, so a new MPL dependency still has to be reviewed.
+[[licenses.exceptions]]
+# Transitive via `dirs` -> `dirs-sys`, in the shipped build graph of sonos-sdk.
+# Used for XDG base-directory lookup only.
+name = "option-ext"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+# Dev-dependency only: `mockito` -> `colored`, for coloured test output. Never
+# in a downstream user's build graph.
+name = "colored"
+allow = ["MPL-2.0"]
+
+# ---------------------------------------------------------------------------
+# Bans / duplicate versions
+# ---------------------------------------------------------------------------
+[bans]
+# Duplicate versions are a warning, not an error. The graph legitimately holds
+# several: `hyper` 0.14 + 1.x (dev-only reqwest 0.11 alongside axum 0.8),
+# multiple `windows-sys` generations, and the deliberate `ureq` 2.x/3.x split
+# documented in soap-client/Cargo.toml. Promoting this to "deny" would mean
+# either pinning transitive deps we do not control or a permanent skip-list.
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+# Prefer the workspace-declared version when a member and the root disagree.
+workspace-default-features = "allow"
+
+deny = [
+    # This SDK is sync-first on `ureq`/`std::net`. An accidental `openssl-sys`
+    # would add a C toolchain requirement to every downstream build; TLS here
+    # comes from rustls.
+    { crate = "openssl-sys", reason = "TLS must stay pure-Rust (rustls); no native OpenSSL build dependency" },
+    { crate = "openssl", reason = "TLS must stay pure-Rust (rustls); no native OpenSSL build dependency" },
+]
+
+skip = []
+skip-tree = []
+
+# ---------------------------------------------------------------------------
+# Sources
+# ---------------------------------------------------------------------------
+[sources]
+# Everything must come from crates.io. No git dependencies and no alternate
+# registries: this workspace publishes to crates.io, which rejects both.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

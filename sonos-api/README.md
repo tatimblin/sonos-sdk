@@ -26,7 +26,7 @@ pub trait SonosOperation {
     const ACTION: &'static str;
     
     fn build_payload(request: &Self::Request) -> String;
-    fn parse_response(xml: &Element) -> Result<Self::Response, ApiError>;
+    fn parse_response(xml: &str) -> Result<Self::Response, ApiError>;
 }
 ```
 
@@ -34,6 +34,11 @@ Each operation implements this trait to provide:
 - Type-safe request and response structures
 - SOAP payload construction from request data
 - XML response parsing into structured data
+
+`parse_response` takes the raw SOAP response body as `&str`. `soap-client` returns text
+rather than a parsed DOM: it handles transport and SOAP-fault detection, so an `Ok` body is
+guaranteed to be a fault-free `<{action}Response>` envelope, while response *shape* is
+service-specific and belongs here.
 
 ## Supported Services
 
@@ -261,8 +266,8 @@ impl SonosOperation for MyOperation {
         // construct XML payload
     }
     
-    fn parse_response(xml: &Element) -> Result<Self::Response, ApiError> {
-        // parse XML response
+    fn parse_response(xml: &str) -> Result<Self::Response, ApiError> {
+        // parse XML response, e.g. with quick_xml::de::from_str or response_text()
     }
 }
 ```

@@ -3,11 +3,13 @@
 //! This module decodes raw events from sonos-stream into typed property
 //! changes that can be applied to the StateStore.
 
+use serde::Deserialize;
 use sonos_api::Service;
 use sonos_stream::events::{
     AVTransportState, EnrichedEvent, EventData, GroupRenderingControlState, RenderingControlState,
     ZoneGroupTopologyState,
 };
+use url::{Host, Url};
 
 use std::net::IpAddr;
 
@@ -407,11 +409,23 @@ pub fn decode_topology_event(event: &ZoneGroupTopologyState) -> TopologyChanges 
     }
 }
 
+/// Extract the device IP from a topology `location` URL.
+///
+/// Topology members are addressed as `http://<ip>:1400/xml/device_description.xml`.
+/// Parsing with `url::Url` rather than splitting on `"http://"`, `'/'` and `':'`
+/// keeps two cases correct that hand-splitting got wrong: an IPv6 literal is
+/// bracketed (`http://[fe80::1]:1400/...`), so splitting on `':'` truncated it to
+/// `"[fe80"` and yielded `None`; and userinfo or a port-less host shifted the
+/// segment the naive split picked. `Url::parse` also rejects a scheme-less string
+/// as a relative URL, preserving the previous `strip_prefix` behaviour of
+/// returning `None` for `"192.168.1.1:1400/xml"`. A hostname that is not a
+/// literal address still returns `None`: this is a cache key, not a resolver.
 fn extract_ip_from_location(location: &str) -> Option<IpAddr> {
-    let url_part = location.strip_prefix("http://")?;
-    let host_port = url_part.split('/').next()?;
-    let host = host_port.split(':').next()?;
-    host.parse().ok()
+    match Url::parse(location).ok()?.host()? {
+        Host::Ipv4(ip) => Some(IpAddr::V4(ip)),
+        Host::Ipv6(ip) => Some(IpAddr::V6(ip)),
+        Host::Domain(_) => None,
+    }
 }
 
 /// Parse duration string (HH:MM:SS or H:MM:SS) to milliseconds
@@ -451,7 +465,44 @@ fn parse_duration_ms(duration: Option<&str>) -> Option<u64> {
         .checked_add(millis)
 }
 
-/// Parse DIDL-Lite track metadata XML
+/// The one DIDL-Lite `<item>` a track's metadata carries.
+///
+/// Field names are the element **local** names. UPnP sends `dc:title`,
+/// `upnp:album`, `upnp:albumArtURI` and `r:albumArtist`, but quick-xml's serde
+/// deserializer resolves prefixes for us and matches on the local name only, so
+/// `rename = "dc:title"` could never match. Unknown siblings (`res`,
+/// `upnp:class`, `r:streamContent`, ...) are ignored by serde.
+///
+/// This duplicates most of `sonos_api::events::DidlItem`; that type lacks
+/// `albumArtist`, which the artist fallback below needs. Consolidating the two
+/// DIDL models is worthwhile follow-up work.
+#[derive(Debug, Deserialize)]
+struct DidlItem {
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    creator: Option<String>,
+    #[serde(rename = "albumArtist", default)]
+    album_artist: Option<String>,
+    #[serde(default)]
+    album: Option<String>,
+    #[serde(rename = "albumArtURI", default)]
+    album_art_uri: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DidlLite {
+    #[serde(rename = "item", default)]
+    items: Vec<DidlItem>,
+}
+
+/// Parse DIDL-Lite track metadata into `(title, artist, album, album_art_uri)`.
+///
+/// Infallible by contract: `sonos-sdk` destructures the tuple directly
+/// (`sonos-sdk/src/property/handles.rs`), and a track whose metadata will not
+/// parse must read as "unknown track", never as an error or a panic. Absent,
+/// empty and `NOT_IMPLEMENTED` input all yield all-`None`, as does any parse
+/// failure.
 pub fn parse_track_metadata(
     metadata: Option<&str>,
 ) -> (
@@ -465,39 +516,104 @@ pub fn parse_track_metadata(
         _ => return (None, None, None, None),
     };
 
-    // Simple XML extraction (could use quick-xml for more robust parsing)
-    let title = extract_xml_element(xml, "dc:title");
-    let artist = extract_xml_element(xml, "dc:creator")
-        .or_else(|| extract_xml_element(xml, "r:albumArtist"));
-    let album = extract_xml_element(xml, "upnp:album");
-    let album_art_uri = extract_xml_element(xml, "upnp:albumArtURI");
+    // Strict parse first: valid DIDL is the common case and costs no allocation.
+    // quick-xml unescapes text as it deserializes, and `unescape` rejects any
+    // entity it does not know (`UnrecognizedSymbol`). Real DIDL from streaming
+    // services carries bare `&` in titles and occasional HTML entities, which
+    // the previous `.replace()` chain tolerated by simply leaving them alone. A
+    // strict-only parse would therefore blank out tracks that render fine today,
+    // so a failed parse retries against a copy whose stray ampersands have been
+    // escaped -- turning `&` into `&amp;` and an unknown `&nbsp;` into the
+    // literal text `&nbsp;`, exactly the old lenient outcome. Only if that also
+    // fails (malformed markup, not just a bad entity) is the whole item dropped.
+    let didl = match quick_xml::de::from_str::<DidlLite>(xml) {
+        Ok(didl) => didl,
+        Err(strict_err) => {
+            let repaired = escape_stray_ampersands(xml);
+            match quick_xml::de::from_str::<DidlLite>(&repaired) {
+                Ok(didl) => didl,
+                Err(err) => {
+                    tracing::debug!(
+                        "Failed to parse DIDL-Lite track metadata: {strict_err}; \
+                         retry with escaped ampersands also failed: {err}"
+                    );
+                    return (None, None, None, None);
+                }
+            }
+        }
+    };
 
-    (title, artist, album, album_art_uri)
+    let Some(item) = didl.items.into_iter().next() else {
+        return (None, None, None, None);
+    };
+
+    // `dc:creator` is authoritative; `r:albumArtist` is the fallback Sonos
+    // supplies for library tracks that carry no creator.
+    let artist = nonempty(item.creator).or_else(|| nonempty(item.album_artist));
+
+    (
+        nonempty(item.title),
+        artist,
+        nonempty(item.album),
+        nonempty(item.album_art_uri),
+    )
 }
 
-/// Extract content from an XML element (simple regex-free implementation)
-pub fn extract_xml_element(xml: &str, element: &str) -> Option<String> {
-    let start_tag = format!("<{element}>");
-    let end_tag = format!("</{element}>");
+/// An element present but empty reads as absent, matching the previous behavior.
+fn nonempty(value: Option<String>) -> Option<String> {
+    value.filter(|s| !s.is_empty())
+}
 
-    let start_idx = xml.find(&start_tag)? + start_tag.len();
-    let end_idx = xml[start_idx..].find(&end_tag)? + start_idx;
+/// Escape every `&` that does not already begin a well-formed character
+/// reference, so a single bad entity cannot fail the whole document.
+fn escape_stray_ampersands(xml: &str) -> String {
+    let mut out = String::with_capacity(xml.len() + 16);
+    let mut rest = xml;
 
-    let content = &xml[start_idx..end_idx];
-
-    // Unescape basic XML entities
-    let unescaped = content
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&amp;", "&")
-        .replace("&apos;", "'")
-        .replace("&quot;", "\"");
-
-    if unescaped.is_empty() {
-        None
-    } else {
-        Some(unescaped)
+    while let Some(pos) = rest.find('&') {
+        out.push_str(&rest[..pos]);
+        let tail = &rest[pos..];
+        match character_reference_len(tail) {
+            Some(len) => {
+                out.push_str(&tail[..len]);
+                rest = &tail[len..];
+            }
+            None => {
+                out.push_str("&amp;");
+                rest = &tail[1..];
+            }
+        }
     }
+
+    out.push_str(rest);
+    out
+}
+
+/// Length of the character reference at the start of `tail`, if it is one
+/// quick-xml will accept: a predefined entity or a numeric reference naming a
+/// real code point. Everything else is a stray `&`.
+fn character_reference_len(tail: &str) -> Option<usize> {
+    for named in ["&amp;", "&lt;", "&gt;", "&quot;", "&apos;"] {
+        if tail.starts_with(named) {
+            return Some(named.len());
+        }
+    }
+
+    let body = tail.strip_prefix("&#")?;
+    let (digits, radix) = match body.strip_prefix(['x', 'X']) {
+        Some(hex) => (hex, 16),
+        None => (body, 10),
+    };
+    let end = digits.find(';')?;
+    let number = &digits[..end];
+    if number.is_empty() {
+        return None;
+    }
+    let code = u32::from_str_radix(number, radix).ok()?;
+    char::from_u32(code)?;
+
+    // "&#" or "&#x", then the digits and the ';'.
+    Some(tail.len() - digits.len() + end + 1)
 }
 
 #[cfg(test)]
@@ -556,18 +672,37 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_xml_element() {
-        let xml = r#"<DIDL-Lite><item><dc:title>Test Song</dc:title><dc:creator>Artist Name</dc:creator></item></DIDL-Lite>"#;
+    fn test_parse_track_metadata_tolerates_bad_entities() {
+        // A bare `&` and an unknown entity are both rejected by a strict XML
+        // parse, but real streaming-service DIDL contains them. They must not
+        // blank out the rest of an otherwise-good item, or panic.
+        let xml = r#"<DIDL-Lite><item><dc:title>Rock & Roll&nbsp;Star</dc:title><dc:creator>Oasis</dc:creator></item></DIDL-Lite>"#;
 
+        let (title, artist, album, art) = parse_track_metadata(Some(xml));
+
+        assert_eq!(title, Some("Rock & Roll&nbsp;Star".to_string()));
+        assert_eq!(artist, Some("Oasis".to_string()));
+        assert_eq!((album, art), (None, None));
+
+        // Markup that is broken rather than merely badly escaped degrades to
+        // all-None instead of propagating an error.
         assert_eq!(
-            extract_xml_element(xml, "dc:title"),
-            Some("Test Song".to_string())
+            parse_track_metadata(Some("<DIDL-Lite><item><dc:title>Unclosed")),
+            (None, None, None, None)
         );
-        assert_eq!(
-            extract_xml_element(xml, "dc:creator"),
-            Some("Artist Name".to_string())
-        );
-        assert_eq!(extract_xml_element(xml, "upnp:album"), None);
+    }
+
+    #[test]
+    fn test_parse_track_metadata_decodes_double_escaped_entity() {
+        // `&amp;apos;` is an escaped `&` followed by the text `apos;`, so it
+        // decodes to the literal `&apos;`. The old `.replace()` chain ran
+        // `&amp;` before `&apos;` and collapsed this to `'`.
+        let xml =
+            r#"<DIDL-Lite><item><dc:title>&amp;apos;Round Midnight</dc:title></item></DIDL-Lite>"#;
+
+        let (title, ..) = parse_track_metadata(Some(xml));
+
+        assert_eq!(title, Some("&apos;Round Midnight".to_string()));
     }
 
     #[test]

@@ -12,18 +12,14 @@ readme = "README.md"
 name = "callback_server"
 
 [dependencies]
-if-addrs = "0.15"
-tokio = { version = "1.0", features = ["full"] }
-warp = "0.3"
-bytes = "1.0"
-async-trait = "0.1"
-thiserror = "1.0"
-reqwest = "0.11"
-uuid = { version = "1.0", features = ["v4"] }
-url = "2.0"
-tracing = "0.1"
-tracing-subscriber = { workspace = true }
+if-addrs = { workspace = true }
+tokio = { workspace = true }
+axum = "0.8"
+tracing = { workspace = true }
 
 [dev-dependencies]
-proptest = "1.0"
-tokio-test = "0.4"
+# Test-only HTTP client for driving the callback server end to end.
+reqwest = { workspace = true }
+
+[lints]
+workspace = true

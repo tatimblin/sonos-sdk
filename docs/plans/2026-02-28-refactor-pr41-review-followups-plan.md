@@ -113,6 +113,18 @@ The PR body still references `OperationFailed(String)` and the file change table
 
 Research found that `quick_xml::escape::escape` does **not** escape `'` (apostrophe) — it only handles `&`, `<`, `>`, `"`. The custom `xml_escape()` correctly escapes all 5 XML special characters. The hand-rolled function is actually more correct for SOAP payloads. No change needed.
 
+> **SUPERSEDED 2026-08-17.** The premise above was **false**. `quick_xml::escape::escape`
+> escapes all five predefined entities — its predicate is
+> `matches!(ch, b'<' | b'>' | b'&' | b'\'' | b'\"')`, verified in the vendored source. This
+> item has since landed: `operation::xml_escape` now delegates to
+> `quick_xml::escape::escape` (commit `refactor(api): delegate SOAP payload escaping to
+> quick-xml`), and `test_xml_escape` asserts all five characters so the guarantee survives a
+> future quick-xml upgrade. See `docs/specs/sonos-api.md` §10.3.
+>
+> Left in place as written above rather than rewritten: this is a historical plan, and the
+> record of *how* a wrong premise blocked a correct change is worth more than a tidy
+> document.
+
 ## Acceptance Criteria
 
 - [x] `cancel_sleep_timer()` method added to Speaker

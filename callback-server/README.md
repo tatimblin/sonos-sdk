@@ -70,8 +70,11 @@ All device-specific logic (speaker IDs, service types, event parsing) should be 
 ## Dependencies
 
 - `tokio`: Async runtime
-- `warp`: HTTP server framework
-- `bytes`: Efficient byte buffer handling
+- `axum`: HTTP server framework (one catch-all NOTIFY route)
+- `if-addrs`: IPv4 interface enumeration for callback address selection
+- `tracing`: Structured logging
+
+Dev-only: `reqwest` (test client for driving the server end to end).
 
 ## Testing
 
@@ -82,8 +85,8 @@ cd callback-server
 cargo test
 ```
 
-Or from the workspace root:
+Or from the workspace root (note the published package name):
 
 ```bash
-cargo test -p callback-server
+cargo test -p sonos-sdk-callback-server
 ```

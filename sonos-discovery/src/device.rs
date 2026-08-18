@@ -6,6 +6,7 @@
 use crate::error::{DiscoveryError, Result};
 use crate::Device;
 use serde::Deserialize;
+use url::Url;
 
 /// UPnP device description root element.
 #[derive(Debug, Deserialize)]
@@ -80,7 +81,7 @@ impl DeviceDescription {
     }
 }
 
-/// Extract IP address from a URL.
+/// Extract the host of a URL.
 ///
 /// # Arguments
 ///
@@ -88,13 +89,15 @@ impl DeviceDescription {
 ///
 /// # Returns
 ///
-/// The IP address portion of the URL, or `None` if the URL is malformed.
+/// The host portion of the URL, or `None` if the URL is malformed or has no host.
+///
+/// IPv6 literals are returned **with** their surrounding brackets (`[::1]`), which is
+/// why this uses [`Url::host_str`] rather than [`Url::host`]: downstream code
+/// reassembles request URLs as `http://{ip}:1400/...`, and a bracketless `::1` would
+/// produce an unparseable URL.
 pub fn extract_ip_from_url(url: &str) -> Option<String> {
-    url.split("//")
-        .nth(1)?
-        .split(':')
-        .next()
-        .map(|s| s.to_string())
+    let parsed = Url::parse(url).ok()?;
+    parsed.host_str().map(|host| host.to_string())
 }
 
 #[cfg(test)]
@@ -112,6 +115,22 @@ mod tests {
             Some("10.0.0.5".to_string())
         );
         assert_eq!(extract_ip_from_url("invalid-url"), None);
+    }
+
+    /// The previous `split("//")` / `split(':')` implementation returned `"["` for
+    /// IPv6 hosts and the wrong segment when the path itself contained `//`.
+    #[test]
+    fn test_extract_ip_from_url_ipv6_and_double_slash_path() {
+        // IPv6 literals keep their brackets so callers can rebuild `http://{ip}:1400/`.
+        assert_eq!(
+            extract_ip_from_url("http://[fe80::1ff:fe23:4567:890a]:1400/xml/device.xml"),
+            Some("[fe80::1ff:fe23:4567:890a]".to_string())
+        );
+        // A `//` inside the path must not be mistaken for the authority delimiter.
+        assert_eq!(
+            extract_ip_from_url("http://192.168.1.100:1400/xml//device_description.xml"),
+            Some("192.168.1.100".to_string())
+        );
     }
 
     #[test]

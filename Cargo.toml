@@ -16,11 +16,122 @@ resolver = "2"
 [workspace.package]
 version = "0.7.2"
 edition = "2021"
-rust-version = "1.80"
+# Floor set by `ureq` 3.4, which is an edition-2024 crate (edition 2024 was
+# stabilized in Rust 1.85). Verified by the `msrv` CI job, which builds the
+# workspace with exactly this toolchain.
+rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/tatimblin/sonos-sdk"
 keywords = ["sonos", "upnp", "audio", "smart-home"]
 categories = ["multimedia::audio", "network-programming"]
 
 [workspace.dependencies]
+# Versions live here so members cannot drift apart. This workspace has had real
+# skew before (ratatui 0.26 vs 0.29, crossterm 0.27 vs 0.28, proptest 1.0 vs
+# 1.4). Members opt in with `{ workspace = true }` and may *add* features on top
+# of the entries below.
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+quick-xml = { version = "0.31", features = ["serialize"] }
+
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+
+# Errors, logging, networking primitives
+thiserror = "2.0"
+tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
+url = "2.5"
+if-addrs = "0.15"
+parking_lot = "0.12"
+
+# Test-only
+proptest = "1.4"
+# Test-only HTTP client, used to drive the local callback server and the
+# fixture-based discovery tests. `default-features = false` drops `default-tls`,
+# which otherwise pulls `native-tls` -> `openssl-sys` into the dev graph (and a
+# C toolchain with it). Nothing in the test suite speaks HTTPS.
+#
+# `ureq` is deliberately *not* centralized here: soap-client pins 2.x while
+# sonos-discovery uses 3.x (see those manifests for why).
+reqwest = { version = "0.11", default-features = false }
+
+# Lint policy for every member crate (`[lints] workspace = true`).
+#
+# Deliberately narrow. The full `clippy::pedantic` + `clippy::nursery` sweep
+# reports ~4,400 findings on this 42k-LOC workspace, almost all stylistic
+# (1,203 `doc_markdown`, 587 `must_use_candidate`, 314 `missing_errors_doc`).
+# Adopting those belongs in its own dedicated round, not at the tail of a
+# refactor. What is enabled below either catches a real bug class or is
+# already at zero and therefore free to lock in.
+[workspace.lints.rust]
+# Zero `unsafe` in the workspace today; keep it that way. Also asserted
+# in-source via `#![forbid(unsafe_code)]` in each crate's lib.rs.
+unsafe_code = "forbid"
+# `priority = -1` so the individual lints below can override members of the
+# group; cargo rejects a group and a lint sharing the default priority.
+rust_2018_idioms = { level = "warn", priority = -1 }
+# Catches `pub` items that are not actually reachable — either dead code or a
+# missing re-export, which for a published SDK is a real API bug.
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+# --- Deadlock / async-correctness. This workspace mixes `parking_lot` guards
+# --- with async code, so these guard a live hazard even at zero findings.
+await_holding_lock = "deny"
+await_holding_refcell_ref = "deny"
+let_underscore_lock = "deny"
+significant_drop_in_scrutinee = "warn"
+needless_pass_by_ref_mut = "warn"
+
+# --- Panics and silent misbehavior.
+unchecked_duration_subtraction = "warn"
+match_wild_err_arm = "warn"
+index_refutable_slice = "warn"
+path_buf_push_overwrite = "warn"
+invalid_upcast_comparisons = "warn"
+debug_assert_with_mut_call = "warn"
+mem_forget = "warn"
+
+# --- Placeholders and debug leftovers that must not reach a release.
+todo = "warn"
+unimplemented = "warn"
+dbg_macro = "warn"
+exit = "warn"
+
+# --- Cheap clarity wins, all at or near zero.
+mutex_atomic = "warn"
+needless_collect = "warn"
+string_to_string = "warn"
+semicolon_if_nothing_returned = "warn"
+flat_map_option = "warn"
+manual_ok_or = "warn"
+from_iter_instead_of_collect = "warn"
+filter_map_next = "warn"
+explicit_into_iter_loop = "warn"
+explicit_iter_loop = "warn"
+mut_mut = "warn"
+empty_enum = "warn"
+zero_sized_map_values = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+lossy_float_literal = "warn"
+verbose_file_reads = "warn"
+# Moved between clippy groups across rustc releases, which is exactly the
+# local-vs-CI divergence this refactor is closing. Pinning it here makes the
+# result identical on every toolchain.
+uninlined_format_args = "warn"
+
+# --- Manifest hygiene.
+wildcard_dependencies = "warn"
+negative_feature_names = "warn"
+
+# Deliberately left off, worth a future round with its own budget:
+#   unused_qualifications (21)  — cosmetic `std::result::Result` spellings
+#   clippy::redundant_clone (66)
+#   clippy::print_stderr (246)  — examples and CLI legitimately print
+#   clippy::let_underscore_must_use (97)
+#   clippy::float_cmp (6)       — all in tests, comparing exact 0.0/1.0/0.8
+#   clippy::multiple_crate_versions (12) — mostly upstream, plus the
+#                                 intentional ureq 2.x/3.x split

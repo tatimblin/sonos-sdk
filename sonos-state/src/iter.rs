@@ -463,8 +463,8 @@ mod tests {
         match done_rx.recv_timeout(Duration::from_secs(5)) {
             Ok(None) => {} // correct: closed channel reported as end of stream
             Ok(Some(e)) => panic!("expected no event from a closed fan-out, got {e:?}"),
-            Err(_) => panic!(
-                "recv() did not return after the fan-out was dropped — the \
+            Err(err) => panic!(
+                "recv() did not return after the fan-out was dropped ({err:?}) — the \
                  iterator is holding its own sender alive (should be `Weak`)"
             ),
         }

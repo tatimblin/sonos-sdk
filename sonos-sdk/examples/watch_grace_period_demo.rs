@@ -132,7 +132,7 @@ fn demo_tui_pattern(speaker: &Speaker) -> Result<(), SdkError> {
         );
 
         let frame_time = frame_start.elapsed();
-        println!("      ⏱️  Frame rendered in {:?}", frame_time);
+        println!("      ⏱️  Frame rendered in {frame_time:?}");
 
         // Small delay between frames
         thread::sleep(Duration::from_millis(16)); // ~60 FPS
@@ -140,7 +140,7 @@ fn demo_tui_pattern(speaker: &Speaker) -> Result<(), SdkError> {
 
     let total_time = start.elapsed();
     println!();
-    println!("   ✅ 10 frames rendered in {:?}", total_time);
+    println!("   ✅ 10 frames rendered in {total_time:?}");
     println!("   🎯 One subscription for the whole loop, and never a stale value.");
     println!();
 
@@ -174,10 +174,7 @@ fn demo_grace_period_timing(speaker: &Speaker) -> Result<(), SdkError> {
     // Create new handle (should reuse subscription)
     let handle2 = speaker.volume.watch()?;
     let reuse_time = drop_time.elapsed();
-    println!(
-        "   ♻️  New handle created at {:?} - subscription reused!",
-        reuse_time
-    );
+    println!("   ♻️  New handle created at {reuse_time:?} - subscription reused!");
 
     if let Some(vol) = handle2.value() {
         println!("      📊 Volume still available: {}%", vol.0);

@@ -1,18 +1,19 @@
 //! XML parsing utilities for Sonos UPnP event processing.
 //!
 //! This module provides reusable XML parsing components that were consolidated
-//! from the sonos-parser crate. It includes namespace stripping, attribute parsing,
-//! and DIDL-Lite metadata structures.
+//! from the sonos-parser crate. It includes attribute parsing and DIDL-Lite
+//! metadata structures.
 
 use crate::{ApiError, Result};
 use serde::de::{DeserializeOwned, Deserializer};
 use serde::{Deserialize, Serialize};
 
-/// Parse XML string into a deserializable type with namespace stripping.
+/// Parse XML string into a deserializable type.
 ///
-/// This function handles the common case of parsing UPnP XML that contains
-/// namespace prefixes. It strips namespace prefixes before parsing to allow
-/// simpler serde struct definitions.
+/// UPnP XML is heavily namespaced (`e:property`, `dc:title`, `upnp:album`), but
+/// quick-xml's serde deserializer matches on *local* names only, so struct fields
+/// and `#[serde(rename = "...")]` values are written without prefixes and no
+/// preprocessing is required.
 ///
 /// # Arguments
 ///
@@ -22,140 +23,8 @@ use serde::{Deserialize, Serialize};
 ///
 /// The parsed value of type `T`, or an error if parsing fails.
 pub fn parse<T: DeserializeOwned>(xml: &str) -> Result<T> {
-    let stripped = strip_namespaces(xml);
-    quick_xml::de::from_str(&stripped)
+    quick_xml::de::from_str(xml)
         .map_err(|e| ApiError::ParseError(format!("XML deserialization failed: {e}")))
-}
-
-/// Strip namespace prefixes from XML content to simplify parsing.
-///
-/// UPnP XML often contains namespace prefixes like `e:`, `dc:`, `upnp:`, etc.
-/// This function removes these prefixes to simplify parsing with serde.
-///
-/// # Example
-///
-/// Input: `<e:propertyset><dc:title>Song</dc:title></e:propertyset>`
-/// Output: `<propertyset><title>Song</title></propertyset>`
-pub fn strip_namespaces(xml: &str) -> String {
-    let mut result = String::with_capacity(xml.len());
-    let mut chars = xml.chars().peekable();
-
-    while let Some(c) = chars.next() {
-        if c == '<' {
-            result.push(c);
-
-            // Check for closing tag or special tags
-            let is_closing = chars.peek() == Some(&'/');
-            if is_closing {
-                result.push(chars.next().unwrap());
-            }
-
-            // Check for special tags (?, !)
-            if let Some(&next) = chars.peek() {
-                if next == '?' || next == '!' {
-                    // Copy until '>'
-                    for ch in chars.by_ref() {
-                        result.push(ch);
-                        if ch == '>' {
-                            break;
-                        }
-                    }
-                    continue;
-                }
-            }
-
-            // Read the tag name (possibly with namespace prefix)
-            let mut tag_name = String::new();
-            while let Some(&ch) = chars.peek() {
-                if ch.is_whitespace() || ch == '>' || ch == '/' {
-                    break;
-                }
-                tag_name.push(chars.next().unwrap());
-            }
-
-            // Strip namespace prefix from tag name
-            if let Some(pos) = tag_name.find(':') {
-                result.push_str(&tag_name[pos + 1..]);
-            } else {
-                result.push_str(&tag_name);
-            }
-
-            // Process attributes
-            while let Some(&ch) = chars.peek() {
-                if ch == '>' {
-                    result.push(chars.next().unwrap());
-                    break;
-                }
-                if ch == '/' {
-                    result.push(chars.next().unwrap());
-                    continue;
-                }
-                if ch.is_whitespace() {
-                    result.push(chars.next().unwrap());
-                    continue;
-                }
-
-                // Read attribute name
-                let mut attr_name = String::new();
-                while let Some(&ach) = chars.peek() {
-                    if ach == '=' || ach.is_whitespace() || ach == '>' || ach == '/' {
-                        break;
-                    }
-                    attr_name.push(chars.next().unwrap());
-                }
-
-                // Strip namespace prefix from attribute name (but keep xmlns declarations)
-                if attr_name.starts_with("xmlns") {
-                    // Skip xmlns declarations entirely
-                    // Skip '='
-                    if chars.peek() == Some(&'=') {
-                        chars.next();
-                    }
-                    // Skip quoted value
-                    if let Some(&quote) = chars.peek() {
-                        if quote == '"' || quote == '\'' {
-                            chars.next();
-                            for ch in chars.by_ref() {
-                                if ch == quote {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    // Keep the attribute, stripping namespace prefix
-                    if let Some(pos) = attr_name.find(':') {
-                        result.push_str(&attr_name[pos + 1..]);
-                    } else {
-                        result.push_str(&attr_name);
-                    }
-
-                    // Copy '=' and value
-                    while let Some(&ach) = chars.peek() {
-                        if ach == '>' || ach == '/' {
-                            break;
-                        }
-                        if ach == '"' || ach == '\'' {
-                            let quote = chars.next().unwrap();
-                            result.push(quote);
-                            for ch in chars.by_ref() {
-                                result.push(ch);
-                                if ch == quote {
-                                    break;
-                                }
-                            }
-                            break;
-                        }
-                        result.push(chars.next().unwrap());
-                    }
-                }
-            }
-        } else {
-            result.push(c);
-        }
-    }
-
-    result
 }
 
 /// Custom deserializer for nested XML content.
@@ -356,25 +225,27 @@ pub struct DidlResource {
 mod tests {
     use super::*;
 
+    /// Comments and CDATA containing `>` used to be truncated at that `>` by the
+    /// hand-rolled namespace stripper, corrupting the document.
     #[test]
-    fn test_strip_namespaces_basic() {
-        let input = r#"<e:propertyset><e:property>test</e:property></e:propertyset>"#;
-        let expected = r#"<propertyset><property>test</property></propertyset>"#;
-        assert_eq!(strip_namespaces(input), expected);
-    }
+    fn test_parse_survives_cdata_and_comment_containing_gt() {
+        let xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><!-- a > b --><e:property><TransportState val="PLAYING"/><Note><![CDATA[3 > 2 && <ok>]]></Note></e:property></e:propertyset>"#;
 
-    #[test]
-    fn test_strip_namespaces_with_attributes() {
-        let input = r#"<dc:title id="1">Song</dc:title>"#;
-        let expected = r#"<title id="1">Song</title>"#;
-        assert_eq!(strip_namespaces(input), expected);
-    }
+        #[derive(Debug, Deserialize)]
+        struct PropertySet {
+            property: Property,
+        }
+        #[derive(Debug, Deserialize)]
+        struct Property {
+            #[serde(rename = "TransportState")]
+            transport_state: ValueAttribute,
+            #[serde(rename = "Note")]
+            note: String,
+        }
 
-    #[test]
-    fn test_strip_namespaces_multiple() {
-        let input = r#"<dc:title>Song</dc:title><upnp:album>Album</upnp:album>"#;
-        let expected = r#"<title>Song</title><album>Album</album>"#;
-        assert_eq!(strip_namespaces(input), expected);
+        let parsed: PropertySet = parse(xml).unwrap();
+        assert_eq!(parsed.property.transport_state.val, "PLAYING");
+        assert_eq!(parsed.property.note, "3 > 2 && <ok>");
     }
 
     #[test]

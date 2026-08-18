@@ -1,0 +1,28 @@
+# Clippy configuration shared by every crate in the workspace.
+#
+# The lint *selection* lives in `[workspace.lints]` in the root Cargo.toml;
+# this file only tunes the lints that take a threshold or an allow-list.
+
+# Keep clippy's suggestions compatible with the declared MSRV so it never
+# proposes an API newer than what we promise to compile on. Must stay in sync
+# with `workspace.package.rust-version`.
+msrv = "1.85"
+
+# UPnP/SOAP identifiers that clippy would otherwise flag as prose typos if
+# `clippy::doc_markdown` is ever enabled, plus product names that appear
+# unbackticked throughout the docs.
+doc-valid-idents = [
+    "AVTransport",
+    "ContentDirectory",
+    "DeviceProperties",
+    "GroupManagement",
+    "GroupRenderingControl",
+    "MusicServices",
+    "RenderingControl",
+    "SSDP",
+    "SOAP",
+    "Sonos",
+    "UPnP",
+    "ZoneGroupTopology",
+    "..",
+]

@@ -239,6 +239,17 @@ impl EventRouter {
 mod tests {
     use super::*;
 
+    /// An `Instant` the given duration in the past.
+    ///
+    /// `Instant::now() - d` can panic where the monotonic clock's zero point is
+    /// near process start, so subtract fallibly and fail with a clear message
+    /// instead of an opaque arithmetic panic.
+    fn stale_instant(ago: Duration) -> Instant {
+        Instant::now()
+            .checked_sub(ago)
+            .expect("clock has enough history to backdate a test instant")
+    }
+
     #[tokio::test]
     async fn test_event_router_register_and_route() {
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -359,7 +370,7 @@ mod tests {
             state.pending.push((
                 "uuid:stale-sid".to_string(),
                 "<event>stale</event>".to_string(),
-                Instant::now() - Duration::from_secs(10), // 10s ago, well past TTL
+                stale_instant(Duration::from_secs(10)), // 10s ago, well past TTL
             ));
         }
 
@@ -498,7 +509,7 @@ mod tests {
             state.pending.push((
                 "uuid:stale".to_string(),
                 "<event>stale</event>".to_string(),
-                Instant::now() - Duration::from_secs(10),
+                stale_instant(Duration::from_secs(10)),
             ));
         }
 

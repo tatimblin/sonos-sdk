@@ -114,7 +114,7 @@ fn main() -> io::Result<()> {
                     KeyCode::Char('q') | KeyCode::Esc => break,
                     KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
                     KeyCode::Down | KeyCode::Char('j') => {
-                        selected = (selected + 1).min(ROOMS.len() - 1)
+                        selected = (selected + 1).min(ROOMS.len() - 1);
                     }
                     KeyCode::Char(' ') => {
                         let room = ROOMS[selected].to_string();
@@ -149,7 +149,13 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
-fn draw(f: &mut Frame, store: &StateStore<String>, selected: usize, renders: u64, log: &[String]) {
+fn draw(
+    f: &mut Frame<'_>,
+    store: &StateStore<String>,
+    selected: usize,
+    renders: u64,
+    log: &[String],
+) {
     let chunks = Layout::vertical([
         Constraint::Length(3),
         Constraint::Length(ROOMS.len() as u16 * 2 + 2),
@@ -163,13 +169,8 @@ fn draw(f: &mut Frame, store: &StateStore<String>, selected: usize, renders: u64
         chunks[0],
     );
 
-    let room_chunks = Layout::vertical(
-        ROOMS
-            .iter()
-            .map(|_| Constraint::Length(2))
-            .collect::<Vec<_>>(),
-    )
-    .split(Block::bordered().title("Rooms").inner(chunks[1]));
+    let room_chunks = Layout::vertical(ROOMS.iter().map(|_| Constraint::Length(2)))
+        .split(Block::bordered().title("Rooms").inner(chunks[1]));
     f.render_widget(Block::bordered().title("Rooms"), chunks[1]);
 
     for (i, room) in ROOMS.iter().enumerate() {
@@ -197,7 +198,7 @@ fn draw(f: &mut Frame, store: &StateStore<String>, selected: usize, renders: u64
         );
     }
 
-    let items: Vec<ListItem> = log
+    let items: Vec<ListItem<'_>> = log
         .iter()
         .rev()
         .map(|s| ListItem::new(s.as_str()).fg(Color::Gray))

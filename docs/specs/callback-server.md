@@ -59,7 +59,7 @@ Without this crate, each device-specific implementation would need to duplicate 
                                     │  (HTTP server binding & lifecycle)       │
                                     ├─────────────────────────────────────────┤
     ┌──────────────┐                │                                         │
-    │ Sonos Device │ ──NOTIFY──────▶│     warp HTTP Server (port 3400-3500)   │
+    │ Sonos Device │ ──NOTIFY──────▶│     axum HTTP Server (port 3400-3500)   │
     │ (Speaker)    │   HTTP POST    │     body capped at 64 KiB (→413/411)    │
     └──────────────┘                └─────────────────┬───────────────────────┘
                                                       │
@@ -88,7 +88,7 @@ Without this crate, each device-specific implementation would need to duplicate 
 
 **Design Rationale**: The architecture separates concerns into three distinct layers:
 
-1. **HTTP Transport** (`CallbackServer`): Handles network binding, TLS would go here if needed, and HTTP protocol details. Uses warp for async HTTP handling.
+1. **HTTP Transport** (`CallbackServer`): Handles network binding, TLS would go here if needed, and HTTP protocol details. Uses `axum` for async HTTP handling.
 
 2. **Event Routing** (`EventRouter`): Maintains subscription registry and forwards events. Decoupled from HTTP so it could theoretically be reused with other transports.
 
@@ -218,29 +218,60 @@ pub struct FirewallDetectionCoordinator {
 
 ```
 ┌──────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│ Sonos Device │────▶│  warp HTTP   │────▶│ EventRouter  │────▶│   Consumer   │
+│ Sonos Device │────▶│  axum HTTP   │────▶│ EventRouter  │────▶│   Consumer   │
 │ NOTIFY POST  │     │  Handler     │     │   .route()   │     │   Channel    │
 └──────────────┘     └──────────────┘     └──────────────┘     └──────────────┘
        │                    │                    │                    │
        ▼                    ▼                    ▼                    ▼
-   HTTP Request      notify_route          route_event()        rx.recv()
+   HTTP Request      NotifyRequest         route_event()        rx.recv()
+                     + handle_notify
 ```
+
+Every gate lives in one `FromRequest` extractor, `NotifyRequest`. Expressing them as an
+extractor rather than as checks inside the handler means they run before the handler body
+and each failure carries its own status via `IntoResponse` — no separate error-to-status
+mapping table to keep in step. The extractor also makes the handler's own signature the
+proof that validation happened: `handle_notify` cannot be reached with an unvalidated
+request.
 
 **Step-by-step**:
 
-1. **Method Validation**: A dedicated `notify_method` filter rejects non-NOTIFY methods with 404. This gate deliberately runs **before** the body filters so that ordinary bodiless requests (e.g. a browser GET) still get 404 rather than 411 Length Required.
+1. **Method Validation**: `req.method().as_str() != NOTIFY_METHOD` rejects non-NOTIFY with
+   404. This gate deliberately runs **before** anything looks at the body, so ordinary
+   bodiless requests (e.g. a browser GET) still get 404 rather than 411 Length Required.
+   NOTIFY is not a standard verb, so it is absent from `http::Method`'s constants and
+   axum's `MethodFilter` cannot express it; comparing `as_str()` against a `&'static str`
+   constant is the whole gate and constructs no `Method` per request.
 
-2. **Body Size Limit**: `warp::body::content_length_limit(MAX_NOTIFY_BODY_BYTES)` caps the body at 64 KiB before warp buffers it. Oversized bodies get 413; a missing `Content-Length` gets 411. See §10.4 for sizing rationale.
+2. **Body Size Limit**, enforced in **two independent places**:
+   - `declared_content_length()` refuses on the declared `Content-Length` before a single
+     body byte is read (413), and turns a request with no declared length into 411.
+   - `DefaultBodyLimit::max(MAX_NOTIFY_BODY_BYTES)` then caps the bytes actually read, so
+     the ceiling holds even if the header check is later changed or bypassed.
 
-3. **HTTP Reception**: The warp filter receives the request and extracts:
+   See §10.4 for sizing rationale.
+
+3. **HTTP Reception**: the extractor reads:
    - HTTP method (must be NOTIFY)
-   - Path (any path accepted)
-   - Headers: `SID`, `NT`, `NTS`
+   - Path (any path accepted, for logging only)
+   - Headers: `SID`, `NT`, `NTS`, via `upnp_header()` — a present-but-not-UTF-8 value is a
+     400, not the 500 it used to fall through to
    - Body bytes (size-capped)
 
-4. **Header Validation** (`validate_upnp_headers`): UPnP headers are validated:
-   - SID header must be present
-   - If NT and NTS are present, they must be `upnp:event` and `upnp:propchange`
+4. **Header Validation** (`validate_upnp_headers`): SID must be present, since without it
+   an event cannot be routed. NT and NTS are optional (some devices omit them) but each is
+   checked **independently** when present:
+
+   ```rust
+   if nt.is_some_and(|nt| nt != "upnp:event") { return false; }
+   if nts.is_some_and(|nts| nts != "upnp:propchange") { return false; }
+   ```
+
+   **This fixed a real validation gap.** The previous form was
+   `if let (Some(nt), Some(nts)) = (nt, nts)`, which validated the pair only when *both*
+   were present — so a request carrying `NT: garbage` and no `NTS` at all skipped
+   validation entirely and was accepted. Independent checks preserve the "optional"
+   intent while closing that hole.
 
    Header validation runs **before** the body is decoded to a `String`, so junk requests never pay for the full allocation. This ordering matters: decoding first would let an invalid request cost a full body copy on top of the buffered bytes.
 
@@ -259,7 +290,7 @@ pub struct FirewallDetectionCoordinator {
 ```
 ┌──────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
 │   new()      │────▶│ find_port()  │────▶│ detect_ip()  │────▶│ start_server │
-│   Entry      │     │ 3400-3500    │     │ enumerate    │     │ warp::serve  │
+│   Entry      │     │ 3400-3500    │     │ enumerate    │     │ axum::serve  │
 └──────────────┘     └──────────────┘     └──────────────┘     └──────────────┘
        │                    │                    │                    │
        ▼                    ▼                    ▼                    ▼
@@ -276,9 +307,9 @@ pub struct FirewallDetectionCoordinator {
 
 3. **URL Construction** (`new`): Combines IP and port into `http://ip:port` format.
 
-4. **Server Spawn** (`start_server`): Spawns tokio task running warp server with graceful shutdown support.
+4. **Server Spawn** (`start_server`): Spawns a tokio task running `axum::serve(listener, app).with_graceful_shutdown(..)`. The router is a single `.fallback(handle_notify)` — `fallback` is what makes the path arbitrary, since the SID header rather than the URL is the routing key.
 
-5. **Ready Signal** (`ready_tx`/`ready_rx`): Server signals readiness via channel before `new()` returns, ensuring the server is actually listening.
+5. **Ready Signal** (`ready_tx`/`ready_rx`): Server signals readiness via channel before `new()` returns, ensuring the server is actually listening. The signal is sent immediately after `TcpListener::bind` returns, because the socket is accepting from that point — so a caller may subscribe knowing events have somewhere to land. If `bind` fails, `ready_tx` is dropped instead, and `new()` reports "Server failed to start" rather than handing back a server nothing can reach.
 
 ### 3.3 Secondary Flow: Firewall Detection
 
@@ -324,15 +355,24 @@ firewall_detection.rs:150   firewall_detection.rs:232   firewall_detection.rs:25
 
 ### 3.4 Error Flow
 
+Every rejection is a `NotifyRejection` variant with its own `IntoResponse`, so the status
+lives next to the reason rather than in a central mapping function:
+
 ```
-[Invalid HTTP headers] ──▶ [warp::reject::custom(InvalidUpnpHeaders)] ──▶ [400 Bad Request]
-                                          │
-                                          ▼
-                                   handle_rejection
+[Not a NOTIFY request] ──▶ [NotifyRejection::NotNotify]          ──▶ [404 Not Found]
 
-[Body > 64 KiB]        ──▶ [warp::reject::PayloadTooLarge] ──▶ [413 Payload Too Large]
+[Invalid/missing SID, bad NT or NTS,
+ non-UTF-8 header value]
+                       ──▶ [NotifyRejection::InvalidUpnpHeaders] ──▶ [400 Bad Request]
 
-[No Content-Length]    ──▶ [warp::reject::LengthRequired]  ──▶ [411 Length Required]
+[Content-Length > 64 KiB]
+                       ──▶ [NotifyRejection::BodyTooLarge]       ──▶ [413 Payload Too Large]
+
+[No parseable Content-Length]
+                       ──▶ [NotifyRejection::LengthRequired]     ──▶ [411 Length Required]
+
+[Read hit the limit, or connection
+ failed mid-body]      ──▶ [NotifyRejection::UnreadableBody]     ──▶ [413 or 400, axum's own mapping]
 
 [Unknown subscription] ──▶ [router.route_event buffers event] ──▶ [200 OK]
                                           │
@@ -368,7 +408,9 @@ The unified approach means one server handles all traffic, simplifying deploymen
 
 #### How
 
-The `CallbackServer` accepts any path for NOTIFY requests (`warp::path::full`). The subscription ID from the SID header is the routing key, not the URL path. This allows the same callback URL to be registered for all subscriptions.
+The `CallbackServer` accepts any path for NOTIFY requests: the router is a single
+`Router::new().fallback(handle_notify)`, and `fallback` is what makes the path arbitrary.
+The subscription ID from the SID header is the routing key, not the URL path. This allows the same callback URL to be registered for all subscriptions.
 
 ```rust
 // All subscriptions use the same base URL
@@ -404,7 +446,7 @@ Automatic selection eliminates manual port configuration.
 
 #### How
 
-Sequential scan from start to end of range, attempting TCP bind on each (`is_port_available`). First successful bind wins. The bound listener is immediately dropped (just testing availability), then warp binds to the same port.
+Sequential scan from start to end of range, attempting TCP bind on each (`is_port_available`). First successful bind wins. The bound listener is immediately dropped (just testing availability), then axum binds to the same port.
 
 ```rust
 fn find_available_port(start: u16, end: u16) -> Option<u16> {
@@ -679,14 +721,13 @@ pub struct DeviceFirewallState {
 |-------|---------|---------------------|
 | `if-addrs` | IPv4 interface enumeration with netmasks | Callback address selection needs each interface's real netmask (§4.5); already used by `sonos-discovery` for per-interface SSDP |
 | `tokio` | Async runtime | Standard async runtime in Rust ecosystem; required for async HTTP server |
-| `warp` | HTTP server framework | Lightweight, filter-based API that composes well; excellent for simple REST endpoints |
-| `bytes` | Byte buffer handling | Required by warp for efficient body handling |
-| `async-trait` | Async trait support | Enables async methods in traits (Rust limitation workaround) |
-| `thiserror` | Error type derivation | Reduces boilerplate for error enum definitions |
-| `reqwest` | HTTP client (dev) | Used in integration tests for sending test requests |
-| `uuid` | UUID generation | Potentially for generating subscription IDs (currently unused in core) |
-| `url` | URL parsing | URL validation and manipulation |
-| `soap-client` | Internal workspace crate | Dependency exists but appears unused in current code |
+| `axum` | HTTP server framework | This crate serves exactly **one** route, so a framework's composition story is nearly irrelevant; what matters is a small dependency tree, first-party `tower`/`hyper` alignment, and a `FromRequest` extractor that lets every gate run before the handler with its own status. Replaced `warp`, which was the sole reason `openssl-sys` (and its C toolchain requirement) was in the tree |
+| `reqwest` | HTTP client (**dev-dependency only**) | Test client for driving the server end to end |
+
+**Deps that used to be listed here and are gone**: `bytes` (axum re-exports `Bytes`, so no
+direct dependency), `async-trait` (no async traits in this crate), `thiserror` (errors here
+are strings, see §7.1), `uuid`, `url` and `soap-client` (all unused — `soap-client` in
+particular was an inverted-layering hazard).
 
 ### 6.2 Dependents (Downstream)
 
@@ -734,23 +775,32 @@ The crate uses string-based errors for simplicity:
 "Server failed to start"                  // Ready signal not received
 ```
 
-HTTP-level errors use warp's rejection system:
+HTTP-level errors are one enum, `NotifyRejection`, used as `NotifyRequest`'s
+`FromRequest::Rejection`. Each variant implements its own status via `IntoResponse`, so
+there is no central `handle_rejection` function and no `anything else => 500` catch-all to
+fall through:
 
 ```rust
-#[derive(Debug)]
-struct InvalidUpnpHeaders;
-impl warp::reject::Reject for InvalidUpnpHeaders {}
+enum NotifyRejection {
+    NotNotify,
+    LengthRequired,
+    BodyTooLarge,
+    UnreadableBody(axum::extract::rejection::BytesRejection),
+    InvalidUpnpHeaders,
+}
 ```
 
-`handle_rejection` maps rejections to statuses:
+| Variant | Status | Meaning |
+|---------|--------|---------|
+| `NotNotify` | 404 | Not a NOTIFY request. Deliberately **not** 405, which would advertise the NOTIFY verb to a scanner |
+| `InvalidUpnpHeaders` | 400 | Missing SID, bad NT/NTS, or a header value that is not UTF-8 |
+| `BodyTooLarge` | 413 | Declared `Content-Length` over `MAX_NOTIFY_BODY_BYTES` (logged at error level with the limit) |
+| `LengthRequired` | 411 | No parseable `Content-Length`, so the body cannot be bounded before reading |
+| `UnreadableBody` | 413 or 400 | The read hit `DefaultBodyLimit`, or the connection failed part-way. axum's own mapping is reused rather than second-guessed |
 
-| Rejection | Status | Meaning |
-|-----------|--------|---------|
-| `is_not_found()` | 404 | Not a NOTIFY request |
-| `InvalidUpnpHeaders` | 400 | Missing SID, or bad NT/NTS |
-| `warp::reject::PayloadTooLarge` | 413 | Body over `MAX_NOTIFY_BODY_BYTES` (logged at error level with the limit) |
-| `warp::reject::LengthRequired` | 411 | No `Content-Length`, so the body cannot be bounded before reading |
-| anything else | 500 | Unexpected |
+**Why a non-UTF-8 header is 400**: it previously fell through to an unhandled rejection and
+became a 500. None of SID/NT/NTS can be valid without being text, so 400 is the honest
+answer and it no longer reports a client error as a server fault.
 
 ### 7.2 Error Philosophy
 
@@ -968,12 +1018,17 @@ every unbounded buffer is a memory-exhaustion primitive.
 
 | Input Source | Validation | Location |
 |--------------|------------|----------|
-| HTTP method | Must be NOTIFY (checked before body filters) | `notify_method` filter in `start_server` |
-| Content-Length | Must be present and ≤ `MAX_NOTIFY_BODY_BYTES` | `warp::body::content_length_limit` |
-| SID header | Must be present | `validate_upnp_headers` |
-| NT header | If present, must be `upnp:event` | `validate_upnp_headers` |
-| NTS header | If present, must be `upnp:propchange` | `validate_upnp_headers` |
+| HTTP method | Must be NOTIFY (checked before anything reads the body) | `NotifyRequest::from_request` |
+| Content-Length | Must be present and ≤ `MAX_NOTIFY_BODY_BYTES` | `declared_content_length` (declared size) **and** `DefaultBodyLimit` (bytes actually read) |
+| SID header | Must be present, and must be UTF-8 | `validate_upnp_headers`, `upnp_header` |
+| NT header | If present, must be `upnp:event` — checked **independently** of NTS | `validate_upnp_headers` |
+| NTS header | If present, must be `upnp:propchange` — checked **independently** of NT | `validate_upnp_headers` |
 | Event body | Size-capped; contents not parsed (passed through) | Consumer responsibility |
+
+**Independent NT/NTS checks**: these were previously gated behind
+`if let (Some(nt), Some(nts))`, so a request supplying only one of the two was never
+validated — `NT: garbage` with no `NTS` was accepted. Each header is now checked on its own
+with `is_some_and`, which keeps both optional while closing that gap.
 
 **Ordering requirement**: header validation must precede `String::from_utf8_lossy`
 on the body. The lossy decode allocates a second full copy of the body, so
@@ -984,11 +1039,24 @@ bytes rather than double.
 
 `MAX_NOTIFY_BODY_BYTES = 64 * 1024` (64 KiB).
 
-**Why a limit is required**: without `content_length_limit`, warp buffers the
-entire body, and the handler then allocates a second full copy when decoding it to
-a `String`. Peak cost is ~2x the body size per in-flight request, so two
-concurrent 1 GB posts would be roughly 4 GB resident. Chunked requests with no
-`Content-Length` have no declared size at all.
+**Why a limit is required**: without one, the entire body is buffered and the handler then
+allocates a second full copy when decoding it to a `String`. Peak cost is ~2x the body size
+per in-flight request, so two concurrent 1 GB posts would be roughly 4 GB resident. The
+endpoint is unauthenticated by design (UPnP eventing has no auth), so any host on the LAN
+can post to it.
+
+**Why the limit is enforced twice**, deliberately:
+
+| Check | When | What it protects |
+|-------|------|------------------|
+| `declared_content_length()` | Before a single body byte is read | Refuses a hostile *declaration* for free, and is what turns an undeclared length into 411 |
+| `DefaultBodyLimit::max(..)` | While reading | Caps the bytes actually read, so the ceiling holds even if a lying `Content-Length` gets past the first check, or the first check is later changed |
+
+**Why chunked bodies get 411 rather than being read**: a chunked request declares no size
+at all, so there is nothing to refuse *before* reading it — the only alternative to 411 is
+to start reading a body of unknown length and rely solely on `DefaultBodyLimit` to stop.
+411 keeps the cheap up-front refusal for the unauthenticated case. This costs nothing in
+practice: real Sonos devices always send `Content-Length` and never chunk (§14.1).
 
 **Why 64 KiB specifically**:
 
@@ -1042,11 +1110,11 @@ trace-logging path previously did `&event_xml[..200]` directly: 198 ASCII bytes
 followed by a 3-byte codepoint spanning bytes 198-200 panics with
 `byte index 200 is not a char boundary`. Event XML routinely carries non-ASCII
 track metadata, so this is reachable in normal use for a music SDK — a panic in
-the warp handler, triggerable by any sender, at trace level.
+the request handler, triggerable by any sender, at trace level.
 
 The `preview(s, max)` helper walks the truncation point back to the nearest char
 boundary. It is a free function rather than inline code specifically so it can be
-unit-tested; logic inside a warp closure cannot be.
+unit-tested.
 
 ---
 
@@ -1068,10 +1136,12 @@ size and the char-boundary panic risk on that path.
 
 ### 11.2 Tracing
 
-**Current state**: `tracing` events are emitted, but there are no spans. Because
-the handler lives inside a warp closure there is no named function to attach
-`#[tracing::instrument]` to; adding request-scoped spans would mean extracting the
-handler body into a standalone async function first.
+**Current state**: `tracing` events are emitted, but there are no spans.
+
+The blocker is gone, though. The handler used to be a closure inside a `warp` filter chain,
+with no named function to attach `#[tracing::instrument]` to. It is now a free async fn,
+`handle_notify(State<Arc<EventRouter>>, NotifyRequest) -> StatusCode`, so adding
+request-scoped spans is a one-attribute change rather than a refactor.
 
 ---
 
@@ -1146,9 +1216,9 @@ For firewall detection (`FirewallDetectionConfig`):
 
 | Debt Item | Location | Severity | Remediation Plan |
 |-----------|----------|----------|------------------|
-| No request-scoped tracing spans | `src/server.rs` (handler is a warp closure) | Low | Extract the handler into a named async fn and add `#[tracing::instrument]` |
-| Unused `soap-client` dependency | `Cargo.toml` | Low | Remove if truly unused |
-| String-based errors | `src/server.rs` | Low | Consider `thiserror` enum |
+| No request-scoped tracing spans | `src/server.rs` (`handle_notify`) | Low | The handler is now a named async fn, so this is just adding `#[tracing::instrument]` |
+| ~~Unused `soap-client` dependency~~ | ~~`Cargo.toml`~~ | — | **Resolved 2026-08-17.** Removed, along with unused `bytes`, `async-trait`, `thiserror`, `uuid` and `url` |
+| String-based errors for server startup | `src/server.rs` | Low | Consider `thiserror` enum. The *HTTP* errors are already a typed enum (`NotifyRejection`, §7.1); only the three `CallbackServer::new` failures are strings |
 
 ---
 
@@ -1158,7 +1228,7 @@ For firewall detection (`FirewallDetectionConfig`):
 
 | Enhancement | Priority | Rationale | Dependencies |
 |-------------|----------|-----------|--------------|
-| Request-scoped tracing spans | P1 | Correlate log lines for a single NOTIFY; needs the handler extracted from the warp closure | None |
+| Request-scoped tracing spans | P1 | Correlate log lines for a single NOTIFY. Now unblocked: `handle_notify` is a named async fn | None |
 | Configurable callback URL | P2 | Support for Docker/NAT environments where auto-detection fails | None |
 | Metrics export | P2 | Prometheus-compatible counters for events received, routing success rate, and rejected/evicted counts | `metrics` crate |
 | Per-source-IP rate limiting | P3 | The size and buffer caps bound memory per request, but not request *rate* from a hostile LAN host | None |
@@ -1184,7 +1254,7 @@ For firewall detection (`FirewallDetectionConfig`):
 ### B. References
 
 - [UPnP Device Architecture 2.0](http://upnp.org/specs/arch/UPnP-arch-DeviceArchitecture-v2.0.pdf) - Section 4 (Eventing)
-- [warp documentation](https://docs.rs/warp/) - HTTP server framework
+- [axum documentation](https://docs.rs/axum/) - HTTP server framework
 - [tokio documentation](https://docs.rs/tokio/) - Async runtime
 
 ### C. Changelog
@@ -1193,4 +1263,5 @@ For firewall detection (`FirewallDetectionConfig`):
 |------|--------|--------|
 | 2025-01-14 | Claude | Initial specification created |
 | 2026-08-15 | Claude | Replaced route-to-8.8.8.8 IP detection with per-interface selection using each interface's real netmask (§4.5), added `if-addrs` (§6.1), documented the single-`base_url` multi-subnet limitation as a named follow-up (§14.1), and required OS-assigned ports in tests (§8.4). |
+| 2026-08-17 | Claude Opus 5 | Ported the single route from `warp` to `axum`: gates now live in a `NotifyRequest` extractor and `NotifyRejection` replaces the rejection-mapping table (§3.1, §3.4, §7.1). Documented the **fixed NT/NTS validation gap** — they were only checked when both were present (§3.1, §10.3) — the two independent body-size checks and why chunked bodies stay 411 (§10.4), and the removal of six unused dependencies (§6.1, §14.2). |
 | 2026-08-15 | Claude | Hardened the unauthenticated NOTIFY endpoint: added the 64 KiB body limit (§10.4), the 256-entry pending buffer cap with per-route TTL sweep (§10.5), and UTF-8-safe trace previews (§10.6). Expanded the threat model to state that unbounded buffers are the primary risk given UPnP has no authentication. |

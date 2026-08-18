@@ -154,6 +154,10 @@
 //! // caused by the control operations
 //! ```
 
+// This workspace contains no `unsafe` code. Asserted here so a future
+// addition is a hard compile error, not a silent change in guarantees.
+#![forbid(unsafe_code)]
+
 pub mod client;
 pub mod error;
 pub mod events;
@@ -179,8 +183,6 @@ pub use operation::{
 };
 
 // New event handling framework exports
-pub use events::{
-    extract_xml_value, EnrichedEvent, EventParser, EventParserRegistry, EventProcessor, EventSource,
-};
+pub use events::{EnrichedEvent, EventParser, EventParserRegistry, EventProcessor, EventSource};
 
 // Enhanced services are available through the services module

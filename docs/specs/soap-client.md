@@ -69,13 +69,13 @@ The soap-client crate provides a unified, resource-efficient transport layer tha
 ├─────────────────────────────────────────────────────────────────┤
 │                   Internal Components                            │
 │  ┌────────────────────────────┐  ┌───────────────────────────┐  │
-│  │  SOAP Envelope Builder     │  │  extract_response()       │  │
-│  │  (inline in call())        │  │  (SOAP fault handling)    │  │
+│  │  SOAP Envelope Builder     │  │  scan_envelope()          │  │
+│  │  (inline in call())        │  │  (fault + shape checking) │  │
 │  └────────────────────────────┘  └───────────────────────────┘  │
 ├─────────────────────────────────────────────────────────────────┤
 │                External Dependencies                             │
 │  ┌───────────────────┐  ┌──────────────────┐  ┌──────────────┐  │
-│  │  ureq (HTTP)      │  │  xmltree (XML)   │  │  thiserror   │  │
+│  │  ureq 2.x (HTTP)  │  │ quick-xml (XML)  │  │  thiserror   │  │
 │  └───────────────────┘  └──────────────────┘  └──────────────┘  │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -169,27 +169,50 @@ pub enum SoapError {
                                                       │
                                                       ▼
 ┌──────────────┐     ┌──────────────────┐     ┌──────────────┐
-│  Return      │◀────│  extract_        │◀────│  Parse XML   │
-│  Element     │     │  response()      │     │  (xmltree)   │
+│  Return      │◀────│  check_response()│◀────│  Read body   │
+│  String      │     │  (scan_envelope) │     │  as text     │
 └──────────────┘     └──────────────────┘     └──────────────┘
 ```
 
 **Step-by-step**:
 
-1. **Entry** (`src/lib.rs:80-87`): The `call()` method receives the device IP, endpoint, service URI, action name, and payload.
+1. **Entry** (`src/lib.rs`, `call()`): receives the device IP, endpoint, service URI, action name, and payload.
 
-2. **Envelope Construction** (`src/lib.rs:89-100`): SOAP envelope is constructed inline using `format!()`. This avoids the overhead of a separate envelope builder module.
+2. **Envelope Construction**: SOAP envelope is constructed inline using `format!()`. This avoids the overhead of a separate envelope builder module.
 
-3. **HTTP Request** (`src/lib.rs:102-110`):
+3. **HTTP Request**:
    - URL constructed as `http://{ip}:1400/{endpoint}`
    - SOAPACTION header formatted as `"{service_uri}#{action}"`
    - Request sent via `ureq` with Content-Type `text/xml; charset="utf-8"`
    - Errors routed through `map_ureq_error()`, which reads the fault body out of
      an error status rather than discarding it (see §3.3)
 
-4. **Response Parsing** (`src/lib.rs:112-116`): Raw XML text is parsed into `xmltree::Element`.
+4. **Body Read**: the response body is read into a `String`. No DOM is built.
 
-5. **Response Extraction** (`src/lib.rs:119`): The `extract_response()` method handles SOAP faults and extracts the action response element.
+5. **Verification** (`check_response()` → `scan_envelope()`): a single streaming `quick-xml`
+   pass confirms the body is a fault-free `<{action}Response>` envelope, or returns the
+   `SoapError` describing what it actually was.
+
+6. **Return**: the raw body `String`, handed to `sonos-api`'s `parse_response(&str)`.
+
+#### Why `call()` returns `String`, not a parsed DOM
+
+Response *shape* is service-specific: only `sonos-api` knows that a `GetVolume` reply
+carries `<CurrentVolume>`. This crate's job is transport plus one question — did the device
+refuse? Returning text draws that line cleanly:
+
+- **One XML library, one place.** `sonos-api` already parsed with `quick-xml` + serde.
+  Returning `xmltree::Element` forced a second XML crate into the workspace purely as an
+  interchange format, and every operation had to bridge between the two models.
+- **The guarantee is still enforced here.** Fault detection did *not* move up a layer. An
+  `Ok(String)` is contractually an envelope containing `<{action}Response>` and no
+  `<Fault>`, so callers cannot forget to check.
+- **No wasted parse.** The old path parsed the whole document into a tree, read two or
+  three elements out of it, and dropped it. Now there is one streaming scan here and one
+  streaming read in `sonos-api`, with no intermediate tree.
+
+The cost is that the guarantee is documented rather than encoded in the type — hence the
+explicit contract on `call()`'s doc comment.
 
 ### 3.2 Secondary Flow: UPnP Subscription
 
@@ -238,8 +261,8 @@ This means the error branch must discriminate on `ureq::Error`, not map it whole
      read resp.into_string()                        SoapError::Network
               │                                     (unreachable host,
               ▼                                      timeout, DNS, …)
-     parse envelope, run
-     extract_response()
+     scan envelope, run
+     check_response()
               │
       ┌───────┴────────┐
       │                │
@@ -253,14 +276,14 @@ This means the error branch must discriminate on `ureq::Error`, not map it whole
 
 ```
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│  xmltree error  │────▶│  map to         │────▶│  SoapError::    │
-│  (parse fail)   │     │  Parse          │     │  Parse(msg)     │
+│ quick-xml error │────▶│  map to         │────▶│  SoapError::    │
+│  (syntax fail)  │     │  Malformed      │     │  Parse(msg)     │
 └─────────────────┘     └─────────────────┘     └─────────────────┘
 ```
 
 **Error handling philosophy**: Errors are categorized by their source rather than their meaning. This allows upstream crates (like sonos-api) to map errors to their own domain-specific error types while preserving the original cause.
 
-**Why the body must be read in the error branch**: Mapping `ureq::Error` directly to `Network` — without reading the response — makes the fault-parsing code unreachable in production. Every device rejection then reports as a generic network error, and `SoapError::Fault` can only ever be produced by unit tests calling `extract_response()` directly. Any future refactor of this branch must preserve the body read.
+**Why the body must be read in the error branch**: Mapping `ureq::Error` directly to `Network` — without reading the response — makes the fault-parsing code unreachable in production. Every device rejection then reports as a generic network error, and `SoapError::Fault` can only ever be produced by unit tests calling `check_response()` directly. Any future refactor of this branch must preserve the body read.
 
 **Subscription errors**: SUBSCRIBE/UNSUBSCRIBE endpoints return no SOAP envelope, so there is no fault to parse. `map_subscription_error()` keeps them as `Network` but preserves the HTTP status in the message, since the status is the actionable detail (e.g. `412 Precondition Failed` for an expired SID).
 
@@ -387,33 +410,46 @@ UPnP devices report action failures as SOAP faults embedded in an HTTP 500 respo
 </s:Fault>
 ```
 
-**Element name**: The UPnP Device Architecture spec spells this `UPnPError` (capital `P`, capital `E`). `xmltree`'s `get_child` is an exact match, so the spelling is load-bearing — a lookup for `UpnPError` silently misses on every spec-compliant device and falls through to the default code, collapsing all faults to 500. `UPNP_ERROR_ELEMENT` is the primary name; `UPNP_ERROR_ELEMENT_LEGACY` (`UpnPError`) is accepted on read only, as defensive tolerance for devices or firmware that emit it.
+**Element name**: The UPnP Device Architecture spec spells this `UPnPError` (capital `P`, capital `E`). Matching is exact, so the spelling is load-bearing — a lookup for `UpnPError` silently misses on every spec-compliant device and falls through to the default code, collapsing all faults to 500. `UPNP_ERROR_ELEMENT` is the primary name; `UPNP_ERROR_ELEMENT_LEGACY` (`UpnPError`) is accepted on read only, as defensive tolerance for devices or firmware that emit it.
 
 #### How
 
+`scan_envelope()` makes one streaming `quick-xml` pass over the body, maintaining a stack
+of element **local** names (so `s:Body` matches `Body`) and answering three questions at
+once: is there a `<Body>`, is there a `<Fault>` under it, and is there a
+`<{action}Response>`. Fault fields are accumulated into a `FaultFields` per spelling, then
+normalized: trim, parse the code with `UNKNOWN_FAULT_CODE` (500) as fallback, and treat a
+blank description as absent.
+
 ```rust
-fn parse_fault(fault: &Element) -> SoapError {
-    let upnp_error = fault.get_child("detail").and_then(|detail| {
-        detail
-            .get_child(UPNP_ERROR_ELEMENT)                          // spec spelling
-            .or_else(|| detail.get_child(UPNP_ERROR_ELEMENT_LEGACY)) // tolerated
-    });
-
-    let code = upnp_error
-        .and_then(|e| e.get_child("errorCode"))
-        .and_then(|c| c.get_text())
-        .and_then(|t| t.trim().parse::<u16>().ok())
-        .unwrap_or(UNKNOWN_FAULT_CODE);
-
-    let description = upnp_error
-        .and_then(|e| e.get_child("errorDescription"))
-        .and_then(|d| d.get_text())
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty());
-
-    SoapError::Fault { code, description }
-}
+// Matching is on the exact child path, not "anywhere in the document":
+at_path(&path, &["Body"])                                              // Body
+at_path(&path, &["Body", "Fault"])                                     // Fault
+at_path(&path, &["Body", "Fault", "detail", element, "errorCode"])     // code
 ```
+
+Three properties of this design are deliberate, and two of them fixed real gaps:
+
+- **Path-exact `<Fault>` matching.** `Fault` counts only as a direct child of `Body`, which
+  is what the previous `xmltree` `get_child` chain enforced structurally. A looser
+  "anywhere in the document" scan would let a `<Fault>` appearing inside legitimate
+  response content — a queue item titled "Fault", a `<Detail><Fault>` in a device's own
+  payload — turn a **successful** call into an error. There is a regression test for this
+  (`test_extract_response_ignores_non_toplevel_fault`).
+
+- **Truncated envelopes are rejected.** `quick-xml` reports `Eof` for a document whose tags
+  are still open rather than erroring, so a body cut off mid-transfer would otherwise scan
+  as a perfectly good `<{action}Response>` and be handed upstream as a success.
+  `xmltree::Element::parse` rejected those for us; the scanner now asserts the element
+  stack is empty at EOF and reports `<{tag}> was never closed`. A half-received body is not
+  an answer.
+
+- **Text is appended, not overwritten.** An element split across several text/CDATA nodes
+  reads the same as `xmltree`'s `get_text`, which concatenated them.
+
+Per-spelling accumulation (rather than one shared buffer) means the spec spelling wins
+wholesale if a device somehow emits both, matching the old `get_child(..).or_else(..)`
+which picked one element and read both fields from it.
 
 #### Trade-offs
 
@@ -423,6 +459,8 @@ fn parse_fault(fault: &Element) -> SoapError {
 | Accept both element spellings | Spec spelling only | Zero cost, and tolerates non-compliant firmware without weakening spec support |
 | Default to 500 on parse failure | Return Parse error | Provides usable error even for malformed faults |
 | `description: Option<String>` | Empty string default | Absent and empty are distinguishable; blank text is normalized to `None` |
+| Streaming scan with a path stack | Build a DOM and walk it | No second XML crate, no whole-document tree for two fields, and path-exactness is explicit rather than an accident of the walk |
+| Explicit unclosed-tag check | Trust the parser to error | `quick-xml` returns `Eof`, not an error, for unclosed tags — trusting it would accept truncated responses |
 
 **Note on propagation**: `sonos-api` maps `SoapError::Fault` to `ApiError::SoapFault(u16)`, which carries only the code. The description is intentionally dropped at that boundary because widening the public `ApiError` variant would be a breaking change to a semver-checked crate. The description remains available to workspace-internal consumers of `SoapError`.
 
@@ -476,8 +514,8 @@ pub struct SubscriptionResponse {
 
 | Crate | Purpose | Why This Dependency |
 |-------|---------|---------------------|
-| `ureq` | Blocking HTTP client | Lightweight, no async runtime required, supports custom HTTP methods needed for UPnP |
-| `xmltree` | XML parsing | Simple DOM-style parsing sufficient for SOAP responses |
+| `ureq` | Blocking HTTP client | Lightweight, no async runtime required, supports custom HTTP methods needed for UPnP. **Pinned to 2.x**: 3.x removes `Agent::request`, `Error::Status` and `Error::Transport`, all of which this crate uses — `Error::Status` in particular is how the fault body is recovered (§3.3) |
+| `quick-xml` | Envelope scanning | The same XML crate `sonos-api` already used. One library across the workspace means the scanner here and the deserializer there cannot disagree about namespaces or entity decoding. Streaming, so no DOM is built for a two-field lookup |
 | `thiserror` | Error derivation | Consistent error handling pattern across workspace |
 
 ### 6.2 Dependents (Downstream)
@@ -597,7 +635,20 @@ pub enum SoapError {
 - [x] Non-200 success codes accepted (`test_is_success_accepts_non_200_success_codes`)
 - [x] Missing Body element handling (`test_extract_response_missing_body`)
 - [x] Missing action response handling (`test_extract_response_missing_action_response`)
+- [x] Response for a *different* action rejected (`test_extract_response_rejects_other_action_response`)
+- [x] Self-closing response element accepted (`test_extract_response_accepts_self_closing_response`)
+- [x] A `<Fault>` nested in legitimate response content does **not** become an error (`test_extract_response_ignores_non_toplevel_fault`)
+- [x] Truncated envelope rejected rather than read as a success (`test_extract_response_rejects_truncated_envelope`)
+- [x] Non-XML body is a `Parse` error, not a missing Body (`test_extract_response_with_non_xml_body`)
 - [x] Default error code on malformed fault (`test_soap_fault_with_default_error_code`)
+- [x] Blank `<errorDescription>` normalized to `None` (`test_soap_fault_blank_description_is_none`)
+- [x] Non-numeric `<errorCode>` falls back rather than failing (`test_soap_fault_unparseable_code_falls_back`)
+- [x] Escaped entities in a fault description are decoded (`test_soap_fault_description_is_unescaped`)
+- [x] Granted TIMEOUT parsed, with fallback for `infinite`/malformed/absent (`test_granted_timeout_parsing_and_fallback`)
+
+The test names keep the historical `test_extract_response_*` prefix even though the function
+is now `check_response`; they are pinned by the spec rather than renamed so the mapping from
+each documented behaviour to its regression test survives the refactor.
 
 **Testing `ureq` error mapping without a device**: `ureq::Response::new(status, status_text, body)` is public, so `ureq::Error::Status(500, resp)` can be constructed directly and driven through `map_ureq_error()`. This covers the fault-detection path with no network or speaker involved.
 
@@ -653,15 +704,18 @@ fn test_singleton_pattern_consistency() {
 
 ### 9.2 Critical Paths
 
-1. **SOAP Envelope Construction** (`src/lib.rs:89-100`)
+1. **SOAP Envelope Construction** (`src/lib.rs`, in `call()`)
    - **Complexity**: O(n) where n = payload size
    - **Bottleneck**: String formatting
    - **Optimization**: Inline format! avoids allocation overhead of builder pattern
 
-2. **Response Parsing** (`src/lib.rs:115-116`)
+2. **Envelope Verification** (`src/lib.rs`, `scan_envelope()`)
    - **Complexity**: O(n) where n = response size
-   - **Bottleneck**: XML parsing
-   - **Optimization**: Single-pass DOM parsing with xmltree
+   - **Bottleneck**: Network I/O dominates; UPnP bodies are small
+   - **Design**: One streaming `quick-xml` pass, no DOM. Only the fault leaves allocate
+     (a `String` per path element on the stack, and the fault text if present). The
+     previous design built a full `xmltree` tree, read two or three elements out, and
+     dropped it — and then `sonos-api` did its own parse on top
 
 ### 9.3 Resource Management
 
@@ -694,10 +748,11 @@ fn test_singleton_pattern_consistency() {
 
 | Input Source | Validation | Location |
 |--------------|------------|----------|
-| Device responses | XML structure validation | `src/lib.rs:350-366` (extract_response) |
-| Timeout header | Safe parsing with fallback | `src/lib.rs:180-190` |
-| Error codes | Numeric parsing with default | `src/lib.rs:368-388` (parse_fault) |
-| Error status bodies | Parsed as SOAP envelope, falling back to `Network` | `src/lib.rs:313-336` (map_ureq_error) |
+| Device responses | Envelope shape: XML well-formedness, no unclosed tags, `Body` present, `<{action}Response>` present | `src/lib.rs` (`scan_envelope`, `check_response`) |
+| Timeout header | Safe parsing with fallback | `src/lib.rs` (`granted_timeout`) |
+| Error codes | Numeric parsing with `UNKNOWN_FAULT_CODE` default | `src/lib.rs` (`FaultFields::into_scan`) |
+| Error status bodies | Scanned as a SOAP envelope, falling back to `Network` | `src/lib.rs` (`map_ureq_error`) |
+| Truncated bodies | Element stack must be empty at EOF, else `Parse` | `src/lib.rs` (`scan_envelope`) |
 
 ---
 
@@ -817,7 +872,7 @@ let client = SoapClient::with_agent(Arc::new(custom_agent));
 - [UPnP Device Architecture 1.1](http://www.upnp.org/specs/arch/UPnP-arch-DeviceArchitecture-v1.1.pdf)
 - [SOAP 1.1 Specification](https://www.w3.org/TR/2000/NOTE-SOAP-20000508/)
 - [ureq Documentation](https://docs.rs/ureq)
-- [xmltree Documentation](https://docs.rs/xmltree)
+- [quick-xml Documentation](https://docs.rs/quick-xml)
 
 ### C. Changelog
 
@@ -825,3 +880,4 @@ let client = SoapClient::with_agent(Arc::new(custom_agent));
 |------|--------|--------|
 | 2024-01-14 | Claude | Initial specification created |
 | 2026-08-15 | Claude | Documented the `ureq` error-status trap (§3.3): UPnP faults arrive as HTTP 500 and must be read out of `ureq::Error::Status`. Corrected fault element spelling to `UPnPError` (§4.3), widened `SoapError::Fault` to carry `errorDescription` (§2.3), and replaced `status() != 200` checks with `is_success()`. |
+| 2026-08-17 | Claude Opus 5 | `call()` now returns `Result<String, SoapError>` instead of `Result<xmltree::Element, _>`, and fault detection is a streaming `quick-xml` scan (`scan_envelope`). `xmltree` removed from the workspace. Documented why text and not a DOM (§3.1), path-exact `<Fault>` matching and truncated-envelope rejection (§4.3), and the `ureq` 2.x pin (§6.1). |

@@ -140,9 +140,8 @@ mod tests {
         let (tx, rx) = mpsc::channel::<EnrichedEvent>();
         let iter = EventManagerIterator::new(Arc::new(Mutex::new(rx)));
 
-        // Should return empty vec when no events
-        let events: Vec<_> = iter.try_iter().collect();
-        assert!(events.is_empty());
+        // Should yield nothing when no events are queued
+        assert_eq!(iter.try_iter().count(), 0);
 
         drop(tx);
     }

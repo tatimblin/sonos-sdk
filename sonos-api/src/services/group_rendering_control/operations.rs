@@ -138,7 +138,7 @@ impl crate::operation::UPnPOperation for GetGroupMuteOperation {
         Ok(format!("<InstanceID>{}</InstanceID>", request.instance_id))
     }
 
-    fn parse_response(xml: &xmltree::Element) -> Result<Self::Response, crate::error::ApiError> {
+    fn parse_response(xml: &str) -> Result<Self::Response, crate::error::ApiError> {
         Ok(GetGroupMuteResponse {
             current_mute: parse_sonos_bool(xml, "CurrentMute"),
         })
@@ -320,8 +320,7 @@ mod tests {
     fn test_get_group_mute_parse_response_true() {
         let xml_str =
             r#"<GetGroupMuteResponse><CurrentMute>1</CurrentMute></GetGroupMuteResponse>"#;
-        let xml = xmltree::Element::parse(xml_str.as_bytes()).unwrap();
-        let response = GetGroupMuteOperation::parse_response(&xml).unwrap();
+        let response = GetGroupMuteOperation::parse_response(xml_str).unwrap();
         assert!(response.current_mute);
     }
 
@@ -329,8 +328,7 @@ mod tests {
     fn test_get_group_mute_parse_response_false() {
         let xml_str =
             r#"<GetGroupMuteResponse><CurrentMute>0</CurrentMute></GetGroupMuteResponse>"#;
-        let xml = xmltree::Element::parse(xml_str.as_bytes()).unwrap();
-        let response = GetGroupMuteOperation::parse_response(&xml).unwrap();
+        let response = GetGroupMuteOperation::parse_response(xml_str).unwrap();
         assert!(!response.current_mute);
     }
 

@@ -5,6 +5,7 @@
 
 use callback_server::{CallbackServer, NotificationPayload};
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
@@ -518,6 +519,113 @@ async fn test_oversized_notify_body_rejected() {
     assert!(
         no_notification.is_err(),
         "oversized body should not be routed"
+    );
+
+    server.shutdown().await.expect("Failed to shutdown server");
+}
+
+/// An `NT` arriving without an `NTS` is still validated.
+///
+/// NT and NTS used to be checked inside `if let (Some(nt), Some(nts))`, so a request
+/// carrying only one of the two skipped validation altogether and a bogus `NT` was
+/// accepted and routed. Each header is now validated independently.
+#[tokio::test]
+async fn test_invalid_nt_without_nts_is_rejected() {
+    let (tx, mut rx) = mpsc::unbounded_channel::<NotificationPayload>();
+    let server = CallbackServer::new(free_port_range(), tx)
+        .await
+        .expect("Failed to create callback server");
+
+    let base_url = server.base_url().to_string();
+    let client = reqwest::Client::new();
+
+    let sid = "uuid:nt-without-nts";
+    server.router().register(sid.to_string()).await;
+
+    for (nt, nts) in [
+        (Some("upnp:not-an-event"), None),
+        (None, Some("upnp:not-a-propchange")),
+    ] {
+        let mut request = client
+            .request(
+                reqwest::Method::from_bytes(b"NOTIFY").unwrap(),
+                format!("{base_url}/notify/nt-without-nts"),
+            )
+            .header("SID", sid)
+            .body("<event>should-not-route</event>");
+        if let Some(nt) = nt {
+            request = request.header("NT", nt);
+        }
+        if let Some(nts) = nts {
+            request = request.header("NTS", nts);
+        }
+
+        let response = request.send().await.expect("Failed to send NOTIFY");
+        assert_eq!(
+            response.status(),
+            400,
+            "a lone invalid {} should be rejected, not waved through",
+            if nt.is_some() { "NT" } else { "NTS" }
+        );
+    }
+
+    // Neither request reached the router.
+    let no_notification = timeout(Duration::from_millis(100), rx.recv()).await;
+    assert!(
+        no_notification.is_err(),
+        "requests with an invalid NT/NTS should not be routed"
+    );
+
+    server.shutdown().await.expect("Failed to shutdown server");
+}
+
+/// A body with no declared length is refused with 411 rather than read.
+///
+/// The size cap keys off `Content-Length`, so a chunked body declares nothing to
+/// check against. Real Sonos devices always send `Content-Length`, so refusing is
+/// free; reading first and hoping would reintroduce the unbounded buffer. Sent over
+/// a raw socket because `reqwest` always sets `Content-Length` for a sized body.
+#[tokio::test]
+async fn test_notify_without_content_length_is_rejected() {
+    let (tx, mut rx) = mpsc::unbounded_channel::<NotificationPayload>();
+    let server = CallbackServer::new(free_port_range(), tx)
+        .await
+        .expect("Failed to create callback server");
+
+    let sid = "uuid:chunked-body";
+    server.router().register(sid.to_string()).await;
+
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", server.port()))
+        .await
+        .expect("Failed to connect to callback server");
+    stream
+        .write_all(
+            format!(
+                "NOTIFY /notify/chunked HTTP/1.1\r\nHost: localhost\r\nSID: {sid}\r\n\
+                 Transfer-Encoding: chunked\r\n\r\n7\r\n<event>\r\n0\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .await
+        .expect("Failed to write chunked NOTIFY");
+
+    // A bounded read, not read-to-EOF: the server may hold the connection open, in
+    // which case waiting for EOF would hang rather than fail.
+    let mut buf = [0u8; 128];
+    let read = timeout(Duration::from_secs(2), stream.read(&mut buf))
+        .await
+        .expect("Timeout waiting for response")
+        .expect("Failed to read response");
+    let response = String::from_utf8_lossy(&buf[..read]);
+    assert!(
+        response.starts_with("HTTP/1.1 411"),
+        "a body with no Content-Length should get 411, got: {response}"
+    );
+
+    let no_notification = timeout(Duration::from_millis(100), rx.recv()).await;
+    assert!(
+        no_notification.is_err(),
+        "a body with no Content-Length should not be routed"
     );
 
     server.shutdown().await.expect("Failed to shutdown server");

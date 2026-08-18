@@ -36,7 +36,7 @@ pub(crate) struct SsdpClient {
 
 impl SsdpClient {
     /// Create a new SSDP client with the specified timeout
-    pub fn new(timeout: Duration) -> Result<Self> {
+    pub(crate) fn new(timeout: Duration) -> Result<Self> {
         let interfaces = usable_interfaces()?;
 
         if interfaces.is_empty() {
@@ -67,7 +67,7 @@ impl SsdpClient {
     /// multicast, for example) is not fatal: that interface is skipped and the
     /// remaining ones still report. An error is only returned when every
     /// interface fails, which indicates a genuine local network problem.
-    pub fn search(&self, search_target: &str) -> Result<Vec<SsdpResponse>> {
+    pub(crate) fn search(&self, search_target: &str) -> Result<Vec<SsdpResponse>> {
         let request = format!(
             "M-SEARCH * HTTP/1.1\r\n\
              HOST: 239.255.255.250:1900\r\n\

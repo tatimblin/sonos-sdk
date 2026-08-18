@@ -8,7 +8,7 @@
 //! in `crate::events`. Service-specific event handling is now done in
 //! individual service modules.
 
-use crate::{ApiError, Result, Service};
+use crate::{Result, Service};
 use serde::{Deserialize, Serialize};
 
 /// Subscribe operation for UPnP event subscriptions
@@ -57,19 +57,13 @@ impl SubscribeOperation {
     ) -> Result<SubscribeResponse> {
         let service_info = service.info();
 
-        let subscription_response = soap_client
-            .subscribe(
-                ip,
-                1400, // Standard Sonos port
-                service_info.event_endpoint,
-                &request.callback_url,
-                request.timeout_seconds,
-            )
-            .map_err(|e| match e {
-                soap_client::SoapError::Network(msg) => ApiError::NetworkError(msg),
-                soap_client::SoapError::Parse(msg) => ApiError::ParseError(msg),
-                soap_client::SoapError::Fault { code, .. } => ApiError::SoapFault(code),
-            })?;
+        let subscription_response = soap_client.subscribe(
+            ip,
+            1400, // Standard Sonos port
+            service_info.event_endpoint,
+            &request.callback_url,
+            request.timeout_seconds,
+        )?;
 
         Ok(SubscribeResponse {
             sid: subscription_response.sid,
@@ -117,18 +111,12 @@ impl UnsubscribeOperation {
     ) -> Result<UnsubscribeResponse> {
         let service_info = service.info();
 
-        soap_client
-            .unsubscribe(
-                ip,
-                1400, // Standard Sonos port
-                service_info.event_endpoint,
-                &request.sid,
-            )
-            .map_err(|e| match e {
-                soap_client::SoapError::Network(msg) => ApiError::NetworkError(msg),
-                soap_client::SoapError::Parse(msg) => ApiError::ParseError(msg),
-                soap_client::SoapError::Fault { code, .. } => ApiError::SoapFault(code),
-            })?;
+        soap_client.unsubscribe(
+            ip,
+            1400, // Standard Sonos port
+            service_info.event_endpoint,
+            &request.sid,
+        )?;
 
         Ok(UnsubscribeResponse)
     }
@@ -178,19 +166,13 @@ impl RenewOperation {
     ) -> Result<RenewResponse> {
         let service_info = service.info();
 
-        let actual_timeout_seconds = soap_client
-            .renew_subscription(
-                ip,
-                1400, // Standard Sonos port
-                service_info.event_endpoint,
-                &request.sid,
-                request.timeout_seconds,
-            )
-            .map_err(|e| match e {
-                soap_client::SoapError::Network(msg) => ApiError::NetworkError(msg),
-                soap_client::SoapError::Parse(msg) => ApiError::ParseError(msg),
-                soap_client::SoapError::Fault { code, .. } => ApiError::SoapFault(code),
-            })?;
+        let actual_timeout_seconds = soap_client.renew_subscription(
+            ip,
+            1400, // Standard Sonos port
+            service_info.event_endpoint,
+            &request.sid,
+            request.timeout_seconds,
+        )?;
 
         Ok(RenewResponse {
             timeout_seconds: actual_timeout_seconds,
