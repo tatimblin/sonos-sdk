@@ -99,7 +99,7 @@ src/
 │   ├── mod.rs                 # Event framework re-exports
 │   ├── types.rs               # EnrichedEvent, EventSource, EventParser
 │   ├── processor.rs           # EventProcessor for generic event handling
-│   └── xml_utils.rs           # DIDL-Lite parsing, namespace stripping
+│   └── xml_utils.rs           # quick-xml/serde helpers, DIDL-Lite structs
 └── services/
     ├── mod.rs                 # Service modules
     ├── events.rs              # Subscription operations (Subscribe, Renew, Unsubscribe)
@@ -276,9 +276,16 @@ pub trait UPnPOperation {
     const ACTION: &'static str;
 
     fn build_payload(request: &Self::Request) -> Result<String, ValidationError>;
-    fn parse_response(xml: &Element) -> Result<Self::Response, ApiError>;
+    fn parse_response(xml: &str) -> Result<Self::Response, ApiError>;
 }
 ```
+
+`parse_response` receives the **raw response body as text**, not a parsed DOM.
+`soap-client` deliberately returns `String`: it owns transport and SOAP-fault detection,
+so an `Ok` body is guaranteed to be a fault-free `<{action}Response>` envelope, but
+response *shape* is service-specific and is this crate's business. That split is what
+lets `soap-client` stay free of any per-service knowledge and lets this crate use one
+XML library (`quick-xml`) end to end.
 
 ```rust
 // Example usage
@@ -382,9 +389,30 @@ let enriched = create_enriched_event(speaker_ip, event_source, event);
 ```
 
 **Implementation** (`src/events/`, `src/services/*/events.rs`):
-- `xml_utils::strip_namespaces()` removes XML namespace prefixes
-- Serde deserializes cleaned XML into event structures
+- `quick_xml::de::from_str` deserializes the raw NOTIFY body straight into the event struct
+- `xml_utils` supplies the shared pieces: `parse()` (deserialize + wrap the error as
+  `ApiError::ParseError`), `deserialize_nested` / `deserialize_zone_group_state` for the
+  escaped-XML-inside-an-element pattern, `ValueAttribute` for `<Foo val="..."/>`,
+  `NestedAttribute<T>` for a `val` attribute holding escaped XML, and the `DidlLite` /
+  `DidlItem` / `DidlResource` structs
 - `EnrichedEvent<T>` wraps event data with speaker IP, service, source, and timestamp
+
+#### Why there is no namespace preprocessing
+
+UPnP event XML is heavily namespaced (`e:propertyset`, `e:property`, `dc:title`,
+`upnp:albumArtURI`), and this crate used to run every body through a hand-written
+`xml_utils::strip_namespaces()` tokenizer first. That step was **always redundant**:
+quick-xml's serde deserializer matches on the element's *local* name, so `<e:property>`
+deserializes as `property` with no preprocessing at all.
+
+It was also actively harmful. The tokenizer treated `<!...>` as "copy until the first
+`>`", so any CDATA section, comment or DOCTYPE internal subset containing a `>` was
+truncated mid-document — a `<dc:title><![CDATA[3 > 2]]></dc:title>` corrupted the whole
+body. Deleting it fixed that class of bug and removed 8 of the crate's `unwrap()` calls.
+
+**Consequence for anyone adding an event type**: write `#[serde(rename = "...")]` values
+*without* prefixes. `rename = "dc:title"` cannot match anything. There is a regression
+test for the CDATA/comment case in `src/events/xml_utils.rs`.
 
 ### 4.5 Feature: Declarative Operation Macros
 
@@ -562,8 +590,9 @@ backwards compatibility.
 
 | Format | Use Case | Library | Notes |
 |--------|----------|---------|-------|
-| XML | SOAP request/response | `quick-xml` + `serde` | Namespace stripping via `xml_utils::strip_namespaces()` |
-| XML | UPnP event parsing | `quick-xml` + `serde` | Handles escaped nested XML via custom deserializers |
+| XML | SOAP request/response | `quick-xml` + `serde` | `parse_response(&str)` reads the raw body; matching is on element *local* names, so no namespace preprocessing |
+| XML | UPnP event parsing | `quick-xml` + `serde` | Handles escaped nested XML via custom deserializers (`deserialize_nested`) |
+| XML | Outbound payload escaping | `quick_xml::escape::escape` | `operation::xml_escape` delegates; see §10.3 |
 | DIDL-Lite | Track metadata | `serde` | Custom `DidlLite`, `DidlItem`, `DidlResource` structs |
 
 ---
@@ -577,8 +606,7 @@ backwards compatibility.
 | `soap-client` | HTTP SOAP transport | Workspace crate providing shared HTTP client with connection pooling |
 | `sonos-discovery` | Device information types | Used for `Device` type in examples, not required for core functionality |
 | `serde` | Serialization framework | Industry standard, enables derive macros for request/response types |
-| `quick-xml` | XML parsing | Lightweight, serde-compatible, handles UPnP XML well |
-| `xmltree` | XML element tree | Used for response parsing in legacy `SonosOperation` trait |
+| `quick-xml` | XML parsing **and** escaping | Lightweight, serde-compatible, handles UPnP XML well. The single XML dependency: it deserializes responses and events, and `escape::escape` backs `operation::xml_escape` |
 | `thiserror` | Error derive macro | Clean error type definitions with `#[error]` attributes |
 | `paste` | Identifier manipulation | Required for macro-generated identifier concatenation |
 
@@ -786,15 +814,21 @@ fn prop_volume_range() {
 
 ### 9.2 Critical Paths
 
-1. **`SonosClient::execute()`** (`src/client.rs:82-105`)
+1. **`SonosClient::execute()`** (`src/client.rs`)
    - **Complexity**: O(n) where n = response size
    - **Bottleneck**: Network I/O dominates
    - **Optimization**: Connection reuse via `soap-client`
 
-2. **`strip_namespaces()`** (`src/events/xml_utils.rs:39-159`)
+2. **`operation::response_text()`** (`src/operation/mod.rs`)
    - **Complexity**: O(n) where n = XML length
-   - **Bottleneck**: String allocation
-   - **Optimization**: Pre-allocated output buffer
+   - **Bottleneck**: Nothing measurable; UPnP response bodies are small
+   - **Design**: A single streaming pass with `quick_xml::Reader`, matching on the
+     argument's local name at any depth. No intermediate DOM and no whole-document
+     copy — the previous design built one of each (a `strip_namespaces()` string
+     rewrite, then an `xmltree::Element` tree). This path is *not* where the time
+     goes, so it is optimized for correctness: nested markup is depth-tracked so its
+     end tag cannot terminate the search early, and only direct text children are
+     collected.
 
 ### 9.3 Resource Management
 
@@ -843,6 +877,16 @@ problem:
   which produces malformed XML that the device rejects.
 - `*MetaData` arguments carry DIDL-Lite, which always contains `<`, `>`, and `&`.
 - A crafted value can close its element early and inject sibling arguments.
+
+`operation::xml_escape` is a thin wrapper over `quick_xml::escape::escape`, which escapes
+all five XML predefined entities — `<`, `>`, `&`, `'` and `"`. Delegating rather than
+hand-rolling the character loop means the escaping cannot drift out of step with the
+parser that has to read the result back, and it is one less place to get the `&`-first
+ordering right. A previous plan
+([2026-02-28 PR41 follow-ups](../plans/2026-02-28-refactor-pr41-review-followups-plan.md))
+declined this change on the premise that `escape` "does not escape `'`"; that premise was
+false, and the delegation has since landed. The `test_xml_escape` unit test asserts all
+five characters, which is what keeps the guarantee if quick-xml is ever upgraded.
 
 Both `define_operation_with_response!` arms and the `request_xml_mapping:` path escape
 automatically. **Only hand-written `UPnPOperation` impls can omit escaping**, so those
@@ -994,3 +1038,4 @@ The crate has `tracing` available as a dependency but does not currently instrum
 | 2025-01-14 | Claude Opus 4.5 | Initial specification |
 | 2026-08-15 | Claude Opus 5 | Document RenderingControl per-channel event state variables and master-selection semantics |
 | 2026-08-15 | Claude Opus 5 | Document `request_xml_mapping:` for explicit UPnP request element names (§4.5) and SOAP payload escaping requirements (§10.3) |
+| 2026-08-17 | Claude Opus 5 | Hand-rolled XML replaced by public crates: `strip_namespaces()` and `extract_xml_value()` deleted, `parse_response` now takes `&str`, `xml_escape` delegates to `quick_xml::escape::escape`, `xmltree` removed. Updated §2.2, §4.1, §4.4, §5.2, §6.1, §9.2, §10.3 |

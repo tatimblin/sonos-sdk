@@ -1039,10 +1039,75 @@ does return is subscription state, managed by `sonos-event-manager` after its gr
 | Format | Use Case | Library | Notes |
 |--------|----------|---------|-------|
 | Serde derive | Property values, `SpeakerInfo`, `Topology`, `GroupInfo` | `serde` | For consumer persistence; not used internally |
-| DIDL-Lite XML | Track metadata | Hand-rolled | `parse_track_metadata` (`src/decoder.rs:442`) via `extract_xml_element` (`:466`) |
-| `HH:MM:SS[.mmm]` | Positions and durations | Hand-rolled | `parse_duration_ms` (`src/decoder.rs:405`); rejects `NOT_IMPLEMENTED` and returns `None` on overflow |
+| DIDL-Lite XML | Track metadata | `quick-xml` + `serde` | `parse_track_metadata` deserializes a private `DidlLite`/`DidlItem` pair. See 5.3a |
+| Device/topology URLs | Speaker IP from a `location` value | `url` | `extract_ip_from_location` (`src/decoder.rs`); see 10.3 |
+| `HH:MM:SS[.mmm]` | Positions and durations | Hand-rolled | `parse_duration_ms` (`src/decoder.rs`); rejects `NOT_IMPLEMENTED` and returns `None` on overflow. Kept hand-rolled: this is not a standard duration format any crate parses |
 
 `Scope` and `SonosProperty` are deliberately not serializable — they are compile-time metadata.
+
+#### 5.3a `parse_track_metadata`: a frozen 4-tuple and a two-stage parse
+
+**The signature is a deliberately frozen cross-crate contract.**
+
+```rust
+pub fn parse_track_metadata(
+    metadata: Option<&str>,
+) -> (Option<String>, Option<String>, Option<String>, Option<String>)
+//     title           artist          album           album_art_uri
+```
+
+`sonos-sdk` destructures the tuple positionally (`sonos-sdk/src/property/handles.rs`), so
+the arity, order and infallibility are all load-bearing. Two consequences:
+
+- **Do not make it fallible.** A track whose metadata will not parse must read as "unknown
+  track" — never `Err`, never a panic. Metadata arrives from streaming services and
+  third-party firmware; a single odd title must not take down the caller's display.
+  Returning `Result` would push a decision onto every call site that has only one sensible
+  answer anyway.
+- **Adding a field means changing every caller.** If a fifth value is ever needed, return a
+  named struct rather than a 5-tuple.
+
+**Why a strict parse then a lenient retry.** quick-xml's `unescape` rejects any entity it
+does not recognize (`UnrecognizedSymbol`). Real DIDL routinely carries bare `&` in titles
+and the occasional HTML entity like `&nbsp;`, so a strict-only parse would blank out
+tracks that render fine today — a regression, not a fix. So:
+
+1. **Strict** `quick_xml::de::from_str` first. Valid DIDL is the common case and this costs
+   no allocation.
+2. On failure, retry against a copy where `escape_stray_ampersands` has escaped every `&`
+   that does not already begin a well-formed character reference. `&` becomes `&amp;`, and
+   an unknown `&nbsp;` becomes the literal text `&nbsp;` — exactly what the old
+   `.replace()` chain produced, so behaviour on real-world input is preserved.
+3. Only if *that* also fails (malformed markup, not merely a bad entity) is the item
+   dropped and all-`None` returned, with the reason at `debug`.
+
+**The bug this replaced.** The previous implementation unescaped by chaining `.replace()`
+calls with `&amp;` **first**, so `&amp;apos;` decoded to `'` instead of the literal
+`&apos;` — double-escaped input silently lost a level. It also could not see CDATA,
+comments, or a matching tag name inside an attribute value. Ordering bugs of that shape are
+exactly why unescaping now belongs to the parser.
+
+**Field names are element *local* names.** quick-xml resolves namespace prefixes, so
+UPnP's `dc:title` deserializes as `title` and `upnp:albumArtURI` as `albumArtURI`;
+`rename = "dc:title"` could never match. `dc:creator` is authoritative for artist, with
+`r:albumArtist` as the fallback Sonos supplies for library tracks carrying no creator.
+The private `DidlItem` here duplicates most of `sonos_api::events::DidlItem`, which lacks
+`albumArtist`; consolidating the two DIDL models is worthwhile follow-up work.
+
+#### 5.3b `extract_ip_from_location`: why `url::Url`
+
+Topology members are addressed as `http://<ip>:1400/xml/device_description.xml`. The IP is
+pulled out with `url::Url` rather than splitting on `"http://"`, `'/'` and `':'`, because
+hand-splitting got two cases wrong:
+
+- **IPv6 literals are bracketed** (`http://[fe80::1]:1400/...`), so splitting on `':'`
+  truncated the host to `"[fe80"` and yielded `None`.
+- **Userinfo, or a host with no port**, shifted whichever segment the naive split picked.
+
+`Url::parse` also rejects a scheme-less string as a relative URL, which preserves the
+previous `strip_prefix("http://")` behaviour of returning `None` for
+`"192.168.1.1:1400/xml"`. A host that is a *name* rather than a literal address still
+returns `None`: this value is a cache key for `ip_to_speaker`, not something to resolve.
 
 ---
 
@@ -1102,9 +1167,13 @@ pub enum StateError {
 }
 ```
 
-Hand-written `Display` (`src/error.rs:51`) and `Error::source` (`:73`) rather than
-`thiserror`, which this crate does not depend on. Only `Api` exposes a `source`
-(`src/error.rs:76`), reached through `From<ApiError>` (`:82`).
+Derived with `thiserror`: `#[derive(thiserror::Error)]` plus one `#[error("...")]` per
+variant. The hand-written `Display` and `Error::source` impls this crate used to carry
+were replaced with derives producing **byte-identical messages**, so nothing downstream
+that matches on error text changed. Only `Api` exposes a `source`, via `#[from]`, which
+also supplies the `From<ApiError>` conversion the `?` operator needs. A unit test pins
+both the message and the presence of the source, so an accidental `#[error]` reword or a
+dropped `#[from]` fails the build rather than silently changing observable behaviour.
 
 ### 7.2 Error Philosophy
 
@@ -1283,7 +1352,7 @@ event-manager iterator terminates.
 |--------|------------|--------|------------|
 | Forged UPnP event on the LAN | Low | Medium (wrong displayed state) | Events from IPs absent from `ip_to_speaker` are dropped (`src/event_worker.rs:159`) |
 | Event flooding | Low | Low | Unbounded `mpsc` grows but never blocks the worker; unwatched properties never enqueue at all |
-| Malformed XML in track metadata | Medium | Low | Index-based extraction (`src/decoder.rs:466`) returns `None` rather than panicking |
+| Malformed XML in track metadata | Medium | Low | `parse_track_metadata` is infallible: a real XML parser (`quick-xml`) with a lenient retry, and all-`None` if both attempts fail. No panic, no error propagated to the display path (5.3a) |
 
 ### 10.2 Sensitive Data
 
@@ -1300,8 +1369,9 @@ event-manager iterator terminates.
 | Event source IP | Must be a known speaker | `src/event_worker.rs:150` |
 | Volume strings | `parse::<u8>()`, then `.min(100)` | `src/decoder.rs:206` |
 | Group volume | `.min(100)` | `src/decoder.rs:315` |
-| Durations | Exactly three `:`-separated parts, and checked arithmetic so an overflowing component yields `None` | `src/decoder.rs:405` |
-| Topology `location` | Requires `http://` prefix and a parseable host | `src/decoder.rs:397` |
+| Durations | Exactly three `:`-separated parts, and checked arithmetic so an overflowing component yields `None` | `src/decoder.rs` (`parse_duration_ms`) |
+| Topology `location` | Parsed with `url::Url`; the host must be a literal IPv4 or IPv6 address | `src/decoder.rs` (`extract_ip_from_location`) |
+| Track metadata | Real XML parse, infallible by contract | `src/decoder.rs` (`parse_track_metadata`); see 5.3a |
 
 ---
 
@@ -1392,7 +1462,8 @@ The workspace versions together; breaking changes ride the `sonos-sdk` version.
 | Two overlapping watch paths: `watch_property_with_subscription` vs. the SDK's guard-based `acquire_watch` | `src/state.rs:610`, `:636` | Medium | Remove the pre-guard path once nothing depends on it |
 | Watch holds are split across two crates: `WatchHolds.subscription` is a flag here because the real per-guard count lives in `sonos-event-manager`'s `service_refs`, keyed `(ip, service)` rather than `(speaker, key)` | `src/state.rs` (`WatchHolds`), `sonos-event-manager/src/manager.rs` | Low | Have `WatchGuard::drop` release its own `(speaker, key)` hold directly, so one counter covers both kinds and the flag can go |
 | Unconstructed `StateError` variants | `src/error.rs:10` | Low | Prune to the variants actually produced |
-| Hand-rolled XML extraction while `sonos-stream` already depends on `quick-xml` | `src/decoder.rs:466` | Low | Move DIDL parsing into `sonos-stream` or adopt `quick-xml` here |
+| ~~Hand-rolled XML extraction while `sonos-stream` already depends on `quick-xml`~~ | ~~`src/decoder.rs`~~ | — | **Resolved 2026-08-17.** `extract_xml_element` deleted; `parse_track_metadata` now deserializes with `quick-xml` (5.3a) and `extract_ip_from_location` parses with `url` (5.3b). What remains is the duplicate DIDL model shared with `sonos_api::events::DidlItem` |
+| Two DIDL-Lite models: the private one here and `sonos_api::events::DidlItem` | `src/decoder.rs`, `sonos-api/src/events/xml_utils.rs` | Low | The api one lacks `albumArtist`, which the artist fallback needs. Add it there and drop the local copy |
 | `software_version` hardcoded to `"unknown"` | `src/state.rs:437` | Low | Read from the device description |
 | Write lock retaken per change inside one event | `src/event_worker.rs:423` | Low | Batch under one lock if profiling shows it matters |
 | Panic containment is a net, not a fix | `src/event_worker.rs:97` | Low | Any `error!` from it marks a real bug to be fixed at its source |
@@ -1457,5 +1528,6 @@ The workspace versions together; breaking changes ride the `sonos-sdk` version.
 | 2026-01-14 | Claude Opus 4.5 | Initial specification created |
 | 2026-08-15 | Claude Opus 5 | Rewritten to match the implemented sync-first design. The prior revision documented an async `tokio::sync::watch` architecture (`reactive.rs`, `store.rs`, `watcher.rs`, `change_iterator.rs`, `decoders/*`, `PropertyWatcher<P>`, async `watch_property()`) that does not exist in the code |
 | 2026-08-15 | Claude Opus 5 | Documented the empty-topology-snapshot guard (3.2), per-event panic containment (4.6 and step 2 of 3.1), the "degrade loudly" rule in 3.4, and checked duration arithmetic; refreshed line references and test counts |
+| 2026-08-17 | Claude Opus 5 | Hand-rolled XML and URL handling replaced by crates. Added 5.3a (`parse_track_metadata`'s frozen 4-tuple contract, the strict-then-lenient parse strategy, and the `&amp;`-ordering unescape bug it fixed) and 5.3b (why `url::Url` for `location`); updated 5.3, 10.1, 10.3 and the 14.2 debt rows; `StateError` is now `thiserror`-derived with byte-identical messages |
 | 2026-08-16 | Claude Opus 5 | Recorded that SDK `WatchHandle`s read through `get_property()` live (3.3), and dropped the re-watch-per-frame framing from 4.2 — overlapping holds now come from independent watchers, not from a documented per-frame loop |
 | 2026-08-15 | Claude Opus 5 | `watched` became reference-counted `WatchCounts` so releasing one watcher no longer silences its siblings (4.2), and `set_property()` now resolves `PerCoordinator` writes to the coordinator so writes land where reads look (4.3) |
