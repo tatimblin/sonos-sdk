@@ -1,0 +1,9 @@
+[toolchain]
+# Pinned so local `cargo clippy` matches CI exactly. Without this, lints that
+# vary between rustc releases (e.g. `uninlined_format_args`) fire locally but
+# not in CI, or vice versa.
+#
+# CI currently resolves its own toolchain via `dtolnay/rust-toolchain@stable`,
+# which ignores this file; reconciling the two is part of the CI hygiene work.
+channel = "1.88.0"
+components = ["rustfmt", "clippy"]

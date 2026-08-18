@@ -158,7 +158,7 @@ fn test_api_operations() -> Result<(), Box<dyn std::error::Error>> {
 
     // Test playback state (read-only, no state changes)
     let playback_state = speaker.playback_state.fetch()?;
-    eprintln!("Playback state: {:?}", playback_state);
+    eprintln!("Playback state: {playback_state:?}");
 
     // Test other properties without state changes
     speaker.mute.fetch()?;
@@ -217,12 +217,9 @@ fn test_event_streaming() -> Result<(), Box<dyn std::error::Error>> {
     let elapsed = start_time.elapsed();
 
     if elapsed < Duration::from_millis(50) {
-        eprintln!("Grace period active: subscription reused at {:?}", elapsed);
+        eprintln!("Grace period active: subscription reused at {elapsed:?}");
     } else {
-        eprintln!(
-            "Grace period expired: new subscription created at {:?}",
-            elapsed
-        );
+        eprintln!("Grace period expired: new subscription created at {elapsed:?}");
     }
 
     // Test event iteration (brief test to avoid long delays)
@@ -249,7 +246,7 @@ fn test_event_streaming() -> Result<(), Box<dyn std::error::Error>> {
     // Restore volume
     speaker.set_volume(original_volume)?;
 
-    eprintln!("Events received: {}", event_count);
+    eprintln!("Events received: {event_count}");
     assert!(
         event_count > 0,
         "Should receive at least one event after volume change"
@@ -286,7 +283,7 @@ fn test_group_lifecycle() -> Result<(), Box<dyn std::error::Error>> {
     let standalone_speakers = match standalone_speakers {
         Ok(speakers) => speakers,
         Err(e) => {
-            eprintln!("⚠️  Skipping group lifecycle test: {}", e);
+            eprintln!("⚠️  Skipping group lifecycle test: {e}");
             return Ok(()); // Skip gracefully - this is common in test environments
         }
     };
@@ -424,7 +421,7 @@ fn test_event_integration() -> Result<(), Box<dyn std::error::Error>> {
 
     // Change volume via API - this should trigger an event
     speaker.set_volume(new_volume)?;
-    eprintln!("🔧 Changed volume: {} -> {}", current_volume, new_volume);
+    eprintln!("🔧 Changed volume: {current_volume} -> {new_volume}");
 
     // Wait for API-triggered event
     let mut volume_event_received = false;
@@ -465,7 +462,7 @@ fn test_event_integration() -> Result<(), Box<dyn std::error::Error>> {
 
     // Restore original volume and verify it also generates an event
     speaker.set_volume(current_volume)?;
-    eprintln!("🔧 Restoring volume: {} -> {}", new_volume, current_volume);
+    eprintln!("🔧 Restoring volume: {new_volume} -> {current_volume}");
 
     // Wait for restore event
     let mut restore_event_received = false;

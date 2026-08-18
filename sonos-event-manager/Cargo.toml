@@ -21,7 +21,7 @@ sonos-discovery = { package = "sonos-sdk-discovery", path = "../sonos-discovery"
 tokio = { version = "1.0", features = ["full"] }
 
 # Error handling and utilities
-thiserror = "1.0"
+thiserror = "2.0"
 tracing = "0.1"
 
 # Non-poisoning locks for Drop safety

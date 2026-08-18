@@ -13,11 +13,15 @@ exclude = ["tests/"]
 name = "sonos_discovery"
 
 [dependencies]
+# `reqwest` is being replaced by `ureq`; both are present only while the swap lands.
 reqwest = { version = "0.11", features = ["blocking"] }
+ureq = "3.4"
 quick-xml = { version = "0.31", features = ["serialize"] }
 serde = { version = "1.0", features = ["derive"] }
 if-addrs = "0.15"
 tracing = "0.1"
+thiserror = "2.0"
+url = "2.5"
 
 [dev-dependencies]
 rstest = "0.18"
