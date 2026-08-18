@@ -21,15 +21,15 @@ quick-xml = { workspace = true }
 url = { workspace = true }
 
 # Workspace dependencies
-sonos-api = { path = "../sonos-api", version = "0.7.1" }
-sonos-stream = { package = "sonos-sdk-stream", path = "../sonos-stream", version = "0.7.1" }
-sonos-event-manager = { package = "sonos-sdk-event-manager", path = "../sonos-event-manager", version = "0.7.1" }
-sonos-discovery = { package = "sonos-sdk-discovery", path = "../sonos-discovery", version = "0.7.1" }
-state-store = { package = "sonos-sdk-state-store", path = "../state-store", version = "0.7.1" }
+sonos-api = { path = "../sonos-api", version = "0.7.2" }
+sonos-stream = { package = "sonos-sdk-stream", path = "../sonos-stream", version = "0.7.2" }
+sonos-event-manager = { package = "sonos-sdk-event-manager", path = "../sonos-event-manager", version = "0.7.2" }
+sonos-discovery = { package = "sonos-sdk-discovery", path = "../sonos-discovery", version = "0.7.2" }
+state-store = { package = "sonos-sdk-state-store", path = "../state-store", version = "0.7.2" }
 
 [dev-dependencies]
-sonos-discovery = { package = "sonos-sdk-discovery", path = "../sonos-discovery", version = "0.7.1" }
-sonos-event-manager = { package = "sonos-sdk-event-manager", path = "../sonos-event-manager", version = "0.7.1" }
+sonos-discovery = { package = "sonos-sdk-discovery", path = "../sonos-discovery", version = "0.7.2" }
+sonos-event-manager = { package = "sonos-sdk-event-manager", path = "../sonos-event-manager", version = "0.7.2" }
 proptest = { workspace = true }
 
 [lints]

@@ -214,6 +214,54 @@ impl SonosSystem {
         Self::construct(devices, true, seed)
     }
 
+    /// Construct offline with an explicit group topology.
+    ///
+    /// The `seed` closure of [`Self::from_devices_offline_with_topology`] receives
+    /// a `&Self` whose `state_manager` is private to this crate, so a downstream
+    /// crate cannot actually seed anything through it — and
+    /// [`Self::with_groups`] only ever builds single-member groups. That left
+    /// multi-member topology unreachable from outside, so a consumer could not
+    /// test behaviour that depends on group size or coordinator identity.
+    ///
+    /// Takes the groups directly and applies them in the same window
+    /// `ensure_topology` occupies in production, so the topology-dependent
+    /// construction steps run in their real order.
+    ///
+    /// ```no_run
+    /// # use sonos_sdk::SonosSystem;
+    /// # use sonos_sdk::{GroupId, SpeakerId};
+    /// # use sonos_sdk::sonos_discovery::Device;
+    /// # fn f(devices: Vec<Device>) -> Result<(), sonos_sdk::SdkError> {
+    /// let system = SonosSystem::from_devices_offline_with_groups(
+    ///     devices,
+    ///     vec![(
+    ///         GroupId::new("RINCON_000:1"),
+    ///         SpeakerId::new("RINCON_000"),
+    ///         vec![SpeakerId::new("RINCON_000"), SpeakerId::new("RINCON_001")],
+    ///     )],
+    /// )?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// Only available with the `test-support` feature.
+    #[cfg(any(feature = "test-support", test))]
+    pub fn from_devices_offline_with_groups(
+        devices: Vec<Device>,
+        groups: Vec<(sonos_state::GroupId, SpeakerId, Vec<SpeakerId>)>,
+    ) -> Result<Self, SdkError> {
+        Self::construct(devices, true, |system| {
+            let infos: Vec<sonos_state::GroupInfo> = groups
+                .into_iter()
+                .map(|(id, coordinator, members)| {
+                    sonos_state::GroupInfo::new(id, coordinator, members)
+                })
+                .collect();
+            let topology = sonos_state::Topology::new(system.state_manager.speaker_infos(), infos);
+            system.state_manager.initialize(topology);
+        })
+    }
+
     fn from_devices_inner(devices: Vec<Device>) -> Result<Self, SdkError> {
         Self::construct(devices, false, |_| {})
     }
@@ -1548,6 +1596,67 @@ mod tests {
                 .set_satellite_ids(satellites.iter().map(|id| SpeakerId::new(*id)).collect());
         })
         .unwrap()
+    }
+
+    /// `from_devices_offline_with_groups` must produce real multi-member groups.
+    ///
+    /// This is the capability a downstream crate was missing: `with_groups` only
+    /// builds single-member groups, and the `seed` closure of
+    /// `from_devices_offline_with_topology` cannot be used outside this crate
+    /// because it hands back a `&SonosSystem` whose `state_manager` is private.
+    /// sonos-cli hit exactly this when trying to test that its default speaker
+    /// selection prefers the largest group.
+    #[test]
+    fn test_offline_with_groups_builds_multi_member_groups() {
+        let devices: Vec<Device> = ["Bedroom", "Living Room", "Kitchen"]
+            .iter()
+            .enumerate()
+            .map(|(i, name)| Device {
+                id: format!("RINCON_{i:03}"),
+                name: name.to_string(),
+                room_name: name.to_string(),
+                ip_address: format!("192.0.2.{}", 10 + i),
+                port: 1400,
+                model_name: "Sonos One".to_string(),
+            })
+            .collect();
+
+        let system = SonosSystem::from_devices_offline_with_groups(
+            devices,
+            vec![
+                // Bedroom + Living Room grouped, Bedroom coordinating.
+                (
+                    GroupId::new("RINCON_000:1"),
+                    SpeakerId::new("RINCON_000"),
+                    vec![SpeakerId::new("RINCON_000"), SpeakerId::new("RINCON_001")],
+                ),
+                // Kitchen standalone.
+                (
+                    GroupId::new("RINCON_002:1"),
+                    SpeakerId::new("RINCON_002"),
+                    vec![SpeakerId::new("RINCON_002")],
+                ),
+            ],
+        )
+        .unwrap();
+
+        let groups = system.groups();
+        assert_eq!(groups.len(), 2, "expected two groups, got {}", groups.len());
+
+        let multi = groups
+            .iter()
+            .find(|g| g.member_ids.len() == 2)
+            .expect("a two-member group must exist — this is what with_groups cannot express");
+        assert_eq!(multi.coordinator_id, SpeakerId::new("RINCON_000"));
+        assert_eq!(
+            multi.coordinator().map(|c| c.name),
+            Some("Bedroom".to_string())
+        );
+
+        assert!(
+            groups.iter().any(|g| g.member_ids.len() == 1),
+            "the standalone group must survive alongside the multi-member one"
+        );
     }
 
     /// A bonded home theater must appear as exactly one controllable speaker.

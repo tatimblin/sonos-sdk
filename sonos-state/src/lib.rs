@@ -94,7 +94,8 @@ pub use iter::ChangeIterator;
 // Properties
 pub use property::{
     Bass, CurrentTrack, GroupInfo, GroupMembership, GroupMute, GroupVolume, GroupVolumeChangeable,
-    Loudness, Mute, PlaybackState, Position, Property, Scope, Topology, Treble, Volume,
+    Loudness, Mute, PlaybackState, Position, Property, Scope, SonosProperty, Topology, Treble,
+    Volume,
 };
 
 // Model types

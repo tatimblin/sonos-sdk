@@ -14,7 +14,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.7.1"
+version = "0.7.2"
 edition = "2021"
 # Floor set by `ureq` 3.4, which is an edition-2024 crate (edition 2024 was
 # stabilized in Rust 1.85). Verified by the `msrv` CI job, which builds the

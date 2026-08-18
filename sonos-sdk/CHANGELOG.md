@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2](https://github.com/tatimblin/sonos-sdk/compare/sonos-sdk-v0.7.1...sonos-sdk-v0.7.2) - 2026-08-18
+
+### Added
+
+- let downstream crates write generic property code and seed group topology ([#104](https://github.com/tatimblin/sonos-sdk/pull/104))
+
 ## [0.7.1](https://github.com/tatimblin/sonos-sdk/compare/sonos-sdk-v0.7.0...sonos-sdk-v0.7.1) - 2026-08-17
 
 ### Fixed
