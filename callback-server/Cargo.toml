@@ -14,10 +14,7 @@ name = "callback_server"
 [dependencies]
 if-addrs = "0.15"
 tokio = { version = "1.0", features = ["full"] }
-# `warp` is being replaced by `axum`; both are present only while the swap lands.
-warp = "0.3"
 axum = "0.8"
-bytes = "1.0"
 tracing = "0.1"
 
 [dev-dependencies]

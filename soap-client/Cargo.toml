@@ -12,10 +12,8 @@ readme = "README.md"
 name = "soap_client"
 
 [dependencies]
-# Pinned to 2.x until the transport rewrite lands; 3.x removes `Agent::request`,
-# `Error::Status` and `Error::Transport`, all of which this crate still uses.
+# Pinned to 2.x: 3.x removes `Agent::request`, `Error::Status` and
+# `Error::Transport`, all of which this crate still uses.
 ureq = { version = "2.9", features = ["json"] }
-# `xmltree` is being replaced by `quick-xml`; both are present only while the swap lands.
-xmltree = "0.10"
 quick-xml = { version = "0.31", features = ["serialize"] }
 thiserror = "2.0"
