@@ -12,15 +12,18 @@ readme = "README.md"
 
 [dependencies]
 soap-client = { package = "sonos-sdk-soap-client", path = "../soap-client", version = "0.7.1" }
-serde = { version = "1.0", features = ["derive"] }
-thiserror = "2.0"
+serde = { workspace = true }
+thiserror = { workspace = true }
 paste = "1.0"
-quick-xml = { version = "0.31", features = ["serialize"] }
+quick-xml = { workspace = true }
 
 [dev-dependencies]
 # Used only by examples (cli_example, validate_rendering_control), which CI
 # compiles via `cargo clippy --all-targets`.
 sonos-discovery = { package = "sonos-sdk-discovery", path = "../sonos-discovery", version = "0.7.1" }
-proptest = "1.0"
-tokio = { version = "1.0", features = ["full"] }
+proptest = { workspace = true }
+tokio = { workspace = true }
 ureq = "2.9"
+
+[lints]
+workspace = true

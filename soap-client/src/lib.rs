@@ -6,6 +6,10 @@
 //! communicating with UPnP devices like Sonos speakers. It also supports
 //! UPnP event subscriptions using SUBSCRIBE/UNSUBSCRIBE methods.
 
+// This workspace contains no `unsafe` code. Asserted here so a future
+// addition is a hard compile error, not a silent change in guarantees.
+#![forbid(unsafe_code)]
+
 mod error;
 
 pub use error::SoapError;
@@ -714,7 +718,7 @@ mod tests {
 
         match check_response(truncated, "Play").unwrap_err() {
             SoapError::Parse(msg) => {
-                assert!(msg.contains("never closed"), "unexpected message: {msg}")
+                assert!(msg.contains("never closed"), "unexpected message: {msg}");
             }
             other => panic!("Expected SoapError::Parse, got {other:?}"),
         }

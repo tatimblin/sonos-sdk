@@ -13,15 +13,46 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   RUSTFLAGS: "-D warnings"
+  # Must match `rust-toolchain.toml`. `dtolnay/rust-toolchain` ignores that
+  # file, so the version is repeated here and the two are asserted equal by the
+  # `toolchain-sync` job below — a silent drift between local and CI toolchains
+  # is what made version-sensitive lints fire in only one of the two places.
+  PINNED_TOOLCHAIN: "1.88.0"
+  # Declared in `[workspace.package] rust-version`. Kept in sync by the `msrv`
+  # job, which reads the manifest rather than trusting this value.
+  MSRV: "1.85"
 
 jobs:
+  # Guards the duplication of the toolchain version between rust-toolchain.toml
+  # and the PINNED_TOOLCHAIN env above. Cheap, and it fails loudly at the one
+  # moment the drift is introduced.
+  toolchain-sync:
+    name: toolchain sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: rust-toolchain.toml matches PINNED_TOOLCHAIN
+        run: |
+          pinned=$(grep -oE 'channel = "[^"]+"' rust-toolchain.toml | cut -d'"' -f2)
+          if [ "$pinned" != "${PINNED_TOOLCHAIN}" ]; then
+            echo "::error::rust-toolchain.toml pins '$pinned' but ci.yml PINNED_TOOLCHAIN is '${PINNED_TOOLCHAIN}'"
+            exit 1
+          fi
+          echo "Both pin Rust $pinned"
+
+  # ---------------------------------------------------------------------------
+  # Gating jobs. All pinned to PINNED_TOOLCHAIN so a CI failure is reproducible
+  # with a plain local `cargo <cmd>` (rust-toolchain.toml selects the same
+  # version). `@stable` is covered separately by the `canary` job.
+  # ---------------------------------------------------------------------------
   fmt:
     name: rustfmt
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.PINNED_TOOLCHAIN }}
           components: rustfmt
       - run: cargo fmt --all -- --check
 
@@ -30,10 +61,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.PINNED_TOOLCHAIN }}
           components: clippy
       - uses: Swatinem/rust-cache@v2
+      # `--features sonos-sdk/test-support` is mandatory: without it
+      # sonos-sdk/tests/property_tests.rs does not compile.
       - run: cargo clippy --workspace --all-targets --features sonos-sdk/test-support --locked -- -D warnings
 
   test:
@@ -41,7 +75,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.PINNED_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --features sonos-sdk/test-support --locked
 
@@ -50,8 +86,122 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.PINNED_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --workspace --no-deps --locked
         env:
           RUSTDOCFLAGS: "-D warnings"
+
+  # ---------------------------------------------------------------------------
+  # Minimum supported Rust version.
+  #
+  # `rust-version` had never been verified before this job existed, and the
+  # previously declared 1.80 was wrong: `ureq` 3.4 is an edition-2024 crate, so
+  # Cargo 1.80 cannot even parse its manifest. The floor is 1.85 (edition 2024
+  # stabilized). Note this builds lib targets only — dev-dependencies (ratatui
+  # -> instability -> darling) declare 1.88 and are not part of the MSRV promise
+  # made to downstream users.
+  # ---------------------------------------------------------------------------
+  msrv:
+    name: msrv
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Assert the manifest and the env agree before installing anything, so
+      # this job can never quietly test a version the manifest does not promise.
+      - name: Cargo.toml rust-version matches MSRV
+        run: |
+          declared=$(grep -m1 -oE '^rust-version = "[^"]+"' Cargo.toml | cut -d'"' -f2)
+          if [ "$declared" != "${MSRV}" ]; then
+            echo "::error::Cargo.toml rust-version is '$declared' but ci.yml MSRV is '${MSRV}'"
+            exit 1
+          fi
+          echo "Building with Rust $declared"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.MSRV }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace --locked
+
+  # ---------------------------------------------------------------------------
+  # Supply chain: advisories, licenses, bans, sources. Config and the reasoning
+  # behind every exception live in deny.toml.
+  # ---------------------------------------------------------------------------
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          # `-D warnings` from the workspace env is a rustc flag and means
+          # nothing to cargo-deny; duplicate-version findings stay warnings as
+          # configured in deny.toml.
+          command-arguments: "--hide-inclusion-graph"
+
+  # ---------------------------------------------------------------------------
+  # Unused dependencies. This refactor removed 15+ of them; this job stops them
+  # growing back. cargo-machete over cargo-udeps because it needs no nightly.
+  # ---------------------------------------------------------------------------
+  machete:
+    name: cargo-machete
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.PINNED_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-machete
+        run: cargo install cargo-machete --locked
+      - run: cargo machete
+
+  # ---------------------------------------------------------------------------
+  # Feature-combination check.
+  #
+  # The only non-test feature in the workspace is sonos-stream's
+  # `firewall-detection`, which is default-on and gates no library code at all
+  # (zero `#[cfg(feature = ...)]` in sonos-stream/src) — it only gates five
+  # examples via `required-features`. This job pins that down: the libraries must
+  # build without it, and sonos-stream's own `--all-targets` must still build
+  # with it so the examples stay compiled.
+  #
+  # `--all-targets --no-default-features` needs `sonos-sdk/test-support`
+  # regardless, since property_tests.rs depends on it.
+  # ---------------------------------------------------------------------------
+  no-default-features:
+    name: no-default-features
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.PINNED_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+      - name: libraries build with no default features
+        run: cargo check --workspace --no-default-features --locked
+      - name: all targets build with no default features
+        run: cargo check --workspace --all-targets --no-default-features --features sonos-sdk/test-support --locked
+      - name: sonos-stream examples still build with firewall-detection
+        run: cargo check -p sonos-sdk-stream --all-targets --locked
+
+  # ---------------------------------------------------------------------------
+  # Early warning for lints introduced by a newer rustc than we pin. Advisory
+  # only: a new upstream lint should not block an unrelated PR, it should
+  # prompt a deliberate toolchain bump.
+  # ---------------------------------------------------------------------------
+  canary:
+    name: canary (stable, advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --features sonos-sdk/test-support --locked -- -D warnings

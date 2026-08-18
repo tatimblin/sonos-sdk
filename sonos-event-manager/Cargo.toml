@@ -18,14 +18,17 @@ sonos-stream = { package = "sonos-sdk-stream", path = "../sonos-stream", version
 sonos-discovery = { package = "sonos-sdk-discovery", path = "../sonos-discovery", version = "0.7.1" }
 
 # Async runtime and utilities
-tokio = { version = "1.0", features = ["full"] }
+tokio = { workspace = true }
 
 # Error handling and utilities
-thiserror = "2.0"
-tracing = "0.1"
+thiserror = { workspace = true }
+tracing = { workspace = true }
 
 # Non-poisoning locks for Drop safety
-parking_lot = "0.12"
+parking_lot = { workspace = true }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["full"] }
+tokio = { workspace = true }
+
+[lints]
+workspace = true

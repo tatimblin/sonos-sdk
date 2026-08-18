@@ -15,6 +15,18 @@ use tracing::debug;
 use crate::broker::PollingReason;
 use crate::registry::{RegistrationId, SpeakerServicePair};
 
+/// An `Instant` the given duration in the past.
+///
+/// `Instant::now() - d` can panic where the monotonic clock's zero point is near
+/// process start, so subtract fallibly. Test-only: production code never needs
+/// to fabricate a past instant.
+#[cfg(test)]
+fn backdated(ago: Duration) -> Instant {
+    Instant::now()
+        .checked_sub(ago)
+        .expect("clock has enough history to backdate a test instant")
+}
+
 /// A single monitored registration combining event time, pair, and polling state
 struct MonitoredRegistration {
     last_event_time: Instant,
@@ -153,7 +165,7 @@ impl EventDetector {
     pub(crate) async fn backdate_last_event_for_test(&self, registration_id: RegistrationId) {
         let mut registrations = self.registrations.write().await;
         if let Some(reg) = registrations.get_mut(&registration_id) {
-            reg.last_event_time = Instant::now() - Duration::from_secs(3600);
+            reg.last_event_time = backdated(Duration::from_secs(3600));
         }
     }
 
@@ -456,7 +468,7 @@ mod tests {
         {
             let mut regs = detector.registrations.write().await;
             if let Some(reg) = regs.get_mut(&registration_id) {
-                reg.last_event_time = Instant::now() - Duration::from_secs(60);
+                reg.last_event_time = backdated(Duration::from_secs(60));
             }
         }
 

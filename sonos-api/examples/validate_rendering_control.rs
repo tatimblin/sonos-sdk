@@ -21,7 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let device = &devices[0];
-    let ip = device.ip_address.to_string();
+    let ip = device.ip_address.clone();
     println!("\nUsing: {} at {}\n", device.name, ip);
 
     let client = SonosClient::new();

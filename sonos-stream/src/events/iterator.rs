@@ -142,7 +142,7 @@ impl EventIterator {
     }
 
     /// Check for automatic resync needs
-    async fn check_and_emit_resync(&mut self) -> Option<EnrichedEvent> {
+    async fn check_and_emit_resync(&self) -> Option<EnrichedEvent> {
         // This is a placeholder implementation
         // In a real implementation, this would coordinate with ResyncDetector
         // to check if any registrations need resync events

@@ -154,6 +154,10 @@
 //! // caused by the control operations
 //! ```
 
+// This workspace contains no `unsafe` code. Asserted here so a future
+// addition is a hard compile error, not a silent change in guarantees.
+#![forbid(unsafe_code)]
+
 pub mod client;
 pub mod error;
 pub mod events;

@@ -13,12 +13,12 @@ exclude = ["plans/"]
 name = "sonos_state"
 
 [dependencies]
-serde = { version = "1.0", features = ["derive"] }
-tracing = "0.1"
-parking_lot = "0.12"
-thiserror = "2.0"
-quick-xml = { version = "0.31", features = ["serialize"] }
-url = "2.5"
+serde = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+thiserror = { workspace = true }
+quick-xml = { workspace = true }
+url = { workspace = true }
 
 # Workspace dependencies
 sonos-api = { path = "../sonos-api", version = "0.7.1" }
@@ -30,4 +30,7 @@ state-store = { package = "sonos-sdk-state-store", path = "../state-store", vers
 [dev-dependencies]
 sonos-discovery = { package = "sonos-sdk-discovery", path = "../sonos-discovery", version = "0.7.1" }
 sonos-event-manager = { package = "sonos-sdk-event-manager", path = "../sonos-event-manager", version = "0.7.1" }
-proptest = "1.4"
+proptest = { workspace = true }
+
+[lints]
+workspace = true

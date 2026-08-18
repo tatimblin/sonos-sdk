@@ -64,6 +64,10 @@
 //! sonos-api (UPnP Operations)         sonos-stream (Event Processing)
 //! ```
 
+// This workspace contains no `unsafe` code. Asserted here so a future
+// addition is a hard compile error, not a silent change in guarantees.
+#![forbid(unsafe_code)]
+
 // Main exports
 pub use error::SdkError;
 pub use group::{Group, GroupChangeResult};

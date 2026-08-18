@@ -290,7 +290,7 @@ impl EventBroker {
     ) -> BrokerResult<Arc<CallbackServer>> {
         let server = CallbackServer::new(config.callback_port_range, event_sender)
             .await
-            .map_err(|e| BrokerError::CallbackServer(e.to_string()))?;
+            .map_err(BrokerError::CallbackServer)?;
 
         Ok(Arc::new(server))
     }

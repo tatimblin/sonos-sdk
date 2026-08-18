@@ -15,20 +15,20 @@ sonos-state = { package = "sonos-sdk-state", path = "../sonos-state", version = 
 sonos-api = { path = "../sonos-api", version = "0.7.1" }
 sonos-discovery = { package = "sonos-sdk-discovery", path = "../sonos-discovery", version = "0.7.1" }
 sonos-event-manager = { package = "sonos-sdk-event-manager", path = "../sonos-event-manager", version = "0.7.1" }
-thiserror = "2.0"
-tracing = "0.1"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 dirs = "6"
 
 [features]
 test-support = []
 
 [dev-dependencies]
-proptest = "1.4"
+proptest = { workspace = true }
 chrono = "0.4"
 ctrlc = "3.4"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { workspace = true }
 
 [[example]]
 name = "smart_dashboard"
@@ -37,3 +37,6 @@ path = "examples/smart_dashboard.rs"
 [[example]]
 name = "property_observer"
 path = "examples/property_observer.rs"
+
+[lints]
+workspace = true

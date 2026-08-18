@@ -685,8 +685,10 @@ impl WatchRegistry for StateWatchRegistry {
     }
 
     fn unregister_watches_for_service(&self, ip: IpAddr, service: Service) {
-        // 1. Resolve IP → SpeakerId
-        let speaker_id = match self.ip_to_speaker.read().get(&ip).cloned() {
+        // 1. Resolve IP → SpeakerId. Bound to a local first so the read guard
+        //    is released before this function takes any other lock.
+        let resolved = self.ip_to_speaker.read().get(&ip).cloned();
+        let speaker_id = match resolved {
             Some(id) => id,
             None => {
                 tracing::warn!(

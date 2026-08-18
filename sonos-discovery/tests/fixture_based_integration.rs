@@ -3,7 +3,7 @@
 //! These tests use pre-captured device XML fixtures to test discovery
 //! scenarios without requiring real devices on the network.
 
-mod helpers;
+pub mod helpers;
 
 use helpers::{DeviceFixture, FixtureSet};
 use mockito::Server;
@@ -87,7 +87,7 @@ fn test_fixture_set_parsing(
             .unwrap_or_else(|e| panic!("Failed to parse {} in {}: {}", fixture.name, scenario, e));
 
         if device_desc.is_sonos_device() {
-            let device = device_desc.to_device(fixture.ip.to_string());
+            let device = device_desc.to_device(fixture.ip.clone());
             parsed_devices.push(device);
         }
     }
@@ -146,7 +146,7 @@ fn test_device_id_uniqueness() {
         let device_desc =
             DeviceDescription::from_xml(&fixture.xml_content).expect("Failed to parse device XML");
 
-        let device = device_desc.to_device(fixture.ip.to_string());
+        let device = device_desc.to_device(fixture.ip.clone());
 
         assert!(
             device_ids.insert(device.id.clone()),

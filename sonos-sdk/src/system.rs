@@ -291,6 +291,13 @@ impl SonosSystem {
             // SonosEventManager is ever constructed. `set_event_manager` is
             // itself idempotent, but without this lock a race would still bind
             // two callback sockets and spawn two runtimes before one lost.
+            // Not an `AtomicBool`: the guard must stay held across the whole
+            // construct-and-publish critical section below, which is exactly
+            // what an atomic flag cannot express.
+            #[allow(
+                clippy::mutex_atomic,
+                reason = "guard is held across the critical section, not just read"
+            )]
             let init_lock: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
             let weak_sm = Arc::downgrade(&state_manager);
             Arc::new(
