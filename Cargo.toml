@@ -16,7 +16,10 @@ resolver = "2"
 [workspace.package]
 version = "0.7.1"
 edition = "2021"
-rust-version = "1.80"
+# Floor set by `ureq` 3.4, which is an edition-2024 crate (edition 2024 was
+# stabilized in Rust 1.85). Verified by the `msrv` CI job, which builds the
+# workspace with exactly this toolchain.
+rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/tatimblin/sonos-sdk"
 keywords = ["sonos", "upnp", "audio", "smart-home"]
