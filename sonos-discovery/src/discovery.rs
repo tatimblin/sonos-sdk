@@ -13,6 +13,7 @@ use crate::ssdp::{SsdpClient, SsdpResponse};
 use crate::DeviceEvent;
 use std::collections::HashSet;
 use std::time::Duration;
+use ureq::Agent;
 
 /// Iterator that discovers Sonos devices on the local network.
 ///
@@ -38,7 +39,7 @@ pub struct DiscoveryIterator {
     ssdp_buffer: Vec<SsdpResponse>,
     buffer_index: usize,
     seen_locations: HashSet<String>,
-    http_client: reqwest::blocking::Client,
+    http_client: Agent,
     finished: bool,
 }
 
@@ -46,14 +47,7 @@ impl DiscoveryIterator {
     /// Create a new discovery iterator with the specified timeout
     pub fn new(timeout: Duration) -> Result<Self> {
         let ssdp_client = SsdpClient::new(timeout)?;
-        let http_client = reqwest::blocking::Client::builder()
-            .timeout(timeout)
-            .build()
-            .map_err(|e| {
-                crate::error::DiscoveryError::NetworkError(format!(
-                    "Failed to create HTTP client: {e}"
-                ))
-            })?;
+        let http_client = Self::http_agent(timeout);
 
         Ok(Self {
             ssdp_client: Some(ssdp_client),
@@ -65,10 +59,29 @@ impl DiscoveryIterator {
         })
     }
 
+    /// Build the HTTP agent used to fetch device descriptions.
+    ///
+    /// `timeout_global` bounds the whole request — connect, send, and body read —
+    /// which matches the single overall deadline the previous client applied.
+    ///
+    /// `http_status_as_error` is turned off so `fetch_device_description` owns the
+    /// status check and can name the offending location in the error, rather than
+    /// having a bare `StatusCode` error interleave with genuine transport failures.
+    fn http_agent(timeout: Duration) -> Agent {
+        Agent::new_with_config(
+            Agent::config_builder()
+                .timeout_global(Some(timeout))
+                .http_status_as_error(false)
+                .build(),
+        )
+    }
+
     /// Create an empty iterator that yields no results
     /// Used as a fallback when initialization fails
     pub(crate) fn empty() -> Self {
-        let http_client = reqwest::blocking::Client::new();
+        // `finished` is true and the buffer stays empty, so this agent never
+        // issues a request; its config is irrelevant.
+        let http_client = Agent::new_with_defaults();
         Self {
             ssdp_client: None,
             ssdp_buffer: Vec::new(),
@@ -103,13 +116,23 @@ impl DiscoveryIterator {
 
     /// Fetch and parse device description from a location URL
     fn fetch_device_description(&self, location: &str) -> Result<DeviceDescription> {
-        let response = self.http_client.get(location).send().map_err(|e| {
+        let mut response = self.http_client.get(location).call().map_err(|e| {
             crate::error::DiscoveryError::NetworkError(format!(
                 "Failed to fetch device description: {e}"
             ))
         })?;
 
-        let xml = response.text().map_err(|e| {
+        // Check the status before touching the body. Without this a 404 or 500
+        // HTML error page reaches the XML parser and surfaces as a confusing
+        // parse error instead of the HTTP failure it actually is.
+        let status = response.status();
+        if !status.is_success() {
+            return Err(crate::error::DiscoveryError::NetworkError(format!(
+                "Device description request to {location} returned HTTP {status}"
+            )));
+        }
+
+        let xml = response.body_mut().read_to_string().map_err(|e| {
             crate::error::DiscoveryError::NetworkError(format!("Failed to read response body: {e}"))
         })?;
 
