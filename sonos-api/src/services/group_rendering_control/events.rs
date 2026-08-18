@@ -14,7 +14,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::events::xml_utils;
 use crate::{ApiError, Result};
 
 /// GroupRenderingControl event - direct serde mapping from UPnP event XML
@@ -73,8 +72,7 @@ impl GroupRenderingControlEvent {
 
     /// Parse from UPnP event XML using serde
     pub fn from_xml(xml: &str) -> Result<Self> {
-        let clean_xml = xml_utils::strip_namespaces(xml);
-        quick_xml::de::from_str(&clean_xml).map_err(|e| {
+        quick_xml::de::from_str(xml).map_err(|e| {
             ApiError::ParseError(format!("Failed to parse GroupRenderingControl XML: {e}"))
         })
     }
