@@ -191,24 +191,6 @@ where
     }
 }
 
-/// Helper function to extract values from XML using basic text matching
-/// This is used as a fallback when proper parsers are not available
-pub fn extract_xml_value(xml: &str, tag: &str) -> Option<String> {
-    let start_tag = format!("<{tag}>");
-    let end_tag = format!("</{tag}>");
-
-    if let Some(start_pos) = xml.find(&start_tag) {
-        let content_start = start_pos + start_tag.len();
-        if let Some(end_pos) = xml[content_start..].find(&end_tag) {
-            let value = xml[content_start..content_start + end_pos].trim();
-            if !value.is_empty() {
-                return Some(value.to_string());
-            }
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,17 +277,5 @@ mod tests {
 
         let supported = registry.supported_services();
         assert!(supported.contains(&Service::AVTransport));
-    }
-
-    #[test]
-    fn test_xml_value_extraction() {
-        let xml = "<Test>value</Test>";
-        assert_eq!(extract_xml_value(xml, "Test"), Some("value".to_string()));
-
-        let xml = "<Test></Test>";
-        assert_eq!(extract_xml_value(xml, "Test"), None);
-
-        let xml = "<Other>value</Other>";
-        assert_eq!(extract_xml_value(xml, "Test"), None);
     }
 }

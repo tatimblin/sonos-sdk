@@ -179,8 +179,6 @@ pub use operation::{
 };
 
 // New event handling framework exports
-pub use events::{
-    extract_xml_value, EnrichedEvent, EventParser, EventParserRegistry, EventProcessor, EventSource,
-};
+pub use events::{EnrichedEvent, EventParser, EventParserRegistry, EventProcessor, EventSource};
 
 // Enhanced services are available through the services module
