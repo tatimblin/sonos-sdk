@@ -11,7 +11,7 @@ description = "Type-safe Sonos API for UPnP device control via SOAP"
 readme = "README.md"
 
 [dependencies]
-soap-client = { package = "sonos-sdk-soap-client", path = "../soap-client", version = "0.7.2" }
+soap-client = { package = "sonos-sdk-soap-client", path = "../soap-client", version = "0.8.0" }
 serde = { workspace = true }
 thiserror = { workspace = true }
 paste = "1.0"
@@ -20,7 +20,7 @@ quick-xml = { workspace = true }
 [dev-dependencies]
 # Used only by examples (cli_example, validate_rendering_control), which CI
 # compiles via `cargo clippy --all-targets`.
-sonos-discovery = { package = "sonos-sdk-discovery", path = "../sonos-discovery", version = "0.7.2" }
+sonos-discovery = { package = "sonos-sdk-discovery", path = "../sonos-discovery", version = "0.8.0" }
 proptest = { workspace = true }
 tokio = { workspace = true }
 ureq = "2.9"
