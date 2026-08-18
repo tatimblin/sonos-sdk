@@ -719,6 +719,15 @@ pub enum SdkError {
 
 `SonosSystem::from_devices_offline(devices)` builds a fully-formed `SonosSystem` from a caller-supplied device list while guaranteeing zero network I/O. It is gated behind the `test-support` feature. `with_speakers()` and `with_groups()` share the same guarantee via the `offline: bool` field on `SonosSystem`.
 
+Two variants inject the topology the poll would have returned, so the topology-dependent construction steps still run in their real order:
+
+| Constructor | Seeds | Usable from |
+|---|---|---|
+| `from_devices_offline_with_topology(devices, seed)` | arbitrary state via a `&Self` closure | **this crate only** — `state_manager` is private, so the closure can seed nothing downstream |
+| `from_devices_offline_with_groups(devices, groups)` | `(GroupId, coordinator, members)` tuples | any crate with `test-support` |
+
+`from_devices_offline_with_groups` exists because multi-member topology was otherwise unreachable from outside this crate: `with_groups()` only ever builds single-member groups, and the closure form is unusable downstream. A consumer therefore could not test anything depending on group size or coordinator identity. sonos-cli hit exactly this trying to verify that its default speaker selection prefers the largest group.
+
 #### Why
 
 `SonosSystem` has exactly **two** paths that reach the network without the caller asking for it, and both are catastrophic in a test process where the device IPs are synthetic:

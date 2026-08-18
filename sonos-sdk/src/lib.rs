@@ -97,10 +97,20 @@ pub use sonos_discovery;
 
 // Re-export commonly used types from sonos-state
 pub use sonos_state::{
-    ChangeEvent, ChangeIterator, ChangeSource, GroupId, GroupMute, GroupVolume,
+    ChangeEvent, ChangeIterator, ChangeSource, CurrentTrack, GroupId, GroupMute, GroupVolume,
     GroupVolumeChangeable, PlaybackState, PropertyChange, SpeakerId, Volume, WriteOutcome,
     WriteStamp,
 };
+
+/// The property trait, re-exported so downstream crates can write code that is
+/// generic over properties.
+///
+/// Without this a consumer needing `P::KEY` — a UI caching watch handles by
+/// `(speaker, property)`, say — has to depend on `sonos-sdk-state` directly and
+/// reach past this facade into a crate documented as an implementation detail.
+/// That also puts the trait's breaking changes outside this crate's version
+/// contract, since `sonos-sdk-state` is not covered by its semver gate.
+pub use sonos_state::{Property, SonosProperty};
 
 // Public modules
 pub mod prelude;
