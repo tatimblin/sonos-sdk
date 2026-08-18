@@ -157,14 +157,11 @@ impl<Op: UPnPOperation> ComposableOperation<Op> {
     /// Parse a response for this operation
     ///
     /// # Arguments
-    /// * `xml` - The parsed XML response element
+    /// * `xml` - The raw SOAP response body
     ///
     /// # Returns
     /// The parsed response or an API error
-    pub fn parse_response(
-        &self,
-        xml: &xmltree::Element,
-    ) -> Result<Op::Response, crate::error::ApiError> {
+    pub fn parse_response(&self, xml: &str) -> Result<Op::Response, crate::error::ApiError> {
         Op::parse_response(xml)
     }
 }
@@ -201,7 +198,6 @@ mod tests {
     use crate::operation::{Validate, ValidationError, ValidationLevel};
     use crate::service::Service;
     use serde::{Deserialize, Serialize};
-    use xmltree::Element;
 
     // Mock types for testing
     #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -241,12 +237,9 @@ mod tests {
             ))
         }
 
-        fn parse_response(xml: &Element) -> Result<Self::Response, crate::error::ApiError> {
+        fn parse_response(xml: &str) -> Result<Self::Response, crate::error::ApiError> {
             Ok(TestResponse {
-                result: xml
-                    .get_child("Result")
-                    .and_then(|e| e.get_text())
-                    .map(|s| s.to_string())
+                result: crate::operation::response_text(xml, "Result")
                     .unwrap_or_else(|| "default".to_string()),
             })
         }

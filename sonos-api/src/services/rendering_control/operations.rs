@@ -139,7 +139,7 @@ impl crate::operation::UPnPOperation for GetMuteOperation {
         ))
     }
 
-    fn parse_response(xml: &xmltree::Element) -> Result<Self::Response, crate::error::ApiError> {
+    fn parse_response(xml: &str) -> Result<Self::Response, crate::error::ApiError> {
         Ok(GetMuteResponse {
             current_mute: parse_sonos_bool(xml, "CurrentMute"),
         })
@@ -341,7 +341,7 @@ impl crate::operation::UPnPOperation for GetLoudnessOperation {
         ))
     }
 
-    fn parse_response(xml: &xmltree::Element) -> Result<Self::Response, crate::error::ApiError> {
+    fn parse_response(xml: &str) -> Result<Self::Response, crate::error::ApiError> {
         Ok(GetLoudnessResponse {
             current_loudness: parse_sonos_bool(xml, "CurrentLoudness"),
         })
@@ -606,16 +606,14 @@ mod tests {
     #[test]
     fn test_get_mute_parse_response_true() {
         let xml_str = r#"<GetMuteResponse><CurrentMute>1</CurrentMute></GetMuteResponse>"#;
-        let xml = xmltree::Element::parse(xml_str.as_bytes()).unwrap();
-        let response = GetMuteOperation::parse_response(&xml).unwrap();
+        let response = GetMuteOperation::parse_response(xml_str).unwrap();
         assert!(response.current_mute);
     }
 
     #[test]
     fn test_get_mute_parse_response_false() {
         let xml_str = r#"<GetMuteResponse><CurrentMute>0</CurrentMute></GetMuteResponse>"#;
-        let xml = xmltree::Element::parse(xml_str.as_bytes()).unwrap();
-        let response = GetMuteOperation::parse_response(&xml).unwrap();
+        let response = GetMuteOperation::parse_response(xml_str).unwrap();
         assert!(!response.current_mute);
     }
 
@@ -817,8 +815,7 @@ mod tests {
     fn test_get_loudness_parse_response_true() {
         let xml_str =
             r#"<GetLoudnessResponse><CurrentLoudness>1</CurrentLoudness></GetLoudnessResponse>"#;
-        let xml = xmltree::Element::parse(xml_str.as_bytes()).unwrap();
-        let response = GetLoudnessOperation::parse_response(&xml).unwrap();
+        let response = GetLoudnessOperation::parse_response(xml_str).unwrap();
         assert!(response.current_loudness);
     }
 
@@ -826,8 +823,7 @@ mod tests {
     fn test_get_loudness_parse_response_false() {
         let xml_str =
             r#"<GetLoudnessResponse><CurrentLoudness>0</CurrentLoudness></GetLoudnessResponse>"#;
-        let xml = xmltree::Element::parse(xml_str.as_bytes()).unwrap();
-        let response = GetLoudnessOperation::parse_response(&xml).unwrap();
+        let response = GetLoudnessOperation::parse_response(xml_str).unwrap();
         assert!(!response.current_loudness);
     }
 

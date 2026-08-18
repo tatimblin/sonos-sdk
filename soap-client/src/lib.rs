@@ -10,9 +10,10 @@ mod error;
 
 pub use error::SoapError;
 
+use quick_xml::events::Event;
+use quick_xml::Reader;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
-use xmltree::Element;
 
 /// Element name carrying UPnP fault details, as spelled in the UPnP Device
 /// Architecture specification.
@@ -87,7 +88,14 @@ impl SoapClient {
         ))
     }
 
-    /// Send a SOAP request and return the parsed response element
+    /// Send a SOAP request and return the raw response body.
+    ///
+    /// The body is handed back as text rather than a parsed DOM: response *shape*
+    /// is service-specific and belongs to `sonos-api`, while this crate is only
+    /// responsible for transport and for distinguishing a device refusal (a SOAP
+    /// fault) from a successful answer. That check still happens here, so a
+    /// returned `Ok(String)` is guaranteed to be an envelope carrying
+    /// `<{action}Response>` and no `<Fault>`.
     pub fn call(
         &self,
         ip: &str,
@@ -95,7 +103,7 @@ impl SoapClient {
         service_uri: &str,
         action: &str,
         payload: &str,
-    ) -> Result<Element, SoapError> {
+    ) -> Result<String, SoapError> {
         // Inline SOAP envelope construction - no separate module needed
         let body = format!(
             r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
@@ -122,11 +130,10 @@ impl SoapClient {
             .into_string()
             .map_err(|e| SoapError::Network(e.to_string()))?;
 
-        let xml =
-            Element::parse(xml_text.as_bytes()).map_err(|e| SoapError::Parse(e.to_string()))?;
+        // Reject faults and malformed envelopes before handing the body upstream.
+        check_response(&xml_text, action)?;
 
-        // Extract response or handle SOAP fault
-        self.extract_response(&xml, action)
+        Ok(xml_text)
     }
 
     /// Subscribe to UPnP events for a specific service endpoint
@@ -282,10 +289,6 @@ impl SoapClient {
 
         Ok(())
     }
-
-    fn extract_response(&self, xml: &Element, action: &str) -> Result<Element, SoapError> {
-        extract_response(xml, action)
-    }
 }
 
 impl Default for SoapClient {
@@ -313,14 +316,16 @@ fn is_success(status: u16) -> bool {
 fn map_ureq_error(error: ureq::Error, action: &str) -> SoapError {
     match error {
         ureq::Error::Status(status, response) => match response.into_string() {
-            Ok(body) => match Element::parse(body.as_bytes()) {
-                // A parseable envelope tells us why the device refused.
-                Ok(xml) => match extract_response(&xml, action) {
-                    // Not a fault after all - the device sent an error status
-                    // with a non-fault body. Report it as a transport failure.
-                    Ok(_) => SoapError::Network(format!("HTTP {status}")),
-                    Err(err) => err,
-                },
+            // A parseable envelope tells us why the device refused.
+            Ok(body) => match check_response(&body, action) {
+                // Not a fault after all - the device sent an error status with a
+                // non-fault body. Report it as a transport failure.
+                Ok(()) => SoapError::Network(format!("HTTP {status}")),
+                Err(SoapError::Fault { code, description }) => {
+                    SoapError::Fault { code, description }
+                }
+                // The body was not a usable SOAP envelope at all. Keep it in the
+                // message: for an error status it is the only diagnostic there is.
                 Err(_) => SoapError::Network(format!("HTTP {status}: {body}")),
             },
             Err(e) => SoapError::Network(format!("HTTP {status}: failed to read body: {e}")),
@@ -346,45 +351,263 @@ fn map_subscription_error(operation: &str, error: ureq::Error) -> SoapError {
     }
 }
 
-/// Extract the action response element from a SOAP envelope, or the fault it carries.
-fn extract_response(xml: &Element, action: &str) -> Result<Element, SoapError> {
-    let body = xml
-        .get_child("Body")
-        .ok_or_else(|| SoapError::Parse("Missing SOAP Body".to_string()))?;
-
-    // Check for SOAP fault first
-    if let Some(fault) = body.get_child("Fault") {
-        return Err(parse_fault(fault));
-    }
-
-    // Extract the action response
-    let response_name = format!("{action}Response");
-    body.get_child(response_name.as_str())
-        .cloned()
-        .ok_or_else(|| SoapError::Parse(format!("Missing {response_name} element")))
+/// What a SOAP response body turned out to be.
+///
+/// Mirrors the outcomes of the previous DOM-based `extract_response`, kept as a
+/// distinct type because the success path and the HTTP-error path map the same
+/// outcomes to different [`SoapError`]s (see [`map_ureq_error`]).
+#[derive(Debug)]
+enum EnvelopeScan {
+    /// `<{action}Response>` is present and there is no fault.
+    Response,
+    /// The envelope carries a `<Fault>`.
+    Fault {
+        code: u16,
+        description: Option<String>,
+    },
+    /// No `<Body>` child on the root element.
+    MissingBody,
+    /// `<Body>` is present but carries no `<{action}Response>`.
+    MissingResponse,
+    /// Not a usable XML document: a syntax error, or no element at all.
+    Malformed(String),
 }
 
-/// Parse a `<s:Fault>` element into [`SoapError::Fault`].
-fn parse_fault(fault: &Element) -> SoapError {
-    let upnp_error = fault.get_child("detail").and_then(|detail| {
-        detail
-            .get_child(UPNP_ERROR_ELEMENT)
-            .or_else(|| detail.get_child(UPNP_ERROR_ELEMENT_LEGACY))
-    });
+/// The two fields read out of a UPnP fault detail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FaultField {
+    Code,
+    Description,
+}
 
-    let code = upnp_error
-        .and_then(|e| e.get_child("errorCode"))
-        .and_then(|c| c.get_text())
-        .and_then(|t| t.trim().parse::<u16>().ok())
-        .unwrap_or(UNKNOWN_FAULT_CODE);
+/// Fault fields collected for one spelling of the UPnP error element.
+#[derive(Debug, Default)]
+struct FaultFields {
+    code: Option<String>,
+    description: Option<String>,
+}
 
-    let description = upnp_error
-        .and_then(|e| e.get_child("errorDescription"))
-        .and_then(|d| d.get_text())
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty());
+impl FaultFields {
+    /// Append to a field rather than overwrite it, so an element split across
+    /// several text/CDATA nodes reads the same as `xmltree`'s `get_text`, which
+    /// concatenated them.
+    fn push(&mut self, field: FaultField, text: &str) {
+        let slot = match field {
+            FaultField::Code => &mut self.code,
+            FaultField::Description => &mut self.description,
+        };
+        slot.get_or_insert_with(String::new).push_str(text);
+    }
 
-    SoapError::Fault { code, description }
+    fn is_empty(&self) -> bool {
+        self.code.is_none() && self.description.is_none()
+    }
+
+    /// Apply the same normalization the DOM implementation did: trim, parse the
+    /// code with [`UNKNOWN_FAULT_CODE`] as fallback, and treat a blank
+    /// description as absent.
+    fn into_scan(self) -> EnvelopeScan {
+        EnvelopeScan::Fault {
+            code: self
+                .code
+                .as_deref()
+                .and_then(|t| t.trim().parse::<u16>().ok())
+                .unwrap_or(UNKNOWN_FAULT_CODE),
+            description: self
+                .description
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty()),
+        }
+    }
+}
+
+/// Verify that a SOAP response body is a successful `<{action}Response>` envelope.
+///
+/// Returns `Ok(())` for a usable response, [`SoapError::Fault`] when the device
+/// refused the action, and [`SoapError::Parse`] when the body is not a response
+/// envelope for `action` at all.
+fn check_response(xml: &str, action: &str) -> Result<(), SoapError> {
+    match scan_envelope(xml, action) {
+        EnvelopeScan::Response => Ok(()),
+        scan => Err(scan_to_error(scan, action)),
+    }
+}
+
+/// Convert a non-success [`EnvelopeScan`] into the [`SoapError`] it represents.
+///
+/// # Panics
+///
+/// Panics if given [`EnvelopeScan::Response`], which is not an error.
+fn scan_to_error(scan: EnvelopeScan, action: &str) -> SoapError {
+    match scan {
+        EnvelopeScan::Fault { code, description } => SoapError::Fault { code, description },
+        EnvelopeScan::MissingBody => SoapError::Parse("Missing SOAP Body".to_string()),
+        EnvelopeScan::MissingResponse => {
+            SoapError::Parse(format!("Missing {action}Response element"))
+        }
+        EnvelopeScan::Malformed(msg) => SoapError::Parse(msg),
+        EnvelopeScan::Response => unreachable!("Response is not an error"),
+    }
+}
+
+/// Whether the current element path, ignoring the root envelope element, is
+/// exactly `expected`.
+fn at_path(path: &[String], expected: &[&str]) -> bool {
+    path.len() == expected.len() + 1 && path[1..].iter().zip(expected).all(|(a, b)| a == b)
+}
+
+/// The fault field the current element path points at, if any.
+///
+/// The `bool` is `true` for the spec spelling of the UPnP error element and
+/// `false` for the tolerated legacy misspelling.
+fn fault_field_at(path: &[String]) -> Option<(bool, FaultField)> {
+    for (is_spec, element) in [
+        (true, UPNP_ERROR_ELEMENT),
+        (false, UPNP_ERROR_ELEMENT_LEGACY),
+    ] {
+        for (field, name) in [
+            (FaultField::Code, "errorCode"),
+            (FaultField::Description, "errorDescription"),
+        ] {
+            if at_path(path, &["Body", "Fault", "detail", element, name]) {
+                return Some((is_spec, field));
+            }
+        }
+    }
+    None
+}
+
+/// Pick the [`FaultFields`] accumulator for the spelling the device used.
+fn fields_for<'a>(
+    is_spec: bool,
+    spec: &'a mut FaultFields,
+    legacy: &'a mut FaultFields,
+) -> &'a mut FaultFields {
+    if is_spec {
+        spec
+    } else {
+        legacy
+    }
+}
+
+/// Scan a SOAP envelope for the action response or the fault it carries.
+///
+/// Single-pass over the document with `quick-xml`. Element matching is on the
+/// **local** name (so `s:Body` matches `Body`) and on the **exact child path**,
+/// which is what the previous `xmltree::Element::get_child` chain did: `Body` had
+/// to be a direct child of the root, `Fault` of `Body`, `detail` of `Fault`, and so
+/// on. A looser "anywhere in the document" match would let a `<Fault>` nested in
+/// unrelated response content turn a successful call into an error.
+fn scan_envelope(xml: &str, action: &str) -> EnvelopeScan {
+    let response_name = format!("{action}Response");
+
+    let mut reader = Reader::from_str(xml);
+    let mut path: Vec<String> = Vec::new();
+    let mut saw_root = false;
+    let mut saw_body = false;
+    let mut saw_fault = false;
+    let mut saw_response = false;
+    // Collected per spelling so the spec spelling wins wholesale if a device
+    // somehow emits both, matching the old `get_child(..).or_else(..)` which
+    // picked one element and read both fields from it.
+    let mut spec_fields = FaultFields::default();
+    let mut legacy_fields = FaultFields::default();
+    // Set while inside an `<errorCode>`/`<errorDescription>` leaf.
+    let mut collecting: Option<(bool, FaultField)> = None;
+
+    loop {
+        let event = match reader.read_event() {
+            Ok(event) => event,
+            Err(e) => return EnvelopeScan::Malformed(e.to_string()),
+        };
+
+        match event {
+            Event::Eof => break,
+
+            Event::Start(start) => {
+                path.push(String::from_utf8_lossy(start.local_name().as_ref()).into_owned());
+                saw_root = true;
+
+                if at_path(&path, &["Body"]) {
+                    saw_body = true;
+                } else if at_path(&path, &["Body", "Fault"]) {
+                    saw_fault = true;
+                } else if path.len() == 3 && path[1] == "Body" && path[2] == response_name {
+                    saw_response = true;
+                } else {
+                    collecting = fault_field_at(&path);
+                }
+            }
+
+            // A self-closing element has no children and no text, so it only
+            // affects the "did we see it" flags - never `collecting`.
+            Event::Empty(start) => {
+                path.push(String::from_utf8_lossy(start.local_name().as_ref()).into_owned());
+                saw_root = true;
+
+                if at_path(&path, &["Body"]) {
+                    saw_body = true;
+                } else if at_path(&path, &["Body", "Fault"]) {
+                    saw_fault = true;
+                } else if path.len() == 3 && path[1] == "Body" && path[2] == response_name {
+                    saw_response = true;
+                }
+                path.pop();
+            }
+
+            Event::Text(text) => {
+                if let Some((is_spec, field)) = collecting {
+                    let decoded = match text.unescape() {
+                        Ok(decoded) => decoded,
+                        Err(e) => return EnvelopeScan::Malformed(e.to_string()),
+                    };
+                    fields_for(is_spec, &mut spec_fields, &mut legacy_fields).push(field, &decoded);
+                }
+            }
+
+            Event::CData(cdata) => {
+                if let Some((is_spec, field)) = collecting {
+                    let decoded = String::from_utf8_lossy(&cdata).into_owned();
+                    fields_for(is_spec, &mut spec_fields, &mut legacy_fields).push(field, &decoded);
+                }
+            }
+
+            Event::End(_) => {
+                path.pop();
+                collecting = fault_field_at(&path);
+            }
+
+            _ => {}
+        }
+    }
+
+    if !saw_root {
+        return EnvelopeScan::Malformed("response body is not an XML document".to_string());
+    }
+    // `quick-xml` reports `Eof` for a document whose tags are still open rather
+    // than erroring, so a response truncated mid-transfer would otherwise scan as
+    // a perfectly good `<{action}Response>`. `xmltree::Element::parse` rejected
+    // those, and it should stay rejected: a half-received body is not an answer.
+    if !path.is_empty() {
+        return EnvelopeScan::Malformed(format!(
+            "unexpected end of XML: <{}> was never closed",
+            path[path.len() - 1]
+        ));
+    }
+    if !saw_body {
+        return EnvelopeScan::MissingBody;
+    }
+    if saw_fault {
+        return if spec_fields.is_empty() {
+            legacy_fields.into_scan()
+        } else {
+            spec_fields.into_scan()
+        };
+    }
+    if !saw_response {
+        return EnvelopeScan::MissingResponse;
+    }
+    EnvelopeScan::Response
 }
 
 #[cfg(test)]
@@ -425,8 +648,6 @@ mod tests {
 
     #[test]
     fn test_extract_response_with_valid_response() {
-        let client = SoapClient::get();
-
         let xml_str = r#"
             <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
                 <s:Body>
@@ -436,18 +657,82 @@ mod tests {
             </s:Envelope>
         "#;
 
-        let xml = Element::parse(xml_str.as_bytes()).unwrap();
-        let result = client.extract_response(&xml, "Play");
+        assert!(check_response(xml_str, "Play").is_ok());
+    }
 
-        assert!(result.is_ok());
-        let response = result.unwrap();
-        assert_eq!(response.name, "PlayResponse");
+    /// A response for a *different* action must not be accepted just because the
+    /// envelope is well-formed.
+    #[test]
+    fn test_extract_response_rejects_other_action_response() {
+        let xml_str = r#"
+            <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+                <s:Body>
+                    <u:PauseResponse xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
+                    </u:PauseResponse>
+                </s:Body>
+            </s:Envelope>
+        "#;
+
+        match check_response(xml_str, "Play").unwrap_err() {
+            SoapError::Parse(msg) => assert!(msg.contains("Missing PlayResponse element")),
+            other => panic!("Expected SoapError::Parse, got {other:?}"),
+        }
+    }
+
+    /// Self-closing response elements are spec-legal and carry the same meaning as
+    /// an empty open/close pair.
+    #[test]
+    fn test_extract_response_accepts_self_closing_response() {
+        let xml_str = r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+                <s:Body><u:PlayResponse xmlns:u="urn:x"/></s:Body>
+            </s:Envelope>"#;
+
+        assert!(check_response(xml_str, "Play").is_ok());
+    }
+
+    /// A `<Fault>` nested inside unrelated response content is not a device
+    /// refusal. Only `Body > Fault` is, which is what the old `get_child` chain
+    /// matched.
+    #[test]
+    fn test_extract_response_ignores_non_toplevel_fault() {
+        let xml_str = r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+                <s:Body>
+                    <u:PlayResponse xmlns:u="urn:x">
+                        <Detail><Fault>not a soap fault</Fault></Detail>
+                    </u:PlayResponse>
+                </s:Body>
+            </s:Envelope>"#;
+
+        assert!(check_response(xml_str, "Play").is_ok());
+    }
+
+    /// Garbage that is not XML at all is a parse failure, not a missing Body.
+    #[test]
+    fn test_extract_response_with_non_xml_body() {
+        match check_response("device busy", "Play").unwrap_err() {
+            SoapError::Parse(_) => {}
+            other => panic!("Expected SoapError::Parse, got {other:?}"),
+        }
+    }
+
+    /// A body truncated mid-transfer must not scan as a valid response. `quick-xml`
+    /// reports `Eof` rather than an error for unclosed tags, so this is checked
+    /// explicitly; `xmltree::Element::parse` used to reject it for us.
+    #[test]
+    fn test_extract_response_rejects_truncated_envelope() {
+        let truncated = r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+                <s:Body><u:PlayResponse xmlns:u="urn:x">"#;
+
+        match check_response(truncated, "Play").unwrap_err() {
+            SoapError::Parse(msg) => {
+                assert!(msg.contains("never closed"), "unexpected message: {msg}")
+            }
+            other => panic!("Expected SoapError::Parse, got {other:?}"),
+        }
     }
 
     #[test]
     fn test_extract_response_with_soap_fault() {
-        let client = SoapClient::get();
-
         let xml_str = r#"
             <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
                 <s:Body>
@@ -465,11 +750,7 @@ mod tests {
             </s:Envelope>
         "#;
 
-        let xml = Element::parse(xml_str.as_bytes()).unwrap();
-        let result = client.extract_response(&xml, "Play");
-
-        assert!(result.is_err());
-        match result.unwrap_err() {
+        match check_response(xml_str, "Play").unwrap_err() {
             SoapError::Fault { code, description } => {
                 assert_eq!(code, 401);
                 assert_eq!(description.as_deref(), Some("Invalid Action"));
@@ -498,8 +779,7 @@ mod tests {
             </s:Envelope>
         "#;
 
-        let xml = Element::parse(xml_str.as_bytes()).unwrap();
-        match extract_response(&xml, "Play").unwrap_err() {
+        match check_response(xml_str, "Play").unwrap_err() {
             SoapError::Fault { code, description } => {
                 assert_eq!(code, 701);
                 assert_eq!(description.as_deref(), Some("Transition not available"));
@@ -562,18 +842,12 @@ mod tests {
 
     #[test]
     fn test_extract_response_missing_body() {
-        let client = SoapClient::get();
-
         let xml_str = r#"
             <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
             </s:Envelope>
         "#;
 
-        let xml = Element::parse(xml_str.as_bytes()).unwrap();
-        let result = client.extract_response(&xml, "Play");
-
-        assert!(result.is_err());
-        match result.unwrap_err() {
+        match check_response(xml_str, "Play").unwrap_err() {
             SoapError::Parse(msg) => assert!(msg.contains("Missing SOAP Body")),
             _ => panic!("Expected SoapError::Parse"),
         }
@@ -581,8 +855,6 @@ mod tests {
 
     #[test]
     fn test_extract_response_missing_action_response() {
-        let client = SoapClient::get();
-
         let xml_str = r#"
             <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
                 <s:Body>
@@ -590,11 +862,7 @@ mod tests {
             </s:Envelope>
         "#;
 
-        let xml = Element::parse(xml_str.as_bytes()).unwrap();
-        let result = client.extract_response(&xml, "Play");
-
-        assert!(result.is_err());
-        match result.unwrap_err() {
+        match check_response(xml_str, "Play").unwrap_err() {
             SoapError::Parse(msg) => assert!(msg.contains("Missing PlayResponse element")),
             _ => panic!("Expected SoapError::Parse"),
         }
@@ -602,8 +870,6 @@ mod tests {
 
     #[test]
     fn test_soap_fault_with_default_error_code() {
-        let client = SoapClient::get();
-
         let xml_str = r#"
             <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
                 <s:Body>
@@ -615,14 +881,86 @@ mod tests {
             </s:Envelope>
         "#;
 
-        let xml = Element::parse(xml_str.as_bytes()).unwrap();
-        let result = client.extract_response(&xml, "Play");
-
-        assert!(result.is_err());
-        match result.unwrap_err() {
+        match check_response(xml_str, "Play").unwrap_err() {
             SoapError::Fault { code, description } => {
                 assert_eq!(code, UNKNOWN_FAULT_CODE);
                 assert_eq!(description, None);
+            }
+            other => panic!("Expected SoapError::Fault, got {other:?}"),
+        }
+    }
+
+    /// A blank `<errorDescription>` is normalized to `None`, matching the old
+    /// `.filter(|t| !t.is_empty())`.
+    #[test]
+    fn test_soap_fault_blank_description_is_none() {
+        let xml_str = r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+                <s:Body>
+                    <s:Fault>
+                        <detail>
+                            <UPnPError xmlns="urn:schemas-upnp-org:control-1-0">
+                                <errorCode>402</errorCode>
+                                <errorDescription>   </errorDescription>
+                            </UPnPError>
+                        </detail>
+                    </s:Fault>
+                </s:Body>
+            </s:Envelope>"#;
+
+        match check_response(xml_str, "Play").unwrap_err() {
+            SoapError::Fault { code, description } => {
+                assert_eq!(code, 402);
+                assert_eq!(description, None);
+            }
+            other => panic!("Expected SoapError::Fault, got {other:?}"),
+        }
+    }
+
+    /// A non-numeric `<errorCode>` falls back to [`UNKNOWN_FAULT_CODE`] rather
+    /// than degrading the fault into a parse error.
+    #[test]
+    fn test_soap_fault_unparseable_code_falls_back() {
+        let xml_str = r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+                <s:Body>
+                    <s:Fault>
+                        <detail>
+                            <UPnPError xmlns="urn:schemas-upnp-org:control-1-0">
+                                <errorCode>not-a-number</errorCode>
+                                <errorDescription>Invalid Args</errorDescription>
+                            </UPnPError>
+                        </detail>
+                    </s:Fault>
+                </s:Body>
+            </s:Envelope>"#;
+
+        match check_response(xml_str, "Play").unwrap_err() {
+            SoapError::Fault { code, description } => {
+                assert_eq!(code, UNKNOWN_FAULT_CODE);
+                assert_eq!(description.as_deref(), Some("Invalid Args"));
+            }
+            other => panic!("Expected SoapError::Fault, got {other:?}"),
+        }
+    }
+
+    /// Escaped entities in a fault description are decoded, as `xmltree` did.
+    #[test]
+    fn test_soap_fault_description_is_unescaped() {
+        let xml_str = r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+                <s:Body>
+                    <s:Fault>
+                        <detail>
+                            <UPnPError xmlns="urn:schemas-upnp-org:control-1-0">
+                                <errorCode>402</errorCode>
+                                <errorDescription>Bad &amp; wrong</errorDescription>
+                            </UPnPError>
+                        </detail>
+                    </s:Fault>
+                </s:Body>
+            </s:Envelope>"#;
+
+        match check_response(xml_str, "Play").unwrap_err() {
+            SoapError::Fault { description, .. } => {
+                assert_eq!(description.as_deref(), Some("Bad & wrong"));
             }
             other => panic!("Expected SoapError::Fault, got {other:?}"),
         }

@@ -64,7 +64,7 @@ macro_rules! define_upnp_operation {
                     Ok($payload_expr)
                 }
 
-                fn parse_response(xml: &xmltree::Element) -> Result<Self::Response, $crate::error::ApiError> {
+                fn parse_response(xml: &str) -> Result<Self::Response, $crate::error::ApiError> {
                     let $xml_param = xml;
                     $parse_expr
                 }
@@ -193,12 +193,8 @@ macro_rules! define_operation_with_response {
                     Ok(xml)
                 }
 
-                fn parse_response(xml: &xmltree::Element) -> Result<Self::Response, $crate::error::ApiError> {
-                    $(let $xml_field = xml
-                        .get_child($xml_path)
-                        .and_then(|e| e.get_text())
-                        .and_then(|s| s.parse().ok())
-                        .unwrap_or_default();)*
+                fn parse_response(xml: &str) -> Result<Self::Response, $crate::error::ApiError> {
+                    $(let $xml_field = $crate::operation::response_field(xml, $xml_path);)*
 
                     Ok($response_struct {
                         $($resp_field: $xml_field,)*
@@ -275,13 +271,9 @@ macro_rules! define_operation_with_response {
                     Ok(xml)
                 }
 
-                fn parse_response(xml: &xmltree::Element) -> Result<Self::Response, $crate::error::ApiError> {
-                    // Create a temporary mapping from field names to XML paths
-                    $(let $xml_field = xml
-                        .get_child($xml_path)
-                        .and_then(|e| e.get_text())
-                        .and_then(|s| s.parse().ok())
-                        .unwrap_or_default();)*
+                fn parse_response(xml: &str) -> Result<Self::Response, $crate::error::ApiError> {
+                    // Read each out-argument by its declared UPnP element name.
+                    $(let $xml_field = $crate::operation::response_field(xml, $xml_path);)*
 
                     Ok($response_struct {
                         $($resp_field: $xml_field,)*

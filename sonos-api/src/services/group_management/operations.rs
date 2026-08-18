@@ -9,7 +9,7 @@
 //! - `report_track_buffering_result` - Report track buffering status
 //! - `set_source_area_ids` - Set source area identifiers
 
-use crate::operation::parse_sonos_bool;
+use crate::operation::{parse_sonos_bool, response_string};
 use crate::{define_upnp_operation, Validate};
 use paste::paste;
 use serde::{Deserialize, Serialize};
@@ -63,39 +63,13 @@ impl crate::operation::UPnPOperation for AddMemberOperation {
         ))
     }
 
-    fn parse_response(xml: &xmltree::Element) -> Result<Self::Response, crate::error::ApiError> {
-        let current_transport_settings = xml
-            .get_child("CurrentTransportSettings")
-            .and_then(|e| e.get_text())
-            .map(|s| s.to_string())
-            .unwrap_or_default();
-
-        let current_uri = xml
-            .get_child("CurrentURI")
-            .and_then(|e| e.get_text())
-            .map(|s| s.to_string())
-            .unwrap_or_default();
-
-        let group_uuid_joined = xml
-            .get_child("GroupUUIDJoined")
-            .and_then(|e| e.get_text())
-            .map(|s| s.to_string())
-            .unwrap_or_default();
-
-        let reset_volume_after = parse_sonos_bool(xml, "ResetVolumeAfter");
-
-        let volume_av_transport_uri = xml
-            .get_child("VolumeAVTransportURI")
-            .and_then(|e| e.get_text())
-            .map(|s| s.to_string())
-            .unwrap_or_default();
-
+    fn parse_response(xml: &str) -> Result<Self::Response, crate::error::ApiError> {
         Ok(AddMemberResponse {
-            current_transport_settings,
-            current_uri,
-            group_uuid_joined,
-            reset_volume_after,
-            volume_av_transport_uri,
+            current_transport_settings: response_string(xml, "CurrentTransportSettings"),
+            current_uri: response_string(xml, "CurrentURI"),
+            group_uuid_joined: response_string(xml, "GroupUUIDJoined"),
+            reset_volume_after: parse_sonos_bool(xml, "ResetVolumeAfter"),
+            volume_av_transport_uri: response_string(xml, "VolumeAVTransportURI"),
         })
     }
 }
@@ -249,8 +223,7 @@ mod tests {
             <ResetVolumeAfter>1</ResetVolumeAfter>
             <VolumeAVTransportURI>x-rincon:RINCON_456</VolumeAVTransportURI>
         </AddMemberResponse>"#;
-        let xml = xmltree::Element::parse(xml_str.as_bytes()).unwrap();
-        let response = AddMemberOperation::parse_response(&xml).unwrap();
+        let response = AddMemberOperation::parse_response(xml_str).unwrap();
 
         assert_eq!(response.current_transport_settings, "settings");
         assert_eq!(response.current_uri, "x-rincon:RINCON_123");
@@ -268,8 +241,7 @@ mod tests {
             <ResetVolumeAfter>0</ResetVolumeAfter>
             <VolumeAVTransportURI></VolumeAVTransportURI>
         </AddMemberResponse>"#;
-        let xml = xmltree::Element::parse(xml_str.as_bytes()).unwrap();
-        let response = AddMemberOperation::parse_response(&xml).unwrap();
+        let response = AddMemberOperation::parse_response(xml_str).unwrap();
 
         assert!(!response.reset_volume_after);
     }
@@ -401,9 +373,7 @@ mod property_tests {
                 <VolumeAVTransportURI>x-rincon:RINCON_VOL</VolumeAVTransportURI>
             </AddMemberResponse>"#);
 
-            let xml = xmltree::Element::parse(xml_str.as_bytes())
-                .expect("XML should parse successfully");
-            let response = AddMemberOperation::parse_response(&xml)
+            let response = AddMemberOperation::parse_response(&xml_str)
                 .expect("Response parsing should succeed");
 
             prop_assert_eq!(
