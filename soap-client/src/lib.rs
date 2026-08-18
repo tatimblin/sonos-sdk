@@ -168,12 +168,7 @@ impl SoapClient {
             .call()
             .map_err(|e| map_subscription_error("SUBSCRIBE", e))?;
 
-        if !is_success(response.status()) {
-            return Err(SoapError::Network(format!(
-                "SUBSCRIBE failed: HTTP {}",
-                response.status()
-            )));
-        }
+        require_success("SUBSCRIBE", &response)?;
 
         // Extract SID from response headers
         let sid = response
@@ -183,22 +178,9 @@ impl SoapClient {
             })?
             .to_string();
 
-        // Extract timeout from response headers (optional, fallback to requested timeout)
-        let actual_timeout_seconds = response
-            .header("TIMEOUT")
-            .and_then(|s| {
-                // Parse "Second-1800" format
-                if s.starts_with("Second-") {
-                    s.strip_prefix("Second-")?.parse::<u32>().ok()
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(timeout_seconds);
-
         Ok(SubscriptionResponse {
             sid,
-            timeout_seconds: actual_timeout_seconds,
+            timeout_seconds: granted_timeout(&response, timeout_seconds),
         })
     }
 
@@ -233,26 +215,9 @@ impl SoapClient {
             .call()
             .map_err(|e| map_subscription_error("SUBSCRIBE renewal", e))?;
 
-        if !is_success(response.status()) {
-            return Err(SoapError::Network(format!(
-                "SUBSCRIBE renewal failed: HTTP {}",
-                response.status()
-            )));
-        }
+        require_success("SUBSCRIBE renewal", &response)?;
 
-        // Extract timeout from response headers
-        let actual_timeout_seconds = response
-            .header("TIMEOUT")
-            .and_then(|s| {
-                if s.starts_with("Second-") {
-                    s.strip_prefix("Second-")?.parse::<u32>().ok()
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(timeout_seconds);
-
-        Ok(actual_timeout_seconds)
+        Ok(granted_timeout(&response, timeout_seconds))
     }
 
     /// Unsubscribe from UPnP events
@@ -280,12 +245,7 @@ impl SoapClient {
             .call()
             .map_err(|e| map_subscription_error("UNSUBSCRIBE", e))?;
 
-        if !is_success(response.status()) {
-            return Err(SoapError::Network(format!(
-                "UNSUBSCRIBE failed: HTTP {}",
-                response.status()
-            )));
-        }
+        require_success("UNSUBSCRIBE", &response)?;
 
         Ok(())
     }
@@ -305,6 +265,35 @@ impl Default for SoapClient {
 /// failures.
 fn is_success(status: u16) -> bool {
     (200..300).contains(&status)
+}
+
+/// Reject a subscription response whose status is not a success.
+///
+/// The message keeps the same `"{operation} failed: HTTP {status}"` shape as
+/// [`map_subscription_error`], so a status surfaced by `ureq` as an error and one
+/// that arrived on the success path read identically to callers.
+fn require_success(operation: &str, response: &ureq::Response) -> Result<(), SoapError> {
+    if is_success(response.status()) {
+        Ok(())
+    } else {
+        Err(SoapError::Network(format!(
+            "{operation} failed: HTTP {}",
+            response.status()
+        )))
+    }
+}
+
+/// Read the timeout the device actually granted from the `TIMEOUT` header.
+///
+/// UPnP spells this `Second-1800`. Devices may grant less than was asked for, so
+/// the header wins when it parses; anything else (absent, `infinite`, malformed)
+/// falls back to `requested` rather than failing, since a non-compliant header is
+/// not a reason to abandon a working subscription.
+fn granted_timeout(response: &ureq::Response, requested: u32) -> u32 {
+    response
+        .header("TIMEOUT")
+        .and_then(|s| s.strip_prefix("Second-")?.parse::<u32>().ok())
+        .unwrap_or(requested)
 }
 
 /// Map a `ureq` error from a SOAP control request into a [`SoapError`].
@@ -838,6 +827,41 @@ mod tests {
         assert!(is_success(200));
         assert!(is_success(201));
         assert!(!is_success(302));
+    }
+
+    #[test]
+    fn test_require_success_preserves_status_and_operation() {
+        let ok = ureq::Response::new(200, "OK", "").unwrap();
+        assert!(require_success("SUBSCRIBE", &ok).is_ok());
+
+        let redirect = ureq::Response::new(302, "Found", "").unwrap();
+        match require_success("UNSUBSCRIBE", &redirect).unwrap_err() {
+            SoapError::Network(msg) => {
+                assert!(msg.contains("UNSUBSCRIBE"), "unexpected message: {msg}");
+                assert!(msg.contains("302"), "unexpected message: {msg}");
+            }
+            other => panic!("Expected SoapError::Network, got {other:?}"),
+        }
+    }
+
+    /// The device's granted timeout wins when the header parses; every other
+    /// shape falls back to what was requested rather than failing.
+    #[test]
+    fn test_granted_timeout_parsing_and_fallback() {
+        let with = |header: Option<&str>| {
+            let mut raw = "HTTP/1.1 200 OK\r\n".to_string();
+            if let Some(value) = header {
+                raw.push_str(&format!("TIMEOUT: {value}\r\n"));
+            }
+            raw.push_str("\r\n");
+            let response: ureq::Response = raw.parse().unwrap();
+            granted_timeout(&response, 1800)
+        };
+
+        assert_eq!(with(Some("Second-600")), 600);
+        assert_eq!(with(Some("Second-infinite")), 1800);
+        assert_eq!(with(Some("600")), 1800);
+        assert_eq!(with(None), 1800);
     }
 
     #[test]
