@@ -73,7 +73,7 @@ Use `/implement-service-stream` skill to add event streaming support.
 
 **Verify:**
 ```bash
-cargo test -p sonos-stream
+cargo test -p sonos-sdk-stream
 python .claude/skills/implement-service-stream/scripts/analyze_stream_events.py --validate
 python .claude/skills/implement-service-stream/scripts/test_polling.py <speaker_ip> NewService
 ```
@@ -95,7 +95,7 @@ Use `/implement-service-state` skill to add reactive state management.
 
 **Verify:**
 ```bash
-cargo test -p sonos-state
+cargo test -p sonos-sdk-state
 python .claude/skills/implement-service-state/scripts/analyze_properties.py --coverage
 ```
 
@@ -125,8 +125,9 @@ python .claude/skills/implement-service-sdk/scripts/analyze_handles.py --coverag
 After all layers are complete:
 
 ```bash
-# Full workspace test
-cargo test
+# Full workspace test. The feature flag is required: sonos-sdk's
+# tests/property_tests.rs does not compile without it.
+cargo test --workspace --features sonos-sdk/test-support --locked
 
 # Integration test with real speaker
 python .claude/skills/add-service/scripts/integration_test.py NewService <speaker_ip>

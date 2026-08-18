@@ -17,12 +17,17 @@ This is a Rust-based modular SDK for interacting with Sonos devices via their UP
 # Build entire workspace
 cargo build
 
-# Build specific crate
+# Build specific crate. Note the published package names differ from the
+# directory names for every crate except sonos-sdk and sonos-api.
+cargo build -p sonos-sdk
 cargo build -p sonos-api
-cargo build -p sonos-discovery
-cargo build -p sonos-stream
-cargo build -p soap-client
-cargo build -p callback-server
+cargo build -p sonos-sdk-discovery      # sonos-discovery/
+cargo build -p sonos-sdk-stream         # sonos-stream/
+cargo build -p sonos-sdk-state          # sonos-state/
+cargo build -p sonos-sdk-event-manager  # sonos-event-manager/
+cargo build -p sonos-sdk-callback-server # callback-server/
+cargo build -p sonos-sdk-soap-client    # soap-client/
+cargo build -p sonos-sdk-state-store    # state-store/
 
 # Release build
 cargo build --release
@@ -30,35 +35,41 @@ cargo build --release
 
 ### Testing
 ```bash
-# Run all tests
-cargo test
+# Run all tests (this is what CI runs)
+cargo test --workspace --features sonos-sdk/test-support --locked
 
-# Test specific crate
+# Test specific crate (`--features` is package-scoped, so the sonos-sdk
+# feature can only be named when sonos-sdk is in the selection)
 cargo test -p sonos-api
-cargo test -p sonos-discovery
-cargo test -p soap-client
+cargo test -p sonos-sdk-discovery
+cargo test -p sonos-sdk-soap-client
+cargo test -p sonos-sdk --features test-support
 
 # Run tests with output
-cargo test -- --nocapture
+cargo test --workspace --features sonos-sdk/test-support -- --nocapture
 ```
+
+> Bare `cargo test` fails to compile. See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for
+> the full pre-push command set and what each flag is for.
 
 ### Running Examples
 ```bash
 # Interactive CLI for testing operations (sonos-api)
 cargo run --example cli_example
 
-# Reactive state management examples (sonos-state)
-cargo run -p sonos-state --example live_dashboard
-cargo run -p sonos-state --example reactive_dashboard
+# Reactive state management examples (sonos-sdk)
+cargo run -p sonos-sdk --example smart_dashboard
+cargo run -p sonos-sdk --example property_observer
+cargo run -p sonos-sdk --example sdk_demo
 
-# Event streaming examples (sonos-stream - internal)
-cargo run -p sonos-stream --example basic_usage
-cargo run -p sonos-stream --example async_realtime
-cargo run -p sonos-stream --example firewall_handling
-cargo run -p sonos-stream --example filtering_and_batch
+# State layer example (sonos-sdk-state - internal)
+cargo run -p sonos-sdk-state --example minimal_example
 
-# Event manager example (sonos-event-manager - internal)
-cargo run -p sonos-event-manager --example smart_dashboard
+# Event streaming examples (sonos-sdk-stream - internal)
+cargo run -p sonos-sdk-stream --example basic_usage
+cargo run -p sonos-sdk-stream --example async_realtime
+cargo run -p sonos-sdk-stream --example firewall_handling
+cargo run -p sonos-sdk-stream --example filtering_and_batch
 
 # Integration example (temporarily disabled)
 # cargo run --bin integration-example
@@ -87,7 +98,7 @@ cargo check
 - Re-exports discovery, state management, and API types
 - Sync-first, DOM-like interface for controlling Sonos speakers
 
-**sonos-api** - High-level type-safe API layer (228 KB)
+**sonos-api** - High-level type-safe API layer (largest crate)
 - Implements the `SonosOperation` trait for all UPnP operations
 - Provides `SonosClient` for simplified operation execution
 - Supports AVTransport (30 ops), RenderingControl (11 ops: Get/Set Volume, Mute, Bass, Treble, Loudness + SetRelativeVolume), GroupRenderingControl (6 ops), GroupManagement (4 ops), ZoneGroupTopology, DeviceProperties, Events services
@@ -95,38 +106,46 @@ cargo check
 
 #### Internal Crates (Workspace-only)
 
-**sonos-state** - Reactive state management (148 KB)
-- High-level reactive API using `tokio::sync::watch` channels
+**sonos-state** - Reactive state management
+- Sync-first API: a store of current values plus a change-event stream. No `.await` required
+- Change delivery is a reference-counted set of watched `(speaker_id, property_key)` pairs plus
+  an `EventFanout` that gives each subscriber its own unbounded `std::sync::mpsc` queue.
+  Deliberately **not** `tokio::sync::watch`/`broadcast` — `blocking_recv()` panics inside a
+  Tokio runtime, and a bounded ring buffer would drop events for slow consumers
+- Only watched pairs emit events, so nothing decodes or fans out work nobody asked for
 - Automatic UPnP subscription management with reference counting
 - Demand-driven subscription lifecycle (subscribes only when properties are watched)
-- Supports Volume, Mute, Bass, Treble, Loudness, PlaybackState, Position, CurrentTrack, GroupMembership, Topology properties
-- Main entry point: `StateManager` with `watch_property<P>(speaker_id)` and `get_property<P>(speaker_id)` methods
+- Supports Volume, Mute, Bass, Treble, Loudness, PlaybackState, Position, CurrentTrack, GroupVolume, GroupMute, GroupMembership, Topology properties
+- Main entry point: `StateManager` with `register_watch()`, `iter()` and `get_property::<P>(speaker_id)`
 
-**sonos-discovery** - Network device discovery (40 KB)
+**sonos-discovery** - Network device discovery
 - SSDP-based discovery of Sonos devices on local network
 - Provides simple `get()` and `get_with_timeout()` functions
 - Iterator-based streaming API with `get_iter()`
 - Automatic device filtering and deduplication
 - Re-exported through `sonos-sdk` for end-user access
 
-**sonos-stream** - Event streaming and subscriptions (204 KB, largest crate)
+**sonos-stream** - Event streaming and subscriptions
 - Internal event streaming layer with transparent UPnP event/polling switching
 - Proactive firewall detection with automatic polling fallback
 - Complete event enrichment with source attribution
 - Used exclusively by sonos-state, not for direct use
 
-**sonos-event-manager** - Subscription orchestration (20 KB)
+**sonos-event-manager** - Subscription orchestration
 - Reference-counted subscription management bridge between sonos-state and sonos-stream
 - Implements Reference-Counted Observable pattern (similar to RxJS refCount)
 - Automatic subscription creation/cleanup based on consumer count
 
-**callback-server** - HTTP event reception (56 KB)
-- Generic HTTP server for receiving UPnP NOTIFY event callbacks using warp framework
+**callback-server** - HTTP event reception
+- Generic HTTP server for receiving UPnP NOTIFY event callbacks, built on `axum`
+- Single catch-all route: NOTIFY-only, 64 KiB body cap, independent SID/NT/NTS validation
 - Device-agnostic event routing via `EventRouter`
 - Handles firewall traversal and callback URL management
 
-**soap-client** - Low-level SOAP transport (20 KB, smallest crate)
+**soap-client** - Low-level SOAP transport (smallest crate)
 - Private crate handling HTTP/SOAP transport using ureq (blocking HTTP)
+- `call()` returns the raw response body as a `String`; response *shape* is `sonos-api`'s
+  business. Fault detection stays here (quick-xml scan) so callers can trust an `Ok`
 - Singleton pattern with shared HTTP connection pool
 - Used internally by other crates, not meant for direct use
 
@@ -142,9 +161,13 @@ pub trait SonosOperation {
     const ACTION: &'static str;
 
     fn build_payload(request: &Self::Request) -> String;
-    fn parse_response(xml: &Element) -> Result<Self::Response, ApiError>;
+    fn parse_response(xml: &str) -> Result<Self::Response, ApiError>;
 }
 ```
+
+`parse_response` takes the raw response body as `&str`. `soap-client` hands back text
+rather than a DOM: it owns transport and fault detection, while response *shape* is
+service-specific and belongs here.
 
 **Stateless Design** - No connection pooling or device state management. Each operation is independent.
 
@@ -189,27 +212,36 @@ End Users → sonos-state → sonos-event-manager → sonos-stream → callback-
 ## Common Patterns
 
 ### Reactive State Management (Recommended)
-```rust
-use sonos_state::{StateManager, Volume, Mute, PlaybackState, SpeakerId};
-use sonos_discovery;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Create state manager with automatic event processing
-    let manager = StateManager::new().await?;
+Sync-first: register the watches you care about, then block on the change iterator.
+The new value rides along on the event, so a burst of queued events shows every
+value rather than the latest one repeated.
+
+```rust
+use sonos_state::property::SonosProperty;
+use sonos_state::{PropertyChange, SpeakerId, StateManager, Volume};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Create state manager (sync - no .await)
+    let manager = StateManager::new()?;
 
     // Discover and add devices
     let devices = sonos_discovery::get();
-    manager.add_devices(devices).await?;
+    manager.add_devices(devices.clone())?;
 
     let speaker_id = SpeakerId::new(&devices[0].id);
 
-    // Watch for volume changes - automatically subscribes to RenderingControl
-    let mut volume_watcher = manager.watch_property::<Volume>(speaker_id.clone()).await?;
+    // Non-reactive read of whatever the store already has
+    if let Some(volume) = manager.get_property::<Volume>(&speaker_id) {
+        println!("Current volume: {}%", volume.0);
+    }
 
-    // React to changes
-    while volume_watcher.changed().await.is_ok() {
-        if let Some(volume) = volume_watcher.current() {
+    // Register interest. Only watched (speaker, property) pairs emit events.
+    manager.register_watch(&speaker_id, Volume::KEY);
+
+    // Blocking iteration over changes
+    for event in manager.iter() {
+        if let PropertyChange::Volume(volume) = &event.change {
             println!("Volume changed: {}%", volume.0);
         }
     }
@@ -217,6 +249,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+
+See `sonos-state/examples/minimal_example.rs` for the full version including the
+UPnP subscription each watch needs. Most end users should reach for `sonos-sdk`'s
+`Speaker`/`Group` handles instead of driving `StateManager` directly.
 
 ### Basic Operation Execution (Resource Efficient)
 ```rust
@@ -294,16 +330,17 @@ let subscription = client.subscribe(device_ip, Service::AVTransport, &subscribe_
 ## Key Dependencies
 
 ### External Libraries by Purpose
-- **Async Runtime**: `tokio` (full features) - Used for reactive state management and event processing
-- **Serialization**: `serde` + `quick-xml` - UPnP XML request/response handling
+- **Async Runtime**: `tokio` (full features) - Used by sonos-stream, sonos-event-manager and callback-server. sonos-state and sonos-sdk are sync
+- **XML**: `quick-xml` + `serde` - the single XML parser across the workspace. Used for SOAP request/response bodies, UPnP event `LastChange` payloads, DIDL-Lite metadata, SSDP device descriptions and SOAP fault scanning. There is no hand-rolled XML anywhere
 - **HTTP**:
-  - `reqwest` (async) - Used in discovery and callback-server
-  - `ureq` (blocking) - Used in soap-client for SOAP transport
-  - `warp` - HTTP server framework for callback-server
-- **Concurrency**: `dashmap`, `crossbeam` - Lock-free data structures for event processing
-- **XML**: `xmltree` - Low-level XML parsing in soap-client
-- **Error Handling**: `thiserror` - Structured error types across all crates
+  - `ureq` (blocking) - SOAP transport in soap-client (pinned to 2.x) and device-description fetching in sonos-discovery (3.x)
+  - `axum` - HTTP server framework for callback-server's single NOTIFY route
+  - `reqwest` - **dev-dependency only**, the test client that drives callback-server and discovery fixtures end to end
+- **URLs**: `url` - parsing SSDP `LOCATION` and topology `location` values in sonos-discovery and sonos-state
+- **Concurrency**: `parking_lot` - non-poisoning locks (Drop safety) in sonos-state and sonos-event-manager
+- **Error Handling**: `thiserror` (2.x) - all error types are derived; no hand-written `Display`/`Error` impls remain
 - **Tracing**: `tracing` - Distributed logging and diagnostics
+- **Macros**: `paste` - identifier concatenation in sonos-api's operation macros
 
 ### Crate Dependencies Overview
 ```

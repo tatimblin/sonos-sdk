@@ -218,7 +218,7 @@ fn test_new_service_event_creation() {
 
 ```bash
 # Run tests
-cargo test -p sonos-stream
+cargo test -p sonos-sdk-stream
 
 # Test polling against real speaker
 python .claude/skills/implement-service-stream/scripts/test_polling.py <speaker_ip> NewService

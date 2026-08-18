@@ -198,7 +198,7 @@ mod tests {
 
 ```bash
 # Run tests
-cargo test -p sonos-state
+cargo test -p sonos-sdk-state
 
 # Check property coverage
 python .claude/skills/implement-service-state/scripts/analyze_properties.py --coverage

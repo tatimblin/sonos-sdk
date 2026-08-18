@@ -51,7 +51,7 @@ cargo run --example cli_example -- <speaker_ip> <Service> <Operation>
 
 ### Verification
 ```bash
-cargo test -p sonos-stream
+cargo test -p sonos-sdk-stream
 python .claude/skills/implement-service-stream/scripts/analyze_stream_events.py --validate
 python .claude/skills/implement-service-stream/scripts/test_polling.py <speaker_ip> <Service>
 ```
@@ -82,7 +82,7 @@ python .claude/skills/implement-service-stream/scripts/test_polling.py <speaker_
 
 ### Verification
 ```bash
-cargo test -p sonos-state
+cargo test -p sonos-sdk-state
 python .claude/skills/implement-service-state/scripts/analyze_properties.py --coverage
 ```
 - [ ] All tests pass
@@ -121,7 +121,9 @@ python .claude/skills/implement-service-sdk/scripts/analyze_handles.py --coverag
 
 ### Full Test Suite
 ```bash
-cargo test
+# The feature flag is required: sonos-sdk's tests/property_tests.rs
+# does not compile without it. Bare `cargo test` fails.
+cargo test --workspace --features sonos-sdk/test-support --locked
 ```
 - [ ] All workspace tests pass
 

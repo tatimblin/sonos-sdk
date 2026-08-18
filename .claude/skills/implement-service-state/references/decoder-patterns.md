@@ -182,14 +182,60 @@ fn parse_duration_ms(duration: Option<&str>) -> Option<u64> {
     let seconds: u64 = seconds_parts[0].parse().ok()?;
     let millis: u64 = seconds_parts.get(1).and_then(|m| m.parse().ok()).unwrap_or(0);
 
-    Some((hours * 3600 + minutes * 60 + seconds) * 1000 + millis)
+    // Checked arithmetic throughout: these components come straight off the wire,
+    // so a device (or a forged event) can supply values near `u64::MAX` that
+    // overflow the multiply. Unchecked math panics in debug and silently wraps to
+    // a nonsense position in release; `None` correctly means "unparseable".
+    hours
+        .checked_mul(3600)?
+        .checked_add(minutes.checked_mul(60)?)?
+        .checked_add(seconds)?
+        .checked_mul(1000)?
+        .checked_add(millis)
 }
 ```
 
 ### XML Metadata Parsing
 
+**Never hand-roll XML extraction.** Declare a serde struct and let quick-xml
+deserialize it. Substring scanning silently mis-decodes nested entities
+(`&amp;apos;` becomes `'` instead of the literal `&apos;`), breaks on CDATA and
+comments, and cannot tell a matching tag inside an attribute from a real element.
+
+Two rules that are easy to get wrong:
+
+- **Field names are element *local* names.** quick-xml's serde deserializer resolves
+  namespace prefixes for you, so UPnP's `dc:title` deserializes as `title` and
+  `upnp:albumArtURI` as `albumArtURI`. `rename = "dc:title"` could never match.
+- **Unknown siblings are ignored by serde**, so you only declare the fields you need.
+
 ```rust
-/// Parse DIDL-Lite track metadata XML
+/// The one DIDL-Lite `<item>` a track's metadata carries.
+#[derive(Debug, Deserialize)]
+struct DidlItem {
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    creator: Option<String>,
+    #[serde(rename = "albumArtist", default)]
+    album_artist: Option<String>,
+    #[serde(default)]
+    album: Option<String>,
+    #[serde(rename = "albumArtURI", default)]
+    album_art_uri: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DidlLite {
+    #[serde(rename = "item", default)]
+    items: Vec<DidlItem>,
+}
+
+/// Parse DIDL-Lite track metadata into `(title, artist, album, album_art_uri)`.
+///
+/// **Infallible by contract.** `sonos-sdk` destructures this 4-tuple directly
+/// (`sonos-sdk/src/property/handles.rs`), so a track whose metadata will not
+/// parse must read as "unknown track" — never an `Err`, never a panic.
 fn parse_track_metadata(
     metadata: Option<&str>,
 ) -> (Option<String>, Option<String>, Option<String>, Option<String>) {
@@ -198,38 +244,42 @@ fn parse_track_metadata(
         _ => return (None, None, None, None),
     };
 
-    let title = extract_xml_element(xml, "dc:title");
-    let artist = extract_xml_element(xml, "dc:creator")
-        .or_else(|| extract_xml_element(xml, "r:albumArtist"));
-    let album = extract_xml_element(xml, "upnp:album");
-    let album_art_uri = extract_xml_element(xml, "upnp:albumArtURI");
+    // Strict parse first: valid DIDL is the common case and costs no allocation.
+    // quick-xml's `unescape` rejects entities it does not know, but real DIDL from
+    // streaming services carries bare `&` in titles and occasional HTML entities.
+    // A strict-only parse would blank out tracks that render fine today, so a
+    // failed parse retries against a copy whose stray `&` have been escaped. Only
+    // if that also fails (malformed markup, not just a bad entity) is the item
+    // dropped. See `escape_stray_ampersands` in `sonos-state/src/decoder.rs`.
+    let didl = match quick_xml::de::from_str::<DidlLite>(xml) {
+        Ok(didl) => didl,
+        Err(strict_err) => match quick_xml::de::from_str::<DidlLite>(&escape_stray_ampersands(xml)) {
+            Ok(didl) => didl,
+            Err(err) => {
+                tracing::debug!("Failed to parse DIDL-Lite: {strict_err}; retry failed: {err}");
+                return (None, None, None, None);
+            }
+        },
+    };
 
-    (title, artist, album, album_art_uri)
+    let Some(item) = didl.items.into_iter().next() else {
+        return (None, None, None, None);
+    };
+
+    // `dc:creator` is authoritative; `r:albumArtist` is the fallback Sonos
+    // supplies for library tracks that carry no creator.
+    let artist = nonempty(item.creator).or_else(|| nonempty(item.album_artist));
+
+    (
+        nonempty(item.title),
+        artist,
+        nonempty(item.album),
+        nonempty(item.album_art_uri),
+    )
 }
 
-/// Extract content from an XML element
-fn extract_xml_element(xml: &str, element: &str) -> Option<String> {
-    let start_tag = format!("<{}>", element);
-    let end_tag = format!("</{}>", element);
-
-    let start_idx = xml.find(&start_tag)? + start_tag.len();
-    let end_idx = xml[start_idx..].find(&end_tag)? + start_idx;
-
-    let content = &xml[start_idx..end_idx];
-
-    // Unescape basic XML entities
-    let unescaped = content
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&amp;", "&")
-        .replace("&apos;", "'")
-        .replace("&quot;", "\"");
-
-    if unescaped.is_empty() {
-        None
-    } else {
-        Some(unescaped)
-    }
+fn nonempty(value: Option<String>) -> Option<String> {
+    value.filter(|s| !s.is_empty())
 }
 ```
 

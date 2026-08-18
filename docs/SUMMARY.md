@@ -303,9 +303,13 @@ pub trait SonosOperation {
     const SERVICE: Service;
     const ACTION: &'static str;
     fn build_payload(request: &Self::Request) -> String;
-    fn parse_response(xml: &Element) -> Result<Self::Response, ApiError>;
+    fn parse_response(xml: &str) -> Result<Self::Response, ApiError>;
 }
 ```
+
+`parse_response` receives the raw response body. `soap-client` returns text rather than a
+parsed DOM: it owns transport and SOAP-fault detection, while response *shape* is
+service-specific and belongs in `sonos-api`.
 
 #### 4. Reference-Counted Observable (sonos-event-manager)
 Similar to RxJS `refCount()`, subscriptions are automatically managed based on consumer count:
@@ -333,34 +337,59 @@ pub struct EnrichedEvent {
 }
 ```
 
-#### 6. Watch Channels (sonos-state)
-Properties use `tokio::sync::watch` for efficient reactive updates:
+#### 6. Watched-Key Set + Per-Subscriber Queue (sonos-state)
+
+Reactive updates are two mechanisms, not a channel type:
+
+1. **A reference-counted set of watched `(speaker_id, property_key)` pairs.** A decoded
+   property change is only emitted if its pair is in the set, so nothing is fanned out
+   that nobody asked for. Multiple watchers of the same pair share one entry; the pair
+   stops being watched when the last hold is released.
+2. **`EventFanout`, a registry of `std::sync::mpsc` senders.** Each subscriber gets its
+   own *unbounded* queue, so `iter()` returns an independent stream (two loops each see
+   every event, rather than splitting the stream) and a slow consumer neither loses
+   events nor blocks a fast one.
 
 ```rust
-// Single producer, multiple consumers
-// Latest value always available
-// Efficient change notification
-let mut watcher = speaker.volume.watch().await?;
-while watcher.changed().await.is_ok() {
-    let current = watcher.current();
+// Register interest, then block on the change stream
+manager.register_watch(&speaker_id, Volume::KEY);
+
+for event in manager.iter() {
+    // The new value rides along on the event, so a burst of queued events
+    // shows every value rather than the latest one repeated.
+    if let PropertyChange::Volume(v) = &event.change { /* ... */ }
 }
 ```
+
+**Why not `tokio::sync::watch` or `broadcast`**: this crate is deliberately sync-first —
+`recv()` blocks and no runtime is assumed. `broadcast::Receiver::blocking_recv()` *panics*
+when called from a thread already inside a Tokio runtime, has no `recv_timeout`, and its
+fixed ring buffer drops events for slow consumers. A `watch` channel additionally
+collapses intermediate values, which would defeat the "every value, in order" guarantee
+above. See `sonos-state/src/iter.rs` and `docs/specs/sonos-state.md` §4.
+
+The cost of unbounded queues is the flip side of never dropping: a subscriber that never
+drains grows its own queue without bound (`docs/specs/sonos-state.md` §14.1).
 
 ---
 
 ## Crate Size Reference
 
-| Crate | Size | Classification | Primary Responsibility |
-|-------|------|----------------|------------------------|
-| sonos-sdk | - | **Public** | DOM-like API (main entry point) |
-| sonos-api | 228 KB | Public | Type-safe UPnP operations |
-| sonos-discovery | 40 KB | Public | SSDP device discovery |
-| sonos-stream | 204 KB | Internal | Event streaming with fallback |
-| sonos-state | 148 KB | Internal | Reactive state management |
-| state-store | ~20 KB | Internal | Generic property storage |
-| callback-server | 56 KB | Internal | HTTP event server |
-| sonos-event-manager | 20 KB | Internal | Subscription reference counting |
-| soap-client | 20 KB | Internal | SOAP transport (singleton) |
+Relative size only, as source lines under `src/` (tests included). Use this to gauge
+where the complexity lives, not as a precise figure — regenerate with
+`find <crate>/src -name '*.rs' | xargs wc -l` rather than trusting the number.
+
+| Crate | Package name | src LOC | Classification | Primary Responsibility |
+|-------|--------------|---------|----------------|------------------------|
+| sonos-sdk | `sonos-sdk` | ~5,300 | **Public** | DOM-like API (main entry point) |
+| sonos-api | `sonos-api` | ~9,500 | Public | Type-safe UPnP operations |
+| sonos-discovery | `sonos-sdk-discovery` | ~1,200 | Public | SSDP device discovery |
+| sonos-stream | `sonos-sdk-stream` | ~6,800 | Internal | Event streaming with fallback |
+| sonos-state | `sonos-sdk-state` | ~7,500 | Internal | Reactive state management |
+| state-store | `sonos-sdk-state-store` | ~1,100 | Internal | Generic property storage |
+| callback-server | `sonos-sdk-callback-server` | ~2,200 | Internal | HTTP event server (axum) |
+| sonos-event-manager | `sonos-sdk-event-manager` | ~1,400 | Internal | Subscription reference counting |
+| soap-client | `sonos-sdk-soap-client` | ~1,000 | Internal | SOAP transport (singleton) |
 
 ---
 
