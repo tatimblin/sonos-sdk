@@ -250,19 +250,16 @@ pub fn parse_sonos_bool(xml: &Element, child_name: &str) -> bool {
 /// Escape XML special characters in a string for safe SOAP payload interpolation.
 ///
 /// Replaces `&`, `<`, `>`, `"`, and `'` with their XML entity equivalents.
+///
+/// Delegates to `quick_xml::escape::escape`, whose predicate is exactly those five
+/// characters. Notably **not** `partial_escape`, which leaves `"` and `'` alone and
+/// would therefore be unsafe for values interpolated in attribute position.
+/// Whitespace is left verbatim: `escape`'s predicate never matches space or tab, so
+/// the numeric-reference arms inside quick-xml's shared `_escape` helper (which exist
+/// for `xs:list` delimiters) are unreachable from here. That matters because SOAP
+/// payloads carry track titles and URIs where `&#32;` would corrupt the value.
 pub fn xml_escape(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => result.push_str("&amp;"),
-            '<' => result.push_str("&lt;"),
-            '>' => result.push_str("&gt;"),
-            '"' => result.push_str("&quot;"),
-            '\'' => result.push_str("&apos;"),
-            _ => result.push(c),
-        }
-    }
-    result
+    quick_xml::escape::escape(s).into_owned()
 }
 
 /// Capitalize the first character of a snake_case field name.
@@ -375,5 +372,17 @@ mod tests {
             "&lt;/CurrentURI&gt;&lt;Injected&gt;"
         );
         assert_eq!(xml_escape(""), "");
+    }
+
+    /// `quick_xml::escape::escape` shares an internal helper with an `xs:list`
+    /// variant that maps space and tab to `&#32;`/`&#9;`. Those arms must stay
+    /// unreachable here: SOAP payloads carry track titles and URIs where escaped
+    /// whitespace would corrupt the value the device receives.
+    #[test]
+    fn test_xml_escape_leaves_whitespace_verbatim() {
+        assert_eq!(
+            xml_escape("Bohemian Rhapsody\t(Remastered 2011)"),
+            "Bohemian Rhapsody\t(Remastered 2011)"
+        );
     }
 }
