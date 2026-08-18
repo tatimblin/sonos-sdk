@@ -1,20 +1,33 @@
 //! HTTP server for receiving UPnP event notifications.
 
+use axum::body::Bytes;
+use axum::extract::{DefaultBodyLimit, FromRequest, Request, State};
+use axum::http::{header, HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::Router;
 use if_addrs::IfAddr;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace};
-use warp::Filter;
 
 use super::router::{EventRouter, NotificationPayload};
+
+/// The only HTTP method this server serves.
+///
+/// UPnP's NOTIFY is not a standard HTTP verb, so it is not in `http::Method`'s set
+/// of constants and axum's `MethodFilter` cannot express it. Comparing
+/// `Method::as_str()` against this constant is the whole gate: no `Method` value is
+/// constructed per request, which is what the old
+/// `Method::from_bytes(b"NOTIFY").unwrap()` did on every single call.
+const NOTIFY_METHOD: &str = "NOTIFY";
 
 /// Maximum accepted size of a UPnP NOTIFY body, in bytes (64 KiB).
 ///
 /// The endpoint is unauthenticated by design (UPnP eventing has no auth), so any
-/// host on the LAN can POST to it. Without a limit, warp would buffer the whole
-/// body and then a second full copy is made when it is decoded to a `String` —
-/// two concurrent 1 GB posts would be ~4 GB resident.
+/// host on the LAN can POST to it. Without a limit the whole body is buffered and
+/// then a second full copy is made when it is decoded to a `String` — two
+/// concurrent 1 GB posts would be ~4 GB resident.
 ///
 /// Sizing: real Sonos propertysets are ~1-5 KB. The largest realistic case is a
 /// `ZoneGroupTopology` event, whose double-escaped `ZoneGroupState` payload runs
@@ -23,9 +36,13 @@ use super::router::{EventRouter, NotificationPayload};
 /// over typical events, while capping the cost of a hostile request at 128 KiB
 /// (bytes + string copy) instead of unbounded.
 ///
-/// Requests without a `Content-Length` header (e.g. chunked bodies, which Sonos
-/// never sends) are rejected with 411 Length Required.
-const MAX_NOTIFY_BODY_BYTES: u64 = 64 * 1024;
+/// Enforced in two independent places, deliberately. [`declared_content_length`]
+/// refuses on the declared size before a single body byte is read, which is also
+/// what turns a body with no declared size into 411 Length Required rather than a
+/// read of unknown length (chunked bodies; Sonos never sends them).
+/// [`DefaultBodyLimit`] then caps the bytes actually read, so the ceiling holds even
+/// if that header check is later changed or bypassed.
+const MAX_NOTIFY_BODY_BYTES: usize = 64 * 1024;
 
 /// How many bytes of event XML to include in trace-level logs.
 const TRACE_PREVIEW_BYTES: usize = 200;
@@ -405,183 +422,267 @@ impl CallbackServer {
         ready_tx: mpsc::Sender<()>,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
-            // Only NOTIFY is handled. This gate runs *before* the body filters so
-            // that ordinary bodiless requests (e.g. a browser GET) still get 404
-            // rather than 411 Length Required.
-            let notify_method = warp::method().and_then(|method: warp::http::Method| async move {
-                if method == warp::http::Method::from_bytes(b"NOTIFY").unwrap() {
-                    Ok(method)
-                } else {
-                    Err(warp::reject::not_found())
+            // One catch-all endpoint: any path, method gated to NOTIFY inside the
+            // `NotifyRequest` extractor. `fallback` is what makes the path
+            // arbitrary — the SID header, not the URL, is the routing key.
+            let app = Router::new()
+                .fallback(handle_notify)
+                // Caps the bytes actually read, independently of the declared
+                // Content-Length check. See MAX_NOTIFY_BODY_BYTES.
+                .layer(DefaultBodyLimit::max(MAX_NOTIFY_BODY_BYTES))
+                .with_state(event_router);
+
+            let listener = match tokio::net::TcpListener::bind(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                port,
+            ))
+            .await
+            {
+                Ok(listener) => listener,
+                Err(e) => {
+                    // `ready_tx` drops here, so `new()` reports "Server failed to
+                    // start" rather than handing back a server nothing can reach.
+                    error!(port, error = %e, "CallbackServer failed to bind");
+                    return;
                 }
-            });
-
-            // Create the NOTIFY endpoint that accepts any path (like the old code)
-            let notify_route = notify_method
-                .and(warp::path::full())
-                .and(warp::header::optional::<String>("sid"))
-                .and(warp::header::optional::<String>("nt"))
-                .and(warp::header::optional::<String>("nts"))
-                // Cap the body before warp buffers it — see MAX_NOTIFY_BODY_BYTES.
-                .and(warp::body::content_length_limit(MAX_NOTIFY_BODY_BYTES))
-                .and(warp::body::bytes())
-                .and_then({
-                    let router = event_router.clone();
-                    move |method: warp::http::Method,
-                          path: warp::path::FullPath,
-                          sid: Option<String>,
-                          nt: Option<String>,
-                          nts: Option<String>,
-                          body: bytes::Bytes| {
-                        let router = router.clone();
-                        async move {
-                            // Log incoming request details for unified event stream monitoring
-                            debug!(
-                                method = %method,
-                                path = %path.as_str(),
-                                body_size = body.len(),
-                                sid = ?sid,
-                                nt = ?nt,
-                                nts = ?nts,
-                                "Received UPnP NOTIFY event"
-                            );
-
-                            // Validate UPnP headers *before* decoding the body, so
-                            // junk requests never pay for the full allocation.
-                            if !Self::validate_upnp_headers(&sid, &nt, &nts) {
-                                error!(
-                                    sid = ?sid,
-                                    nt = ?nt,
-                                    nts = ?nts,
-                                    "Invalid UPnP headers in NOTIFY request"
-                                );
-                                return Err(warp::reject::custom(InvalidUpnpHeaders));
-                            }
-
-                            // Extract subscription ID from SID header (required for UPnP events)
-                            let sub_id = sid.ok_or_else(|| {
-                                error!("Missing required SID header in UPnP NOTIFY request");
-                                warp::reject::custom(InvalidUpnpHeaders)
-                            })?;
-
-                            // Convert body to string and log content at trace level only
-                            let event_xml = String::from_utf8_lossy(&body).to_string();
-                            if event_xml.len() > TRACE_PREVIEW_BYTES {
-                                trace!(
-                                    event_xml_preview = %preview(&event_xml, TRACE_PREVIEW_BYTES),
-                                    total_length = event_xml.len(),
-                                    "UPnP event XML content (truncated)"
-                                );
-                            } else {
-                                trace!(
-                                    event_xml = %event_xml,
-                                    "UPnP event XML content (full)"
-                                );
-                            }
-
-                            // Route the event through the unified event stream.
-                            // Events are either delivered immediately (registered SID)
-                            // or buffered for replay when register() is called.
-                            router.route_event(sub_id.clone(), event_xml).await;
-
-                            debug!(
-                                subscription_id = %sub_id,
-                                "UPnP event accepted"
-                            );
-                            // Always 200 OK — event is either routed or buffered.
-                            // Returning 404 could cause the speaker to cancel the subscription.
-                            Ok::<_, warp::Rejection>(warp::reply::with_status(
-                                "",
-                                warp::http::StatusCode::OK,
-                            ))
-                        }
-                    }
-                });
-
-            // Configure routes with just the NOTIFY endpoint
-            let routes = notify_route.recover(handle_rejection);
-
-            // Create server with graceful shutdown
-            let (addr, server) = warp::serve(routes).bind_with_graceful_shutdown(
-                SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), port),
-                async move {
-                    shutdown_rx.recv().await;
-                },
-            );
+            };
 
             info!(
-                address = %addr,
+                address = ?listener.local_addr(),
                 "CallbackServer listening - ready to process UPnP events"
             );
-            // Signal that server is ready
+            // The socket is accepting as soon as `bind` returns, so signalling here
+            // means callers can subscribe knowing events have somewhere to land.
             let _ = ready_tx.send(()).await;
-            server.await;
+
+            if let Err(e) = axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    shutdown_rx.recv().await;
+                })
+                .await
+            {
+                error!(error = %e, "CallbackServer stopped with an error");
+            }
         })
     }
 
     /// Validate UPnP event notification headers.
     ///
-    /// Checks that the required SID header is present and validates optional
-    /// NT and NTS headers if they are provided.
-    fn validate_upnp_headers(
-        sid: &Option<String>,
-        nt: &Option<String>,
-        nts: &Option<String>,
-    ) -> bool {
+    /// SID is required — without it an event cannot be routed. NT and NTS are
+    /// optional (some devices omit them) but each is checked **independently** when
+    /// present: the previous `if let (Some(nt), Some(nts))` form meant a request
+    /// carrying only one of the two skipped validation entirely.
+    fn validate_upnp_headers(sid: Option<&str>, nt: Option<&str>, nts: Option<&str>) -> bool {
         // SID header is required for event notifications
         if sid.is_none() {
             return false;
         }
 
-        // For UPnP events, NT and NTS headers are typically present
-        // If present, validate they have expected values
-        if let (Some(nt_val), Some(nts_val)) = (nt, nts) {
-            if nt_val != "upnp:event" || nts_val != "upnp:propchange" {
-                return false;
-            }
+        if nt.is_some_and(|nt| nt != "upnp:event") {
+            return false;
+        }
+
+        if nts.is_some_and(|nts| nts != "upnp:propchange") {
+            return false;
         }
 
         true
     }
 }
 
-/// Custom rejection for invalid UPnP headers.
-#[derive(Debug)]
-struct InvalidUpnpHeaders;
+/// A NOTIFY request that has passed every gate: NOTIFY-only method, declared and
+/// actual body size within [`MAX_NOTIFY_BODY_BYTES`], and valid SID/NT/NTS.
+///
+/// Expressed as an extractor so the checks run before the handler body, and so each
+/// failure carries its own status via [`IntoResponse`] rather than needing a
+/// separate error-to-status mapping table.
+struct NotifyRequest {
+    /// Value of the SID header; the routing key.
+    subscription_id: String,
+    /// Raw request body, at most [`MAX_NOTIFY_BODY_BYTES`].
+    body: Bytes,
+}
 
-impl warp::reject::Reject for InvalidUpnpHeaders {}
+/// Why a request was not a servable NOTIFY. Each variant carries the status a
+/// malformed request has always received (404/411/413/400).
+enum NotifyRejection {
+    /// Not a NOTIFY request at all.
+    NotNotify,
+    /// No usable `Content-Length`, so the body cannot be bounded before reading it.
+    LengthRequired,
+    /// `Content-Length` declares more than [`MAX_NOTIFY_BODY_BYTES`].
+    BodyTooLarge,
+    /// The body could not be buffered — over the limit while reading, or the
+    /// connection failed part-way through.
+    UnreadableBody(axum::extract::rejection::BytesRejection),
+    /// Missing SID, or an NT/NTS that is present with the wrong value.
+    InvalidUpnpHeaders,
+}
 
-/// Handle rejections and convert them to HTTP responses.
-async fn handle_rejection(
-    err: warp::Rejection,
-) -> Result<impl warp::Reply, std::convert::Infallible> {
-    let code;
-    let message;
+impl IntoResponse for NotifyRejection {
+    fn into_response(self) -> Response {
+        match self {
+            // 404, as before: the speaker asked for something this server does not
+            // serve. Deliberately not 405, which would advertise the NOTIFY verb.
+            Self::NotNotify => (StatusCode::NOT_FOUND, "Subscription not found").into_response(),
+            // Sonos always sends Content-Length; a missing one means we cannot
+            // bound the body before reading it, so refuse.
+            Self::LengthRequired => (
+                StatusCode::LENGTH_REQUIRED,
+                "Content-Length header is required",
+            )
+                .into_response(),
+            Self::BodyTooLarge => {
+                error!(
+                    limit_bytes = MAX_NOTIFY_BODY_BYTES,
+                    "Rejected NOTIFY body exceeding size limit"
+                );
+                (StatusCode::PAYLOAD_TOO_LARGE, "NOTIFY body too large").into_response()
+            }
+            // 413 when the read hit the limit, 400 otherwise — axum's own mapping.
+            Self::UnreadableBody(rejection) => {
+                error!(
+                    limit_bytes = MAX_NOTIFY_BODY_BYTES,
+                    status = %rejection.status(),
+                    "Could not buffer NOTIFY body"
+                );
+                rejection.into_response()
+            }
+            Self::InvalidUpnpHeaders => {
+                (StatusCode::BAD_REQUEST, "Invalid UPnP headers").into_response()
+            }
+        }
+    }
+}
 
-    if err.is_not_found() {
-        code = warp::http::StatusCode::NOT_FOUND;
-        message = "Subscription not found";
-    } else if err.find::<InvalidUpnpHeaders>().is_some() {
-        code = warp::http::StatusCode::BAD_REQUEST;
-        message = "Invalid UPnP headers";
-    } else if err.find::<warp::reject::PayloadTooLarge>().is_some() {
-        error!(
-            limit_bytes = MAX_NOTIFY_BODY_BYTES,
-            "Rejected NOTIFY body exceeding size limit"
+impl<S> FromRequest<S> for NotifyRequest
+where
+    S: Send + Sync,
+{
+    type Rejection = NotifyRejection;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        // Only NOTIFY is served. This gate runs *before* anything looks at the
+        // body so that ordinary bodiless requests (e.g. a browser GET) still get
+        // 404 rather than 411 Length Required.
+        if req.method().as_str() != NOTIFY_METHOD {
+            return Err(NotifyRejection::NotNotify);
+        }
+
+        // Reject on the declared length before reading a single byte.
+        let content_length = declared_content_length(req.headers())?;
+
+        // Owned copies because reading the body below consumes the request. Three
+        // short strings, and only for requests that already passed the method gate.
+        let path = req.uri().path().to_owned();
+        let sid = upnp_header(req.headers(), "sid")?;
+        let nt = upnp_header(req.headers(), "nt")?;
+        let nts = upnp_header(req.headers(), "nts")?;
+
+        let body = Bytes::from_request(req, state)
+            .await
+            .map_err(NotifyRejection::UnreadableBody)?;
+
+        debug!(
+            method = NOTIFY_METHOD,
+            path = %path,
+            content_length,
+            body_size = body.len(),
+            sid = ?sid,
+            nt = ?nt,
+            nts = ?nts,
+            "Received UPnP NOTIFY event"
         );
-        code = warp::http::StatusCode::PAYLOAD_TOO_LARGE;
-        message = "NOTIFY body too large";
-    } else if err.find::<warp::reject::LengthRequired>().is_some() {
-        // Sonos always sends Content-Length; a missing one means we cannot
-        // bound the body before reading it, so refuse.
-        code = warp::http::StatusCode::LENGTH_REQUIRED;
-        message = "Content-Length header is required";
-    } else {
-        code = warp::http::StatusCode::INTERNAL_SERVER_ERROR;
-        message = "Internal server error";
+
+        // Validate UPnP headers *before* decoding the body to a `String`, so junk
+        // requests never pay for that second full allocation.
+        if !CallbackServer::validate_upnp_headers(sid.as_deref(), nt.as_deref(), nts.as_deref()) {
+            error!(
+                sid = ?sid,
+                nt = ?nt,
+                nts = ?nts,
+                "Invalid UPnP headers in NOTIFY request"
+            );
+            return Err(NotifyRejection::InvalidUpnpHeaders);
+        }
+
+        // Guaranteed present by the validation above.
+        let subscription_id = sid.ok_or_else(|| {
+            error!("Missing required SID header in UPnP NOTIFY request");
+            NotifyRejection::InvalidUpnpHeaders
+        })?;
+
+        Ok(Self {
+            subscription_id,
+            body,
+        })
+    }
+}
+
+/// The declared body size, refusing requests we cannot bound up front.
+///
+/// A missing or unparseable `Content-Length` yields 411 rather than being treated
+/// as zero: a chunked body declares no size at all, and real Sonos devices always
+/// send the header (see `docs/specs/callback-server.md` §14.1).
+fn declared_content_length(headers: &HeaderMap) -> Result<u64, NotifyRejection> {
+    let length = headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or(NotifyRejection::LengthRequired)?;
+
+    if length > MAX_NOTIFY_BODY_BYTES as u64 {
+        return Err(NotifyRejection::BodyTooLarge);
     }
 
-    Ok(warp::reply::with_status(message, code))
+    Ok(length)
+}
+
+/// Read a UPnP header as text. Absent is `None`; present-but-not-UTF-8 is invalid.
+///
+/// A non-UTF-8 value previously fell through to an unhandled rejection and became a
+/// 500. None of these three headers can be valid without being text, so 400 is the
+/// honest answer.
+fn upnp_header(headers: &HeaderMap, name: &str) -> Result<Option<String>, NotifyRejection> {
+    match headers.get(name) {
+        None => Ok(None),
+        Some(value) => match value.to_str() {
+            Ok(value) => Ok(Some(value.to_owned())),
+            Err(_) => Err(NotifyRejection::InvalidUpnpHeaders),
+        },
+    }
+}
+
+/// Handle a validated UPnP NOTIFY: decode, log, route.
+///
+/// Always answers 200 OK. The event is either delivered immediately (registered
+/// SID) or buffered for replay; returning 404 could cause the speaker to cancel the
+/// subscription.
+async fn handle_notify(
+    State(router): State<Arc<EventRouter>>,
+    notify: NotifyRequest,
+) -> StatusCode {
+    let NotifyRequest {
+        subscription_id,
+        body,
+    } = notify;
+
+    // Second full copy of the body; bounded by MAX_NOTIFY_BODY_BYTES.
+    let event_xml = String::from_utf8_lossy(&body).to_string();
+    if event_xml.len() > TRACE_PREVIEW_BYTES {
+        trace!(
+            event_xml_preview = %preview(&event_xml, TRACE_PREVIEW_BYTES),
+            total_length = event_xml.len(),
+            "UPnP event XML content (truncated)"
+        );
+    } else {
+        trace!(event_xml = %event_xml, "UPnP event XML content (full)");
+    }
+
+    router.route_event(subscription_id.clone(), event_xml).await;
+
+    debug!(subscription_id = %subscription_id, "UPnP event accepted");
+    StatusCode::OK
 }
 
 #[cfg(test)]
@@ -754,37 +855,68 @@ mod tests {
     fn test_validate_upnp_headers() {
         // Valid headers with NT and NTS
         assert!(CallbackServer::validate_upnp_headers(
-            &Some("uuid:123".to_string()),
-            &Some("upnp:event".to_string()),
-            &Some("upnp:propchange".to_string()),
+            Some("uuid:123"),
+            Some("upnp:event"),
+            Some("upnp:propchange"),
         ));
 
         // Valid headers without NT and NTS (event notification)
         assert!(CallbackServer::validate_upnp_headers(
-            &Some("uuid:123".to_string()),
-            &None,
-            &None,
+            Some("uuid:123"),
+            None,
+            None
         ));
 
         // Invalid: missing SID
         assert!(!CallbackServer::validate_upnp_headers(
-            &None,
-            &Some("upnp:event".to_string()),
-            &Some("upnp:propchange".to_string()),
+            None,
+            Some("upnp:event"),
+            Some("upnp:propchange"),
         ));
 
         // Invalid: wrong NT value
         assert!(!CallbackServer::validate_upnp_headers(
-            &Some("uuid:123".to_string()),
-            &Some("wrong".to_string()),
-            &Some("upnp:propchange".to_string()),
+            Some("uuid:123"),
+            Some("wrong"),
+            Some("upnp:propchange"),
         ));
 
         // Invalid: wrong NTS value
         assert!(!CallbackServer::validate_upnp_headers(
-            &Some("uuid:123".to_string()),
-            &Some("upnp:event".to_string()),
-            &Some("wrong".to_string()),
+            Some("uuid:123"),
+            Some("upnp:event"),
+            Some("wrong"),
+        ));
+    }
+
+    /// NT and NTS used to be checked inside `if let (Some(nt), Some(nts))`, so a
+    /// request carrying only one of the two bypassed validation entirely: a bogus
+    /// `NT` with no `NTS` was accepted. Each header is now checked independently.
+    #[test]
+    fn test_validate_upnp_headers_checks_nt_and_nts_independently() {
+        // A single valid header on its own is still fine.
+        assert!(CallbackServer::validate_upnp_headers(
+            Some("uuid:123"),
+            Some("upnp:event"),
+            None
+        ));
+        assert!(CallbackServer::validate_upnp_headers(
+            Some("uuid:123"),
+            None,
+            Some("upnp:propchange"),
+        ));
+
+        // A single *invalid* header on its own is now rejected; both of these
+        // returned true before the fix.
+        assert!(!CallbackServer::validate_upnp_headers(
+            Some("uuid:123"),
+            Some("upnp:not-an-event"),
+            None,
+        ));
+        assert!(!CallbackServer::validate_upnp_headers(
+            Some("uuid:123"),
+            None,
+            Some("upnp:not-a-propchange"),
         ));
     }
 
