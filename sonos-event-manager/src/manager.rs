@@ -1648,6 +1648,13 @@ mod tests {
 
         const ROUNDS: usize = 500;
 
+        // Counted per round, not aggregated: an aggregate bound like
+        // `unregisters() <= ROUNDS` is satisfied by "twice in one round, never
+        // in another", which is precisely the failure it was supposed to
+        // exclude.
+        let mut fires = 0_usize;
+        let mut claims = 0_usize;
+
         for round in 0..ROUNDS {
             let guard = manager
                 .acquire_watch(&speaker_id, "volume", ip, service)
@@ -1655,14 +1662,29 @@ mod tests {
             drop(guard);
 
             let teardown = in_flight_teardown(&manager, ip, service);
+            let unregisters_before = registry.unregisters();
+
+            // Rendezvous before either side touches the mutex. Without it the
+            // thread spawned first is already blocked on the lock by the time
+            // the second is created, and the expiry wins all 500 rounds — the
+            // cancel path would never be exercised at all.
+            let start_line = Arc::new(std::sync::Barrier::new(2));
 
             let fire_side = {
                 let manager = Arc::clone(&manager);
-                std::thread::spawn(move || teardown.fire(&manager.command_tx))
+                let start_line = Arc::clone(&start_line);
+                std::thread::spawn(move || {
+                    start_line.wait();
+                    teardown.fire(&manager.command_tx)
+                })
             };
             let claim_side = {
                 let manager = Arc::clone(&manager);
-                std::thread::spawn(move || manager.claim_pending_teardown(ip, service))
+                let start_line = Arc::clone(&start_line);
+                std::thread::spawn(move || {
+                    start_line.wait();
+                    manager.claim_pending_teardown(ip, service)
+                })
             };
 
             let fired = fire_side.join().unwrap();
@@ -1674,6 +1696,21 @@ mod tests {
                  (fired={fired}, claimed={claimed})"
             );
 
+            let delta = registry.unregisters() - unregisters_before;
+            assert_eq!(
+                delta,
+                usize::from(fired),
+                "round {round}: the watched set must be cleared exactly once \
+                 when the expiry wins and not at all when the cancel does \
+                 (fired={fired}, delta={delta})"
+            );
+
+            if fired {
+                fires += 1;
+            } else {
+                claims += 1;
+            }
+
             // Whoever lost must have left no entry behind.
             assert!(
                 manager.pending_unsubscribes.lock().is_empty(),
@@ -1681,28 +1718,101 @@ mod tests {
             );
 
             // The ref count is left at 1 by the claim side when it wins, so
-            // normalize before the next round.
+            // normalize before the next round. Claim the token that release
+            // just scheduled rather than clearing the map behind it: an
+            // unclaimed token left in the timer's queue would fire 50 ms later,
+            // in the middle of some later round, and the per-round delta above
+            // would blame that round for it.
             if claimed {
                 manager.release_watch(&speaker_id, "volume", ip, service);
-                manager.pending_unsubscribes.lock().clear();
+                manager.claim_pending_teardown(ip, service);
             }
         }
 
-        // Every round that the timer won must have unregistered exactly once,
-        // and no round may have unregistered twice.
-        assert!(
-            registry.unregisters() <= ROUNDS,
-            "no round may unregister more than once"
+        assert_eq!(
+            fires + claims,
+            ROUNDS,
+            "every round must have resolved one way or the other"
         );
+
+        // Reported, not asserted, so `--nocapture` shows which side the rounds
+        // actually exercised.
+        //
+        // Asserting `fires > 0 && claims > 0` was tried and does not hold. The
+        // race is lopsided in whichever direction the mechanics push it:
+        // without the rendezvous above the thread spawned first is already on
+        // the mutex and the expiry wins 500/500; with it, measured splits were
+        // 30/470, 4/496, 6/494, 4/496 and 0/500 across five consecutive runs.
+        // Zero is reachable, so the assertion would be a flake, not a check.
+        // Both sides are covered deterministically elsewhere —
+        // `test_expiry_then_reacquire_must_resubscribe` and
+        // `test_cancel_then_late_expiry_keeps_subscription` — and what *this*
+        // test uniquely proves, on every round regardless of who wins, is the
+        // per-round delta above.
+        eprintln!("exactly-one-winner over {ROUNDS} rounds: {fires} expiries, {claims} cancels");
+    }
+
+    /// Threads in this *process*.
+    ///
+    /// `/proc/self/status` is Linux-only, so everywhere else this reports 0 and
+    /// the assertion that reads it is compiled out with it. Linux is what CI
+    /// runs, which is the platform the claim needs to hold on.
+    fn process_thread_count() -> usize {
+        #[cfg(target_os = "linux")]
+        {
+            std::fs::read_to_string("/proc/self/status")
+                .ok()
+                .and_then(|status| {
+                    status
+                        .lines()
+                        .find_map(|line| line.strip_prefix("Threads:"))
+                        .and_then(|count| count.trim().parse().ok())
+                })
+                .unwrap_or(0)
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            0
+        }
     }
 
     /// The TUI hot path: drop and re-acquire every handle each frame.
     ///
-    /// This is the workload the grace period exists for. It must not leak
-    /// pending entries, and (the point of this change) each release costs a
-    /// channel send rather than an OS thread.
+    /// This is the workload the grace period exists for, and the reason the
+    /// per-release thread had to go. The old version of this test asserted only
+    /// that pending entries do not accumulate — which the per-release-thread
+    /// implementation satisfied perfectly well, so it could not fail for the
+    /// reason the change was made. It now measures the thing that changed.
+    ///
+    /// Phase 1 keeps the leak assertions. Phase 2 measures cost: 1,000 releases
+    /// rather than the 200 frames of phase 1, because 200 releases is 9–16 ms
+    /// of work either way — close enough to noise to prove nothing — while
+    /// 1,000 is ~1 ms here against 45–82 ms with a thread per release.
+    ///
+    /// The **median** release, not the mean: a stray scheduler hiccup in a
+    /// 1,000-sample run moves a mean and cannot move a median.
+    ///
+    /// The bound is 8 µs, chosen against measurements rather than guessed.
+    /// Median release, debug build, Apple M-series, three consecutive runs of
+    /// each shape:
+    ///
+    /// | | this test alone, warm | whole crate suite, cold binary |
+    /// |---|---|---|
+    /// | shared timer (here) | 0.92 – 1.00 µs | 2.71 – 3.17 µs |
+    /// | thread per release (`main`) | 14.6 – 17.7 µs | 27.0 – 28.8 µs |
+    ///
+    /// The cold-and-parallel row is the shape CI actually runs. 8 µs sits ~2.5x
+    /// above the worst fast-path number and ~1.8x below the best slow-path one,
+    /// and `main` exceeds it in every shape measured.
+    ///
+    /// An earlier draft used 20 µs, on the assumption that a thread spawn costs
+    /// 45–82 µs. It does not on this hardware — `main` passed at 20 µs in the
+    /// warm shape — and a bound `main` passes is not a test of anything. If
+    /// this ever flakes, retune it against a fresh pair of measurements from
+    /// both sides; do not simply widen it until it stops failing.
     #[test]
-    fn test_immediate_mode_churn_does_not_leak_pending_entries() {
+    fn test_immediate_mode_churn_costs_no_threads() {
         let config = BrokerConfig::default().with_callback_ports(5300, 5400);
         let manager = Arc::new(SonosEventManager::with_config(config).unwrap());
         let registry = MockRegistry::new();
@@ -1712,8 +1822,7 @@ mod tests {
         let speaker_id = SpeakerId::new("RINCON_123");
         let keys = ["volume", "mute", "bass", "treble", "loudness"];
 
-        // 200 frames x 5 handles. Under the old implementation this was 1,000
-        // OS threads, each sleeping 50ms.
+        // Phase 1 — 200 frames x 5 handles: nothing accumulates.
         for _frame in 0..200 {
             let guards: Vec<_> = keys
                 .iter()
@@ -1736,6 +1845,52 @@ mod tests {
         // than the single entry it is keyed by.
         assert!(manager.pending_unsubscribes.lock().len() <= 1);
         assert_eq!(manager.service_ref_count(ip, Service::RenderingControl), 0);
+
+        // Phase 2 — 1,000 single-key cycles, timing only the release.
+        const CYCLES: usize = 1_000;
+        let mut releases = Vec::with_capacity(CYCLES);
+        let mut peak_threads = process_thread_count();
+
+        for cycle in 0..CYCLES {
+            let guard = manager
+                .acquire_watch(&speaker_id, "volume", ip, Service::RenderingControl)
+                .unwrap();
+
+            let started = std::time::Instant::now();
+            drop(guard);
+            releases.push(started.elapsed());
+
+            // Sampled rather than read once at the end: a thread per release
+            // lives for 50 ms, so the evidence is in the peak, not the final
+            // value.
+            if cycle % 25 == 0 {
+                peak_threads = peak_threads.max(process_thread_count());
+            }
+        }
+
+        releases.sort_unstable();
+        let median = releases[releases.len() / 2];
+        eprintln!(
+            "release cost over {CYCLES} cycles: median {median:?}, \
+             min {:?}, max {:?}; peak process threads {peak_threads}",
+            releases[0],
+            releases[releases.len() - 1],
+        );
+
+        assert!(
+            median < Duration::from_micros(8),
+            "a release must cost a mutex, a heap push and a notify — not an OS \
+             thread (median {median:?} over {CYCLES} cycles)"
+        );
+
+        // A resource assertion, not a timing one: with a thread per release,
+        // 1,000 releases at 50 ms apiece overlap into hundreds of live threads.
+        #[cfg(target_os = "linux")]
+        assert!(
+            peak_threads <= 16,
+            "releases must not spawn threads (peak {peak_threads} threads in \
+             this process)"
+        );
     }
 
     #[test]
