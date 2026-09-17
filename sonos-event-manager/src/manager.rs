@@ -1334,6 +1334,13 @@ mod tests {
     /// This test used to stop at "does not panic", which the C3 bug satisfied
     /// trivially by doing nothing at all. The observable it was missing is the
     /// watched-set cleanup.
+    ///
+    /// The *intermediate* assertion is what makes it able to fail. Since
+    /// `release_watch` gained its inline fallback, the final `unregisters() ==
+    /// 1` is reached whether `shutdown` drains the timer or stops it: stopping
+    /// makes `schedule` refuse and the teardown resolves inside the drop. The
+    /// only surviving difference is timing, so the grace period has to be
+    /// asserted while it is still pending.
     #[test]
     fn test_guard_drop_with_disconnected_worker() {
         let config = BrokerConfig::default().with_callback_ports(4800, 4900);
@@ -1353,6 +1360,24 @@ mod tests {
 
         // Dropping guard should not panic even with disconnected worker
         drop(guard);
+
+        // A real grace period, not an immediate teardown: the release must have
+        // gone onto the still-running timer. Under a `shutdown` that stopped
+        // the timer instead of draining it, `schedule` refuses here and the
+        // teardown has already happened by this line.
+        assert!(
+            manager
+                .pending_unsubscribes
+                .lock()
+                .contains_key(&(ip, Service::RenderingControl)),
+            "a watch released after shutdown must get a grace period, not an \
+             immediate teardown"
+        );
+        assert_eq!(
+            registry.unregisters(),
+            0,
+            "nothing may be torn down while the grace period is still pending"
+        );
 
         // And the teardown must still happen: the failed `Unsubscribe` send is
         // ignored, but the watched set is not the worker's to clean up.
@@ -1407,6 +1432,12 @@ mod tests {
     /// after a `shutdown()` found `schedule` refusing work: the pending entry
     /// was dropped and the watched set kept its stale entries forever. Only
     /// dropping the manager may stop the timer.
+    ///
+    /// The *intermediate* assertion is what makes it able to fail. Once
+    /// `release_watch` gained its inline fallback, a `shutdown` that stopped
+    /// the timer also reached `unregisters() == 1` — just synchronously, inside
+    /// the drop, with no grace period. Drain versus stop is only observable as
+    /// timing, so the pending grace period is asserted before it elapses.
     #[test]
     fn test_release_after_shutdown_still_unregisters() {
         let config = BrokerConfig::default().with_callback_ports(5500, 5600);
@@ -1434,6 +1465,23 @@ mod tests {
 
         drop(held);
         drop(reacquired);
+
+        // The grace period must be *pending* here, not already resolved. This
+        // is the assertion that separates `drain` from `stop`: a stopped timer
+        // refuses `schedule`, so `release_watch` fires inline and both of these
+        // are already past by the time this line runs.
+        assert!(
+            manager
+                .pending_unsubscribes
+                .lock()
+                .contains_key(&(ip, Service::RenderingControl)),
+            "shutdown must leave the timer able to grant a grace period"
+        );
+        assert_eq!(
+            registry.unregisters(),
+            0,
+            "nothing may be torn down while the grace period is still pending"
+        );
 
         std::thread::sleep(Duration::from_millis(200));
 
