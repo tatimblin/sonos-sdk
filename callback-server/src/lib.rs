@@ -146,8 +146,8 @@ pub mod router;
 mod server;
 
 pub use firewall_detection::{
-    CoordinatorStats, DetectionReason, DetectionResult, DeviceFirewallState,
-    FirewallDetectionConfig, FirewallDetectionCoordinator, FirewallStatus,
+    DetectionReason, DetectionResult, DeviceFirewallState, FirewallDetectionConfig,
+    FirewallDetectionCoordinator, FirewallStatus,
 };
 pub use router::{EventRouter, NotificationPayload};
 pub use server::CallbackServer;

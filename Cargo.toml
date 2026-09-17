@@ -1,7 +1,6 @@
 [workspace]
 members = [
     "callback-server",
-    # "integration-example",  # Temporarily disabled while refactoring UPnP client
     "sonos-discovery",
     "sonos-event-manager",
     "sonos-state",
@@ -9,7 +8,6 @@ members = [
     "soap-client",
     "sonos-api",
     "sonos-sdk",
-    "state-store",
 ]
 resolver = "2"
 

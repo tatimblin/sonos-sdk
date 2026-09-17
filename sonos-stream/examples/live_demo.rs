@@ -1,7 +1,7 @@
 //! Live demo — discover speakers and stream all service events in real time.
 //!
 //! Run with:
-//!   cargo run -p sonos-stream --example live_demo
+//!   cargo run -p sonos-sdk-stream --example live_demo
 //!
 //! Then change volume, play/pause, group/ungroup speakers and watch the output.
 
@@ -138,11 +138,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .unwrap_or("-".into());
                         let uuid = s.local_group_uuid.as_deref().unwrap_or("-");
                         println!("GroupManagement  coordinator_local={local}  group={uuid}");
-                    }
-                    EventData::DeviceProperties(s) => {
-                        let name = s.zone_name.as_deref().unwrap_or("-");
-                        let model = s.model_name.as_deref().unwrap_or("-");
-                        println!("DeviceProperties  zone={name}  model={model}");
                     }
                 }
             }

@@ -125,7 +125,6 @@ async fn test_firewall_scenario(
     // Check final statistics
     let stats = broker.stats().await;
     println!("\n📊 Final Statistics:");
-    println!("   Firewall Status: {:?}", stats.firewall_status);
     println!("   Background Tasks: {}", stats.background_tasks_count);
     println!(
         "   Registry: {} active registrations",
@@ -285,9 +284,6 @@ async fn monitor_events(
                                     + g.members.iter().map(|m| m.satellites.len()).sum::<usize>())
                                 .sum::<usize>()
                         );
-                    }
-                    EventData::DeviceProperties(_) => {
-                        println!("       ⚙️ Device properties event received");
                     }
                     EventData::GroupManagement(gm_event) => {
                         println!(

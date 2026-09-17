@@ -168,12 +168,17 @@ jobs:
   # ---------------------------------------------------------------------------
   # Feature-combination check.
   #
-  # The only non-test feature in the workspace is sonos-stream's
-  # `firewall-detection`, which is default-on and gates no library code at all
-  # (zero `#[cfg(feature = ...)]` in sonos-stream/src) — it only gates five
-  # examples via `required-features`. This job pins that down: the libraries must
-  # build without it, and sonos-stream's own `--all-targets` must still build
-  # with it so the examples stay compiled.
+  # The workspace declares exactly one feature, `sonos-sdk/test-support`, and it
+  # is not default-on. So what this job actually guards is the *dependency*
+  # default-feature assumption: nothing in the workspace may rely on a default
+  # feature of a dependency without naming it.
+  #
+  # It previously carried a third step re-checking `-p sonos-sdk-stream
+  # --all-targets` with defaults on, because sonos-stream's `firewall-detection`
+  # feature gated five examples via `required-features` and step 2 would
+  # therefore skip them. That feature gated no library code (zero
+  # `#[cfg(feature = ...)]` anywhere) and has been removed, so the examples are
+  # now unconditional and step 2 already compiles them.
   #
   # `--all-targets --no-default-features` needs `sonos-sdk/test-support`
   # regardless, since property_tests.rs depends on it.
@@ -191,8 +196,6 @@ jobs:
         run: cargo check --workspace --no-default-features --locked
       - name: all targets build with no default features
         run: cargo check --workspace --all-targets --no-default-features --features sonos-sdk/test-support --locked
-      - name: sonos-stream examples still build with firewall-detection
-        run: cargo check -p sonos-sdk-stream --all-targets --locked
 
   # ---------------------------------------------------------------------------
   # Early warning for lints introduced by a newer rustc than we pin. Advisory

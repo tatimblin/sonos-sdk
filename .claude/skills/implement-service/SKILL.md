@@ -38,7 +38,7 @@ Document each operation found with:
 Run speaker discovery:
 
 ```bash
-cargo run -p sonos-discovery --example discover_json
+cargo run -p sonos-sdk-discovery --example discover_json
 ```
 
 Present discovered speakers to user. Get user selection for which speaker to test against.

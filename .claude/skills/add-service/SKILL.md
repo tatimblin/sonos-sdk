@@ -133,7 +133,7 @@ cargo test --workspace --features sonos-sdk/test-support --locked
 python .claude/skills/add-service/scripts/integration_test.py NewService <speaker_ip>
 
 # Run SDK example
-cargo run -p sonos-sdk --example basic_usage
+cargo run -p sonos-sdk --example basic_usage_sdk
 ```
 
 ## Layer Responsibilities Reference

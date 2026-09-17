@@ -34,11 +34,6 @@ name = "sonos-sdk-state"
 changelog_update = false
 git_release_enable = false
 
-[[package]]
-name = "sonos-sdk-state-store"
-changelog_update = false
-git_release_enable = false
-
 # Public crates: full release pipeline
 [[package]]
 name = "sonos-api"
@@ -57,5 +52,4 @@ changelog_include = [
   "sonos-sdk-event-manager",
   "sonos-sdk-callback-server",
   "sonos-sdk-soap-client",
-  "sonos-sdk-state-store",
 ]

@@ -199,7 +199,6 @@ pub fn decode_event(event: &EnrichedEvent, speaker_id: SpeakerId) -> DecodedChan
         EventData::RenderingControl(rc) => decode_rendering_control(rc),
         EventData::AVTransport(avt) => decode_av_transport(avt),
         EventData::ZoneGroupTopology(zgt) => decode_topology(zgt),
-        EventData::DeviceProperties(_) => vec![],
         // GroupManagement is action-only; group changes surface via ZoneGroupTopology events.
         // No user-facing properties to decode.
         EventData::GroupManagement(_) => vec![],

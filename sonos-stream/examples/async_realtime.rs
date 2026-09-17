@@ -84,9 +84,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     EventData::ZoneGroupTopology(topology) => {
                         handle_topology_change_async(event.speaker_ip, topology).await;
                     }
-                    EventData::DeviceProperties(device_event) => {
-                        handle_device_properties_async(event.speaker_ip, device_event).await;
-                    }
                     EventData::GroupManagement(gm_event) => {
                         handle_group_management_async(event.speaker_ip, gm_event).await;
                     }
@@ -286,38 +283,6 @@ async fn handle_topology_change_async(
     simulate_topology_update(device_ip, &topology).await;
 }
 
-/// Handle device properties events asynchronously
-async fn handle_device_properties_async(
-    device_ip: IpAddr,
-    device_event: sonos_stream::events::types::DevicePropertiesEvent,
-) {
-    println!("⚙️  Processing device properties event asynchronously...");
-    println!("   Device: {device_ip}");
-
-    if let Some(ref zone_name) = device_event.zone_name {
-        println!("   📍 Zone name: {zone_name}");
-        // Example: Update room database
-        simulate_external_notification("zone_renamed", device_ip).await;
-    }
-
-    if let Some(ref model) = device_event.model_name {
-        println!("   📱 Model: {model}");
-    }
-
-    if let Some(ref version) = device_event.software_version {
-        println!("   💾 Software version: {version}");
-        // Example: Track firmware updates
-        simulate_external_notification("firmware_updated", device_ip).await;
-    }
-
-    if let Some(ref config) = device_event.configuration {
-        println!("   ⚙️  Configuration: {config}");
-    }
-
-    // Example: Update device registry
-    simulate_device_update(device_ip, &device_event).await;
-}
-
 /// Handle group management events asynchronously
 async fn handle_group_management_async(
     device_ip: IpAddr,
@@ -419,26 +384,6 @@ async fn simulate_topology_update(
         device_ip,
         topology.zone_groups.len()
     );
-}
-
-/// Simulate device properties database update
-async fn simulate_device_update(
-    device_ip: IpAddr,
-    device_event: &sonos_stream::events::types::DevicePropertiesEvent,
-) {
-    // Simulate async database update
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    let properties_count = [
-        &device_event.zone_name,
-        &device_event.model_name,
-        &device_event.software_version,
-        &device_event.configuration,
-    ]
-    .iter()
-    .filter(|prop| prop.is_some())
-    .count();
-
-    println!("   💾 Updated device database: {device_ip} with {properties_count} properties");
 }
 
 /// Format event source for display

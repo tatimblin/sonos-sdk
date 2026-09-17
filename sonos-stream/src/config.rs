@@ -20,15 +20,6 @@ pub struct BrokerConfig {
     /// Default: 30 seconds
     pub event_timeout: Duration,
 
-    /// Delay after proactive firewall detection before activating polling.
-    /// Default: 5 seconds
-    ///
-    /// **Currently has no effect.** Its only reader was
-    /// `EventDetector::should_stop_polling`, a time-based heuristic replaced by an
-    /// explicit polling-state machine (see `docs/specs/sonos-stream.md` §3.2). Retained
-    /// for API compatibility; scheduled for removal.
-    pub polling_activation_delay: Duration,
-
     /// Base interval for polling operations
     /// Default: 5 seconds
     pub base_polling_interval: Duration,
@@ -36,10 +27,6 @@ pub struct BrokerConfig {
     /// Maximum interval for adaptive polling
     /// Default: 30 seconds
     pub max_polling_interval: Duration,
-
-    /// Timeout for UPnP subscriptions
-    /// Default: 1800 seconds (30 minutes)
-    pub subscription_timeout: Duration,
 
     /// Buffer size for event channels
     /// Default: 1000
@@ -88,10 +75,8 @@ impl Default for BrokerConfig {
         Self {
             callback_port_range: (3400, 3500),
             event_timeout: Duration::from_secs(30),
-            polling_activation_delay: Duration::from_secs(5),
             base_polling_interval: Duration::from_secs(5),
             max_polling_interval: Duration::from_secs(30),
-            subscription_timeout: Duration::from_secs(1800), // 30 minutes
             event_buffer_size: 1000,
             max_concurrent_polls: 50,
             enable_proactive_firewall_detection: true,
@@ -117,7 +102,6 @@ impl BrokerConfig {
         Self {
             base_polling_interval: Duration::from_secs(2),
             max_polling_interval: Duration::from_secs(10),
-            polling_activation_delay: Duration::from_secs(1),
             event_timeout: Duration::from_secs(15),
             firewall_event_wait_timeout: Duration::from_secs(5), // Faster detection
             ..Default::default()

@@ -110,16 +110,16 @@ While not intended for end-user consumption, the crate includes examples for dev
 
 ```bash
 # Basic event streaming example
-cargo run -p sonos-stream --example basic_usage
+cargo run -p sonos-sdk-stream --example basic_usage
 
 # Async real-time processing
-cargo run -p sonos-stream --example async_realtime
+cargo run -p sonos-sdk-stream --example async_realtime
 
 # Firewall handling demonstration
-cargo run -p sonos-stream --example firewall_handling
+cargo run -p sonos-sdk-stream --example firewall_handling
 
 # Filtering and batch processing
-cargo run -p sonos-stream --example filtering_and_batch
+cargo run -p sonos-sdk-stream --example filtering_and_batch
 ```
 
 ## Integration with sonos-state

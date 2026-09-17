@@ -903,16 +903,8 @@ impl EventBroker {
             polling_stats,
             event_processor_stats,
             event_detector_stats,
-            firewall_status: FirewallStatus::Unknown, // Status is now per-device
             background_tasks_count: self.background_tasks.len(),
         }
-    }
-
-    /// Get current firewall status (returns Unknown since status is now per-device)
-    pub async fn firewall_status(&self) -> FirewallStatus {
-        // Since firewall status is now per-device, this method returns Unknown
-        // Use get_device_firewall_status() for specific device status
-        FirewallStatus::Unknown
     }
 
     /// Get firewall status for a specific device
@@ -921,22 +913,6 @@ impl EventBroker {
             coordinator.get_device_status(device_ip).await
         } else {
             FirewallStatus::Unknown
-        }
-    }
-
-    /// Manually trigger firewall detection for a specific device
-    pub async fn trigger_firewall_detection(
-        &self,
-        device_ip: IpAddr,
-    ) -> BrokerResult<FirewallStatus> {
-        if let Some(coordinator) = &self.firewall_coordinator {
-            // Trigger detection by calling on_first_subscription
-            // This will start monitoring for the device
-            Ok(coordinator.on_first_subscription(device_ip).await)
-        } else {
-            Err(BrokerError::Configuration(
-                "Firewall detection is disabled".to_string(),
-            ))
         }
     }
 
@@ -979,14 +955,12 @@ pub struct BrokerStats {
     pub polling_stats: crate::polling::scheduler::PollingSchedulerStats,
     pub event_processor_stats: crate::events::processor::EventProcessorStats,
     pub event_detector_stats: crate::subscription::event_detector::EventDetectorStats,
-    pub firewall_status: FirewallStatus,
     pub background_tasks_count: usize,
 }
 
 impl std::fmt::Display for BrokerStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "=== EventBroker Stats ===")?;
-        writeln!(f, "Firewall Status: {:?}", self.firewall_status)?;
         writeln!(f, "Background Tasks: {}", self.background_tasks_count)?;
         writeln!(f)?;
         write!(f, "{}", self.registry_stats)?;

@@ -29,7 +29,6 @@ This document provides an overview of each Rust crate in the Sonos SDK workspace
 | Crate | Purpose | Specification |
 |-------|---------|---------------|
 | **sonos-state** | Reactive state management layer | [View Spec](specs/sonos-state.md) |
-| **state-store** | Generic state management primitives | [View Spec](specs/state-store.md) |
 | **sonos-stream** | Low-level event streaming with transparent fallback | [View Spec](specs/sonos-stream.md) |
 | **sonos-event-manager** | Reference-counted subscription management | [View Spec](specs/sonos-event-manager.md) |
 | **callback-server** | Generic HTTP server for UPnP event callbacks | [View Spec](specs/callback-server.md) |
@@ -68,15 +67,8 @@ This document provides an overview of each Rust crate in the Sonos SDK workspace
 │ • SSDP multicast │  │ • SonosOperation │  │ • StateManager           │
 │ • Device enum    │  │ • Type-safe APIs │  │ • PropertyWatcher        │
 │ • Deduplication  │  │ • Service groups │  │ • Event Decoders         │
-└──────────────────┘  └────────┬─────────┘  │                          │
-                               │            │  ┌────────────────────┐  │
-                               │            │  │   state-store      │  │
-                               │            │  │  (Generic Storage) │  │
-                               │            │  │                    │  │
-                               │            │  │ • PropertyBag      │  │
-                               │            │  │ • StateStore<Id>   │  │
-                               │            │  │ • ChangeIterator   │  │
-                               │            │  └────────────────────┘  │
+└──────────────────┘  └────────┬─────────┘  │ • PropertyBag            │
+                               │            │ • ChangeIterator         │
                                │            └────────────┬─────────────┘
                                │                         │
                                │         Internal APIs   │
@@ -386,7 +378,6 @@ where the complexity lives, not as a precise figure — regenerate with
 | sonos-discovery | `sonos-sdk-discovery` | ~1,200 | Public | SSDP device discovery |
 | sonos-stream | `sonos-sdk-stream` | ~6,800 | Internal | Event streaming with fallback |
 | sonos-state | `sonos-sdk-state` | ~7,500 | Internal | Reactive state management |
-| state-store | `sonos-sdk-state-store` | ~1,100 | Internal | Generic property storage |
 | callback-server | `sonos-sdk-callback-server` | ~2,200 | Internal | HTTP event server (axum) |
 | sonos-event-manager | `sonos-sdk-event-manager` | ~1,400 | Internal | Subscription reference counting |
 | soap-client | `sonos-sdk-soap-client` | ~1,000 | Internal | SOAP transport (singleton) |

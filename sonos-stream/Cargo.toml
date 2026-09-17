@@ -21,7 +21,9 @@ tokio = { workspace = true }
 futures = "0.3"
 
 # Serialization and data handling
-serde = { workspace = true }
+# `serde_json` only: the polling strategies round-trip sonos-api State types
+# through JSON. Nothing in this crate derives, so `serde` itself is not a
+# direct dependency.
 serde_json = { workspace = true }
 
 # Error handling and utilities
@@ -35,35 +37,6 @@ tracing = { workspace = true }
 sonos-discovery = { package = "sonos-sdk-discovery", path = "../sonos-discovery", version = "0.8.0" }
 # Used by the `live_demo` example, which CI compiles via `--all-targets`.
 tracing-subscriber = { workspace = true }
-
-[features]
-default = ["firewall-detection"]
-firewall-detection = []  # Enable proactive firewall detection
-
-[[example]]
-name = "basic_usage"
-path = "examples/basic_usage.rs"
-required-features = ["firewall-detection"]
-
-[[example]]
-name = "async_realtime"
-path = "examples/async_realtime.rs"
-required-features = ["firewall-detection"]
-
-[[example]]
-name = "firewall_handling"
-path = "examples/firewall_handling.rs"
-required-features = ["firewall-detection"]
-
-[[example]]
-name = "filtering_and_batch"
-path = "examples/filtering_and_batch.rs"
-required-features = ["firewall-detection"]
-
-[[example]]
-name = "live_demo"
-path = "examples/live_demo.rs"
-required-features = ["firewall-detection"]
 
 [lints]
 workspace = true

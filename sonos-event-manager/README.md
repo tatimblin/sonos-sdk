@@ -184,7 +184,7 @@ This internal crate wraps:
 The crate includes a smart dashboard example that demonstrates the integrated `sonos-state` API:
 
 ```bash
-cargo run -p sonos-event-manager --example smart_dashboard
+cargo run -p sonos-sdk --example smart_dashboard
 ```
 
 Note: This example actually uses `sonos-state`, showing the intended usage pattern.

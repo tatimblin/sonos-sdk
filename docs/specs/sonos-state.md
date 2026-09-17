@@ -343,7 +343,9 @@ it.
 #### `SonosProperty` (`src/property.rs:52`)
 
 ```rust
-pub use state_store::Property;      // src/property.rs:15 — provides const KEY
+pub trait Property: Clone + Send + Sync + PartialEq + 'static {
+    const KEY: &'static str;    // src/property.rs:25
+}
 
 pub trait SonosProperty: Property {
     const SCOPE: Scope;             // Speaker | Group | System  (src/property.rs:23)
@@ -351,7 +353,7 @@ pub trait SonosProperty: Property {
 }
 ```
 
-**Purpose**: `KEY` comes from the generic `state-store` crate; `SCOPE` and `SERVICE` are the
+**Purpose**: `KEY` is the domain-agnostic identifier; `SCOPE` and `SERVICE` are the
 Sonos-specific additions. `SERVICE` is what lets `watch()` know which UPnP service to
 subscribe to from the property type alone, with no lookup table to keep in sync.
 
@@ -419,9 +421,10 @@ handle_event                       src/event_worker.rs:117
    coordinator.
 5. **Decode** (`src/decoder.rs:182`): dispatches on `EventData` to
    `decode_rendering_control` (:201), `decode_av_transport` (:241), or
-   `decode_group_rendering_control` (:311). `DeviceProperties` and `GroupManagement` decode to
-   an empty vec (`:187`, `:190`) — the former has no API layer yet, the latter is action-only
-   and surfaces its effects through topology events instead.
+   `decode_group_rendering_control` (:311). `GroupManagement` decodes to an empty vec — it is
+   action-only and surfaces its effects through topology events instead. `DeviceProperties` no
+   longer appears at all: `sonos-stream` never constructed the variant, so it was removed from
+   `EventData` (see `docs/specs/sonos-stream.md` changelog, 2026-09-17).
 6. **Apply** (`src/decoder.rs`): `PropertyChange::apply(.., stamp)` routes by scope —
    speaker-scoped variants to `store.set()`, group-scoped variants resolve
    `speaker_to_group` first and write to `store.set_group()`. A group-scoped change for a
@@ -1121,7 +1124,6 @@ returns `None`: this value is a cache key for `ip_to_speaker`, not something to 
 | `sonos-stream` | `EnrichedEvent`, `EventData`, per-service state structs | Already normalizes UPnP events and polling into one shape |
 | `sonos-event-manager` | `SonosEventManager`, `WatchRegistry` | Owns subscription ref counting and grace periods |
 | `sonos-discovery` | `Device` | Input type for `add_devices()` |
-| `state-store` | Base `Property` trait (`src/property.rs:15`) | Domain-agnostic `KEY`; `SonosProperty` adds the Sonos parts |
 | `parking_lot` | `RwLock` | Non-poisoning: a panicking consumer must not poison shared state |
 | `serde` | Derives on property types | Lets consumers persist values |
 | `tracing` | Logging | Workspace-wide convention |
@@ -1447,7 +1449,7 @@ The workspace versions together; breaking changes ride the `sonos-sdk` version.
 | Limitation | Impact | Workaround | Planned Fix |
 |------------|--------|------------|-------------|
 | Properties start as `None` | First `get()` before any event returns nothing | Use the SDK's `fetch()` or `watch_or_fetch()` | — |
-| `DeviceProperties` and `GroupManagement` decode to empty | No properties from those services | — | Tracked in `docs/STATUS.md` |
+| `GroupManagement` decodes to empty | No properties from that service | — | Tracked in `docs/STATUS.md` |
 | Unbounded notification queues, now one per subscriber | A never-draining consumer grows memory, and each extra `iter()` adds its own queue plus a `ChangeEvent` clone (~168 bytes, plus heap strings for `CurrentTrack`) per event. Nothing is dropped, which is the intended tradeoff | Drain, or use `try_iter()` per frame; drop iterators you no longer read | Bounded queues with a *detectable* drop policy — a silent drop would reintroduce the bug 4.1b fixed |
 | A `ChangeIterator` receives only events emitted after it was created | Taking an iterator after a write misses that write; there is no replay | Subscribe before the writes you want to observe; read current state from `get_property()` | None planned — see 4.1b trade-offs |
 | `cleanup_timeout` unused | Builder option has no effect | Ignore it | Remove or wire through |
@@ -1519,7 +1521,6 @@ The workspace versions together; breaking changes ride the `sonos-sdk` version.
 - [docs/STATUS.md](../STATUS.md) — service completion matrix
 - [docs/specs/sonos-event-manager.md](sonos-event-manager.md) — subscription lifecycle
 - [docs/specs/sonos-stream.md](sonos-stream.md) — event delivery and polling fallback
-- [docs/specs/state-store.md](state-store.md) — the generic `Property` trait
 
 ### C. Changelog
 

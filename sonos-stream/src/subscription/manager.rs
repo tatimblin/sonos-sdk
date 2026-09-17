@@ -9,7 +9,6 @@ use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::{Mutex, RwLock};
 
-use callback_server::firewall_detection::FirewallStatus;
 use sonos_api::{ManagedSubscription, Service, SonosClient};
 
 use crate::error::{SubscriptionError, SubscriptionResult};
@@ -148,9 +147,6 @@ pub struct SubscriptionManager {
 
     /// Active subscriptions indexed by registration ID
     active_subscriptions: Arc<RwLock<HashMap<RegistrationId, Arc<ManagedSubscriptionWrapper>>>>,
-
-    /// Current firewall status (shared with other components)
-    firewall_status: Arc<RwLock<FirewallStatus>>,
 }
 
 impl SubscriptionManager {
@@ -160,20 +156,7 @@ impl SubscriptionManager {
             sonos_client: SonosClient::new(),
             callback_url,
             active_subscriptions: Arc::new(RwLock::new(HashMap::new())),
-            firewall_status: Arc::new(RwLock::new(FirewallStatus::Unknown)),
         }
-    }
-
-    /// Set the firewall status (called by firewall detection system)
-    pub async fn set_firewall_status(&self, status: FirewallStatus) {
-        let mut current_status = self.firewall_status.write().await;
-        *current_status = status;
-    }
-
-    /// Get the current firewall status
-    pub async fn firewall_status(&self) -> FirewallStatus {
-        let status = self.firewall_status.read().await;
-        *status
     }
 
     /// Create a subscription for a speaker/service pair
@@ -292,7 +275,6 @@ impl SubscriptionManager {
     pub async fn stats(&self) -> SubscriptionStats {
         let subscriptions = self.active_subscriptions.read().await;
         let total_count = subscriptions.len();
-        let firewall_status = *self.firewall_status.read().await;
 
         let mut service_counts = HashMap::new();
         let mut polling_count = 0;
@@ -315,7 +297,6 @@ impl SubscriptionManager {
             service_breakdown: service_counts,
             polling_active_count: polling_count,
             total_renewals: renewal_count,
-            firewall_status,
         }
     }
 
@@ -345,14 +326,12 @@ pub struct SubscriptionStats {
     pub service_breakdown: HashMap<Service, usize>,
     pub polling_active_count: usize,
     pub total_renewals: u32,
-    pub firewall_status: FirewallStatus,
 }
 
 impl std::fmt::Display for SubscriptionStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "Subscription Manager Stats:")?;
         writeln!(f, "  Total subscriptions: {}", self.total_subscriptions)?;
-        writeln!(f, "  Firewall status: {:?}", self.firewall_status)?;
         writeln!(f, "  Polling active: {}", self.polling_active_count)?;
         writeln!(f, "  Total renewals: {}", self.total_renewals)?;
         writeln!(f, "  Service breakdown:")?;
@@ -384,14 +363,7 @@ mod tests {
         let manager = SubscriptionManager::new("http://192.168.1.50:3400/callback".to_string());
 
         // Test initial state
-        assert_eq!(manager.firewall_status().await, FirewallStatus::Unknown);
         assert_eq!(manager.list_subscriptions().await.len(), 0);
-
-        // Test firewall status updates
-        manager
-            .set_firewall_status(FirewallStatus::Accessible)
-            .await;
-        assert_eq!(manager.firewall_status().await, FirewallStatus::Accessible);
     }
 
     #[tokio::test]
@@ -401,6 +373,5 @@ mod tests {
         let stats = manager.stats().await;
         assert_eq!(stats.total_subscriptions, 0);
         assert_eq!(stats.polling_active_count, 0);
-        assert_eq!(stats.firewall_status, FirewallStatus::Unknown);
     }
 }

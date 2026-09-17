@@ -1,6 +1,6 @@
 //! Simple speaker discovery that outputs JSON for scripting
 //!
-//! Usage: cargo run -p sonos-discovery --example discover_json
+//! Usage: cargo run -p sonos-sdk-discovery --example discover_json
 
 use serde::Serialize;
 use sonos_discovery::get_with_timeout;

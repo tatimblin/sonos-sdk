@@ -61,13 +61,6 @@ impl EventIterator {
             return Some(event);
         }
 
-        // Check for automatic resync needs
-        if let Some(resync_event) = self.check_and_emit_resync().await {
-            self.stats.resync_events_emitted += 1;
-            self.stats.events_delivered += 1;
-            return Some(resync_event);
-        }
-
         // Get next event from receiver
         if let Some(receiver) = &mut self.receiver {
             match receiver.recv().await {
@@ -139,14 +132,6 @@ impl EventIterator {
     /// Use like: `for event in events.iter() { /* handle event */ }`
     pub fn iter(&mut self) -> SyncEventIterator<'_> {
         SyncEventIterator::new(self)
-    }
-
-    /// Check for automatic resync needs
-    async fn check_and_emit_resync(&self) -> Option<EnrichedEvent> {
-        // This is a placeholder implementation
-        // In a real implementation, this would coordinate with ResyncDetector
-        // to check if any registrations need resync events
-        None
     }
 
     /// Buffer multiple events for batch processing
@@ -352,9 +337,6 @@ pub struct EventIteratorStats {
     /// Events delivered to the consumer
     pub events_delivered: u64,
 
-    /// Resync events generated
-    pub resync_events_emitted: u64,
-
     /// Timeouts occurred
     pub timeouts: u64,
 }
@@ -364,7 +346,6 @@ impl EventIteratorStats {
         Self {
             events_received: 0,
             events_delivered: 0,
-            resync_events_emitted: 0,
             timeouts: 0,
         }
     }
@@ -384,7 +365,6 @@ impl std::fmt::Display for EventIteratorStats {
         writeln!(f, "Event Iterator Stats:")?;
         writeln!(f, "  Events received: {}", self.events_received)?;
         writeln!(f, "  Events delivered: {}", self.events_delivered)?;
-        writeln!(f, "  Resync events: {}", self.resync_events_emitted)?;
         writeln!(f, "  Timeouts: {}", self.timeouts)?;
         writeln!(f, "  Delivery rate: {:.1}%", self.delivery_rate() * 100.0)?;
         Ok(())
@@ -587,7 +567,6 @@ mod tests {
         let stats_with_data = EventIteratorStats {
             events_received: 10,
             events_delivered: 8,
-            resync_events_emitted: 1,
             timeouts: 2,
         };
         assert_eq!(stats_with_data.delivery_rate(), 0.8);

@@ -1,7 +1,7 @@
 //! Property trait and built-in properties for Sonos state management
 //!
 //! Properties are the fundamental unit of state in sonos-state. Each property:
-//! - Has a unique key for identification (from state-store::Property)
+//! - Has a unique key for identification (`Property::KEY`)
 //! - Belongs to a scope (Speaker, Group, or System)
 //! - Is associated with a UPnP service (for subscription hints)
 //! - Can be watched for changes
@@ -11,8 +11,24 @@ use sonos_api::Service;
 
 use crate::model::{GroupId, SpeakerInfo};
 
-// Re-export the base Property trait from state-store
-pub use state_store::Property;
+// ============================================================================
+// Base Property trait
+// ============================================================================
+
+/// Marker trait for values that can be stored and watched
+///
+/// Properties must be:
+/// - `Clone`: for copying values to watchers
+/// - `Send + Sync`: for thread-safe access
+/// - `PartialEq`: for change detection (only emit when the value actually changes)
+/// - `'static`: for type-erased storage keyed by `TypeId`
+pub trait Property: Clone + Send + Sync + PartialEq + 'static {
+    /// Unique key identifying this property type
+    ///
+    /// Used for debugging, logging, and filtering change events. Must be unique
+    /// across the properties registered in one store — e.g. `"volume"`, `"mute"`.
+    const KEY: &'static str;
+}
 
 // ============================================================================
 // Sonos-specific Extensions
@@ -31,7 +47,7 @@ pub enum Scope {
 
 /// Extension trait for Sonos-specific property metadata
 ///
-/// Extends the base `state_store::Property` trait with Sonos-specific
+/// Extends the base [`Property`] trait with Sonos-specific
 /// information about scope and UPnP service.
 ///
 /// # Example
