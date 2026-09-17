@@ -193,10 +193,26 @@ impl TeardownTimer {
 
 impl Drop for TeardownTimer {
     fn drop(&mut self) {
-        // Signal only; deliberately no join. The thread may be inside
-        // `PendingTeardown::fire`, which reaches into the watch registry, and
-        // blocking a `Drop` on that invites lock-order surprises during
-        // teardown. It owns nothing but `Arc`s and exits on its own.
+        // Signal only; deliberately no join.
+        //
+        // The guarantee is ownership, not timing. The thread holds an
+        // `Arc<Shared>` and a `WeakUnboundedSender<Command>` and nothing else:
+        // it borrows no manager state, so there is nothing it can outlive. The
+        // `Arc` keeps `Shared` alive for exactly as long as the thread needs
+        // it, and the weak sender simply fails to upgrade once the manager's
+        // command channel is gone. Stopping is therefore sufficient — the
+        // thread wakes, sees `stopped`, and exits on its own.
+        //
+        // Joining would block a `Drop` on a thread that may be inside
+        // `PendingTeardown::fire`, and therefore inside an implementor-supplied
+        // registry callback: a hang with no upper bound and no diagnosis.
+        //
+        // The cost is worth stating plainly rather than hiding: dropping the
+        // manager *does* block for one in-flight registry callback, because
+        // `SonosEventManager::drop` takes the pending-map mutex that `fire`
+        // holds across it. That is the visible price of the ordering guarantee
+        // documented on `fire`, and it is bounded by the `WatchRegistry`
+        // contract, not by this `Drop`.
         self.stop();
     }
 }

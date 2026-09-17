@@ -329,6 +329,32 @@ impl Drop for WatchGuard {
 ///     println!("Event: {:?}", event);
 /// }
 /// ```
+///
+/// # Lock ordering
+///
+/// Four locks are reachable from the watch lifecycle. Any path that needs more
+/// than one takes them in this order and never the reverse:
+///
+/// ```text
+/// service_refs  ->  pending_unsubscribes  ->  timer.queue
+///                   pending_unsubscribes  ->  WatchRegistry (implementor's locks)
+/// ```
+///
+/// - `acquire_watch` / `release_watch` release `service_refs` before touching
+///   `pending_unsubscribes`; the blocks are written so the guards are scoped,
+///   not so they merely happen to drop in time.
+/// - `release_watch` inserts under `pending_unsubscribes`, drops it explicitly,
+///   and only then calls `TeardownTimer::schedule`, which takes `timer.queue`.
+///   `shutdown` follows the same order: drain-and-claim, drop, then
+///   `TeardownTimer::drain`.
+/// - `PendingTeardown::fire` holds `pending_unsubscribes` across the registry
+///   callback *on purpose* — that is the ordering guarantee `acquire_watch`
+///   relies on, and it is why the [`WatchRegistry`] contract forbids
+///   re-entering this type. See [`PendingTeardown::fire`].
+///
+/// The timer thread only ever holds one of `timer.queue` and
+/// `pending_unsubscribes` at a time: `run` pops under the queue lock and fires
+/// outside it.
 pub struct SonosEventManager {
     /// Send commands to background worker (tokio unbounded — send() is sync)
     command_tx: tokio_mpsc::UnboundedSender<Command>,
@@ -565,9 +591,18 @@ impl SonosEventManager {
 
         if should_start_grace {
             let cancelled = Arc::new(AtomicBool::new(false));
-            self.pending_unsubscribes
-                .lock()
-                .insert((ip, service), Arc::clone(&cancelled));
+
+            // Named guard and an explicit `drop`, rather than a temporary that
+            // happens to be released at the end of its statement. The lock
+            // order is `pending_unsubscribes -> timer.queue` (see the note on
+            // `SonosEventManager`), and `schedule` below takes `timer.queue`.
+            // Relying on temporary-drop timing to keep those apart makes the
+            // ordering invisible to the next reader and one refactor away from
+            // being wrong; today only `clippy::significant_drop_in_scrutinee`
+            // would have caught it, and only in some shapes.
+            let mut pending = self.pending_unsubscribes.lock();
+            pending.insert((ip, service), Arc::clone(&cancelled));
+            drop(pending);
 
             let teardown = PendingTeardown {
                 ip,
@@ -920,6 +955,38 @@ mod tests {
         fn unregister_watches_for_service(&self, _ip: IpAddr, _service: Service) {
             std::thread::sleep(self.unregister_delay);
             self.events.lock().push("unregister");
+        }
+    }
+
+    /// A registry that parks inside `unregister` until the test joins it at the
+    /// barrier, then holds the pending-map mutex for `hold`.
+    struct BarrierRegistry {
+        entered: Arc<std::sync::Barrier>,
+        hold: Duration,
+        unregisters: AtomicUsize,
+    }
+
+    impl BarrierRegistry {
+        fn new(entered: Arc<std::sync::Barrier>, hold: Duration) -> Arc<Self> {
+            Arc::new(Self {
+                entered,
+                hold,
+                unregisters: AtomicUsize::new(0),
+            })
+        }
+
+        fn unregisters(&self) -> usize {
+            self.unregisters.load(Ordering::SeqCst)
+        }
+    }
+
+    impl WatchRegistry for BarrierRegistry {
+        fn register_watch(&self, _speaker_id: &SpeakerId, _key: &'static str, _service: Service) {}
+
+        fn unregister_watches_for_service(&self, _ip: IpAddr, _service: Service) {
+            self.entered.wait();
+            std::thread::sleep(self.hold);
+            self.unregisters.fetch_add(1, Ordering::SeqCst);
         }
     }
 
@@ -1450,6 +1517,54 @@ mod tests {
             "a cancelled grace period must never unregister the watched set"
         );
         assert_eq!(manager.service_ref_count(ip, service), 1);
+    }
+
+    /// Dropping the manager while a teardown is mid-flight must finish, not hang.
+    ///
+    /// The timer thread is not joined on drop, so this is the case that would
+    /// expose the mistake if it were: the thread is inside the registry
+    /// callback, holding the pending-map mutex that `SonosEventManager::drop`
+    /// needs. Drop therefore *blocks* for the length of that callback — the
+    /// visible cost of holding the mutex across it — and must then complete.
+    ///
+    /// The bound is deliberately generous. This test is looking for a deadlock,
+    /// not measuring a duration, so 1 s cannot be tripped by a slow machine.
+    #[test]
+    fn test_manager_drop_during_teardown_fire() {
+        let config = BrokerConfig::default().with_callback_ports(5800, 5900);
+        let manager = Arc::new(SonosEventManager::with_config(config).unwrap());
+
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let registry = BarrierRegistry::new(Arc::clone(&entered), Duration::from_millis(100));
+        manager.set_watch_registry(registry.clone());
+
+        let ip: IpAddr = "192.168.1.100".parse().unwrap();
+        let speaker_id = SpeakerId::new("RINCON_123");
+
+        drop(
+            manager
+                .acquire_watch(&speaker_id, "volume", ip, Service::RenderingControl)
+                .unwrap(),
+        );
+
+        // Rendezvous: returns once the timer thread is inside the callback with
+        // the pending-map mutex held.
+        entered.wait();
+
+        let start = std::time::Instant::now();
+        drop(manager);
+        let blocked_for = start.elapsed();
+
+        assert!(
+            blocked_for < Duration::from_secs(1),
+            "dropping the manager during a teardown must complete, not deadlock \
+             (blocked for {blocked_for:?})"
+        );
+        assert_eq!(
+            registry.unregisters(),
+            1,
+            "the in-flight teardown must run to completion exactly once"
+        );
     }
 
     /// A re-acquire racing an expiry must end up *registered*.
