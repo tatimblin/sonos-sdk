@@ -732,17 +732,38 @@ impl SonosEventManager {
         // Stop the timer first so nothing new fires while we drain by hand.
         self.teardown_timer.stop();
 
-        // Cancel all pending grace timers
-        let pending: Vec<_> = self.pending_unsubscribes.lock().drain().collect();
-        for ((ip, service), flag) in pending {
-            flag.store(true, Ordering::SeqCst);
-            // Send unsubscribe immediately (no grace period on shutdown)
+        // Drain *and* claim in one locked scope.
+        //
+        // `self.pending_unsubscribes.lock().drain()` released the mutex at the
+        // end of that statement, before any token was claimed. A teardown
+        // already blocked inside `PendingTeardown::fire` could then take the
+        // mutex, win its own swap and unsubscribe — and this loop would
+        // unsubscribe and unregister the same key a second time. Binding the
+        // guard makes drain-and-claim atomic against both `fire` and
+        // `acquire_watch`.
+        //
+        // `swap` rather than `store` because the return value *is* the claim:
+        // a key whose teardown already fired reports `true` and is skipped,
+        // which is what makes "exactly one winner" hold here too. That is also
+        // why there is no race test for this — the property is carried by the
+        // swap's return value, and a test that tried to hit the window would
+        // flake rather than prove anything.
+        let mut pending = self.pending_unsubscribes.lock();
+        let claimed: Vec<_> = pending
+            .drain()
+            .filter(|(_, flag)| !flag.swap(true, Ordering::SeqCst))
+            .collect();
+
+        for ((ip, service), _) in claimed {
+            // No grace period on shutdown. Unsubscribe first, then clear the
+            // watched set — the same order `fire` uses, and still inside the
+            // mutex so a racing `acquire_watch` enqueues behind us.
             let _ = self.command_tx.send(Command::Unsubscribe { ip, service });
-            // Clean up watched set
             if let Some(registry) = self.watch_registry.get() {
                 call_unregister(registry, ip, service);
             }
         }
+        drop(pending);
 
         let _ = self.command_tx.send(Command::Shutdown);
     }
@@ -755,11 +776,16 @@ impl Drop for SonosEventManager {
             self.service_refs.read().len()
         );
 
-        // Cancel all pending grace timers
-        let pending: Vec<_> = self.pending_unsubscribes.lock().drain().collect();
-        for (_, flag) in &pending {
-            flag.store(true, Ordering::SeqCst);
+        // Cancel all pending grace timers, draining and claiming in one
+        // locked scope for the reason spelled out in `shutdown`. Nothing acts
+        // on the claim here — the worker and the whole watched set are going
+        // away with the manager — but taking it keeps a late `fire` from
+        // believing it still owns the teardown.
+        let mut pending = self.pending_unsubscribes.lock();
+        for (_, flag) in pending.drain() {
+            let _ = flag.swap(true, Ordering::SeqCst);
         }
+        drop(pending);
 
         // Send shutdown command to worker
         let _ = self.command_tx.send(Command::Shutdown);
@@ -1370,5 +1396,22 @@ mod tests {
 
         // Pending should be cleared
         assert!(manager.pending_unsubscribes.lock().is_empty());
+
+        // Shutdown claims the token itself, so the watched set is cleared
+        // exactly once...
+        assert_eq!(
+            registry.unregisters(),
+            1,
+            "shutdown must tear down the pending watch itself"
+        );
+
+        // ...and stays cleared once: the teardown that was queued for this key
+        // finds its token already claimed and declines.
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(
+            registry.unregisters(),
+            1,
+            "a teardown whose token shutdown claimed must not fire as well"
+        );
     }
 }
