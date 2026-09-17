@@ -324,14 +324,10 @@ impl EventDetector {
             }
         }
 
-        // Firewall status is now per-device, so we return Unknown for global stats
-        let firewall_status = FirewallStatus::Unknown;
-
         EventDetectorStats {
             total_monitored,
             timeout_count,
             recent_events_count,
-            firewall_status,
             event_timeout: self.event_timeout,
         }
     }
@@ -343,7 +339,6 @@ pub struct EventDetectorStats {
     pub total_monitored: usize,
     pub timeout_count: usize,
     pub recent_events_count: usize,
-    pub firewall_status: FirewallStatus,
     pub event_timeout: Duration,
 }
 
@@ -353,7 +348,6 @@ impl std::fmt::Display for EventDetectorStats {
         writeln!(f, "  Total monitored: {}", self.total_monitored)?;
         writeln!(f, "  Timeout count: {}", self.timeout_count)?;
         writeln!(f, "  Recent events: {}", self.recent_events_count)?;
-        writeln!(f, "  Firewall status: {:?}", self.firewall_status)?;
         writeln!(f, "  Event timeout: {:?}", self.event_timeout)?;
         Ok(())
     }

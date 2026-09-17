@@ -72,8 +72,6 @@ pub enum DetectionReason {
     EventReceived,
     /// No events received within timeout
     Timeout,
-    /// Subscription creation failed
-    SubscriptionFailed,
 }
 
 /// Coordinates per-device firewall detection by monitoring real UPnP event delivery.
@@ -129,14 +127,6 @@ impl FirewallDetectionCoordinator {
                             reason = ?result.reason,
                             status = ?result.status,
                             "Firewall detection: No events received within timeout"
-                        );
-                    }
-                    DetectionReason::SubscriptionFailed => {
-                        warn!(
-                            device_ip = %result.device_ip,
-                            reason = ?result.reason,
-                            status = ?result.status,
-                            "Firewall detection: Subscription failed for device"
                         );
                     }
                 }
@@ -239,16 +229,6 @@ impl FirewallDetectionCoordinator {
         }
     }
 
-    /// Clear cached status for a device (useful for testing).
-    pub async fn clear_device_cache(&self, device_ip: IpAddr) {
-        let mut device_states = self.device_states.write().await;
-        device_states.remove(&device_ip);
-        debug!(
-            device_ip = %device_ip,
-            "Firewall detection: Cleared cache for device"
-        );
-    }
-
     /// Start detection monitoring for a specific device.
     async fn start_detection_for_device(&self, device_ip: IpAddr) {
         let mut device_states = self.device_states.write().await;
@@ -322,41 +302,6 @@ impl FirewallDetectionCoordinator {
             }
         }
     }
-
-    /// Get statistics about the coordinator state.
-    pub async fn get_stats(&self) -> CoordinatorStats {
-        let device_states = self.device_states.read().await;
-
-        let mut stats = CoordinatorStats {
-            total_devices: device_states.len(),
-            accessible_devices: 0,
-            blocked_devices: 0,
-            unknown_devices: 0,
-            error_devices: 0,
-        };
-
-        for state_arc in device_states.values() {
-            let state = state_arc.read().await;
-            match state.status {
-                FirewallStatus::Accessible => stats.accessible_devices += 1,
-                FirewallStatus::Blocked => stats.blocked_devices += 1,
-                FirewallStatus::Unknown => stats.unknown_devices += 1,
-                FirewallStatus::Error => stats.error_devices += 1,
-            }
-        }
-
-        stats
-    }
-}
-
-/// Statistics about the firewall detection coordinator.
-#[derive(Debug, Clone)]
-pub struct CoordinatorStats {
-    pub total_devices: usize,
-    pub accessible_devices: usize,
-    pub blocked_devices: usize,
-    pub unknown_devices: usize,
-    pub error_devices: usize,
 }
 
 #[cfg(test)]
@@ -440,53 +385,5 @@ mod tests {
         // Second subscription should return cached status
         let status = coordinator.on_first_subscription(device_ip).await;
         assert_eq!(status, FirewallStatus::Accessible);
-    }
-
-    #[tokio::test]
-    async fn test_clear_device_cache() {
-        let config = FirewallDetectionConfig::default();
-        let coordinator = FirewallDetectionCoordinator::new(config);
-
-        let device_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
-
-        // Create cached entry
-        coordinator.on_first_subscription(device_ip).await;
-        coordinator.on_event_received(device_ip).await;
-
-        // Verify cached
-        assert_eq!(
-            coordinator.get_device_status(device_ip).await,
-            FirewallStatus::Accessible
-        );
-
-        // Clear cache
-        coordinator.clear_device_cache(device_ip).await;
-
-        // Should be unknown again
-        assert_eq!(
-            coordinator.get_device_status(device_ip).await,
-            FirewallStatus::Unknown
-        );
-    }
-
-    #[tokio::test]
-    async fn test_stats() {
-        let config = FirewallDetectionConfig::default();
-        let coordinator = FirewallDetectionCoordinator::new(config);
-
-        let device1 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
-        let device2 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 101));
-
-        // One accessible, one unknown
-        coordinator.on_first_subscription(device1).await;
-        coordinator.on_event_received(device1).await;
-        coordinator.on_first_subscription(device2).await;
-
-        let stats = coordinator.get_stats().await;
-        assert_eq!(stats.total_devices, 2);
-        assert_eq!(stats.accessible_devices, 1);
-        assert_eq!(stats.unknown_devices, 1);
-        assert_eq!(stats.blocked_devices, 0);
-        assert_eq!(stats.error_devices, 0);
     }
 }

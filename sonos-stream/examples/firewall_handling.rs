@@ -125,7 +125,6 @@ async fn test_firewall_scenario(
     // Check final statistics
     let stats = broker.stats().await;
     println!("\n📊 Final Statistics:");
-    println!("   Firewall Status: {:?}", stats.firewall_status);
     println!("   Background Tasks: {}", stats.background_tasks_count);
     println!(
         "   Registry: {} active registrations",

@@ -674,7 +674,7 @@ pub struct DeviceFirewallState {
 **Lifecycle**:
 1. **Creation**: Created in `start_detection_for_device()` when first subscription triggers detection
 2. **Mutation**: `status`, `first_event_time`, `detection_completed` updated when event arrives or timeout occurs
-3. **Destruction**: Removed via `clear_device_cache()` or LRU eviction when cache is full
+3. **Destruction**: Evicted by the oldest-first eviction in `start_detection_for_device()` when `max_cached_devices` is reached; otherwise the entry lives for the life of the coordinator
 
 ### 5.2 State Transitions
 
@@ -697,7 +697,7 @@ pub struct DeviceFirewallState {
               │ (cached) │  │ (cached) │
               └──────────┘  └──────────┘
                      │           │
-    clear_device_cache()    clear_device_cache()
+    cache full, oldest entry evicted
                      │           │
                      ▼           ▼
               ┌─────────────────────────┐
@@ -1265,3 +1265,4 @@ For firewall detection (`FirewallDetectionConfig`):
 | 2026-08-15 | Claude | Replaced route-to-8.8.8.8 IP detection with per-interface selection using each interface's real netmask (§4.5), added `if-addrs` (§6.1), documented the single-`base_url` multi-subnet limitation as a named follow-up (§14.1), and required OS-assigned ports in tests (§8.4). |
 | 2026-08-17 | Claude Opus 5 | Ported the single route from `warp` to `axum`: gates now live in a `NotifyRequest` extractor and `NotifyRejection` replaces the rejection-mapping table (§3.1, §3.4, §7.1). Documented the **fixed NT/NTS validation gap** — they were only checked when both were present (§3.1, §10.3) — the two independent body-size checks and why chunked bodies stay 411 (§10.4), and the removal of six unused dependencies (§6.1, §14.2). |
 | 2026-08-15 | Claude | Hardened the unauthenticated NOTIFY endpoint: added the 64 KiB body limit (§10.4), the 256-entry pending buffer cap with per-route TTL sweep (§10.5), and UTF-8-safe trace previews (§10.6). Expanded the threat model to state that unbounded buffers are the primary risk given UPnP has no authentication. |
+| 2026-09-17 | Claude Opus 5 | Removed three stranded `FirewallDetectionCoordinator` items (§5.1, §5.2). `clear_device_cache()` and `get_stats()`/`CoordinatorStats` had no caller outside their own unit tests, and `DetectionReason::SubscriptionFailed` was never constructed, making its logging arm unreachable — `DetectionResult` is only ever sent with `EventReceived` or `Timeout`. The `DeviceFirewallState` destruction path and the `FirewallStatus` state machine now describe the one eviction that really exists: oldest-first, triggered by `max_cached_devices` in `start_detection_for_device()`. Detection itself (`on_first_subscription`, `on_event_received`, `get_device_status`, the timeout monitor) is unchanged and remains live. |
