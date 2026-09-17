@@ -713,10 +713,13 @@ The crate is thin (bridges sonos-state and sonos-stream), so testing focuses on:
 | `test_cancel_then_late_expiry_keeps_subscription` | A claimed teardown firing late does nothing at all |
 | `test_cancel_and_expiry_have_exactly_one_winner` | 500 contended rounds; per-round unregister delta is exactly `usize::from(fired)` |
 | `test_expiry_racing_reacquire_keeps_the_watch_registered` | The re-acquire's `register_watch` lands *after* the expiry's unregister |
-| `test_registry_panic_does_not_kill_the_timer` | A panicking callback costs one teardown, not the thread |
+| `test_registry_panic_does_not_kill_the_timer` | A panicking callback costs one teardown, not the thread — and is contained by `call_unregister` specifically, asserted as `TeardownTimer::restarts() == 0` |
+| `test_timer_thread_restarts_after_a_panic` | The second layer: a panic that escapes `run` restarts the loop rather than ending the service. Unreachable through the registry, so the panic is injected |
+| `test_inline_teardown_contains_a_panicking_registry` | The inline path has no restart loop behind it, so `call_unregister` is all that keeps a registry panic out of `WatchGuard::drop` |
+| `test_ensure_subscribed_inside_grace_window_claims_the_teardown` | `ensure_service_subscribed` claims the pending token instead of subscribing alongside it |
 | `test_inline_teardown_when_timer_unavailable` | With no timer, the teardown resolves inside the drop — asserted without sleeping |
-| `test_release_after_shutdown_still_unregisters` | `shutdown()` does not latch the grace mechanism off |
-| `test_guard_drop_with_disconnected_worker` | Dropping a guard after shutdown still clears the watched set |
+| `test_release_after_shutdown_still_unregisters` | `shutdown()` does not latch the grace mechanism off — asserted on the *pending* grace period, since the inline fallback reaches the same end state under `stop()` |
+| `test_guard_drop_with_disconnected_worker` | Dropping a guard after shutdown still clears the watched set, and does so after a real grace period |
 | `test_shutdown_drains_pending_grace_timers` | Shutdown tears down exactly once, and stays at once |
 | `test_manager_drop_during_teardown_fire` | Dropping the manager mid-teardown completes rather than deadlocking |
 | `test_immediate_mode_churn_costs_no_threads` | Median release under 8 us over 1,000 cycles, plus a Linux-only bound on the *growth* in process threads across those cycles |
@@ -730,8 +733,8 @@ off the real timer with `TeardownTimer::drain`, rather than racing a sleep
 against the 50 ms grace period.
 
 **Port allocation**: each test that builds a manager takes a disjoint
-`with_callback_ports` range so parallel runs cannot collide. 4000–5400 are in
-use; new tests continue from 5400.
+`with_callback_ports` range so parallel runs cannot collide. 4000–6100 are in
+use; new tests continue from 6100.
 
 ### 8.3 Integration Tests
 

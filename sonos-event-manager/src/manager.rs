@@ -176,6 +176,17 @@ impl PendingTeardown {
 /// `RefUnwindSafe`. `catch_unwind` is a safe function, so `#![forbid(unsafe_code)]`
 /// is unaffected. A registry that panics has broken the contract documented on
 /// [`WatchRegistry`]; whatever state it left behind is its own to repair.
+///
+/// # This protection depends on unwinding
+///
+/// `catch_unwind` catches nothing under `panic = "abort"`. Adding that to any
+/// profile — here or in a downstream binary, where the setting is taken from
+/// the top-level crate — silently converts both this guard and the restart loop
+/// in [`crate::timer`] into process aborts. There is no compile error and no
+/// warning; the tests that cover these paths simply take the whole test binary
+/// down instead of failing. The two layers are the reason a misbehaving
+/// `WatchRegistry` costs one teardown rather than the process, so that trade is
+/// worth making on purpose rather than by inheriting a profile.
 fn call_unregister(registry: &Arc<dyn WatchRegistry>, ip: IpAddr, service: Service) {
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         registry.unregister_watches_for_service(ip, service);
@@ -356,6 +367,19 @@ impl Drop for WatchGuard {
 /// The timer thread only ever holds one of `timer.queue` and
 /// `pending_unsubscribes` at a time: `run` pops under the queue lock and fires
 /// outside it.
+///
+/// # Field order is load-bearing
+///
+/// Rust drops fields in declaration order, and `teardown_timer` is declared
+/// before `watch_registry` on purpose. Every queued `PendingTeardown` holds
+/// an `Arc<dyn WatchRegistry>` clone, so dropping the timer — which clears its
+/// queue under `timer.queue` — is what releases them. If `watch_registry` were
+/// dropped first, this manager's own `Arc` would go while the queue still held
+/// the others, and the *last* release would then happen inside
+/// `TeardownTimer::stop`, running the registry's `Drop` under `timer.queue`.
+/// That is a user-supplied destructor under the one lock the timer thread needs
+/// to make progress, and it inverts the documented order above. Keep
+/// `teardown_timer` ahead of `watch_registry`.
 pub struct SonosEventManager {
     /// Send commands to background worker (tokio unbounded — send() is sync)
     command_tx: tokio_mpsc::UnboundedSender<Command>,
@@ -738,6 +762,35 @@ impl SonosEventManager {
     }
 
     /// Release a service subscription for a device (sync, ref-counted)
+    ///
+    /// # Why this is *not* symmetric with `release_watch`
+    ///
+    /// It unsubscribes the moment the count reaches zero, with no grace period,
+    /// and it never calls `unregister_watches_for_service`. Both differences
+    /// are deliberate, and neither one is `release_watch`'s asymmetry to
+    /// repair:
+    ///
+    /// - **No grace period.** The invariant in spec §2.3 still holds — the
+    ///   subscription ends exactly when the count reaches 0, so there is no
+    ///   window in which a live reference has nothing behind it. A grace period
+    ///   here would only be an optimization for churn, and this path is not the
+    ///   churning one: the immediate-mode hot path is [`WatchGuard`], which has
+    ///   one. Adding a token would also mean scheduling a teardown from a
+    ///   fallible, non-`Drop` method, which is a different contract.
+    /// - **No watched-set unregister.** Unregistering here would be a *bug*,
+    ///   not a fix. This method has no `(speaker_id, key)` pair — its
+    ///   counterpart [`ensure_service_subscribed`](Self::ensure_service_subscribed)
+    ///   never registers one — so the only thing it could call is the
+    ///   service-wide `unregister_watches_for_service`, which would wipe every
+    ///   watched pair for that service, including pairs belonging to live
+    ///   `WatchGuard`s and to other properties on the same service. The one
+    ///   shipping caller, `StateManager::unwatch_property_with_subscription`,
+    ///   already unregisters its own key first, at the right granularity.
+    ///
+    /// The residue is a leak, not a correctness hole: a `WatchGuard` and this
+    /// API interleaved on one key can leave a watched pair registered after the
+    /// subscription is gone. No events arrive for it, and the next real
+    /// teardown for that service clears it.
     ///
     /// Decrements the reference count for the (device_ip, service) pair.
     /// If this reaches zero, triggers an unsubscription via the background worker.
@@ -1928,16 +1981,19 @@ mod tests {
                 "round {round}: pending map must be empty after the race resolves"
             );
 
-            // The ref count is left at 1 by the claim side when it wins, so
-            // normalize before the next round. Claim the token that release
-            // just scheduled rather than clearing the map behind it: an
-            // unclaimed token left in the timer's queue would fire 50 ms later,
-            // in the middle of some later round, and the per-round delta above
-            // would blame that round for it.
-            if claimed {
-                manager.release_watch(&speaker_id, "volume", ip, service);
-                manager.claim_pending_teardown(ip, service);
-            }
+            // No normalization is needed between rounds, and a block that
+            // looked like it was doing some has been removed. It claimed to be
+            // undoing a ref count "left at 1 by the claim side when it wins" —
+            // but the claim side here calls `claim_pending_teardown` directly,
+            // which only touches `pending_unsubscribes`. The `drop(guard)`
+            // above already took the count to 0 and removed the key, so the
+            // block's `release_watch` found no ref count, logged a warning and
+            // did nothing. The round starts clean either way.
+            assert_eq!(
+                manager.service_ref_count(ip, service),
+                0,
+                "round {round}: the round must end with the ref count back at 0"
+            );
         }
 
         assert_eq!(
