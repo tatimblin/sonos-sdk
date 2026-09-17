@@ -9,7 +9,7 @@ Interrupt all speakers with an announcement, then restore their previous state.
 use sonos_sdk::prelude::*;
 
 fn announce(sonos: &SonosSystem, audio_uri: &str) -> Result<(), SdkError> {
-    let speakers: Vec<_> = sonos.speakers().collect();
+    let speakers = sonos.speakers();
     let main = &speakers[0];
     let main_group = main.group().unwrap();
 
@@ -39,15 +39,17 @@ Use reactive state to detect when the announcement finishes:
 
 ```rust
 fn announce_and_restore(sonos: &SonosSystem, audio_uri: &str) -> Result<(), SdkError> {
-    let main = sonos.speakers().next().unwrap();
+    let main = sonos.speakers().into_iter().next().unwrap();
+
+    // Watch before starting, so the stop event cannot be missed
+    let state = main.playback_state.watch()?;
 
     // Start announcement (as above)
     main.set_av_transport_uri(audio_uri, "")?;
     main.play()?;
 
     // Wait for playback to stop
-    for event in sonos.iter() {
-        let state = main.playback_state.watch()?;
+    for _event in sonos.iter() {
         if let Some(PlaybackState::Stopped) = state.value() {
             break;
         }

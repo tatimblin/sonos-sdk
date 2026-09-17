@@ -143,11 +143,17 @@ living_room.delegate_coordination_to(&kitchen.id, false)?;
 The `group_membership` property updates when speakers join or leave groups:
 
 ```rust
-for event in sonos.iter() {
-    let membership = speaker.group_membership.watch()?;
+let kitchen = sonos.speaker("Kitchen").unwrap();
+let membership = kitchen.group_membership.watch()?;
 
+for _event in sonos.iter() {
     if let Some(info) = membership.value() {
         println!("Group: {}, Is coordinator: {}", info.group_id, info.is_coordinator);
     }
 }
 ```
+
+Membership changes do not mutate an existing `Group` handle — `Group` is a
+snapshot of `id`, `coordinator_id`, and `member_ids` as they stood when it was
+built. Re-read `sonos.groups()` or `speaker.group()` after a join or leave to
+see the new topology.
