@@ -214,34 +214,6 @@ impl EventProcessor {
         Ok(())
     }
 
-    /// Process a resync event (already enriched)
-    pub async fn process_resync_event(&self, event: EnrichedEvent) -> EventProcessingResult<()> {
-        // Update stats
-        {
-            let mut stats = self.stats.write().await;
-            stats.resync_events_received += 1;
-        }
-
-        // Send the event (it's already enriched)
-        debug!(
-            speaker_ip = %event.speaker_ip,
-            service = ?event.service,
-            event_source = ?event.event_source,
-            "Routing resync event to EventIterator channel"
-        );
-        self.event_sender
-            .send(event)
-            .map_err(|_| EventProcessingError::ChannelClosed)?;
-
-        // Update success stats
-        {
-            let mut stats = self.stats.write().await;
-            stats.events_processed += 1;
-        }
-
-        Ok(())
-    }
-
     /// Convert from sonos-api event data to sonos-stream compatible EventData.
     ///
     /// Each match arm downcasts the type-erased event and calls `into_state()`
@@ -380,32 +352,6 @@ impl EventProcessor {
         info!("Polling event processing stopped");
     }
 
-    /// Start processing resync events
-    pub async fn start_resync_processing(
-        &self,
-        mut resync_receiver: mpsc::UnboundedReceiver<EnrichedEvent>,
-    ) {
-        info!("Starting resync event processing");
-
-        while let Some(event) = resync_receiver.recv().await {
-            match self.process_resync_event(event).await {
-                Ok(()) => {
-                    // Event processed successfully
-                }
-                Err(e) => {
-                    error!(
-                        error = %e,
-                        "Failed to process resync event"
-                    );
-                    let mut stats = self.stats.write().await;
-                    stats.processing_errors += 1;
-                }
-            }
-        }
-
-        info!("Resync event processing stopped");
-    }
-
     /// Get event processor statistics
     pub async fn stats(&self) -> EventProcessorStats {
         let stats = self.stats.read().await;
@@ -435,9 +381,6 @@ pub struct EventProcessorStats {
     /// Polling events received
     pub polling_events_received: u64,
 
-    /// Resync events received
-    pub resync_events_received: u64,
-
     /// Processing errors encountered
     pub processing_errors: u64,
 
@@ -451,7 +394,6 @@ impl EventProcessorStats {
             events_processed: 0,
             upnp_events_received: 0,
             polling_events_received: 0,
-            resync_events_received: 0,
             processing_errors: 0,
             unsupported_services: 0,
         }
@@ -459,7 +401,7 @@ impl EventProcessorStats {
 
     /// Get total events received (all sources)
     pub fn total_events_received(&self) -> u64 {
-        self.upnp_events_received + self.polling_events_received + self.resync_events_received
+        self.upnp_events_received + self.polling_events_received
     }
 
     /// Get processing success rate
@@ -481,7 +423,6 @@ impl std::fmt::Display for EventProcessorStats {
         writeln!(f, "  Event sources:")?;
         writeln!(f, "    UPnP events: {}", self.upnp_events_received)?;
         writeln!(f, "    Polling events: {}", self.polling_events_received)?;
-        writeln!(f, "    Resync events: {}", self.resync_events_received)?;
         writeln!(f, "  Errors:")?;
         writeln!(f, "    Processing errors: {}", self.processing_errors)?;
         writeln!(f, "    Unsupported services: {}", self.unsupported_services)?;
