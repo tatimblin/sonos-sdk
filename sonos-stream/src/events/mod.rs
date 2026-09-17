@@ -13,7 +13,6 @@ pub use processor::EventProcessor;
 pub use types::{
     // Re-export sonos-api state types for convenience
     AVTransportState,
-    DevicePropertiesEvent,
     EnrichedEvent,
     EventData,
     EventSource,

@@ -286,9 +286,6 @@ async fn monitor_events(
                                 .sum::<usize>()
                         );
                     }
-                    EventData::DeviceProperties(_) => {
-                        println!("       ⚙️ Device properties event received");
-                    }
                     EventData::GroupManagement(gm_event) => {
                         println!(
                             "       🔗 Group management: coordinator_local={:?}, group_uuid={:?}",

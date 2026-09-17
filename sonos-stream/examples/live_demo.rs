@@ -139,11 +139,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let uuid = s.local_group_uuid.as_deref().unwrap_or("-");
                         println!("GroupManagement  coordinator_local={local}  group={uuid}");
                     }
-                    EventData::DeviceProperties(s) => {
-                        let name = s.zone_name.as_deref().unwrap_or("-");
-                        let model = s.model_name.as_deref().unwrap_or("-");
-                        println!("DeviceProperties  zone={name}  model={model}");
-                    }
                 }
             }
             Ok(None) => {

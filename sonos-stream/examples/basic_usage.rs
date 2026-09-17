@@ -240,20 +240,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            // Device properties events
-            EventData::DeviceProperties(device_event) => {
-                println!("⚙️  Device properties event received:");
-                if let Some(ref zone_name) = device_event.zone_name {
-                    println!("   → Zone name: {zone_name}");
-                }
-                if let Some(ref model) = device_event.model_name {
-                    println!("   → Model: {model}");
-                }
-                if let Some(ref version) = device_event.software_version {
-                    println!("   → Software version: {version}");
-                }
-            }
-
             // GroupManagement events
             EventData::GroupManagement(gm_event) => {
                 println!("🔗 Group management event received:");

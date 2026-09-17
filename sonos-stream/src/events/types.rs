@@ -4,7 +4,6 @@
 //! and re-exports canonical state types from sonos-api. The actual per-service state
 //! structs live in sonos-api; sonos-stream wraps them in EventData for transport.
 
-use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -141,9 +140,6 @@ pub enum EventData {
     /// RenderingControl service state
     RenderingControl(RenderingControlState),
 
-    /// DeviceProperties service event (no sonos-api State type yet)
-    DeviceProperties(DevicePropertiesEvent),
-
     /// ZoneGroupTopology service state
     ZoneGroupTopology(ZoneGroupTopologyState),
 
@@ -152,58 +148,6 @@ pub enum EventData {
 
     /// GroupRenderingControl service state
     GroupRenderingControl(GroupRenderingControlState),
-}
-
-impl EventData {
-    /// Get the service type for this event data
-    pub fn service_type(&self) -> sonos_api::Service {
-        match self {
-            EventData::AVTransport(_) => sonos_api::Service::AVTransport,
-            EventData::RenderingControl(_) => sonos_api::Service::RenderingControl,
-            EventData::DeviceProperties(_) => {
-                // FIXME: DeviceProperties needs its own Service variant in sonos-api.
-                // Using ZoneGroupTopology as fallback could cause misrouted events
-                // if DeviceProperties polling is ever added to the scheduler.
-                sonos_api::Service::ZoneGroupTopology
-            }
-            EventData::ZoneGroupTopology(_) => sonos_api::Service::ZoneGroupTopology,
-            EventData::GroupManagement(_) => sonos_api::Service::GroupManagement,
-            EventData::GroupRenderingControl(_) => sonos_api::Service::GroupRenderingControl,
-        }
-    }
-}
-
-// DeviceProperties event types — kept here since there's no sonos-api State type yet
-
-/// Complete DeviceProperties event data containing all device property information
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DevicePropertiesEvent {
-    /// Current zone name
-    pub zone_name: Option<String>,
-
-    /// Current zone icon
-    pub zone_icon: Option<String>,
-
-    /// Current configuration information
-    pub configuration: Option<String>,
-
-    /// Device capabilities
-    pub capabilities: Option<String>,
-
-    /// Firmware version
-    pub software_version: Option<String>,
-
-    /// Device model information
-    pub model_name: Option<String>,
-
-    /// Device display version
-    pub display_version: Option<String>,
-
-    /// Device hardware version
-    pub hardware_version: Option<String>,
-
-    /// Additional device properties (extensible)
-    pub additional_properties: std::collections::HashMap<String, String>,
 }
 
 #[cfg(test)]
@@ -240,63 +184,5 @@ mod tests {
         assert_eq!(event.registration_id, reg_id);
         assert_eq!(event.speaker_ip, ip);
         assert_eq!(event.service, service);
-    }
-
-    #[test]
-    fn test_event_data_service_type() {
-        let av_event = EventData::AVTransport(AVTransportState {
-            transport_state: Some("PLAYING".to_string()),
-            transport_status: None,
-            speed: None,
-            current_track_uri: None,
-            track_duration: None,
-            track_metadata: None,
-            rel_time: None,
-            abs_time: None,
-            rel_count: None,
-            abs_count: None,
-            play_mode: None,
-            next_track_uri: None,
-            next_track_metadata: None,
-            queue_length: None,
-        });
-        assert_eq!(av_event.service_type(), sonos_api::Service::AVTransport);
-
-        let rc_event = EventData::RenderingControl(RenderingControlState {
-            master_volume: Some("50".to_string()),
-            master_mute: Some("false".to_string()),
-            lf_volume: None,
-            rf_volume: None,
-            lf_mute: None,
-            rf_mute: None,
-            bass: None,
-            treble: None,
-            loudness: None,
-            balance: None,
-            other_channels: std::collections::HashMap::new(),
-        });
-        assert_eq!(
-            rc_event.service_type(),
-            sonos_api::Service::RenderingControl
-        );
-
-        let gm_event = EventData::GroupManagement(GroupManagementState {
-            group_coordinator_is_local: Some(true),
-            local_group_uuid: None,
-            reset_volume_after: None,
-            virtual_line_in_group_id: None,
-            volume_av_transport_uri: None,
-        });
-        assert_eq!(gm_event.service_type(), sonos_api::Service::GroupManagement);
-
-        let grc_event = EventData::GroupRenderingControl(GroupRenderingControlState {
-            group_volume: Some(14),
-            group_mute: Some(false),
-            group_volume_changeable: Some(true),
-        });
-        assert_eq!(
-            grc_event.service_type(),
-            sonos_api::Service::GroupRenderingControl
-        );
     }
 }

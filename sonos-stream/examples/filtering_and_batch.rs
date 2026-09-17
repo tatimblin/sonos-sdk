@@ -235,14 +235,6 @@ async fn demonstrate_batch_processing(
                         format_event_source(&event.event_source)
                     );
                 }
-                EventData::DeviceProperties(_) => {
-                    println!(
-                        "   {}. ⚙️  Device properties event from {} ({})",
-                        i + 1,
-                        event.speaker_ip,
-                        format_event_source(&event.event_source)
-                    );
-                }
                 EventData::GroupManagement(_) => {
                     println!(
                         "   {}. 🔗 Group management event from {} ({})",
@@ -489,7 +481,6 @@ fn format_event_data(data: &EventData) -> String {
         EventData::ZoneGroupTopology(topology) => {
             format!("Topology Event ({} groups)", topology.zone_groups.len())
         }
-        EventData::DeviceProperties(_) => "Device Properties Event".to_string(),
         EventData::GroupManagement(_) => "Group Management Event".to_string(),
         EventData::GroupRenderingControl(_) => "Group Rendering Control Event".to_string(),
     }

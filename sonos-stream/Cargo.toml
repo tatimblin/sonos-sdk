@@ -21,7 +21,9 @@ tokio = { workspace = true }
 futures = "0.3"
 
 # Serialization and data handling
-serde = { workspace = true }
+# `serde_json` only: the polling strategies round-trip sonos-api State types
+# through JSON. Nothing in this crate derives, so `serde` itself is not a
+# direct dependency.
 serde_json = { workspace = true }
 
 # Error handling and utilities
