@@ -69,6 +69,27 @@ struct Shared {
     queue: Mutex<Queue>,
     /// Signalled when a teardown is enqueued or the timer is stopped.
     wakeup: Condvar,
+
+    /// Times [`timer_thread`] has restarted `run` after catching a panic.
+    ///
+    /// Test-only, and the only way the restart loop is observable at all: it
+    /// exists so that a *later* teardown still fires, which is exactly what a
+    /// surviving `call_unregister` also produces. Without this counter a test
+    /// that watches outcomes cannot tell the two layers apart, and deleting
+    /// either one leaves the suite green.
+    #[cfg(test)]
+    restarts: std::sync::atomic::AtomicUsize,
+
+    /// Test-only panic injection: when set, `run` panics once, at the point
+    /// where it is holding the queue lock.
+    ///
+    /// The restart loop cannot be reached through the registry — the whole
+    /// point of `call_unregister` is that a registry panic never gets this far
+    /// — so the second layer has to be driven directly to be tested at all.
+    /// Panicking under the queue guard is deliberate: it also exercises the
+    /// claim on [`timer_thread`] that `parking_lot` guards unlock on unwind.
+    #[cfg(test)]
+    panic_once: std::sync::atomic::AtomicBool,
 }
 
 /// Handle to the timer thread. Stopping is idempotent and happens on drop.
@@ -86,6 +107,10 @@ impl TeardownTimer {
         let shared = Arc::new(Shared {
             queue: Mutex::new(Queue::default()),
             wakeup: Condvar::new(),
+            #[cfg(test)]
+            restarts: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            panic_once: std::sync::atomic::AtomicBool::new(false),
         });
 
         let worker_shared = Arc::clone(&shared);
@@ -189,6 +214,30 @@ impl TeardownTimer {
     pub(crate) fn queued(&self) -> usize {
         self.shared.queue.lock().heap.len()
     }
+
+    /// Times the thread body has restarted `run` after a panic.
+    ///
+    /// Test-only. A teardown whose registry callback panicked must leave this
+    /// at 0: `call_unregister` is the layer that is supposed to contain it, and
+    /// reaching the restart loop means it did not.
+    #[cfg(test)]
+    pub(crate) fn restarts(&self) -> usize {
+        self.shared
+            .restarts
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Make the timer thread panic once, from inside `run`. Test-only.
+    ///
+    /// Wakes the thread so the injected panic is reached without waiting for a
+    /// deadline.
+    #[cfg(test)]
+    pub(crate) fn inject_panic(&self) {
+        self.shared
+            .panic_once
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.shared.wakeup.notify_all();
+    }
 }
 
 impl Drop for TeardownTimer {
@@ -240,6 +289,11 @@ fn timer_thread(shared: &Arc<Shared>, command_tx: &tokio_mpsc::WeakUnboundedSend
 
         tracing::error!("Teardown timer thread panicked; resuming the timer loop");
 
+        #[cfg(test)]
+        shared
+            .restarts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
         if shared.queue.lock().stopped {
             return;
         }
@@ -255,6 +309,16 @@ fn run(shared: &Arc<Shared>, command_tx: &tokio_mpsc::WeakUnboundedSender<Comman
                 if queue.stopped {
                     tracing::debug!("Teardown timer stopped");
                     return;
+                }
+
+                // Test-only, compiled out of every real build. Panics while
+                // `queue` is held on purpose: see `Shared::panic_once`.
+                #[cfg(test)]
+                if shared
+                    .panic_once
+                    .swap(false, std::sync::atomic::Ordering::SeqCst)
+                {
+                    panic!("injected teardown timer panic (expected by this test)");
                 }
 
                 // Copy the deadline out so the borrow on `queue` ends before
@@ -326,6 +390,67 @@ mod tests {
             "a stopped timer must hand the teardown back rather than swallow it"
         );
         assert_eq!(timer.queued(), 0);
+    }
+
+    /// Wait for `cond`, polling, up to `limit`. Returns whether it came true.
+    ///
+    /// Used instead of a flat sleep so the restart test states the outcome it
+    /// is waiting for rather than a duration that happens to be long enough.
+    #[cfg(test)]
+    fn wait_for(limit: std::time::Duration, mut cond: impl FnMut() -> bool) -> bool {
+        let deadline = Instant::now() + limit;
+        while Instant::now() < deadline {
+            if cond() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        cond()
+    }
+
+    /// A panic that escapes `run` must restart the loop, not end the service.
+    ///
+    /// This is the second `catch_unwind` layer, and the only test that reaches
+    /// it: `call_unregister` contains every registry panic, so the restart loop
+    /// is unreachable through the public path by design. The panic is therefore
+    /// injected directly, from under the queue lock, which also pins the claim
+    /// that `parking_lot` guards unlock on unwind — if they did not, the
+    /// schedule below would deadlock rather than fire.
+    ///
+    /// The panic backtrace this prints is expected output.
+    #[test]
+    fn test_timer_thread_restarts_after_a_panic() {
+        let (tx, _rx) = tokio_mpsc::unbounded_channel::<Command>();
+        let timer = TeardownTimer::start(tx.downgrade());
+
+        assert_eq!(timer.restarts(), 0, "a healthy timer never restarts");
+
+        timer.inject_panic();
+
+        assert!(
+            wait_for(std::time::Duration::from_secs(2), || timer.restarts() == 1),
+            "a panic escaping `run` must restart the loop, not kill the thread \
+             (restarts = {})",
+            timer.restarts()
+        );
+
+        // Restarting is only worth anything if the thread still services the
+        // queue afterwards.
+        let mut teardown = crate::manager::test_support::dummy_teardown();
+        teardown.delay = std::time::Duration::from_millis(1);
+        timer
+            .schedule(Box::new(teardown))
+            .expect("a restarted timer must still accept work");
+
+        assert!(
+            wait_for(std::time::Duration::from_secs(2), || timer.queued() == 0),
+            "a restarted timer must still fire what it is handed"
+        );
+        assert_eq!(
+            timer.restarts(),
+            1,
+            "the restart must happen once, not in a storm"
+        );
     }
 
     #[test]

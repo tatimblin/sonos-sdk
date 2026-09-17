@@ -1025,6 +1025,17 @@ mod tests {
     /// `run` loop and killed it, so every *later* teardown — here a second,
     /// unrelated service — was silently dropped and its pending entry stuck
     /// forever.
+    ///
+    /// # Why the restart counter is asserted
+    ///
+    /// Two `catch_unwind` layers stand between a panicking registry and a dead
+    /// timer: this one, and the restart loop in [`crate::timer`]. On outcomes
+    /// alone they are indistinguishable — the second teardown fires either way
+    /// — so this test used to pass with *either* deleted, proving only that at
+    /// least one existed. Asserting that the timer never restarted is what
+    /// pins this layer specifically: `call_unregister` caught the panic, so the
+    /// restart loop was never needed. The restart loop has its own test,
+    /// `timer::tests::test_timer_thread_restarts_after_a_panic`.
     #[test]
     fn test_registry_panic_does_not_kill_the_timer() {
         let config = BrokerConfig::default().with_callback_ports(5400, 5500);
@@ -1060,6 +1071,71 @@ mod tests {
             manager.pending_unsubscribes.lock().is_empty(),
             "no teardown may be left stranded by a panicking registry"
         );
+        assert_eq!(
+            manager.teardown_timer.restarts(),
+            0,
+            "the panic must be contained by `call_unregister`; reaching the \
+             timer's restart loop means it was not"
+        );
+    }
+
+    /// The inline teardown path must contain a registry panic too.
+    ///
+    /// `release_watch` fires the teardown itself when the timer is unavailable,
+    /// and `release_watch` runs from `WatchGuard::drop`. There is no timer
+    /// thread in that path and therefore no restart loop behind it, so
+    /// `call_unregister` is the only thing standing between a panicking
+    /// registry and a panic escaping a `Drop` — which, if the guard is being
+    /// dropped during an unwind, is a process abort rather than a failure
+    /// anyone can catch.
+    ///
+    /// The panic backtrace this prints is expected output.
+    #[test]
+    fn test_inline_teardown_contains_a_panicking_registry() {
+        let config = BrokerConfig::default().with_callback_ports(5900, 6000);
+        let manager = Arc::new(SonosEventManager::with_config(config).unwrap());
+        let registry = PanickingRegistry::new();
+        manager.set_watch_registry(registry.clone());
+
+        let ip: IpAddr = "192.168.1.100".parse().unwrap();
+        let speaker_id = SpeakerId::new("RINCON_123");
+
+        // Stand in for a failed spawn, exactly as
+        // `test_inline_teardown_when_timer_unavailable` does: a stopped timer
+        // refuses `schedule`, so `release_watch` resolves the teardown inline.
+        manager.teardown_timer.stop();
+
+        let guard = manager
+            .acquire_watch(&speaker_id, "volume", ip, Service::RenderingControl)
+            .unwrap();
+
+        // Without `call_unregister`, this `drop` panics.
+        drop(guard);
+
+        assert_eq!(
+            registry.calls(),
+            1,
+            "the inline teardown must still have called the registry"
+        );
+        assert!(
+            manager.pending_unsubscribes.lock().is_empty(),
+            "a panicking registry must not strand the inline teardown's pending entry"
+        );
+        assert_eq!(
+            manager.teardown_timer.restarts(),
+            0,
+            "the inline path has no timer thread to restart"
+        );
+
+        // Still usable afterwards: the panic cost one teardown, not the guard
+        // lifecycle. The timer is stopped, so this teardown is inline too, and
+        // `PanickingRegistry` only panics on its first call.
+        drop(
+            manager
+                .acquire_watch(&speaker_id, "mute", ip, Service::RenderingControl)
+                .unwrap(),
+        );
+        assert_eq!(registry.calls(), 2);
     }
 
     #[test]
