@@ -87,6 +87,9 @@ The Sonos SDK requires efficient management of UPnP event subscriptions across m
 src/
 ├── lib.rs              # Public API surface, re-exports, prelude
 ├── manager.rs          # SonosEventManager implementation
+├── timer.rs            # Shared grace-period teardown timer (private)
+├── worker.rs           # Background worker thread + Command enum
+├── iter.rs             # Blocking event iterator
 └── error.rs            # Error types (EventManagerError)
 ```
 
@@ -94,7 +97,14 @@ src/
 |--------|---------------|------------|
 | `lib.rs` | Public API, re-exports from dependencies, prelude module | `pub` |
 | `manager.rs` | SonosEventManager struct and all subscription management logic | `pub` |
+| `timer.rs` | `TeardownTimer`: one thread servicing a deadline-ordered queue of pending teardowns | private |
+| `worker.rs` | Background thread owning the tokio runtime and the `EventBroker` | `pub` |
+| `iter.rs` | `EventManagerIterator` over the sync event channel | `pub` |
 | `error.rs` | EventManagerError enum and Result type alias | `pub` |
+
+`timer.rs` is private on purpose: the grace period is an implementation detail
+of the watch lifecycle, and nothing outside this crate should be able to stop,
+drain or schedule on it.
 
 ### 2.3 Key Types
 
@@ -102,25 +112,42 @@ src/
 
 ```rust
 pub struct SonosEventManager {
-    /// The underlying event broker from sonos-stream
-    broker: EventBroker,
+    /// Commands to the background worker, which owns the EventBroker
+    command_tx: tokio_mpsc::UnboundedSender<Command>,
+
+    /// Deadline queue for grace-period teardowns, serviced by one thread
+    teardown_timer: TeardownTimer,
+
+    /// Events from the background worker (sync channel)
+    event_rx: Arc<Mutex<mpsc::Receiver<EnrichedEvent>>>,
 
     /// Map of device IP addresses to device information
     devices: Arc<RwLock<HashMap<IpAddr, Device>>>,
 
     /// Reference counting for service subscriptions: (device_ip, service) -> ref_count
-    service_refs: Arc<DashMap<(IpAddr, Service), AtomicUsize>>,
+    service_refs: Arc<RwLock<HashMap<(IpAddr, Service), usize>>>,
+
+    /// Grace periods in flight, keyed by (ip, service). The AtomicBool is a
+    /// claim token, not merely a cancellation flag.
+    pending_unsubscribes: Arc<parking_lot::Mutex<PendingUnsubscribes>>,
+
+    /// Watched-property set bridge into sonos-state (set once)
+    watch_registry: OnceLock<Arc<dyn WatchRegistry>>,
+
+    _worker: JoinHandle<()>,
 }
 ```
 
-**Purpose**: Central facade that coordinates device registration, subscription lifecycle, and event stream access.
+**Purpose**: Central facade that coordinates device registration, subscription lifecycle, and event stream access. The `EventBroker` itself lives on the worker thread, behind the command channel, so this type stays sync.
 
 **Invariants**:
-- Reference counts are always non-negative
-- A subscription exists in EventBroker if and only if the reference count is > 0
+- Reference counts are always non-negative, and an entry is removed rather than left at zero
+- A subscription exists in EventBroker if and only if the reference count is > 0, or a grace period is pending for that key
 - Device map entries are never removed (devices can be added but not explicitly removed)
+- At most one pending teardown per `(ip, service)`, and its token has exactly one claimant
+- Locks are taken in the order given in §4.2 and never the reverse
 
-**Ownership**: Created once per application, typically owned by `sonos-state::StateManager`. Wrapped in `Arc<RwLock<>>` for shared access.
+**Ownership**: Created once per application, typically owned by `sonos-state::StateManager`. Handed out as `Arc<SonosEventManager>`; every `WatchGuard` holds one.
 
 #### `WatchRegistry` Trait
 
@@ -132,6 +159,50 @@ pub trait WatchRegistry: Send + Sync + 'static {
 ```
 
 **Purpose**: Bridges the event-manager and state-manager for watched-property set management. Defined in sonos-event-manager, implemented by `StateWatchRegistry` in sonos-state. Enables the grace period to clean up watched entries when unsubscribing.
+
+**Implementor contract** (see §4.2 "Callback contract"): `unregister_watches_for_service` is called from the shared teardown thread **while the manager's pending-unsubscribe mutex is held**. Implementations must be short, non-blocking, free of I/O, and must not re-enter `SonosEventManager` — every entry point takes that same mutex. A panic is caught and logged; a hang blocks every subsequent teardown for the life of the process.
+
+**Ordering note**: `acquire_watch` calls `register_watch` *after* it resolves any pending teardown, not before. An implementor may therefore observe `unregister_watches_for_service` immediately followed by `register_watch` for the same service; it must not assume a register always precedes its matching unregister.
+
+#### `TeardownTimer` (private, `timer.rs`)
+
+```rust
+pub(crate) struct TeardownTimer {
+    shared: Arc<Shared>,   // Mutex<Queue { heap: BinaryHeap<Scheduled>, stopped: bool }> + Condvar
+}
+```
+
+**Purpose**: One thread per manager, servicing a deadline-ordered queue of pending teardowns. Replaces the previous one-OS-thread-per-release design.
+
+**Why a dedicated thread rather than the worker's runtime**: the worker runs `new_current_thread`, and the UPnP subscribe path reaches blocking `ureq` calls inside `async fn`s without `spawn_blocking`. One SUBSCRIBE to an unreachable speaker wedged that runtime for 5,002.7 ms, during which a `tokio::time::sleep` scheduled on it would not fire; the dedicated thread fired the same teardown at 50.4 ms. Teardown timing must be independent of broker health.
+
+**Invariants**:
+- The thread holds only an `Arc<Shared>` and a `WeakUnboundedSender<Command>`, so it borrows no manager state and cannot outlive anything it dereferences. The weak sender is what lets the worker still observe its command channel closing.
+- `stop()` is one-way and belongs to `Drop`; `drain()` clears the queue without latching and is what `shutdown()` uses.
+- `schedule()` never panics and returns the teardown back to the caller on refusal. Exactly two refusals: the timer is stopped, or `now + delay` is not a representable `Instant`.
+- A spawn failure latches `stopped`, so the caller falls back to firing inline rather than silently queueing work nothing will ever run.
+- The thread body wraps `run` in a `catch_unwind` restart loop; a panic costs one iteration, not the service.
+- `Drop` signals and does **not** join — joining would block a `Drop` on an implementor-supplied callback with no upper bound.
+
+#### `PendingTeardown` (private, `manager.rs`)
+
+```rust
+pub(crate) struct PendingTeardown {
+    ip: IpAddr,
+    service: Service,
+    delay: Duration,                                   // GRACE_PERIOD today
+    cancelled: Arc<AtomicBool>,                        // the claim token
+    pending: Arc<parking_lot::Mutex<PendingUnsubscribes>>,
+    registry: Option<Arc<dyn WatchRegistry>>,
+}
+```
+
+**Purpose**: Everything a deferred teardown needs to resolve itself. Carries the shared pending-map handle rather than a manager reference, so the timer thread can never keep the manager alive.
+
+**Invariants**:
+- `fire()` claims by `swap`ping the token under the pending-map mutex, so exactly one of expiry and cancellation wins. It returns `true` only for the winner — including when the registry callback panicked.
+- `delay` rides on the teardown rather than being read from a constant, so making the grace period configurable is later plumbing only.
+- The mutex is held **across** the registry callback. This is the ordering guarantee `acquire_watch` depends on; see §4.2.
 
 #### `WatchGuard`
 
@@ -149,9 +220,10 @@ pub struct WatchGuard {
 **Purpose**: RAII guard returned by `acquire_watch()`. Each instance holds one ref count on the (ip, service) subscription. `Drop` calls `release_watch()` which never panics. Not `Clone`, not `Copy` — each guard is exactly one subscription hold.
 
 **Invariants**:
-- Dropping a WatchGuard decrements the service ref count
-- When the ref count reaches zero, a 50ms grace period thread is spawned
-- If `acquire_watch()` is called within 50ms, the grace timer is cancelled via AtomicBool
+- Dropping a `WatchGuard` decrements the service ref count, and never panics.
+- When the ref count reaches zero, a `PendingTeardown` is scheduled on the shared `TeardownTimer` — a mutex, a heap push and a condvar notify. No thread is created.
+- If `acquire_watch()` is called within the 50 ms window, it claims the teardown's token under the pending-map mutex and the subscription is reused.
+- If the timer refuses the schedule (thread never spawned, or an unrepresentable deadline), the teardown fires **inline** inside the drop. It is never dropped on the floor.
 
 #### `EventManagerError`
 
@@ -294,26 +366,91 @@ TUI frameworks like ratatui reconstruct widgets every frame. Calling `watch()` i
 #### How
 
 ```rust
-// acquire_watch() increments ref count, returns WatchGuard
+// acquire_watch() increments the ref count and returns a WatchGuard
 let guard = event_manager.acquire_watch(&speaker_id, "volume", ip, Service::RenderingControl)?;
 
 // ... use guard ...
 
 // WatchGuard::Drop calls release_watch()
-// If ref count hits 0:
-//   - Spawns thread with 50ms sleep + AtomicBool cancellation
-//   - If not cancelled: sends Command::Unsubscribe + cleans watched set via WatchRegistry
-//   - If cancelled (re-acquired within 50ms): thread exits, subscription persists
+// If the ref count hits 0:
+//   - insert a claim token into pending_unsubscribes, release that mutex
+//   - TeardownTimer::schedule(PendingTeardown) — mutex, heap push, condvar notify
+//   - on refusal (no timer thread, or an unrepresentable deadline) fire inline
+// The shared timer thread, once the deadline passes:
+//   - pops the teardown, then outside the queue lock calls fire()
+//   - fire() takes the pending-map mutex and swaps the token:
+//       already true  -> a re-acquire claimed it; do nothing
+//       was false     -> remove the entry, send Command::Unsubscribe,
+//                        then clear the watched set via WatchRegistry,
+//                        all still under that mutex
 ```
+
+#### The claim protocol
+
+The grace window is a race between two events on one `(ip, service)`: the timer
+expiring, and an `acquire_watch` arriving to reuse the subscription. Both swap
+the *same* `Arc<AtomicBool>` while holding the pending-map mutex, and `swap`
+returns the previous value, so exactly one observes `false` and owns the
+outcome. Never zero winners (a stale map entry that made the next acquire skip
+its `Subscribe`) and never two (an unsubscribe underneath a live guard).
+
+Ordering falls out of the same mutex:
+
+- **Commands.** `Unsubscribe` is sent *inside* the mutex, so a racing
+  `Subscribe` can only enqueue behind it. The channel is FIFO, so the worker
+  sees unsubscribe-then-subscribe and ends up subscribed — never the reverse.
+- **The watched set.** `acquire_watch` calls `register_watch` only *after* its
+  claim resolves on that mutex. It therefore either cancels the teardown, or
+  blocks until the unregister has finished and registers on top of it.
+
+#### Lock ordering
+
+```
+service_refs  ->  pending_unsubscribes  ->  timer.queue
+                  pending_unsubscribes  ->  WatchRegistry (implementor's locks)
+```
+
+Taken in this order on every path and never the reverse. `release_watch` binds
+a named guard on `pending_unsubscribes` and drops it explicitly before calling
+`schedule`; `shutdown` drains-and-claims under that mutex, releases it, and only
+then calls `TeardownTimer::drain`. The timer thread holds only one of
+`timer.queue` and `pending_unsubscribes` at a time — `run` pops under the queue
+lock and fires outside it.
+
+#### Callback contract
+
+`PendingTeardown::fire` holds the pending-map mutex across
+`unregister_watches_for_service`. Dropping it early would look like an
+improvement and is not: it opens a window in which a re-acquire completes, hands
+back a live guard over a live subscription, and *then* the teardown wipes that
+pair out of the watched set, so every event for it is filtered until the guard
+drops. Holding the mutex is what makes that impossible.
+
+The price is that implementor code runs under a manager lock, which bounds
+`drop`, `shutdown()` and `acquire_watch`'s claim by the callback's duration.
+Hence the contract in §2.3: short, non-blocking, no I/O, no re-entry. A panic is
+contained by `call_unregister` and the timer's restart loop; a hang is not
+recoverable.
+
+Offloading the callback to another queue is **declined**, not deferred: an
+offload puts `unregister` on a queue `register_watch` is not on, which
+reintroduces exactly the reordering above. A registry that needs slow work must
+defer it internally, where it can order its own mutations.
 
 #### Trade-offs
 
 | Decision | Alternative Considered | Why We Chose This |
 |----------|----------------------|-------------------|
-| `std::thread::spawn` for grace timer | `tokio::time::sleep` in worker | Zero worker changes, ~20 lines vs ~150 |
-| `AtomicBool` for cancellation | Channel-based cancel | Simpler, zero allocation, SeqCst ordering |
-| `parking_lot::RwLock` | `std::sync::RwLock` | Non-poisoning, safe in Drop during panic unwinding |
+| One shared timer thread | One `std::thread::spawn` per release | ~540 releases/sec on the TUI path made per-release threads the dominant cost: 27.0–28.8 us median release against 2.7–3.2 us. A release is now a mutex, a heap push and a notify |
+| Dedicated OS thread | `tokio::time::sleep` on the worker runtime | The worker is `new_current_thread` and blocks in `ureq`; one SUBSCRIBE to an unreachable speaker wedged it 5,002.7 ms while the dedicated thread fired at 50.4 ms |
+| `AtomicBool` claim token, swapped under a mutex | Channel-based cancel; bare `AtomicBool` flag | The swap's return value *is* the claim, which is what makes "exactly one winner" hold. A bare flag cannot order the map mutation against the callback |
+| Registry callback under the pending mutex | `drop(pending)` first; offload to a queue | Ordering the watched-set mutation against `acquire_watch` — see "Callback contract" |
+| `catch_unwind` + in-thread restart loop | Supervisor thread; let it die | A supervisor costs a thread, a join handle, a liveness protocol and a shutdown race with `TeardownTimer::drop`, and buys nothing an in-thread restart does not |
+| Inline teardown on schedule refusal | Leak the teardown; panic in `Drop` | `main` panicked in `Drop`; the first draft leaked. Inline is the only option that neither aborts nor silently stops releasing subscriptions |
+| `shutdown()` drains the timer | `shutdown()` stops the timer | Stopping is one-way, so every later release silently skipped its teardown. Only `Drop` may latch |
+| `parking_lot` locks | `std::sync` locks | Non-poisoning, so a panicking callback leaves usable state; guards unlock on unwind |
 | `release_watch()` returns `()` | Returns `Result` | Must never panic in Drop; errors logged internally |
+| `GRACE_PERIOD` fixed at 50 ms | Configurable | Deliberately deferred; `delay` already rides on `PendingTeardown`, so it is later plumbing only |
 
 ### 4.3 Feature: Device Registry
 
@@ -556,28 +693,44 @@ The crate is thin (bridges sonos-state and sonos-stream), so testing focuses on:
 
 ### 8.2 Unit Tests
 
-**Location**: `src/manager.rs` inline `#[cfg(test)]` module
+**Location**: `src/manager.rs` and `src/timer.rs` inline `#[cfg(test)]` modules
 
 **What to test**:
 - [x] Initial subscription state (not subscribed)
 - [x] Device management (add, query, lookup)
-- [ ] Reference count increment/decrement
-- [ ] First-subscription triggers registration
-- [ ] Last-release triggers cleanup
+- [x] Reference count increment/decrement
+- [x] First-subscription triggers registration
+- [x] Last-release triggers cleanup
 
-**Example**:
-```rust
-#[tokio::test]
-async fn test_device_management() {
-    let manager = SonosEventManager::new().await.unwrap();
-    assert!(manager.devices().await.is_empty());
+**Watch lifecycle and teardown timer**:
 
-    let devices = vec![Device { /* ... */ }];
-    manager.add_devices(devices).await.unwrap();
+| Test | What it pins down |
+|------|-------------------|
+| `test_grace_period_cancelled_by_reacquire` | A re-acquire inside the window keeps the subscription |
+| `test_grace_period_fires_after_timeout` | Expiry tears down — and does so while the worker runtime is wedged in `ureq`, which is the timer-independence assertion |
+| `test_expiry_then_reacquire_must_resubscribe` | A fired teardown clears its own entry, so the next acquire resubscribes |
+| `test_cancel_then_late_expiry_keeps_subscription` | A claimed teardown firing late does nothing at all |
+| `test_cancel_and_expiry_have_exactly_one_winner` | 500 contended rounds; per-round unregister delta is exactly `usize::from(fired)` |
+| `test_expiry_racing_reacquire_keeps_the_watch_registered` | The re-acquire's `register_watch` lands *after* the expiry's unregister |
+| `test_registry_panic_does_not_kill_the_timer` | A panicking callback costs one teardown, not the thread |
+| `test_inline_teardown_when_timer_unavailable` | With no timer, the teardown resolves inside the drop — asserted without sleeping |
+| `test_release_after_shutdown_still_unregisters` | `shutdown()` does not latch the grace mechanism off |
+| `test_guard_drop_with_disconnected_worker` | Dropping a guard after shutdown still clears the watched set |
+| `test_shutdown_drains_pending_grace_timers` | Shutdown tears down exactly once, and stays at once |
+| `test_manager_drop_during_teardown_fire` | Dropping the manager mid-teardown completes rather than deadlocking |
+| `test_immediate_mode_churn_costs_no_threads` | Median release under 8 us over 1,000 cycles, plus a Linux-only peak-thread bound |
+| `test_unrepresentable_deadline_is_refused` | `Duration::MAX` is refused, not panicked on |
+| `test_schedule_after_stop_is_refused` | A stopped timer hands the teardown back |
+| `test_earliest_deadline_pops_first` | The heap is min-by-deadline |
 
-    assert_eq!(manager.devices().await.len(), 1);
-}
-```
+**Testing note**: tests that need a deterministic interleaving drive
+`PendingTeardown::fire` by hand (`in_flight_teardown`) and take the queued copy
+off the real timer with `TeardownTimer::drain`, rather than racing a sleep
+against the 50 ms grace period.
+
+**Port allocation**: each test that builds a manager takes a disjoint
+`with_callback_ports` range so parallel runs cannot collide. 4000–5400 are in
+use; new tests continue from 5400.
 
 ### 8.3 Integration Tests
 
@@ -605,20 +758,36 @@ async fn test_device_management() {
 
 ### 9.1 Performance Goals
 
-| Metric | Target | Rationale |
-|--------|--------|-----------|
-| Reference count operation | < 1us | Hot path; should not block event processing |
-| First subscription latency | < 500ms | Includes UPnP network round-trip |
-| Memory per subscription | < 100 bytes | Support many devices without excessive memory |
+| Metric | Target | Measured | Rationale |
+|--------|--------|----------|-----------|
+| `release_watch` (ref count → 0, teardown scheduled) | < 8 us median | 0.92–1.00 us alone; 2.71–3.17 us under the full suite on a cold binary | The immediate-mode TUI path runs ~9 handles at 60 fps ≈ 540 releases/sec |
+| First subscription latency | < 500ms | not measured | Includes UPnP network round-trip |
+| Memory per subscription | < 100 bytes | not measured | Support many devices without excessive memory |
+| Teardown latency under a wedged worker | ≈ `GRACE_PERIOD` | 50.4 ms (dedicated thread) vs 5,002.7 ms (worker runtime) | Teardown timing must not depend on broker health |
+
+Regression baseline: with one `std::thread::spawn` per release the same
+`release_watch` measured 14.6–17.7 us alone and 27.0–28.8 us under the full
+suite — an order of magnitude, and the reason for the shared timer.
+`test_immediate_mode_churn_costs_no_threads` enforces the median bound and
+reports the numbers through `eprintln!`.
 
 ### 9.2 Critical Paths
 
-1. **Reference Count Update** (`src/manager.rs:83`)
-   - **Complexity**: O(1) amortized (DashMap + AtomicUsize)
-   - **Bottleneck**: DashMap shard lock acquisition
-   - **Optimization**: `AtomicUsize` avoids locking for increment/decrement
+1. **Reference Count Update** (`acquire_watch` / `release_watch`)
+   - **Complexity**: O(1) amortized — `parking_lot::RwLock<HashMap<(IpAddr, Service), usize>>`
+   - **Bottleneck**: the write lock, held for the increment only
+   - **Note**: the counts are plain `usize` under one `RwLock`, not `DashMap` + `AtomicUsize`. The decision to subscribe or tear down depends on the transition through zero, which has to be observed atomically with the update
 
-2. **Event Iteration** (`src/manager.rs:156-158`)
+2. **Teardown Scheduling** (`release_watch` → `TeardownTimer::schedule`)
+   - **Complexity**: O(log n) in the number of pending teardowns
+   - **Bottleneck**: two uncontended mutexes and, only when the new deadline is the earliest, a condvar notify
+   - **Optimization**: one thread for all teardowns instead of one per release
+
+3. **Teardown Expiry** (`TeardownTimer::run` → `PendingTeardown::fire`)
+   - **Complexity**: O(log n) to pop, plus the registry callback
+   - **Bottleneck**: the pending-map mutex, held across the callback by design (§4.2)
+
+4. **Event Iteration**
    - **Complexity**: O(1) per event
    - **Bottleneck**: Channel receive
    - **Optimization**: Unbounded channel avoids backpressure blocking
@@ -753,6 +922,12 @@ let manager = SonosEventManager::with_config(config).await?;
 | No EventBroker unregistration | Subscriptions may not be fully cleaned up | Manager drop clears everything | TODO in `release_service_subscription()` |
 | Single event iterator | Can only call `get_event_iterator()` once | Design intentional | None - architectural choice |
 | No device removal | Cannot remove devices once added | Recreate manager | Evaluate need based on usage |
+| Sibling-key register race | Thread B acquiring `"mute"` while A acquires `"volume"` takes the `should_subscribe == false` path and never touches the pending mutex, so its `register_watch` is unordered against a concurrent expiry | Unreachable on the single-threaded TUI path | Needs the `service_refs` increment under the pending mutex — changes the manager's whole locking shape, so its own PR |
+| Registry callbacks run under a manager lock | `drop`, `shutdown()` and `acquire_watch`'s claim can each block for one callback | The §2.3 contract bounds it | Shard `pending_unsubscribes`, or per-key token locks. Trigger: any callback measured above 100 us, or observed contention |
+| `acquire_watch` leaks a ref count and a registration if `send(Subscribe)` fails | A watch that will never receive events | None | Pre-existing; not addressed by the teardown work |
+| Post-`shutdown()` `Unsubscribe` commands accumulate | Unbounded channel grows until the manager drops | None needed in practice | Pre-existing; bounded by manager lifetime |
+| `GRACE_PERIOD` is not configurable | 50 ms for everyone | None | `delay` already rides on `PendingTeardown`, so this is plumbing only |
+| The timer thread is never joined | A teardown may still be running as the manager drops | `Drop` blocks on the pending-map mutex, so an in-flight callback completes first | Declined by design — joining would block `Drop` on implementor code |
 
 ### 14.2 Technical Debt
 

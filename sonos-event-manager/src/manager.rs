@@ -350,7 +350,8 @@ impl Drop for WatchGuard {
 /// - `PendingTeardown::fire` holds `pending_unsubscribes` across the registry
 ///   callback *on purpose* — that is the ordering guarantee `acquire_watch`
 ///   relies on, and it is why the [`WatchRegistry`] contract forbids
-///   re-entering this type. See [`PendingTeardown::fire`].
+///   re-entering this type. The argument is written out on
+///   `PendingTeardown::fire` (private; `--document-private-items` to read it).
 ///
 /// The timer thread only ever holds one of `timer.queue` and
 /// `pending_unsubscribes` at a time: `run` pops under the queue lock and fires
