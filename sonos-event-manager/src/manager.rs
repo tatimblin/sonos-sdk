@@ -538,16 +538,26 @@ impl SonosEventManager {
 
             // Panic-free by contract: this runs from `Drop`. Scheduling is a
             // mutex, a heap push and a condvar notify — no blocking, no
-            // allocation beyond the box, and no OS thread. It only fails once
-            // the timer is stopped, in which case there is nothing left to tear
-            // down, so drop the token rather than leaving it pending forever.
-            if !self.teardown_timer.schedule(Box::new(teardown)) {
+            // allocation beyond the box, and no OS thread.
+            if let Err(teardown) = self.teardown_timer.schedule(Box::new(teardown)) {
+                // The timer is unavailable: its thread failed to spawn, or the
+                // manager is going away. Either way something still has to
+                // resolve this teardown, and dropping the token on the floor
+                // would leave a live UPnP subscription and a stale watched-set
+                // entry behind — at 540 releases/sec, forever.
+                //
+                // So fire it here, inline and without the grace period. This
+                // does run a registry callback from `Drop`; it is contained by
+                // `call_unregister`, and it is only reachable once OS thread
+                // spawning has already failed, which is not a state worth
+                // engineering around further. The previous implementation's
+                // answer to the same condition was a panic in `Drop`.
                 tracing::debug!(
-                    "release_watch: timer stopped, skipping grace period for {}:{:?}",
+                    "release_watch: timer unavailable, tearing down {}:{:?} inline",
                     ip,
                     service
                 );
-                self.pending_unsubscribes.lock().remove(&(ip, service));
+                teardown.fire(&self.command_tx);
             }
         }
     }
@@ -1133,6 +1143,43 @@ mod tests {
             registry.unregisters(),
             1,
             "a guard dropped after shutdown must still clear the watched set"
+        );
+    }
+
+    /// With no timer thread, the teardown has to happen on the spot.
+    ///
+    /// A `TeardownTimer` whose thread failed to spawn latches itself off, so
+    /// `schedule` refuses and hands the teardown back. `release_watch` fires it
+    /// inline. The assertion deliberately does **not** sleep: any wait would
+    /// also pass if a timer were doing the work, and the whole point is that
+    /// nothing is waiting.
+    #[test]
+    fn test_inline_teardown_when_timer_unavailable() {
+        let config = BrokerConfig::default().with_callback_ports(5600, 5700);
+        let manager = Arc::new(SonosEventManager::with_config(config).unwrap());
+        let registry = MockRegistry::new();
+        manager.set_watch_registry(registry.clone());
+
+        let ip: IpAddr = "192.168.1.100".parse().unwrap();
+        let speaker_id = SpeakerId::new("RINCON_123");
+
+        // Stand in for a failed spawn: a stopped timer refuses work in exactly
+        // the same way.
+        manager.teardown_timer.stop();
+
+        let guard = manager
+            .acquire_watch(&speaker_id, "volume", ip, Service::RenderingControl)
+            .unwrap();
+        drop(guard);
+
+        assert_eq!(
+            registry.unregisters(),
+            1,
+            "with no timer to fire it, the teardown must resolve inside the drop"
+        );
+        assert!(
+            manager.pending_unsubscribes.lock().is_empty(),
+            "the inline teardown must clear its own pending entry"
         );
     }
 

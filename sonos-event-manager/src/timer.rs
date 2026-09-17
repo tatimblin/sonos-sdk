@@ -89,28 +89,58 @@ impl TeardownTimer {
         });
 
         let worker_shared = Arc::clone(&shared);
-        std::thread::Builder::new()
+        if let Err(e) = std::thread::Builder::new()
             .name("sonos-teardown-timer".to_string())
             .spawn(move || timer_thread(&worker_shared, &command_tx))
-            // A failure to spawn leaves `shared` with no servicing thread:
-            // teardowns still enqueue and are simply never fired, which is the
-            // same degraded-but-silent outcome as a dead worker.
-            .map_err(|e| tracing::warn!("Failed to spawn teardown timer thread: {}", e))
-            .ok();
+        {
+            // No servicing thread means nothing enqueued here would ever fire.
+            // Latch the timer off so `schedule` refuses immediately and hands
+            // the teardown back to the caller to resolve inline: silently
+            // accumulating never-fired teardowns at 540 releases/sec is the one
+            // outcome nobody can diagnose from the outside.
+            tracing::error!(
+                "Failed to spawn teardown timer thread ({}); grace periods will be \
+                 resolved inline instead",
+                e
+            );
+            shared.queue.lock().stopped = true;
+        }
 
         Self { shared }
     }
 
     /// Enqueue a teardown to fire after its own `delay`.
     ///
-    /// Never panics — this is reached from `Drop`. Returns `false` if the timer
-    /// is already stopped, in which case the caller owns the cleanup.
-    pub(crate) fn schedule(&self, teardown: Box<PendingTeardown>) -> bool {
-        let due = Instant::now() + teardown.delay;
+    /// Never panics — this is reached from `Drop`. On refusal the teardown is
+    /// handed back in the `Err`, because a refused teardown still has to be
+    /// resolved by somebody; the caller owns it from that point.
+    ///
+    /// There are exactly two refusals:
+    ///
+    /// 1. the timer is stopped — its thread failed to spawn, or the manager is
+    ///    being dropped;
+    /// 2. `now + delay` is not a representable [`Instant`]. `Instant + Duration`
+    ///    *panics* on overflow, and `delay` rides on the teardown rather than
+    ///    being a constant here, so the day the grace period becomes
+    ///    configurable a bad value must not become a panic inside `Drop`.
+    pub(crate) fn schedule(
+        &self,
+        teardown: Box<PendingTeardown>,
+    ) -> Result<(), Box<PendingTeardown>> {
+        let Some(due) = Instant::now().checked_add(teardown.delay) else {
+            tracing::error!(
+                "Grace period of {:?} for {}:{:?} is not a representable deadline; \
+                 handing the teardown back to be resolved without one",
+                teardown.delay,
+                teardown.ip,
+                teardown.service
+            );
+            return Err(teardown);
+        };
 
         let mut queue = self.shared.queue.lock();
         if queue.stopped {
-            return false;
+            return Err(teardown);
         }
 
         // Only the earliest deadline needs to wake the thread; anything later
@@ -123,7 +153,7 @@ impl TeardownTimer {
             self.shared.wakeup.notify_one();
         }
 
-        true
+        Ok(())
     }
 
     /// Discard everything currently queued, leaving the timer running.
@@ -274,8 +304,25 @@ mod tests {
         timer.stop();
 
         assert!(
-            !timer.schedule(Box::new(crate::manager::test_support::dummy_teardown())),
-            "a stopped timer must refuse work rather than silently swallow it"
+            timer
+                .schedule(Box::new(crate::manager::test_support::dummy_teardown()))
+                .is_err(),
+            "a stopped timer must hand the teardown back rather than swallow it"
+        );
+        assert_eq!(timer.queued(), 0);
+    }
+
+    #[test]
+    fn test_unrepresentable_deadline_is_refused() {
+        let (tx, _rx) = tokio_mpsc::unbounded_channel::<Command>();
+        let timer = TeardownTimer::start(tx.downgrade());
+
+        let mut teardown = crate::manager::test_support::dummy_teardown();
+        teardown.delay = std::time::Duration::MAX;
+
+        assert!(
+            timer.schedule(Box::new(teardown)).is_err(),
+            "a deadline that cannot be represented must be refused, not panicked on"
         );
         assert_eq!(timer.queued(), 0);
     }
