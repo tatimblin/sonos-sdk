@@ -1,7 +1,7 @@
 //! Live demo — discover speakers and stream all service events in real time.
 //!
 //! Run with:
-//!   cargo run -p sonos-stream --example live_demo
+//!   cargo run -p sonos-sdk-stream --example live_demo
 //!
 //! Then change volume, play/pause, group/ungroup speakers and watch the output.
 

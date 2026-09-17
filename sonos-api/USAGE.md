@@ -478,13 +478,11 @@ impl DeviceCache {
 
 1. **Explore the CLI Example**: Run `cargo run --example cli_example` to see all features
 2. **Read the API Documentation**: Use `cargo doc --open` to browse the full API
-3. **Check Integration Example**: See `../../integration-example/` for more advanced usage
-4. **Event Handling**: Explore `../../sonos-stream/` for real-time event subscriptions
-5. **Build Your App**: Use these patterns to build your own Sonos applications
+3. **Event Handling**: Explore `../../sonos-stream/` for real-time event subscriptions
+4. **Build Your App**: Use these patterns to build your own Sonos applications
 
 ## Related Documentation
 
 - [sonos-api README](README.md) - Crate overview and basic usage
 - [CLI Example README](examples/README.md) - Detailed CLI example documentation  
-- [Integration Example](../../integration-example/README.md) - Advanced integration patterns
-- [sonos-stream Examples](../../sonos-stream/examples/README.md) - Event handling examples
+- [sonos-stream examples](../../sonos-stream/examples/) - Event handling examples

@@ -7,7 +7,6 @@ license.workspace = true
 repository.workspace = true
 description = "Internal reactive state management for sonos-sdk"
 readme = "README.md"
-exclude = ["plans/"]
 
 [lib]
 name = "sonos_state"

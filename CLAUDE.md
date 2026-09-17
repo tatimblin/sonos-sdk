@@ -69,9 +69,6 @@ cargo run -p sonos-sdk-stream --example basic_usage
 cargo run -p sonos-sdk-stream --example async_realtime
 cargo run -p sonos-sdk-stream --example firewall_handling
 cargo run -p sonos-sdk-stream --example filtering_and_batch
-
-# Integration example (temporarily disabled)
-# cargo run --bin integration-example
 ```
 
 ### Linting and Formatting
@@ -350,7 +347,6 @@ sonos-state ──┬── sonos-api ──── soap-client
 
 ## Important Notes
 
-- The `integration-example` crate is temporarily disabled during UPnP client refactoring
 - Mix of async (sonos-state, sonos-stream, callback-server) and blocking (sonos-api, soap-client) APIs
 - Device communication happens on port 1400 typically
 - Event subscriptions require firewall configuration for callbacks - automatic fallback to polling provided

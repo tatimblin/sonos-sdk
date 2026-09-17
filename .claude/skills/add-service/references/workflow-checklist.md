@@ -138,7 +138,7 @@ python .claude/skills/add-service/scripts/integration_test.py <Service> <speaker
 
 ### Example Application
 ```bash
-cargo run -p sonos-sdk --example basic_usage
+cargo run -p sonos-sdk --example basic_usage_sdk
 ```
 - [ ] Example compiles
 - [ ] New properties accessible

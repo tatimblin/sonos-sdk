@@ -284,5 +284,4 @@ After exploring this example:
 
 ### Related Examples
 
-- **Integration Example**: See `../../integration-example/` for a more comprehensive example with event handling
 - **Stream Examples**: Check `../../sonos-stream/examples/` for event streaming examples
