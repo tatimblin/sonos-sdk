@@ -19,7 +19,7 @@ edition = "2021"
 # Floor set by `ureq` 3.4, which is an edition-2024 crate (edition 2024 was
 # stabilized in Rust 1.85). Verified by the `msrv` CI job, which builds the
 # workspace with exactly this toolchain.
-rust-version = "1.85"
+rust-version = "1.98"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/tatimblin/sonos-sdk"
 keywords = ["sonos", "upnp", "audio", "smart-home"]
@@ -94,7 +94,7 @@ significant_drop_in_scrutinee = "warn"
 needless_pass_by_ref_mut = "warn"
 
 # --- Panics and silent misbehavior.
-unchecked_duration_subtraction = "warn"
+unchecked_time_subtraction = "warn"
 match_wild_err_arm = "warn"
 index_refutable_slice = "warn"
 path_buf_push_overwrite = "warn"
@@ -111,16 +111,14 @@ exit = "warn"
 # --- Cheap clarity wins, all at or near zero.
 mutex_atomic = "warn"
 needless_collect = "warn"
-string_to_string = "warn"
 semicolon_if_nothing_returned = "warn"
 flat_map_option = "warn"
 manual_ok_or = "warn"
-from_iter_instead_of_collect = "warn"
 filter_map_next = "warn"
 explicit_into_iter_loop = "warn"
 explicit_iter_loop = "warn"
 mut_mut = "warn"
-empty_enum = "warn"
+empty_enums = "warn"
 zero_sized_map_values = "warn"
 rest_pat_in_fully_bound_structs = "warn"
 lossy_float_literal = "warn"

@@ -86,7 +86,7 @@ fn main() -> io::Result<()> {
             thread::sleep(Duration::from_millis(400));
             let room = ROOMS[i as usize % ROOMS.len()].to_string();
             if let Some(Temperature(t)) = store_sim.get::<Temperature>(&room) {
-                let new_t = if i % 3 == 0 {
+                let new_t = if i.is_multiple_of(3) {
                     t.saturating_add(1).min(99)
                 } else {
                     t.saturating_sub(1).max(40)

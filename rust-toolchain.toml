@@ -3,7 +3,9 @@
 # vary between rustc releases (e.g. `uninlined_format_args`) fire locally but
 # not in CI, or vice versa.
 #
-# CI currently resolves its own toolchain via `dtolnay/rust-toolchain@stable`,
-# which ignores this file; reconciling the two is part of the CI hygiene work.
-channel = "1.88.0"
+# CI installs this same version explicitly via `PINNED_TOOLCHAIN` in ci.yml,
+# which the `toolchain-sync` job asserts matches the channel below. Note that
+# `dtolnay/rust-toolchain` ignores this file, so any job that needs a *different*
+# toolchain must set `RUSTUP_TOOLCHAIN` to escape it -- see the `msrv` job.
+channel = "1.98.1"
 components = ["rustfmt", "clippy"]
