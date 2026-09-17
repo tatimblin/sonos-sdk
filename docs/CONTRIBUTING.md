@@ -177,8 +177,7 @@ sonos-sdk/
 ├── sonos-event-manager/     # Internal: subscription lifecycle
 ├── sonos-discovery/         # Internal: SSDP device discovery
 ├── callback-server/         # Internal: HTTP event reception
-├── soap-client/             # Internal: SOAP transport
-└── state-store/             # Internal: generic state primitives
+└── soap-client/             # Internal: SOAP transport
 ```
 
 ## Troubleshooting

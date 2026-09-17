@@ -27,7 +27,6 @@ cargo build -p sonos-sdk-state          # sonos-state/
 cargo build -p sonos-sdk-event-manager  # sonos-event-manager/
 cargo build -p sonos-sdk-callback-server # callback-server/
 cargo build -p sonos-sdk-soap-client    # soap-client/
-cargo build -p sonos-sdk-state-store    # state-store/
 
 # Release build
 cargo build --release
@@ -357,4 +356,4 @@ sonos-state ──┬── sonos-api ──── soap-client
 - Event subscriptions require firewall configuration for callbacks - automatic fallback to polling provided
 - The project uses standard Rust 2021 edition features
 - **User-Facing APIs**: Only sonos-sdk and sonos-api are intended for direct use
-- **Internal Crates**: sonos-state, sonos-discovery, sonos-stream, sonos-event-manager, callback-server, soap-client, state-store are workspace implementation details (published to crates.io as transitive dependencies)
+- **Internal Crates**: sonos-state, sonos-discovery, sonos-stream, sonos-event-manager, callback-server, soap-client are workspace implementation details (published to crates.io as transitive dependencies)

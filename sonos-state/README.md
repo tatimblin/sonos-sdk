@@ -26,9 +26,6 @@ sonos-state (Internal State Management)
     ├── StateManager (property storage + watch tracking)
     ├── ChangeIterator (blocking event iteration)
     └── Property types (Volume, Mute, PlaybackState, etc.)
-            │
-            ▼
-state-store (Generic Storage Primitives)
 ```
 
 ## Role in the SDK
@@ -101,7 +98,7 @@ Sonos-specific property types with UPnP service metadata:
 ### Property Traits
 
 ```rust
-// Generic trait from state-store
+// Base trait (src/property.rs)
 pub trait Property: Clone + Send + Sync + PartialEq + 'static {
     const KEY: &'static str;
 }
@@ -123,7 +120,6 @@ pub trait SonosProperty: Property {
 
 ## Dependencies
 
-- `state-store` - Generic state management primitives
 - `sonos-api` - UPnP operations and types
 - `sonos-discovery` - Device discovery types
 
@@ -134,5 +130,4 @@ MIT License
 ## See Also
 
 - [`sonos-sdk`](../sonos-sdk) - Public DOM-like API (use this for applications)
-- [`state-store`](../state-store) - Generic state management primitives
 - [`sonos-api`](../sonos-api) - Low-level UPnP operations

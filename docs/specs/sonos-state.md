@@ -343,7 +343,9 @@ it.
 #### `SonosProperty` (`src/property.rs:52`)
 
 ```rust
-pub use state_store::Property;      // src/property.rs:15 — provides const KEY
+pub trait Property: Clone + Send + Sync + PartialEq + 'static {
+    const KEY: &'static str;    // src/property.rs:25
+}
 
 pub trait SonosProperty: Property {
     const SCOPE: Scope;             // Speaker | Group | System  (src/property.rs:23)
@@ -351,7 +353,7 @@ pub trait SonosProperty: Property {
 }
 ```
 
-**Purpose**: `KEY` comes from the generic `state-store` crate; `SCOPE` and `SERVICE` are the
+**Purpose**: `KEY` is the domain-agnostic identifier; `SCOPE` and `SERVICE` are the
 Sonos-specific additions. `SERVICE` is what lets `watch()` know which UPnP service to
 subscribe to from the property type alone, with no lookup table to keep in sync.
 
@@ -1121,7 +1123,6 @@ returns `None`: this value is a cache key for `ip_to_speaker`, not something to 
 | `sonos-stream` | `EnrichedEvent`, `EventData`, per-service state structs | Already normalizes UPnP events and polling into one shape |
 | `sonos-event-manager` | `SonosEventManager`, `WatchRegistry` | Owns subscription ref counting and grace periods |
 | `sonos-discovery` | `Device` | Input type for `add_devices()` |
-| `state-store` | Base `Property` trait (`src/property.rs:15`) | Domain-agnostic `KEY`; `SonosProperty` adds the Sonos parts |
 | `parking_lot` | `RwLock` | Non-poisoning: a panicking consumer must not poison shared state |
 | `serde` | Derives on property types | Lets consumers persist values |
 | `tracing` | Logging | Workspace-wide convention |
@@ -1519,7 +1520,6 @@ The workspace versions together; breaking changes ride the `sonos-sdk` version.
 - [docs/STATUS.md](../STATUS.md) — service completion matrix
 - [docs/specs/sonos-event-manager.md](sonos-event-manager.md) — subscription lifecycle
 - [docs/specs/sonos-stream.md](sonos-stream.md) — event delivery and polling fallback
-- [docs/specs/state-store.md](state-store.md) — the generic `Property` trait
 
 ### C. Changelog
 
