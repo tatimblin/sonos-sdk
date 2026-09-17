@@ -54,7 +54,7 @@ The soap-client crate provides a unified, resource-efficient transport layer tha
 │                         Public API                               │
 │  ┌──────────────────────────────────────────────────────────┐   │
 │  │  SoapClient::get() -> &'static SoapClient (singleton)     │   │
-│  │  SoapClient::with_agent() -> SoapClient (custom)          │   │
+│  │  SoapClient::default() -> SoapClient (== get().clone())   │   │
 │  └──────────────────────────────────────────────────────────┘   │
 ├─────────────────────────────────────────────────────────────────┤
 │                      Core Methods                                │
@@ -481,9 +481,9 @@ pub struct SoapClient {
 ```
 
 **Lifecycle**:
-1. **Creation**: Either via `LazyLock` singleton initialization (preferred) or `with_agent()` for custom configurations
+1. **Creation**: `LazyLock` singleton initialization only. `agent` is private and no constructor takes one, so every `SoapClient` in existence is the singleton or a `Clone` of it, reached via `get()`, `clone()` or `default()`
 2. **Mutation**: Immutable after creation - all state is in the HTTP agent which manages its own connection pool
-3. **Destruction**: Singleton lives for program duration; custom instances dropped when last Arc reference is dropped
+3. **Destruction**: The singleton lives for the program duration; clones drop when the last Arc reference goes
 
 **Memory considerations**:
 - `SoapClient` is 8 bytes (single Arc pointer)
@@ -781,15 +781,10 @@ The soap-client crate currently does not include logging. All observability is h
 | Connect timeout | `Duration` | 5 seconds | Maximum time to establish TCP connection |
 | Read timeout | `Duration` | 10 seconds | Maximum time to receive complete response |
 
-These are hardcoded in the singleton but can be customized via `SoapClient::with_agent()`:
-
-```rust
-let custom_agent = ureq::AgentBuilder::new()
-    .timeout_connect(Duration::from_secs(10))
-    .timeout_read(Duration::from_secs(30))
-    .build();
-let client = SoapClient::with_agent(Arc::new(custom_agent));
-```
+These are hardcoded in the singleton and are not configurable. The
+`with_agent()` escape hatch that once allowed a custom `ureq::Agent` was
+removed in 0.9.0 (unreleased) — see §13.3. Changing them means editing
+`SHARED_SOAP_CLIENT` in `src/lib.rs`.
 
 ---
 
@@ -800,8 +795,7 @@ let client = SoapClient::with_agent(Arc::new(custom_agent));
 | API | Stability | Notes |
 |-----|-----------|-------|
 | `SoapClient::get()` | Stable | Primary API, no changes planned |
-| `SoapClient::with_agent()` | Stable | Escape hatch for custom configuration |
-| `SoapClient::new()` | Deprecated | Marked deprecated since 0.2.0; use `get()` |
+| `SoapClient::default()` | Stable | Sugar for `get().clone()` |
 | `call()` | Stable | Core functionality |
 | `subscribe()`, `renew_subscription()`, `unsubscribe()` | Stable | UPnP subscription API |
 
@@ -809,8 +803,7 @@ let client = SoapClient::with_agent(Arc::new(custom_agent));
 
 **Policy**: As a private crate, breaking changes are coordinated within the workspace. Downstream crates are updated atomically.
 
-**Current deprecations**:
-- `SoapClient::new()`: Use `SoapClient::get()` instead (marked `#[deprecated]` at `src/lib.rs:69`)
+**Current deprecations**: none.
 
 ### 13.3 Version History
 
@@ -818,6 +811,7 @@ let client = SoapClient::with_agent(Arc::new(custom_agent));
 |---------|---------|-----------------|
 | 0.1.0 | Initial release | N/A |
 | 0.2.0 | Added singleton pattern, deprecated `new()` | Replace `SoapClient::new()` with `SoapClient::get().clone()` |
+| 0.9.0 (unreleased) | Removed `new()` and `with_agent()` | Use `SoapClient::get().clone()` or `SoapClient::default()`. Custom agents are no longer supported |
 
 ---
 
@@ -827,7 +821,7 @@ let client = SoapClient::with_agent(Arc::new(custom_agent));
 
 | Limitation | Impact | Workaround | Planned Fix |
 |------------|--------|------------|-------------|
-| Hardcoded timeouts in singleton | Cannot adjust timeouts globally | Use `with_agent()` for custom timeouts | None planned |
+| Hardcoded timeouts in singleton | Cannot adjust timeouts globally | None — edit `SHARED_SOAP_CLIENT` in `src/lib.rs` | None planned |
 | No connection pool metrics | Cannot monitor pool health | None | Consider adding metrics |
 | callback-server dependency unused | Unnecessary compilation | May be used in future | Review and remove if unneeded |
 
@@ -881,3 +875,4 @@ let client = SoapClient::with_agent(Arc::new(custom_agent));
 | 2024-01-14 | Claude | Initial specification created |
 | 2026-08-15 | Claude | Documented the `ureq` error-status trap (§3.3): UPnP faults arrive as HTTP 500 and must be read out of `ureq::Error::Status`. Corrected fault element spelling to `UPnPError` (§4.3), widened `SoapError::Fault` to carry `errorDescription` (§2.3), and replaced `status() != 200` checks with `is_success()`. |
 | 2026-08-17 | Claude Opus 5 | `call()` now returns `Result<String, SoapError>` instead of `Result<xmltree::Element, _>`, and fault detection is a streaming `quick-xml` scan (`scan_envelope`). `xmltree` removed from the workspace. Documented why text and not a DOM (§3.1), path-exact `<Fault>` matching and truncated-envelope rejection (§4.3), and the `ureq` 2.x pin (§6.1). |
+| 2026-09-17 | Claude Opus 5 | Removed `SoapClient::new()` and `SoapClient::with_agent()` (§2.1, §5.1, §12, §13.1, §13.2, §13.3, §14.1). `new()` had been `#[deprecated]` since 0.1.0 with no callers anywhere, including its own tests; `with_agent()`'s only caller in the workspace was that dead `new()`. All real traffic has always gone through `SoapClient::get()`. With both gone, `agent` is private and no remaining constructor accepts one, so every `SoapClient` is provably the singleton or a clone of it — the resource-efficiency claim in §2.1 is now enforced by the type rather than by convention. The cost is that the documented workaround for §14.1's hardcoded timeouts disappears; that row now says so rather than pointing at an escape hatch nothing exercised. |

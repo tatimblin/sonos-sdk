@@ -68,30 +68,6 @@ impl SoapClient {
         &SHARED_SOAP_CLIENT
     }
 
-    /// Create a SOAP client with a custom agent (for advanced use cases only)
-    ///
-    /// Most applications should use `SoapClient::get()` instead for better
-    /// resource efficiency. This method is provided for cases where custom
-    /// timeout values or other HTTP client configuration is needed.
-    pub fn with_agent(agent: Arc<ureq::Agent>) -> Self {
-        Self { agent }
-    }
-
-    /// Create a new SOAP client with default configuration
-    ///
-    /// **DEPRECATED**: Use `SoapClient::get()` instead for better resource efficiency.
-    /// This method creates a separate HTTP agent instance, which wastes resources
-    /// when multiple SOAP clients are used.
-    #[deprecated(since = "0.1.0", note = "Use SoapClient::get() for shared resources")]
-    pub fn new() -> Self {
-        Self::with_agent(Arc::new(
-            ureq::AgentBuilder::new()
-                .timeout_connect(Duration::from_secs(5))
-                .timeout_read(Duration::from_secs(10))
-                .build(),
-        ))
-    }
-
     /// Send a SOAP request and return the raw response body.
     ///
     /// The body is handed back as text rather than a parsed DOM: response *shape*
