@@ -1,7 +1,7 @@
 # Product Roadmap: Complete the 5 Core Services
 
 **Date:** 2026-02-24
-**Status:** Brainstorm complete
+**Status:** Landed — see [docs/STATUS.md](../STATUS.md) for live per-service coverage
 
 ## What We're Building
 
@@ -126,7 +126,9 @@ Add execution methods to Speaker and Group structs.
 - AVTransport methods on Speaker: play(), pause(), stop(), next(), previous(), seek(), set_av_transport_uri(), etc.
 - RenderingControl methods on Speaker: set_volume(), set_mute(), set_bass(), set_treble(), set_loudness(), set_relative_volume()
 - GroupRenderingControl methods on Group: set_group_volume(), set_group_mute(), snapshot_group_volume()
-- GroupManagement methods on Group: add_member(), remove_member()
+- Group lifecycle methods on Group: `add_speaker()`, `remove_speaker()`, `dissolve()` —
+  implemented over AVTransport (`SetAVTransportURI` with `x-rincon:`, and
+  `BecomeCoordinatorOfStandaloneGroup`), not over GroupManagement
 - ZoneGroupTopology: any needed methods for group creation/dissolution
 
 ### Layer 6: Group Lifecycle

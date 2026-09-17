@@ -237,51 +237,45 @@ pub fn release_watch(
 #### sonos-sdk
 
 ```rust
-/// Replaces WatchStatus<P>. Holds a snapshot of the current value
-/// along with a subscription guard. Dropping the handle starts the
-/// grace period — the subscription persists for 50ms.
+/// A live view onto the property plus a subscription hold. Dropping the
+/// handle starts the grace period — the subscription persists for 50ms.
 ///
 /// Not Clone — each handle is one subscription hold.
 #[must_use = "dropping the handle starts the grace period"]
 pub struct WatchHandle<P> {
-    value: Option<P>,
+    /// Reads the property from the store on demand.
+    read: Box<dyn Fn() -> Option<P> + Send + Sync>,
     mode: WatchMode,
-    _guard: WatchGuard,
-}
-
-impl<P> Deref for WatchHandle<P> {
-    type Target = Option<P>;
-    fn deref(&self) -> &Self::Target { &self.value }
+    _cleanup: WatchCleanup,
 }
 
 impl<P> WatchHandle<P> {
     /// Returns the watch mode (Events, Polling, or CacheOnly).
     pub fn mode(&self) -> WatchMode { self.mode }
 
-    /// Convenience: returns a reference to the inner value, if available.
-    /// Equivalent to `(*handle).as_ref()` but more ergonomic.
-    pub fn value(&self) -> Option<&P> { self.value.as_ref() }
+    /// Reads the current value from the store. Live: re-reads on every call.
+    pub fn value(&self) -> Option<P> { (self.read)() }
 
-    /// Returns true if a value has been received from the device.
-    pub fn has_value(&self) -> bool { self.value.is_some() }
+    /// Returns true if a value is currently available from the store.
+    pub fn has_value(&self) -> bool { self.value().is_some() }
 
     /// Returns true if real-time UPnP events are active.
     pub fn has_realtime_events(&self) -> bool { self.mode == WatchMode::Events }
 }
-
-impl<P: fmt::Debug> fmt::Debug for WatchHandle<P> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("WatchHandle")
-            .field("value", &self.value)
-            .field("mode", &self.mode)
-            .finish()
-    }
-}
 ```
 
-#### Research Insight: WatchHandle Ergonomics
+#### WatchHandle Ergonomics
 
-The pattern review noted that `Deref<Target = Option<P>>` is acceptable but unconventional. The `value()` method provides `Option<&P>` which is more idiomatic than `&Option<P>` in most Rust APIs. `has_realtime_events()` is preserved from the deleted `WatchStatus` to minimize gratuitous API breakage.
+A handle is a lease, not a snapshot. Holding the read as a closure makes `value()` a live
+read, so one handle held across a render loop reports every change and callers never have
+to re-`watch()` to refresh. It also keeps `WatchHandle` unaware of which store it came
+from: `PropertyHandle::watch()` and `GroupPropertyHandle::watch()` read via `get_property`
+and `get_group_property` and resolve different keys, so capturing the read is what stops
+the two construction sites drifting into two notions of "current".
+
+There is deliberately no `Deref<Target = Option<P>>`: with a live read there is no owned
+`Option<P>` to hand out a reference to, and the accessors carry the intent better.
+`has_realtime_events()` is kept so callers can distinguish `Events` from `Polling`.
 
 ### Implementation Phases
 
@@ -459,8 +453,8 @@ The architecture review identified that `GroupPropertyHandle` uses the coordinat
 | SpeakerId circular dependency | Resolved in Phase 0a: SpeakerId moved to sonos-api |
 | WatchGuard::Drop panic safety | `release_watch()` returns `()`, handles all errors internally |
 | Lock poisoning permanently disables watch system | Resolved in Phase 0c: `parking_lot::RwLock` (no poisoning) |
-| Grace timer race with new watch() | AtomicBool cancellation is checked after sleep — no race possible |
-| Thread spawn overhead at 60fps | At most 30 threads/sec (10 speakers * 3 services), each sleeping 50ms. Negligible. |
+| Grace timer race with new watch() | The `AtomicBool` is a *claim token*, not a post-sleep check: whoever swaps it `false`→`true` owns the teardown, and both the cancelling `acquire_watch` and the expiring timer swap while holding the pending map's mutex, so exactly one wins |
+| Thread spawn overhead at 60fps | ~540 releases/sec (9 handles at 60fps), each formerly costing an OS thread alive for 50ms. One shared `TeardownTimer` thread over a deadline-ordered heap replaces them; a release is now a mutex, a heap push and a condvar notify |
 | todo/004 (event-init not propagated to rediscovered speakers) | Pre-existing bug, not worsened meaningfully. Address separately. |
 | Partial service re-acquisition leaves stale watched entries | Acceptable minor inefficiency; documented in brainstorm |
 | WatchGuard is Send but not Sync | Acceptable for TUI single-thread rendering. Documented. |
@@ -470,7 +464,7 @@ The architecture review identified that `GroupPropertyHandle` uses the coordinat
 
 ### Origin
 
-- **Brainstorm document:** [docs/brainstorms/2026-03-24-watch-grace-period-brainstorm.md](docs/brainstorms/2026-03-24-watch-grace-period-brainstorm.md) — Key decisions carried forward: 50ms grace period, RAII WatchGuard, unified timer in event-manager, delete unwatch().
+- **Brainstorm document:** [docs/brainstorms/2026-03-24-watch-grace-period-brainstorm.md](../brainstorms/2026-03-24-watch-grace-period-brainstorm.md) — Key decisions carried forward: 50ms grace period, RAII WatchGuard, unified timer in event-manager, delete unwatch().
 
 ### Internal References
 

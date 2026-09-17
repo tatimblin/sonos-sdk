@@ -330,7 +330,6 @@ pub enum EventData {
     GroupRenderingControl(sonos_api::services::group_rendering_control::state::GroupRenderingControlState),
     ZoneGroupTopology(sonos_api::services::zone_group_topology::state::ZoneGroupTopologyState),
     GroupManagement(sonos_api::services::group_management::state::GroupManagementState),
-    DeviceProperties(DevicePropertiesEvent), // Keep — no state type yet
 }
 ```
 
@@ -341,9 +340,9 @@ pub enum EventData {
 - `ZoneGroupTopologyEvent` struct + `ZoneGroupInfo` + `ZoneGroupMemberInfo` + `NetworkInfo` + `SatelliteInfo`
 - `GroupManagementEvent` struct
 
-**Keep in types.rs:** `EnrichedEvent`, `EventSource`, `DevicePropertiesEvent` (no state type for this service yet).
+**Keep in types.rs:** `EnrichedEvent`, `EventSource` and the `EventData` enum itself.
 
-**Update `EventData::service_type()`** to match new variant names.
+`EventData` needs no service accessor: the originating `Service` travels on `EnrichedEvent`.
 
 ---
 

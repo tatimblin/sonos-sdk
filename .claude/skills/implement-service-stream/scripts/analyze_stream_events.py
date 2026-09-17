@@ -18,25 +18,30 @@ SCRIPT_DIR = Path(__file__).parent
 WORKSPACE_ROOT = SCRIPT_DIR.parents[3]  # Up from .claude/skills/implement-service-stream/scripts
 
 TYPES_FILE = WORKSPACE_ROOT / "sonos-stream" / "src" / "events" / "types.rs"
+# The canonical `{Service}State` types live in sonos-api, one directory per
+# service. sonos-stream only wraps them in `EventData`.
+API_SERVICES_DIR = WORKSPACE_ROOT / "sonos-api" / "src" / "services"
 PROCESSOR_FILE = WORKSPACE_ROOT / "sonos-stream" / "src" / "events" / "processor.rs"
 
 
-def parse_event_structs(content: str) -> dict:
-    """Parse event struct definitions from types.rs"""
+def parse_event_structs(_content: str = "") -> dict:
+    """Parse `{Service}State` definitions from sonos-api services/*/state.rs"""
     structs = {}
 
-    # Match struct definitions
-    struct_pattern = r'pub struct (\w+Event)\s*\{([^}]+)\}'
-    matches = re.findall(struct_pattern, content, re.DOTALL)
+    if not API_SERVICES_DIR.exists():
+        return structs
 
-    for name, body in matches:
-        fields = []
-        field_pattern = r'pub (\w+):\s*([\w<>,\s:]+)'
-        for field_match in re.finditer(field_pattern, body):
-            field_name = field_match.group(1)
-            field_type = field_match.group(2).strip().rstrip(',')
-            fields.append((field_name, field_type))
-        structs[name] = fields
+    for state_file in sorted(API_SERVICES_DIR.glob("*/state.rs")):
+        content = state_file.read_text()
+        struct_pattern = r'pub struct (\w+State)\s*\{([^}]+)\}'
+        for name, body in re.findall(struct_pattern, content, re.DOTALL):
+            fields = []
+            field_pattern = r'pub (\w+):\s*([\w<>,\s:]+)'
+            for field_match in re.finditer(field_pattern, body):
+                field_name = field_match.group(1)
+                field_type = field_match.group(2).strip().rstrip(',')
+                fields.append((field_name, field_type))
+            structs[name] = fields
 
     return structs
 
@@ -57,21 +62,27 @@ def parse_event_data_enum(content: str) -> list:
 
 
 def parse_service_type_mapping(content: str) -> dict:
-    """Parse service_type() match arms"""
-    mapping = {}
+    """Map each EventData variant to its sonos_api::Service
 
-    # Find service_type implementation
-    impl_match = re.search(
-        r'fn service_type\(&self\)[^{]*\{([^}]+match self[^}]+\})',
-        content, re.DOTALL
-    )
-    if impl_match:
-        impl_body = impl_match.group(1)
-        arm_pattern = r'EventData::(\w+)\(_\)\s*=>\s*\{?\s*sonos_api::Service::(\w+)'
-        for match in re.finditer(arm_pattern, impl_body):
-            mapping[match.group(1)] = match.group(2)
+    `EventData` carries no service accessor -- the originating service travels
+    on the enclosing `EnrichedEvent`. The variant name *is* the service name, so
+    the mapping is the identity over the variants that also exist in the
+    `Service` enum.
+    """
+    service_file = WORKSPACE_ROOT / "sonos-api" / "src" / "service.rs"
+    services = set()
+    if service_file.exists():
+        enum_match = re.search(
+            r'pub enum Service\s*\{(.*?)\n\}', service_file.read_text(), re.DOTALL
+        )
+        if enum_match:
+            body = re.sub(r'^\s*(///|//).*$', '', enum_match.group(1), flags=re.MULTILINE)
+            services = set(re.findall(r'^\s*(\w+)\s*,', body, re.MULTILINE))
 
-    return mapping
+    return {
+        variant: (variant if variant in services else "UNKNOWN")
+        for variant, _ in parse_event_data_enum(content)
+    }
 
 
 def list_events():
@@ -126,7 +137,7 @@ def show_service(service_name: str):
         print(f"Available services: {', '.join(set(mapping.values()))}")
         sys.exit(1)
 
-    struct_name = target_variant.replace("Event", "") + "Event"
+    struct_name = f"{target_variant}State"
     if struct_name not in structs:
         # Try direct match
         for s in structs:
@@ -135,8 +146,8 @@ def show_service(service_name: str):
                 break
 
     print(f"Service: {mapping.get(target_variant, 'UNKNOWN')}")
-    print(f"Event Variant: EventData::{target_variant}")
-    print(f"Event Struct: {struct_name}")
+    print(f"EventData Variant: EventData::{target_variant}")
+    print(f"State Struct: {struct_name}")
     print()
 
     if struct_name in structs:
@@ -144,7 +155,7 @@ def show_service(service_name: str):
         for field_name, field_type in structs[struct_name]:
             print(f"  pub {field_name}: {field_type}")
     else:
-        print(f"Warning: Struct {struct_name} not found in types.rs")
+        print(f"Warning: Struct {struct_name} not found under {API_SERVICES_DIR}")
 
 
 def validate_coverage():

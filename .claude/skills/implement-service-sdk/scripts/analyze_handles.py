@@ -19,6 +19,8 @@ WORKSPACE_ROOT = SCRIPT_DIR.parents[3]
 
 HANDLES_FILE = WORKSPACE_ROOT / "sonos-sdk" / "src" / "property" / "handles.rs"
 SPEAKER_FILE = WORKSPACE_ROOT / "sonos-sdk" / "src" / "speaker.rs"
+# Group-scoped handles hang off `Group`, not `Speaker`.
+GROUP_FILE = WORKSPACE_ROOT / "sonos-sdk" / "src" / "group.rs"
 STATE_PROPERTY_FILE = WORKSPACE_ROOT / "sonos-state" / "src" / "property.rs"
 
 
@@ -27,7 +29,8 @@ def parse_type_aliases(content: str) -> list:
     aliases = []
 
     # Match: pub type XxxHandle = PropertyHandle<Xxx>;
-    pattern = r'pub type (\w+Handle)\s*=\s*PropertyHandle<(\w+)>'
+    # Group properties alias GroupPropertyHandle, so the prefix is optional.
+    pattern = r'pub type (\w+Handle)\s*=\s*(?:Group)?PropertyHandle<(\w+)>'
     for match in re.finditer(pattern, content):
         alias = match.group(1)
         property_type = match.group(2)
@@ -40,8 +43,11 @@ def parse_fetchable_impls(content: str) -> list:
     """Parse Fetchable implementations from handles.rs"""
     fetchable = []
 
-    # Match: impl Fetchable for Xxx {
-    pattern = r'impl Fetchable for (\w+)\s*\{'
+    # Match the three fetch traits: Fetchable, GroupFetchable (group-scoped)
+    # and FetchableWithContext (response covers several speakers). Anchored to
+    # the line start so the `impl Fetchable for Volume` example in the trait's
+    # own doc comment is not counted.
+    pattern = r'(?m)^impl (?:Group)?Fetchable(?:WithContext)? for (\w+)\s*\{'
     for match in re.finditer(pattern, content):
         property_type = match.group(1)
         fetchable.append(property_type)
@@ -49,12 +55,13 @@ def parse_fetchable_impls(content: str) -> list:
     return fetchable
 
 
-def parse_speaker_fields(content: str) -> list:
-    """Parse property handle fields from Speaker struct"""
+def parse_struct_handle_fields(content: str, struct_name: str) -> list:
+    """Parse property handle fields from a struct that exposes them"""
     fields = []
 
-    # Find Speaker struct
-    struct_match = re.search(r'pub struct Speaker\s*\{([^}]+)\}', content, re.DOTALL)
+    struct_match = re.search(
+        r'pub struct ' + struct_name + r'\s*\{([^}]+)\}', content, re.DOTALL
+    )
     if not struct_match:
         return fields
 
@@ -75,7 +82,9 @@ def parse_state_properties(content: str) -> list:
     properties = []
 
     # Match: impl Property for Xxx {
-    pattern = r'impl Property for (\w+)\s*\{'
+    # Anchored to the line start so the `impl Property for Volume` example in
+    # the SonosProperty trait's doc comment is not counted twice.
+    pattern = r'(?m)^impl Property for (\w+)\s*\{'
     for match in re.finditer(pattern, content):
         property_type = match.group(1)
         properties.append(property_type)
@@ -134,16 +143,22 @@ def check_coverage():
 
     handles_content = HANDLES_FILE.read_text()
     speaker_content = SPEAKER_FILE.read_text()
+    group_content = GROUP_FILE.read_text() if GROUP_FILE.exists() else ""
     state_content = STATE_PROPERTY_FILE.read_text()
 
     aliases = parse_type_aliases(handles_content)
     fetchable = parse_fetchable_impls(handles_content)
-    speaker_fields = parse_speaker_fields(speaker_content)
+    speaker_fields = [
+        ("Speaker", f, h)
+        for f, h in parse_struct_handle_fields(speaker_content, "Speaker")
+    ] + [
+        ("Group", f, h) for f, h in parse_struct_handle_fields(group_content, "Group")
+    ]
     state_properties = parse_state_properties(state_content)
 
     # Build lookup sets
     alias_properties = set(prop for _, prop in aliases)
-    speaker_field_handles = set(handle for _, handle in speaker_fields)
+    speaker_field_handles = set(handle for _, _, handle in speaker_fields)
     alias_names = set(alias for alias, _ in aliases)
 
     print("Property Handle Coverage Analysis")
@@ -153,7 +168,13 @@ def check_coverage():
     print("\n1. State Properties → SDK Handles")
     print("-" * 50)
 
-    for prop in sorted(state_properties):
+    # System-scoped properties are read off SonosSystem and have no handle.
+    SYSTEM_SCOPED = {"Topology"}
+
+    for prop in sorted(set(state_properties)):
+        if prop in SYSTEM_SCOPED:
+            print(f"  [n/a    ] {prop:<26} system-scoped, read via SonosSystem")
+            continue
         has_alias = prop in alias_properties
         expected_alias = f"{prop}Handle"
         has_speaker_field = expected_alias in speaker_field_handles
@@ -172,14 +193,15 @@ def check_coverage():
         print(f"  [{status:7}] {prop:25} {extra}")
 
     # 2. Speaker fields
-    print("\n2. Speaker Fields")
+    print("\n2. Handle Fields on Speaker and Group")
     print("-" * 50)
 
-    for field_name, handle_type in speaker_fields:
+    for struct_name, field_name, handle_type in speaker_fields:
+        owner = struct_name.lower()
         if handle_type in alias_names:
-            print(f"  [OK] speaker.{field_name}: {handle_type}")
+            print(f"  [OK] {owner}.{field_name}: {handle_type}")
         else:
-            print(f"  [MISSING ALIAS] speaker.{field_name}: {handle_type}")
+            print(f"  [MISSING ALIAS] {owner}.{field_name}: {handle_type}")
 
     # Summary
     print("\n" + "=" * 70)

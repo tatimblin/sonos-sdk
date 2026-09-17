@@ -2,7 +2,7 @@
 
 Service completion matrix and development roadmap for the Sonos SDK.
 
-**Last updated:** 2026-08-17
+**Last updated:** 2026-09-17
 
 ## Service Completion Matrix
 
@@ -16,18 +16,16 @@ Tracks each Sonos UPnP service across the 4-layer SDK architecture (6 checkpoint
 |---|---|---|---|---|---|---|---|
 | AVTransport | Done | Done | Done | Done | Done | Done | Done |
 | RenderingControl | Done | Done | Done | Done | Done | Done | Done |
-| GroupRenderingControl | Done | Done | Done | Done | Done | Done | Done |
-| ZoneGroupTopology | Done | Done | Done | Done | Partial [8] | Done | — |
-| GroupManagement | Done | Done | Done [11] | None | None | — | Deferred [12] |
-| DeviceProperties | None | Partial [10] | None | None | None | — | — |
+| GroupRenderingControl | Done | Done | Done | Done | Done | Partial [1] | Done |
+| ZoneGroupTopology | Done | Done | Done | Done | Partial [2] | Done | — |
+| GroupManagement | Done | Done | Done [3] | None | None | — | Deferred [4] |
 
 **Footnotes:**
 
-3. ~~Only `GetVolume`, `SetVolume`, `SetRelativeVolume`~~ — All 11 operations now implemented (Get/Set for Volume, Mute, Bass, Treble, Loudness + SetRelativeVolume)
-8. `GroupMembership` on Speaker; `Topology` is system-level with no SDK handle
-10. `DevicePropertiesEvent` type exists in stream but no `Service` enum variant; uses `ZoneGroupTopology` as fallback in `service_type()`
-11. GroupManagement is action-only (`AddMember`, `RemoveMember`, `ReportTrackBufferingResult`, `SetSourceAreaIds` — no Get operations); poller returns stable empty state so scheduler never emits spurious change events
-12. The GroupManagement UPnP operations themselves are still unexposed in the SDK. The ergonomic group-lifecycle API landed instead and is implemented over AVTransport: `Group::add_speaker` (`x-rincon:` via `SetAVTransportURI`), `Group::remove_speaker` and `Group::dissolve` (`BecomeCoordinatorOfStandaloneGroup`) in `sonos-sdk/src/group.rs`
+1. `GroupVolume` and `GroupMute` implement `GroupFetchable`; `GroupVolumeChangeable` is event-only and has no fetch path
+2. `GroupMembership` on Speaker; `Topology` is system-level with no SDK handle
+3. GroupManagement is action-only (`AddMember`, `RemoveMember`, `ReportTrackBufferingResult`, `SetSourceAreaIds` — no Get operations); poller returns stable empty state so scheduler never emits spurious change events
+4. The GroupManagement UPnP operations are unexposed in the SDK. The ergonomic group-lifecycle API is implemented over AVTransport instead: `Group::add_speaker` (`x-rincon:` via `SetAVTransportURI`), `Group::remove_speaker` and `Group::dissolve` (`BecomeCoordinatorOfStandaloneGroup`) in `sonos-sdk/src/group.rs`
 
 ### Unstarted Services
 
@@ -39,6 +37,7 @@ These services are known from Sonos device descriptions but have no implementati
 | AudioIn | None | None | None | None | None | — | — |
 | ConnectionManager | None | None | None | None | None | — | — |
 | ContentDirectory | None | None | None | None | None | — | — |
+| DeviceProperties | None | None | None | None | None | — | — |
 | HTControl | None | None | None | None | None | — | — |
 | MusicServices | None | None | None | None | None | — | — |
 | Queue | None | None | None | None | None | — | — |
@@ -101,7 +100,7 @@ Write operations exposed as ergonomic methods on Speaker and Group.
 
 Adding entirely new services end-to-end using the [4-layer pattern](adding-services.md).
 
-- [ ] DeviceProperties — phantom event type exists in stream, needs API service and full stack
+- [ ] DeviceProperties — needs API service and full stack
 - [ ] Queue — high user value for playlist management
 - [ ] ContentDirectory — browse media libraries
 - [ ] AlarmClock, MusicServices, AudioIn, HTControl, ConnectionManager, SystemProperties, VirtualLineIn

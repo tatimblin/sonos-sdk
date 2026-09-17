@@ -44,33 +44,31 @@ This document provides an overview of each Rust crate in the Sonos SDK workspace
 ┌─────────────────────────────────────────────────────────────────────┐
 │                           End Users                                  │
 └────────────────────────────────┬────────────────────────────────────┘
-                                 │
                                  │ User-Facing API
                                  ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                      sonos-sdk (DOM-like API)                        │
 │  ┌───────────────────────────────────────────────────────────────┐  │
-│  │  SonosSystem → Speaker → Property Handles                     │  │
+│  │  SonosSystem → Speaker / Group → Property Handles             │  │
 │  │                                                               │  │
 │  │  speaker.volume.get()    → Cached value                       │  │
-│  │  speaker.volume.fetch()  → API call + update cache            │  │
-│  │  speaker.volume.watch()  → Reactive UPnP stream               │  │
+│  │  speaker.volume.fetch()  → SOAP call + update cache           │  │
+│  │  speaker.volume.watch()  → WatchHandle, live view             │  │
 │  └───────────────────────────────────────────────────────────────┘  │
 └──────────┬─────────────────────┬───────────────────────┬────────────┘
-           │                     │                       │
            │                     │                       │
            ▼                     ▼                       ▼
 ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────────────┐
 │ sonos-discovery  │  │   sonos-api      │  │     sonos-state          │
 │ (Device Discovery│  │   (Operations)   │  │  (Reactive State)        │
 │                  │  │                  │  │                          │
-│ • SSDP multicast │  │ • SonosOperation │  │ • StateManager           │
-│ • Device enum    │  │ • Type-safe APIs │  │ • PropertyWatcher        │
-│ • Deduplication  │  │ • Service groups │  │ • Event Decoders         │
-└──────────────────┘  └────────┬─────────┘  │ • PropertyBag            │
-                               │            │ • ChangeIterator         │
-                               │            └────────────┬─────────────┘
-                               │                         │
+│ • SSDP multicast │  │ • UPnPOperation  │  │ • StateManager           │
+│ • Device enum    │  │ • Type-safe APIs │  │ • Watched-key set        │
+│ • Deduplication  │  │ • Service groups │  │ • Event decoders         │
+│                  │  │                  │  │ • PropertyBag            │
+│  (no workspace   │  └────────┬─────────┘  │ • EventFanout            │
+│   dependencies)  │           │            └────────────┬─────────────┘
+└──────────────────┘           │                         │
                                │         Internal APIs   │
                                │                         ▼
                                │       ┌─────────────────────────────────┐
@@ -79,7 +77,7 @@ This document provides an overview of each Rust crate in the Sonos SDK workspace
                                │       │                                 │
                                │       │  • Subscription lifecycle       │
                                │       │  • Ref count management         │
-                               │       │  • Automatic cleanup            │
+                               │       │  • Shared teardown timer        │
                                │       └────────────┬────────────────────┘
                                │                    │
                                │                    ▼
@@ -90,30 +88,33 @@ This document provides an overview of each Rust crate in the Sonos SDK workspace
                                │       │  • UPnP/Polling switching       │
                                │       │  • Firewall detection           │
                                │       │  • Event enrichment             │
-                               │       └───────────┬─────────────────────┘
-                               │                   │
-                               │    ┌──────────────┴──────────────┐
-                               │    │                             │
-                               │    ▼                             ▼
-                               │  ┌───────────────────┐  ┌────────────────┐
-                               │  │  callback-server  │  │                │
-                               │  │  (HTTP Server)    │  │                │
-                               │  │                   │  │                │
-                               │  │ • NOTIFY handling │  │                │
-                               │  │ • Event routing   │  │                │
-                               │  └─────────┬─────────┘  │                │
-                               │            │            │                │
-                               └────────────┼────────────┘                │
-                                            │                             │
-                                            ▼                             │
-                            ┌─────────────────────────────┐               │
-                            │       soap-client           │◄──────────────┘
+                               │       └──────┬──────────────────┬───────┘
+                               │              │                  │
+                               │              ▼                  │
+                               │  ┌────────────────────────┐     │
+                               │  │    callback-server     │     │
+                               │  │    (HTTP Server)       │     │
+                               │  │                        │     │
+                               │  │ • NOTIFY handling      │     │
+                               │  │ • Event routing        │     │
+                               │  │                        │     │
+                               │  │ (no workspace deps —   │     │
+                               │  │  device-agnostic, does │     │
+                               │  │  not speak SOAP)       │     │
+                               │  └────────────────────────┘     │
+                               │                                 │
+                               └─────────────┬───────────────────┘
+                                             ▼
+                            ┌─────────────────────────────┐
+                            │       soap-client           │
                             │       (SOAP Transport)      │
                             │                             │
                             │  • Singleton pattern        │
                             │  • Shared HTTP agent        │
                             │  • Connection pooling       │
                             │  • SOAP envelope building   │
+                            │                             │
+                            │  (no workspace dependencies)│
                             └──────────────┬──────────────┘
                                            │
                                            ▼
@@ -122,6 +123,11 @@ This document provides an overview of each Rust crate in the Sonos SDK workspace
                             │      (Port 1400)            │
                             └─────────────────────────────┘
 ```
+
+Three crates are leaves with no workspace dependencies at all: `soap-client`,
+`sonos-discovery` and `callback-server`. `callback-server` in particular is entirely
+device-agnostic — it receives HTTP NOTIFY requests and routes them by subscription ID, and
+knows nothing about SOAP or Sonos. Outbound SOAP always travels `sonos-api → soap-client`.
 
 ### Data Flow
 
@@ -167,7 +173,7 @@ Option<Volume> returned instantly
 
 #### 3. Property Fetch Flow (Fresh API Call)
 ```
-speaker.volume.fetch().await
+speaker.volume.fetch()
     │
     ▼
 VolumeHandle
@@ -196,14 +202,15 @@ Volume returned to caller
 
 #### 4. Property Watch Flow (Reactive)
 ```
-speaker.volume.watch().await
+speaker.volume.watch()
     │
     ▼
 VolumeHandle
     │
     ▼
-sonos-state (StateManager.watch_property)
-    │ Checks if RenderingControl subscription exists
+sonos-state (StateManager)
+    │ Registers the watched (speaker_id, "volume") pair,
+    │ checks if a RenderingControl subscription exists
     ▼
 sonos-event-manager
     │ Reference count: 0→1, creates subscription
@@ -227,12 +234,17 @@ sonos-event-manager
     │ Distribute to consumers
     ▼
 sonos-state (Decoders)
-    │ Parse to property updates
+    │ Parse to PropertyChange values
     ▼
-StateStore
-    │ Update watch channels
+sonos-state event worker
+    │ Write StateStore, then check the watched-key set:
+    │ is (speaker_id, "volume") watched?
     ▼
-PropertyWatcher<Volume> receives update
+EventFanout
+    │ If watched, clone the ChangeEvent into every
+    │ subscriber's own unbounded mpsc queue
+    ▼
+system.iter() yields ChangeEvent; WatchHandle::value() re-reads the store
 ```
 
 #### 5. Firewall Fallback Flow
@@ -267,12 +279,16 @@ Properties are accessed directly on speaker objects with three consistent method
 // Cached read (instant)
 let volume = speaker.volume.get();
 
-// Fresh API call + cache update
-let volume = speaker.volume.fetch().await?;
+// Fresh SOAP call + cache update
+let volume = speaker.volume.fetch()?;
 
-// Reactive stream
-let mut watcher = speaker.volume.watch().await?;
+// Reactive. Hold the handle — dropping it starts the 50ms teardown grace period.
+let volume = speaker.volume.watch()?;
+println!("{:?} via {:?}", volume.value(), volume.mode());
 ```
+
+The whole public surface is sync. There is no `.await` anywhere in `sonos-sdk` or
+`sonos-state`; the Tokio runtime lives behind `sonos-stream` and `sonos-event-manager`.
 
 #### 2. Singleton Pattern (soap-client)
 All SOAP clients share a single `LazyLock<SoapClient>` instance with pooled HTTP connections, reducing memory usage by ~95% in multi-client scenarios.
@@ -286,18 +302,25 @@ impl SoapClient {
 ```
 
 #### 3. Trait-Based Operations (sonos-api)
-The `SonosOperation` trait provides a consistent interface for all UPnP operations:
+The `UPnPOperation` trait provides a consistent interface for all UPnP operations:
 
 ```rust
-pub trait SonosOperation {
-    type Request: Serialize;
+pub trait UPnPOperation {
+    type Request: Serialize + Validate;
     type Response: for<'de> Deserialize<'de>;
     const SERVICE: Service;
     const ACTION: &'static str;
-    fn build_payload(request: &Self::Request) -> String;
+    fn build_payload(request: &Self::Request) -> Result<String, ValidationError>;
     fn parse_response(xml: &str) -> Result<Self::Response, ApiError>;
 }
 ```
+
+`build_payload` validates before serializing, so an invalid request fails without a
+network round trip. Operations are declared through the `define_upnp_operation!` and
+`define_operation_with_response!` macros, which generate the request struct, the trait
+impl, and a snake_case builder function (`PlayOperation` → `play_operation`) returning an
+`OperationBuilder`. Execute the built `ComposableOperation` with
+`SonosClient::execute_enhanced()`.
 
 `parse_response` receives the raw response body. `soap-client` returns text rather than a
 parsed DOM: it owns transport and SOAP-fault detection, while response *shape* is
@@ -373,13 +396,13 @@ where the complexity lives, not as a precise figure — regenerate with
 
 | Crate | Package name | src LOC | Classification | Primary Responsibility |
 |-------|--------------|---------|----------------|------------------------|
-| sonos-sdk | `sonos-sdk` | ~5,300 | **Public** | DOM-like API (main entry point) |
+| sonos-sdk | `sonos-sdk` | ~5,400 | **Public** | DOM-like API (main entry point) |
 | sonos-api | `sonos-api` | ~9,500 | Public | Type-safe UPnP operations |
 | sonos-discovery | `sonos-sdk-discovery` | ~1,200 | Public | SSDP device discovery |
-| sonos-stream | `sonos-sdk-stream` | ~6,800 | Internal | Event streaming with fallback |
+| sonos-stream | `sonos-sdk-stream` | ~6,500 | Internal | Event streaming with fallback |
 | sonos-state | `sonos-sdk-state` | ~7,500 | Internal | Reactive state management |
-| callback-server | `sonos-sdk-callback-server` | ~2,200 | Internal | HTTP event server (axum) |
-| sonos-event-manager | `sonos-sdk-event-manager` | ~1,400 | Internal | Subscription reference counting |
+| callback-server | `sonos-sdk-callback-server` | ~2,100 | Internal | HTTP event server (axum) |
+| sonos-event-manager | `sonos-sdk-event-manager` | ~3,200 | Internal | Subscription reference counting, teardown timer |
 | soap-client | `sonos-sdk-soap-client` | ~1,000 | Internal | SOAP transport (singleton) |
 
 ---
@@ -389,4 +412,8 @@ where the complexity lives, not as a precise figure — regenerate with
 | Guide | Description |
 |-------|-------------|
 | [Adding Services](adding-services.md) | How to add new Sonos UPnP services to the SDK |
-| [Watchable Properties](watchable-properties.md) | Reference for properties that support reactive updates |
+| [Watchable Properties](watchable-properties.md) | Per-property reference: keys, scopes, fetch support, and how a change reaches `iter()` |
+| [Project Status](STATUS.md) | Per-service coverage across all four layers |
+| [Contributing](CONTRIBUTING.md) | Toolchain, local CI commands, release process |
+| [Solutions](solutions/) | Debugging findings whose causal chain is not recoverable from the code |
+| [Integration Tests](INTEGRATION_TESTS.md) | Running the real-speaker test suite |

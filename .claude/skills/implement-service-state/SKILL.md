@@ -53,6 +53,15 @@ impl Property for NewProperty {
 impl SonosProperty for NewProperty {
     const SCOPE: Scope = Scope::Speaker;  // or Group, System
     const SERVICE: Service = Service::NewService;
+
+    // Required for any watchable property. `to_change()` defaults to `None`,
+    // and a property returning `None` still writes to the store but emits no
+    // `ChangeEvent` — so `watch()` on it never fires and the missing-variant
+    // path logs. Only `Topology`, written wholesale by `initialize()`,
+    // legitimately omits this.
+    fn to_change(&self) -> Option<crate::decoder::PropertyChange> {
+        Some(crate::decoder::PropertyChange::NewProperty(self.clone()))
+    }
 }
 
 impl NewProperty {
@@ -112,7 +121,7 @@ Add a decoder function in `sonos-state/src/decoder.rs`:
 
 ```rust
 /// Decode NewService event data
-fn decode_new_service(event: &NewServiceEvent) -> Vec<PropertyChange> {
+fn decode_new_service(event: &NewServiceState) -> Vec<PropertyChange> {
     let mut changes = vec![];
 
     // Parse each field from the event
@@ -139,11 +148,14 @@ Update `decode_event()` to handle the new service:
 ```rust
 pub fn decode_event(event: &EnrichedEvent, speaker_id: SpeakerId) -> DecodedChanges {
     let changes = match &event.event_data {
-        EventData::RenderingControlEvent(rc) => decode_rendering_control(rc),
-        EventData::AVTransportEvent(avt) => decode_av_transport(avt),
-        EventData::ZoneGroupTopologyEvent(zgt) => decode_topology(zgt),
-        EventData::DevicePropertiesEvent(_) => vec![],
-        EventData::NewServiceEvent(ns) => decode_new_service(ns),  // Add
+        EventData::RenderingControl(rc) => decode_rendering_control(rc),
+        EventData::AVTransport(avt) => decode_av_transport(avt),
+        EventData::ZoneGroupTopology(zgt) => decode_topology(zgt),
+        // GroupManagement is action-only; group changes surface via
+        // ZoneGroupTopology events. No user-facing properties to decode.
+        EventData::GroupManagement(_) => vec![],
+        EventData::GroupRenderingControl(grc) => decode_group_rendering_control(grc),
+        EventData::NewService(ns) => decode_new_service(ns),  // Add
     };
 
     DecodedChanges { speaker_id, changes }
@@ -172,7 +184,7 @@ mod tests {
 
     #[test]
     fn test_decode_new_service() {
-        let event = NewServiceEvent {
+        let event = NewServiceState {
             field1: Some("42".to_string()),
             enabled: Some("true".to_string()),
         };

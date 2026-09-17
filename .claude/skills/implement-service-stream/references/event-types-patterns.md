@@ -2,16 +2,21 @@
 
 ## Overview
 
-Event types in sonos-stream represent the complete state information received from UPnP events or polling. They are defined in `sonos-stream/src/events/types.rs`.
+A service's state type carries the complete state information received from UPnP events or
+polling. It lives in **`sonos-api/src/services/{service}/state.rs`** as `{Service}State`.
+`sonos-stream/src/events/types.rs` holds only the `EventData` enum that wraps those types.
 
-## Event Struct Pattern
+Both paths converge on the same type — `{Service}Event::into_state()` for UPnP events,
+`state::poll()` for polling — which is what keeps events and polling in parity.
+
+## State Struct Pattern
 
 ### Basic Structure
 
 ```rust
 /// Complete {Service} event data containing all state information
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NewServiceEvent {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NewServiceState {
     /// Description of what this field represents
     pub field1: Option<String>,
 
@@ -37,42 +42,42 @@ Using `Option<T>` allows:
 
 ## EventData Enum
 
-The `EventData` enum provides a unified type for all service events:
+`EventData` in `sonos-stream/src/events/types.rs` is the unified payload type. Each variant
+is named for its service with **no `Event` suffix**, and wraps the canonical State type
+from `sonos-api`:
 
 ```rust
 pub enum EventData {
-    AVTransportEvent(AVTransportEvent),
-    RenderingControlEvent(RenderingControlEvent),
-    DevicePropertiesEvent(DevicePropertiesEvent),
-    ZoneGroupTopologyEvent(ZoneGroupTopologyEvent),
+    /// AVTransport service state
+    AVTransport(AVTransportState),
+
+    /// RenderingControl service state
+    RenderingControl(RenderingControlState),
+
+    /// ZoneGroupTopology service state
+    ZoneGroupTopology(ZoneGroupTopologyState),
+
+    /// GroupManagement service state
+    GroupManagement(GroupManagementState),
+
+    /// GroupRenderingControl service state
+    GroupRenderingControl(GroupRenderingControlState),
+
     // Add new variants here
 }
 ```
 
-### service_type() Method
+`EventData` carries no service accessor. The originating `Service` travels on the
+enclosing `EnrichedEvent`, so the payload never has to re-derive it — and there is no map
+that can disagree with the event's own routing.
 
-Each variant maps to a `sonos_api::Service`:
+## Existing State Type Examples
 
-```rust
-impl EventData {
-    pub fn service_type(&self) -> sonos_api::Service {
-        match self {
-            EventData::AVTransportEvent(_) => sonos_api::Service::AVTransport,
-            EventData::RenderingControlEvent(_) => sonos_api::Service::RenderingControl,
-            EventData::DevicePropertiesEvent(_) => sonos_api::Service::ZoneGroupTopology,
-            EventData::ZoneGroupTopologyEvent(_) => sonos_api::Service::ZoneGroupTopology,
-        }
-    }
-}
-```
-
-## Existing Event Struct Examples
-
-### AVTransportEvent (Transport State)
+### AVTransportState (Transport State)
 
 ```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AVTransportEvent {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AVTransportState {
     pub transport_state: Option<String>,      // PLAYING, PAUSED_PLAYBACK, STOPPED
     pub transport_status: Option<String>,     // OK, ERROR_OCCURRED
     pub speed: Option<String>,                // Playback speed
@@ -90,11 +95,11 @@ pub struct AVTransportEvent {
 }
 ```
 
-### RenderingControlEvent (Audio Settings)
+### RenderingControlState (Audio Settings)
 
 ```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RenderingControlEvent {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RenderingControlState {
     pub master_volume: Option<String>,        // 0-100 as string
     pub lf_volume: Option<String>,            // Left front channel
     pub rf_volume: Option<String>,            // Right front channel
@@ -109,25 +114,25 @@ pub struct RenderingControlEvent {
 }
 ```
 
-### ZoneGroupTopologyEvent (Complex Nested)
+### ZoneGroupTopologyState (Complex Nested)
 
 For complex hierarchical data, use nested structs:
 
 ```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ZoneGroupTopologyEvent {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ZoneGroupTopologyState {
     pub zone_groups: Vec<ZoneGroupInfo>,
     pub vanished_devices: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ZoneGroupInfo {
     pub coordinator: String,
     pub id: String,
     pub members: Vec<ZoneGroupMemberInfo>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ZoneGroupMemberInfo {
     pub uuid: String,
     pub location: String,
@@ -166,7 +171,7 @@ mod tests {
 
     #[test]
     fn test_event_creation() {
-        let event = NewServiceEvent {
+        let event = NewServiceState {
             field1: Some("value".to_string()),
             field2: None,
         };
@@ -176,24 +181,24 @@ mod tests {
     }
 
     #[test]
-    fn test_event_data_service_type() {
-        let event = EventData::NewServiceEvent(NewServiceEvent {
+    fn test_event_data_wraps_state() {
+        let event = EventData::NewService(NewServiceState {
             field1: None,
             field2: None,
         });
 
-        assert_eq!(event.service_type(), sonos_api::Service::NewService);
+        assert!(matches!(event, EventData::NewService(_)));
     }
 
     #[test]
     fn test_serialization_roundtrip() {
-        let event = NewServiceEvent {
+        let event = NewServiceState {
             field1: Some("test".to_string()),
             field2: Some(42),
         };
 
         let json = serde_json::to_string(&event).unwrap();
-        let restored: NewServiceEvent = serde_json::from_str(&json).unwrap();
+        let restored: NewServiceState = serde_json::from_str(&json).unwrap();
 
         assert_eq!(event.field1, restored.field1);
         assert_eq!(event.field2, restored.field2);
@@ -201,12 +206,15 @@ mod tests {
 }
 ```
 
-## Checklist for New Event Types
+## Checklist for New State Types
 
-- [ ] Event struct defined with `#[derive(Debug, Clone, Serialize, Deserialize)]`
+- [ ] `{Service}State` defined in `sonos-api/src/services/{service}/state.rs` with
+      `#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]`
 - [ ] All fields are `Option<T>`
 - [ ] Doc comments on struct and fields
-- [ ] EventData variant added
-- [ ] service_type() match arm added
-- [ ] Unit tests for creation and service_type()
-- [ ] Serialization roundtrip test
+- [ ] `{Service}Event::into_state()` in `events.rs` produces it
+- [ ] `state::poll()` produces it
+- [ ] `EventData::{Service}({Service}State)` variant added
+- [ ] `convert_api_event_data()` arm added in `sonos-stream/src/events/processor.rs`
+- [ ] Unit tests for creation
+- [ ] Serialization roundtrip test — the poller round-trips this type through JSON

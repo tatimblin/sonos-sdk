@@ -32,23 +32,22 @@ After Phase 0 phantom dep cleanup, the correct dependency-ordered sequence:
 Leaves (no workspace deps):
   1. sonos-sdk-soap-client
   2. sonos-sdk-discovery
-  3. sonos-sdk-state-store
-  4. sonos-sdk-callback-server
+  3. sonos-sdk-callback-server
 
 Level 1:
-  5. sonos-api            → soap-client, discovery
+  4. sonos-api            → soap-client
 
 Level 2:
-  6. sonos-sdk-stream     → api, callback-server
+  5. sonos-sdk-stream     → api, callback-server
 
 Level 3:
-  7. sonos-sdk-event-manager → api, stream, discovery
+  6. sonos-sdk-event-manager → api, stream, discovery
 
 Level 4:
-  8. sonos-sdk-state      → api, stream, event-manager, discovery, state-store
+  7. sonos-sdk-state      → api, stream, event-manager, discovery
 
 Level 5:
-  9. sonos-sdk            → state, api, discovery, event-manager
+  8. sonos-sdk            → state, api, discovery, event-manager
 ```
 
 (See brainstorm: `docs/brainstorms/2026-02-28-public-release-brainstorm.md` — "Publish Order" section. The order above is the corrected version after Phase 0 cleanup.)
@@ -73,7 +72,6 @@ set -euo pipefail
 CRATES=(
   sonos-sdk-soap-client
   sonos-sdk-discovery
-  sonos-sdk-state-store
   sonos-sdk-callback-server
   sonos-api
   sonos-sdk-stream

@@ -26,7 +26,9 @@ SCRIPT_DIR = Path(__file__).parent
 WORKSPACE_ROOT = SCRIPT_DIR.parents[3]
 
 DECODER_FILE = WORKSPACE_ROOT / "sonos-state" / "src" / "decoder.rs"
-STREAM_TYPES_FILE = WORKSPACE_ROOT / "sonos-stream" / "src" / "events" / "types.rs"
+# The canonical `{Service}State` types live in sonos-api, one directory per
+# service. sonos-stream only wraps them in `EventData`.
+API_SERVICES_DIR = WORKSPACE_ROOT / "sonos-api" / "src" / "services"
 
 
 def parse_event_struct_fields(content: str, struct_name: str) -> list:
@@ -52,23 +54,24 @@ def parse_event_struct_fields(content: str, struct_name: str) -> list:
 
 
 def get_event_struct_name(service_name: str) -> str:
-    """Map service name to event struct name"""
-    mapping = {
-        "RenderingControl": "RenderingControlEvent",
-        "AVTransport": "AVTransportEvent",
-        "ZoneGroupTopology": "ZoneGroupTopologyEvent",
-        "DeviceProperties": "DevicePropertiesEvent",
-    }
-    return mapping.get(service_name, f"{service_name}Event")
+    """Map service name to its canonical state struct name"""
+    return f"{service_name}State"
+
+
+def read_state_sources() -> str:
+    """Concatenate every sonos-api services/*/state.rs"""
+    if not API_SERVICES_DIR.exists():
+        return ""
+    return "\n".join(f.read_text() for f in sorted(API_SERVICES_DIR.glob("*/state.rs")))
 
 
 def generate_sample_event(service_name: str) -> dict:
     """Generate a sample event JSON for testing"""
-    if not STREAM_TYPES_FILE.exists():
-        print(f"Error: {STREAM_TYPES_FILE} not found", file=sys.stderr)
+    if not API_SERVICES_DIR.exists():
+        print(f"Error: {API_SERVICES_DIR} not found", file=sys.stderr)
         sys.exit(1)
 
-    content = STREAM_TYPES_FILE.read_text()
+    content = read_state_sources()
     struct_name = get_event_struct_name(service_name)
     fields = parse_event_struct_fields(content, struct_name)
 
@@ -269,7 +272,7 @@ def run_self_test():
     # Check files exist
     files_to_check = [
         ("Decoder file", DECODER_FILE),
-        ("Stream types file", STREAM_TYPES_FILE),
+        ("sonos-api services dir", API_SERVICES_DIR),
     ]
 
     all_ok = True

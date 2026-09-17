@@ -1,7 +1,7 @@
 # Plan: resolve the review findings on PR #108
 
 **Date**: 2026-09-17
-**Status**: Draft — not yet implemented
+**Status**: Completed — all 11 findings (C1–C11) are implemented at HEAD
 **PR**: https://github.com/tatimblin/sonos-sdk/pull/108 (`fix/watch-teardown-timer` → `main`, base commit `ef0ba44`)
 **Origin**: code review of PR #108; findings C1–C11
 

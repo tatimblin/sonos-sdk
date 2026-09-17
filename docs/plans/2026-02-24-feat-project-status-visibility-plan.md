@@ -66,7 +66,7 @@ VirtualLineIn         | None    | None          | None           | None         
 7. GroupVolume handle exists on Group; no GroupMute handle
 8. GroupMembership on Speaker; Topology is system-level with no SDK handle
 9. GroupMembership has no fetch(); could use GetZoneGroupState
-10. DevicePropertiesEvent type exists in stream but no Service enum variant; uses ZoneGroupTopology as fallback
+10. DeviceProperties has no implementation at any layer
 
 **Section 2 — Impact Roadmap**
 
@@ -83,7 +83,7 @@ Five tiers from brainstorm (with correction: GroupVolume fetch exists, remove fr
 Add a short section after the "Project Overview" paragraph (before "Development Commands"):
 
 ```markdown
-> **Project Status**: See [docs/STATUS.md](docs/STATUS.md) for the service completion matrix and development roadmap.
+> **Project Status**: See [docs/STATUS.md](../STATUS.md) for the service completion matrix and development roadmap.
 ```
 
 This keeps it near the top where it's immediately visible.
@@ -104,7 +104,7 @@ Add a new rule to the "Standard Development Workflow" section:
 
 ## Sources
 
-- **Origin brainstorm:** [docs/brainstorms/2026-02-24-project-visibility-brainstorm.md](docs/brainstorms/2026-02-24-project-visibility-brainstorm.md) — Key decisions: standalone STATUS.md location, all 17+ services in scope, impact-prioritized roadmap, manual maintenance, AI agent references
+- **Origin brainstorm:** [docs/brainstorms/2026-02-24-project-visibility-brainstorm.md](../brainstorms/2026-02-24-project-visibility-brainstorm.md) — Key decisions: standalone STATUS.md location, all 17+ services in scope, impact-prioritized roadmap, manual maintenance, AI agent references
 - **Existing tool:** `.claude/skills/add-service/scripts/service_status.py` — can scan source code for service status (useful for future validation)
 - **Architecture reference:** `docs/adding-services.md` — defines the 4-layer, 6-checkpoint pattern
 - **Code verification:** Exact per-layer status verified against source files in sonos-api, sonos-stream, sonos-state, sonos-sdk

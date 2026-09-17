@@ -1,7 +1,7 @@
 ---
 title: "fix: Event router registration race drops initial UPnP events"
 type: fix
-status: active
+status: completed
 date: 2026-03-28
 ---
 
@@ -82,8 +82,9 @@ None — approach is clear.
 
 ## Sources
 
-- EventRouter registration: `callback-server/router.rs:80-83` (register), `157-172` (route_event)
-- Subscription creation: `sonos-stream/broker.rs:510-518` (registers SID after SUBSCRIBE)
+- EventRouter registration and replay: `callback-server/src/router.rs` — `register()`,
+  `route_event()`, `BUFFER_TTL`, `MAX_PENDING_EVENTS`
+- Subscription creation: `sonos-stream/src/broker.rs` — registers the SID after SUBSCRIBE
 - Callback server NOTIFY handler: `callback-server/server.rs:252-349`
 - Event processor: `sonos-stream/events/processor.rs:54-136`
-- Related TUI issue: `sonos-cli` PR #32 — watch migration showed persistent blank state
+- Related TUI issue: observed in the `sonos-cli` repository — watch migration showed persistent blank state

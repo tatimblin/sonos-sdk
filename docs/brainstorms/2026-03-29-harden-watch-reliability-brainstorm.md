@@ -1,7 +1,8 @@
 # Brainstorm: Harden watch() Property Reliability
 
 **Date:** 2026-03-29
-**Status:** Draft
+**Status:** Phases 1-2 landed (`sonos-sdk/examples/property_observer.rs`,
+`sonos-sdk/tests/property_validation.rs`); Phase 3 partly open
 
 ## What We're Building
 
@@ -22,7 +23,11 @@ A two-phase approach to make `watch()` deliver every property update reliably:
 
 ## Key Decisions
 
-1. **Goal: Never miss events** — Fix root causes in the pipeline rather than adding eventual-consistency safety nets (polling resync). If a property changes on the speaker, `watch()` must deliver it.
+1. **Goal: Never miss events** — Fix root causes in the pipeline rather than papering over
+   them with a polling resync. If a property changes on the speaker, `watch()` must
+   deliver it. This rules out reconciliation loops that hide pipeline bugs; it does not
+   rule out priming the cache or absorbing subscription churn, both of which shipped as
+   `watch_or_fetch()` and the 50 ms teardown grace period.
 
 2. **All 13 properties covered** — Not just API-controllable ones. CurrentTrack and Position will use creative test approaches (playing known URIs, verifying position advances during playback).
 

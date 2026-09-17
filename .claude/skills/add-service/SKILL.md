@@ -39,6 +39,7 @@ python .claude/skills/add-service/scripts/integration_test.py NewService 192.168
 Use `/implement-service` skill to implement UPnP operations.
 
 **Files Modified:**
+- `sonos-api/src/service.rs` - `Service` enum variant + `name()`/`info()` arms
 - `sonos-api/src/services/{service}/mod.rs` - Service module
 - `sonos-api/src/services/{service}/operations.rs` - Operation structs
 - `sonos-api/src/services/mod.rs` - Service registration
@@ -53,7 +54,7 @@ Use `/implement-service` skill to implement UPnP operations.
 **Verify:**
 ```bash
 cargo test -p sonos-api
-cargo run --example cli_example -- <speaker_ip> NewService OperationName
+cargo run -p sonos-api --example cli_example -- <speaker_ip> NewService OperationName
 ```
 
 ### Step 2: Stream Layer (sonos-stream)
@@ -61,13 +62,14 @@ cargo run --example cli_example -- <speaker_ip> NewService OperationName
 Use `/implement-service-stream` skill to add event streaming support.
 
 **Files Modified:**
-- `sonos-stream/src/events/types.rs` - Event struct + EventData variant
+- `sonos-api/src/services/{service}/state.rs` - `{Service}State` + `poll()`
+- `sonos-stream/src/events/types.rs` - EventData variant wrapping `{Service}State`
 - `sonos-stream/src/events/processor.rs` - Event processor case
 - `sonos-stream/src/polling/strategies.rs` - ServicePoller impl
 
 **Key Tasks:**
-1. Define event struct with all state fields
-2. Add EventData enum variant
+1. Define `{Service}State` in sonos-api with all state fields
+2. Add the `EventData::{Service}({Service}State)` variant
 3. Implement convert_api_event_data() case
 4. Implement ServicePoller for polling fallback
 

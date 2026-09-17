@@ -1,159 +1,113 @@
 # WatchHandle Grace Period Demo
 
-This document explains the new RAII WatchHandle with 50ms grace period feature introduced in PR #59 and how to validate it using the enhanced demonstration example.
+`sonos-sdk/examples/watch_grace_period_demo.rs` demonstrates the RAII `WatchHandle` and
+the 50 ms teardown grace period against real speakers.
 
-## What's New in This PR
+## The Model
 
-### RAII WatchHandle Pattern
-- **Before**: `watch()` returned `WatchStatus<P>`, required manual `unwatch()` calls
-- **After**: `watch()` returns `WatchHandle<P>`, automatically unsubscribes when dropped
+`watch()` returns a `WatchHandle<P>`. The handle is a **lease on the UPnP subscription**,
+not a snapshot of the value:
 
-### 50ms Grace Period
-- When a `WatchHandle` is dropped, there's a 50ms delay before the underlying UPnP subscription is terminated
-- If another `WatchHandle` for the same property is created within this grace period, the existing subscription is reused
-- **Key benefit**: Prevents subscription churn in TUI applications that call `watch()` inside draw methods
+- It is `#[must_use]`. Dropping it starts a 50 ms grace period, after which the
+  subscription is torn down.
+- If another handle for the same `(speaker, service)` is acquired inside that window, the
+  pending teardown is cancelled and the existing subscription is reused.
+- `value()` re-reads the store on every call, so **one handle held across a loop reports
+  every change**. There is no need to re-watch to refresh a value.
+- Overlapping handles share one subscription. It is released only when the last one drops.
 
-### Breaking Changes
-- `watch()` now returns `WatchHandle<P>` instead of `WatchStatus<P>`
-- `unwatch()` method removed from `PropertyHandle` and `GroupPropertyHandle`
-- `WatchHandle` uses `value()` / `mode()` methods instead of public fields
+The grace period is hysteresis for the cases where a handle genuinely must be dropped and
+reacquired. It is not a licence to acquire one per frame — `release`/`acquire` churn is
+work the subscription layer then has to undo.
 
-## Running the Grace Period Demo
+## Running It
 
-### Prerequisites
-1. Ensure you have Sonos speakers on your local network
-2. Make sure the speakers are discoverable (not in sleep mode)
+Requires Sonos speakers on the local network, awake and discoverable.
 
-### Running the Demo
 ```bash
-# From the project root
 cargo run -p sonos-sdk --example watch_grace_period_demo
 ```
 
-### What the Demo Shows
+## What Each Demo Shows
 
-#### Demo 1: Normal Usage Pattern
-Shows the standard lifecycle of creating a watch handle, using it, and letting it drop naturally.
+**Demo 1 — Normal usage.** Acquire a handle, read `mode()` and `value()`, hold it for two
+seconds, drop it. Dropping is what starts the grace period.
 
-#### Demo 2: TUI Pattern (The Key Innovation)
-Simulates a TUI application calling `watch()` inside a draw method repeatedly:
-- Creates 10 rapid watch handles (simulating 60 FPS rendering)
-- Each handle is dropped at the end of the frame
-- **Without grace period**: Would cause 9 unsubscribe/resubscribe cycles (expensive!)
-- **With grace period**: Subscription is maintained throughout, preventing churn
+**Demo 2 — TUI pattern.** Simulates ten draw calls at ~60 FPS. The handle is acquired
+**once, outside the loop**; each frame does a live read through `value()`. One
+subscription covers the whole loop and no frame sees a stale value.
 
-#### Demo 3: Grace Period Timing
-Demonstrates the exact 50ms timing:
-- Creates a handle, drops it (grace period starts)
-- Creates a new handle within 25ms - subscription is reused
-- Shows that the subscription was never interrupted
+**Demo 3 — Grace period timing.** Acquire a handle and drop it, wait 25 ms (inside the
+window), then acquire a new one — the subscription is reused and was never interrupted.
+Then drop it and wait 60 ms so the grace period expires and the subscription is cleaned up.
 
-#### Demo 4: Subscription Persistence
-Shows how multiple overlapping watches share the same subscription and how the grace period manages cleanup.
+**Demo 4 — Subscription sharing.** Two overlapping volume handles plus a mute handle.
+Dropping the first volume handle leaves the subscription up, because the second still
+holds it. Only when the last handle drops does the grace period start.
 
-### Sample Output
+## Reading a Handle
 
-```
-🎵 Sonos SDK Grace Period Demo
-===============================
-
-This demo shows how the 50ms grace period prevents subscription churn
-when WatchHandles are created and dropped rapidly (like in TUI apps).
-
-🔍 Finding reachable speaker...
-   ✅ Kitchen at 192.168.1.100 is reachable
-
-📋 Demo 1: Normal Usage Pattern
---------------------------------
-Creating a watch handle and keeping it alive...
-   ✅ Watch handle created - mode: Events
-   📊 Current volume: 25%
-   ⏱️  Keeping handle alive for 2 seconds...
-   🗑️  Dropping handle (grace period starts)...
-   ✅ Handle dropped - subscription will cleanup after 50ms grace period
-
-🖥️  Demo 2: TUI Pattern (Rapid Watch Creation/Dropping)
---------------------------------------------------------
-Simulating a TUI app calling watch() inside draw() method...
-This would cause subscription churn WITHOUT the grace period.
-
-   🖼️  Frame  1: Volume: 25% | Handle mode: Events
-      ⏱️  Frame rendered in 2.1ms
-   🖼️  Frame  2: Volume: 25% | Handle mode: Events
-      ⏱️  Frame rendered in 651µs
-   ...
-   🖼️  Frame 10: Volume: 25% | Handle mode: Events
-      ⏱️  Frame rendered in 423µs
-
-   ✅ 10 frames rendered in 184.7ms
-   🎯 Grace period prevented 9 unnecessary unsubscribe/resubscribe cycles!
-```
-
-## Validating the PR
-
-### Automated Testing
-```bash
-# Run tests with test-support feature
-cargo test -p sonos-sdk --features test-support
-
-# Build all examples
-cargo build -p sonos-sdk --examples
-
-# Check formatting and linting
-cargo fmt --check
-cargo clippy -- -D warnings
-```
-
-### Manual Validation Steps
-
-1. **Run the grace period demo** against real speakers to see the feature in action
-2. **Monitor network traffic** (optional) to verify subscription churn is eliminated
-3. **Test TUI scenarios** by rapidly creating/dropping watches
-4. **Verify property access** still works correctly with the new API
-
-### Integration with Existing Code
-
-The new API is mostly backward-compatible for reading:
 ```rust
-// OLD API (still works)
 let handle = speaker.volume.watch()?;
+
 if let Some(vol) = handle.value() {
     println!("Volume: {}%", vol.0);
 }
 
-// NEW CAPABILITIES
 println!("Watch mode: {}", handle.mode());
 println!("Has realtime events: {}", handle.has_realtime_events());
 ```
 
-### Key Benefits Demonstrated
+`mode()` is one of `Events` (UPnP NOTIFY), `Polling` (callbacks blocked, value polled on
+an interval) or `CacheOnly` (neither; the store is read but nothing refreshes it).
 
-1. **Resource Efficiency**: No more subscription churn in TUI applications
-2. **RAII Safety**: No manual cleanup required - handles clean up automatically
-3. **Backward Compatibility**: Existing property access patterns still work
-4. **Better UX**: Smoother TUI applications without subscription delays
+## Validating Changes
 
-## Architecture Impact
-
-### Reference-Counted Observable Pattern
-- First property watcher creates UPnP subscription (ref count 0→1)
-- Multiple watchers share same subscription without duplication
-- Last watcher dropping triggers cleanup (ref count 1→0)
-- Grace period provides hysteresis to prevent rapid ref count fluctuations
-
-### Multi-Layer Integration
-```
-SDK User Code
-    ↓
-WatchHandle<P> (RAII + Grace Period)
-    ↓
-StateManager (Property Management)
-    ↓
-SonosEventManager (Reference Counting)
-    ↓
-SonosStream (UPnP Events/Polling)
-    ↓
-UPnP SOAP Operations
+```bash
+cargo test -p sonos-sdk --features test-support
+cargo build -p sonos-sdk --examples
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --features sonos-sdk/test-support --locked -- -D warnings
 ```
 
-This enhancement makes the Sonos SDK much more suitable for interactive applications while maintaining all existing functionality.
+The teardown timer's own coverage lives in `sonos-event-manager/src/manager.rs` — notably
+`test_expiry_racing_reacquire_keeps_the_watch_registered`,
+`test_cancel_and_expiry_have_exactly_one_winner` and
+`test_immediate_mode_churn_costs_no_threads`.
+
+Beyond that, run the demo against real speakers and, optionally, watch network traffic to
+confirm no SUBSCRIBE/UNSUBSCRIBE churn during Demo 2.
+
+## How It Works Underneath
+
+Subscriptions are reference counted in `sonos-event-manager`:
+
+- First holder creates the UPnP subscription (ref count 0→1)
+- Additional holders share it without duplication
+- Last holder dropping schedules the teardown (ref count 1→0)
+
+The delay is not a thread per drop. A single OS thread per manager
+(`sonos-event-manager/src/timer.rs`, named `sonos-teardown-timer`) services a
+deadline-ordered queue, so a release costs a mutex, a heap push and a condvar notify. It
+runs off the Tokio runtime deliberately: the worker runtime is single-threaded and the
+subscribe path makes blocking calls, so a `tokio::time::sleep` there would not fire while
+a SUBSCRIBE to an unreachable speaker was in flight.
+
+Cancellation and expiry race by design, and exactly one wins. Each pending teardown owns
+an `AtomicBool` claim token; whoever swaps it from `false` to `true` — the re-acquiring
+watcher or the expiring timer — owns the outcome. Both swap while holding the pending
+map's mutex, so they cannot interleave.
+
+```
+SDK user code
+    ↓
+WatchHandle<P>            RAII lease, live read
+    ↓
+StateManager              watched-key set, property store
+    ↓
+SonosEventManager         reference counting + teardown timer
+    ↓
+sonos-stream              UPnP events / polling fallback
+    ↓
+UPnP SOAP operations
+```

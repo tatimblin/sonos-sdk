@@ -68,33 +68,39 @@ impl SpeakerContext {
 
 ### WatchHandle<P>
 
-Result of watch() operation. RAII guard — dropping starts the 50ms grace period:
+Result of `watch()`. An RAII lease on the subscription — dropping it starts the 50 ms
+grace period:
 
 ```rust
 #[must_use = "dropping the handle starts the grace period — hold it to keep the subscription alive"]
 pub struct WatchHandle<P> {
-    value: Option<P>,
+    /// Reads the property from the store on demand.
+    read: Box<dyn Fn() -> Option<P> + Send + Sync>,
     mode: WatchMode,
-    _cleanup: WatchCleanup,  // Guard(WatchGuard) or CacheOnly(CacheOnlyGuard)
-}
-
-impl<P> Deref for WatchHandle<P> {
-    type Target = Option<P>;
-    fn deref(&self) -> &Self::Target { &self.value }
+    _cleanup: WatchCleanup,
 }
 
 impl<P> WatchHandle<P> {
     /// Returns the watch mode (Events, Polling, or CacheOnly)
     pub fn mode(&self) -> WatchMode;
 
-    /// Returns a reference to the inner value, if available
-    pub fn value(&self) -> Option<&P>;
+    /// Reads the current value from the store. Live: re-reads on every call.
+    pub fn value(&self) -> Option<P>;
 
-    /// Returns true if a value has been received from the device
+    /// Returns true if a value is currently available from the store
     pub fn has_value(&self) -> bool;
 
     /// Returns true if real-time UPnP events are active
     pub fn has_realtime_events(&self) -> bool;
+}
+
+enum WatchCleanup {
+    Guard(WatchGuard),
+    CacheOnly(CacheOnlyGuard),
+    CoordinatorGuard {
+        _guard: WatchGuard,
+        _member_cleanup: CacheOnlyGuard,
+    },
 }
 
 pub enum WatchMode {
@@ -106,6 +112,16 @@ pub enum WatchMode {
     CacheOnly,
 }
 ```
+
+Two things follow from the `read` closure, and both matter to callers:
+
+- **It is a live view, not a snapshot.** `value()` returns an owned `Option<P>` read from
+  the store at call time, so one handle held across a loop reports every change. There is
+  no `Deref` impl — use the accessors.
+- **The handle does not know which store it came from.** `PropertyHandle::watch()` and
+  `GroupPropertyHandle::watch()` read via `get_property` and `get_group_property`
+  respectively and resolve different keys; capturing the read keeps the two construction
+  sites from drifting into two different notions of "current".
 
 ## The Fetchable Trait
 
@@ -338,7 +354,6 @@ impl Speaker {
 use std::fmt;
 use std::marker::PhantomData;
 use std::net::IpAddr;
-use std::ops::Deref;
 use std::sync::Arc;
 
 use sonos_api::operation::{ComposableOperation, UPnPOperation};

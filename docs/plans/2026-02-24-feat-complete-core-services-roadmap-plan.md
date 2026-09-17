@@ -265,12 +265,12 @@ Phase 7 → docs (rustdoc + examples + guide)
 This is the largest phase — the SDK is currently entirely read-only.
 
 **Files to modify:**
-- `sonos-sdk/src/error.rs` — Add `OperationFailed(String)` variant
+- `sonos-sdk/src/error.rs` — `ValidationFailed(#[from] ValidationError)` variant
 - `sonos-sdk/src/speaker.rs` — Add `api_client` field, `exec()` helper, 29 action methods
 - `sonos-sdk/src/group.rs` — Add `coordinator_ip` field, `exec()` helper, 6 action methods
 - `sonos-sdk/src/lib.rs` — Re-export response types via `responses` module
 
-**Design: `exec()` helper pattern** — Private helper on Speaker and Group eliminates boilerplate. Takes the `Result` from `.build()` directly, maps `ValidationError` → `SdkError::OperationFailed`, and calls `execute_enhanced`. Every action method becomes a one-liner:
+**Design: `exec()` helper pattern** — Private helper on Speaker and Group eliminates boilerplate. Takes the `Result` from `.build()` directly and calls `execute_enhanced`. A `ValidationError` converts through `#[from]` on `SdkError::ValidationFailed`, so `?` is enough. Every action method becomes a one-liner:
 
 ```rust
 impl Speaker {
@@ -278,9 +278,10 @@ impl Speaker {
         &self,
         operation: Result<ComposableOperation<Op>, ValidationError>,
     ) -> Result<Op::Response, SdkError> {
-        let op = operation.map_err(|e| SdkError::OperationFailed(e.to_string()))?;
-        self.api_client
-            .execute_enhanced(&self.ip.to_string(), op)
+        let op = operation?;
+        self.context
+            .api_client
+            .execute_enhanced(&self.context.speaker_ip.to_string(), op)
             .map_err(SdkError::ApiError)
     }
 
@@ -421,7 +422,7 @@ impl Speaker {
   - Create example showing operation execution (play/pause/volume)
   - Create example showing group management lifecycle
 
-- [ ] **Getting-started guide** in `docs/`
+- [x] **Getting-started guide** — `website/src/content/docs/getting-started/` (installation, quick start)
   - Discovery → System creation → Speaker access → Property watching → Operation execution → Group management
   - Code examples for each step
 
@@ -441,21 +442,21 @@ impl Speaker {
 
 ### Functional Requirements
 
-- [ ] All 5 services have complete API operations (44+ total)
-- [ ] All 5 services stream events with real polling fallback
-- [ ] All properties support get(), watch(), and fetch()
-- [ ] All operations are callable via methods on Speaker/Group
-- [ ] Groups can be created, modified (add/remove speakers), and dissolved
-- [ ] Live topology updates reflect group changes automatically
+- [x] All 5 services have complete API operations (52 total: AVTransport 30, RenderingControl 11, GroupRenderingControl 6, GroupManagement 4, ZoneGroupTopology 1)
+- [x] All 5 services stream events with real polling fallback (all five pollers registered in `DeviceStatePoller::new()`)
+- [ ] All properties support get(), watch(), and fetch() — `GroupVolumeChangeable` has no Get operation, so it is event-only by necessity
+- [ ] All operations are callable via methods on Speaker/Group — the four GroupManagement operations remain unexposed
+- [x] Groups can be created, modified (add/remove speakers), and dissolved
+- [x] Live topology updates reflect group changes automatically
 - [ ] `docs/STATUS.md` shows Done for all 5 services across all columns
 
 ### Quality Gates
 
-- [ ] `cargo test` passes across entire workspace
-- [ ] `cargo clippy` passes with no warnings
-- [ ] `cargo doc --no-deps` builds cleanly
+- [x] `cargo test --workspace --features sonos-sdk/test-support --locked` passes across entire workspace
+- [x] `cargo clippy` passes with no warnings
+- [x] `cargo doc --workspace --no-deps --locked` builds cleanly
 - [ ] All public APIs have rustdoc comments
-- [ ] Getting-started guide exists with working code examples
+- [x] Getting-started guide exists with working code examples
 
 ## Dependencies & Prerequisites
 
