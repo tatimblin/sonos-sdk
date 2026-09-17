@@ -7,11 +7,7 @@ This guide demonstrates how to use the sonos-api crate through the interactive C
 The fastest way to explore the sonos-api functionality is through the interactive CLI example:
 
 ```bash
-# Navigate to the sonos-api directory
-cd sonos-api
-
-# Run the interactive CLI example
-cargo run --example cli_example
+cargo run -p sonos-api --example cli_example
 ```
 
 ### Prerequisites
@@ -25,7 +21,7 @@ Before running the example, ensure:
 
 ### What the CLI Example Demonstrates
 
-The CLI example showcases all major sonos-api features:
+The CLI example showcases the crate's core workflow:
 
 #### 🔍 Device Discovery
 - Automatic network scanning for Sonos devices
@@ -41,31 +37,41 @@ The CLI example showcases all major sonos-api features:
 
 **AVTransport Service** (Playback Control):
 - `Play` - Start playback with optional speed parameter
-- `Pause` - Pause current playback  
+- `Pause` - Pause current playback
 - `Stop` - Stop current playback
 - `GetTransportInfo` - Get current playback state and information
 
-**RenderingControl Service** (Volume Control):
-- `GetVolume` - Get current volume level for a channel
-- `SetVolume` - Set volume to specific level (0-100)
-- `SetRelativeVolume` - Adjust volume by relative amount (-128 to +127)
+**RenderingControl Service** (Audio Control):
+- `GetVolume` / `SetVolume` - Read or set volume (0-100)
+- `SetRelativeVolume` - Adjust volume by a relative amount (-128 to +127)
+- `GetMute` / `SetMute` - Read or set mute state
+- `GetBass` / `SetBass` - Read or set bass level (-10 to +10)
+- `GetTreble` / `SetTreble` - Read or set treble level (-10 to +10)
+- `GetLoudness` / `SetLoudness` - Read or set loudness compensation
 
 #### ❌ Error Handling
 - Network connectivity issues
-- Device discovery timeouts  
+- Device discovery timeouts
 - Invalid user input validation
 - SOAP operation failures
 - Parameter validation errors
 
-## Building Your Own Applications
+### Other Examples
 
-The CLI example demonstrates key patterns for building Sonos applications:
+| Example | Command | Purpose |
+|---------|---------|---------|
+| `cli_example` | `cargo run -p sonos-api --example cli_example` | Interactive control of a discovered speaker |
+| `managed_subscription_example` | `cargo run -p sonos-api --example managed_subscription_example` | `ManagedSubscription` lifecycle: renew, expiry, unsubscribe |
+| `validate_rendering_control` | `cargo run -p sonos-api --example validate_rendering_control` | Round-trips every RenderingControl operation against a real speaker |
+| `test_operation` | `cargo run -p sonos-api --example test_operation -- <ip> <service> <action> [Param=value...]` | Sends an arbitrary raw SOAP action, for probing undocumented behavior |
+
+## Building Your Own Applications
 
 ### 1. Basic Setup
 
 ```rust
-use sonos_api::{SonosClient, operations::av_transport::*};
-use sonos_discovery::{get_with_timeout, Device};
+use sonos_api::SonosClient;
+use sonos_discovery::get_with_timeout;
 use std::time::Duration;
 
 // Create a client
@@ -78,245 +84,269 @@ let device = &devices[0]; // Use first device
 
 ### 2. Execute Operations
 
+Each operation has a snake_case constructor that returns an `OperationBuilder`. `build()`
+validates the request; `execute_enhanced` sends it:
+
 ```rust
-use sonos_api::operations::av_transport::{PlayOperation, PlayRequest};
+use sonos_api::services::av_transport;
+use sonos_api::SonosClient;
 
-// Create a request
-let request = PlayRequest {
-    instance_id: 0,
-    speed: "1".to_string(),
-};
+let client = SonosClient::new();
 
-// Execute the operation
-match client.execute::<PlayOperation>(&device.ip_address, &request) {
+let operation = av_transport::play_operation("1".to_string()).build()?;
+
+match client.execute_enhanced("192.168.1.100", operation) {
     Ok(_) => println!("✓ Playback started"),
-    Err(e) => eprintln!("Error: {}", e),
+    Err(e) => eprintln!("Error: {e}"),
 }
 ```
 
 ### 3. Handle Different Operation Types
 
 ```rust
-use sonos_api::operations::{
-    av_transport::{GetTransportInfoOperation, GetTransportInfoRequest},
-    rendering_control::{SetVolumeOperation, SetVolumeRequest},
-};
+use sonos_api::services::{av_transport, rendering_control};
+use sonos_api::SonosClient;
+
+let client = SonosClient::new();
+let ip = "192.168.1.100";
 
 // Get transport info (no parameters)
-let transport_request = GetTransportInfoRequest { instance_id: 0 };
-let transport_response = client.execute::<GetTransportInfoOperation>(
-    &device.ip_address, 
-    &transport_request
-)?;
-println!("Current state: {:?}", transport_response.current_transport_state);
+let operation = av_transport::get_transport_info_operation().build()?;
+let transport = client.execute_enhanced(ip, operation)?;
+println!("Current state: {}", transport.current_transport_state);
 
 // Set volume (with parameters)
-let volume_request = SetVolumeRequest {
-    instance_id: 0,
-    channel: "Master".to_string(),
-    desired_volume: 75,
-};
-client.execute::<SetVolumeOperation>(&device.ip_address, &volume_request)?;
+let operation = rendering_control::set_volume_operation("Master".to_string(), 75).build()?;
+client.execute_enhanced(ip, operation)?;
 println!("Volume set to 75%");
 ```
 
 ### 4. Error Handling Patterns
 
 ```rust
-use sonos_api::ApiError;
+use sonos_api::services::av_transport;
+use sonos_api::{ApiError, SonosClient};
 
-match client.execute::<PlayOperation>(&device.ip_address, &request) {
-    Ok(response) => {
-        // Handle successful response
+let client = SonosClient::new();
+let operation = av_transport::play_operation("1".to_string()).build()?;
+
+match client.execute_enhanced("192.168.1.100", operation) {
+    Ok(_response) => {
         println!("Operation completed successfully");
     }
     Err(ApiError::NetworkError(msg)) => {
-        eprintln!("Network error: {}", msg);
-        // Maybe retry or switch to different device
+        eprintln!("Network error: {msg}");
+        // Maybe retry or switch to a different device
     }
     Err(ApiError::SoapFault(code)) => {
-        eprintln!("Device returned error code: {}", code);
+        eprintln!("Device returned error code: {code}");
         // Handle device-specific errors
     }
     Err(ApiError::ParseError(msg)) => {
-        eprintln!("Failed to parse response: {}", msg);
+        eprintln!("Failed to parse response: {msg}");
         // Handle malformed responses
     }
     Err(e) => {
-        eprintln!("Other error: {}", e);
+        eprintln!("Other error: {e}");
     }
 }
 ```
 
 ### 5. Parameter Validation
 
-```rust
-fn validate_volume(volume: u8) -> Result<(), String> {
-    if volume > 100 {
-        return Err(format!("Volume must be 0-100, got {}", volume));
-    }
-    Ok(())
-}
+Range and format checks live on the request type's `Validate` implementation and run inside
+`build()`, so an out-of-range value never reaches the network:
 
-fn set_volume_safely(client: &SonosClient, device: &Device, volume: u8) -> Result<(), Box<dyn std::error::Error>> {
-    // Validate before sending
-    validate_volume(volume)?;
-    
-    let request = SetVolumeRequest {
-        instance_id: 0,
-        channel: "Master".to_string(),
-        desired_volume: volume,
-    };
-    
-    client.execute::<SetVolumeOperation>(&device.ip_address, &request)?;
-    Ok(())
-}
+```rust
+use sonos_api::services::rendering_control;
+
+// Volume above 100 is rejected before any SOAP call is made.
+let too_loud = rendering_control::set_volume_operation("Master".to_string(), 150).build();
+assert!(too_loud.is_err());
+
+let ok = rendering_control::set_volume_operation("Master".to_string(), 75).build();
+assert!(ok.is_ok());
 ```
+
+The same applies to channel names, bass and treble range (-10 to +10), and relative volume
+adjustments (-128 to +127).
 
 ## Advanced Usage Patterns
 
 ### 1. Multiple Device Control
 
 ```rust
+use sonos_api::services::rendering_control;
+use sonos_api::SonosClient;
+use sonos_discovery::get_with_timeout;
 use std::collections::HashMap;
+use std::time::Duration;
 
-// Control multiple devices
+let client = SonosClient::new();
 let devices = get_with_timeout(Duration::from_secs(5));
 let mut results = HashMap::new();
 
 for device in &devices {
-    let request = GetVolumeRequest {
-        instance_id: 0,
-        channel: "Master".to_string(),
-    };
-    
-    match client.execute::<GetVolumeOperation>(&device.ip_address, &request) {
+    let operation = rendering_control::get_volume_operation("Master".to_string()).build()?;
+
+    match client.execute_enhanced(&device.ip_address, operation) {
         Ok(response) => {
-            results.insert(&device.name, response.current_volume);
+            results.insert(device.name.clone(), response.current_volume);
         }
         Err(e) => {
-            eprintln!("Failed to get volume for {}: {}", device.name, e);
+            eprintln!("Failed to get volume for {}: {e}", device.name);
         }
     }
 }
 
-// Print all volumes
 for (name, volume) in results {
-    println!("{}: {}%", name, volume);
+    println!("{name}: {volume}%");
 }
 ```
 
-### 2. Operation Batching
+### 2. Operation Sequences
+
+Operations execute one at a time. Sequence them by executing in order and propagating errors:
 
 ```rust
-// Execute multiple operations in sequence
+use sonos_api::services::{av_transport, rendering_control};
+use sonos_api::SonosClient;
+use sonos_discovery::Device;
+
 fn control_playback_sequence(
-    client: &SonosClient, 
-    device: &Device
+    client: &SonosClient,
+    device: &Device,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    
     // 1. Get current state
-    let info_request = GetTransportInfoRequest { instance_id: 0 };
-    let info = client.execute::<GetTransportInfoOperation>(&device.ip_address, &info_request)?;
-    println!("Current state: {:?}", info.current_transport_state);
-    
-    // 2. Set volume to reasonable level
-    let volume_request = SetVolumeRequest {
-        instance_id: 0,
-        channel: "Master".to_string(),
-        desired_volume: 30,
-    };
-    client.execute::<SetVolumeOperation>(&device.ip_address, &volume_request)?;
+    let operation = av_transport::get_transport_info_operation().build()?;
+    let info = client.execute_enhanced(&device.ip_address, operation)?;
+    println!("Current state: {}", info.current_transport_state);
+
+    // 2. Set volume to a reasonable level
+    let operation = rendering_control::set_volume_operation("Master".to_string(), 30).build()?;
+    client.execute_enhanced(&device.ip_address, operation)?;
     println!("Volume set to 30%");
-    
+
     // 3. Start playback
-    let play_request = PlayRequest {
-        instance_id: 0,
-        speed: "1".to_string(),
-    };
-    client.execute::<PlayOperation>(&device.ip_address, &play_request)?;
+    let operation = av_transport::play_operation("1".to_string()).build()?;
+    client.execute_enhanced(&device.ip_address, operation)?;
     println!("Playback started");
-    
+
     Ok(())
 }
 ```
 
 ### 3. Retry Logic
 
+A `ComposableOperation` is consumed by `execute_enhanced`, so a retry loop rebuilds the
+operation on each attempt:
+
 ```rust
+use sonos_api::services::rendering_control;
+use sonos_api::{ApiError, SonosClient};
 use std::thread;
 use std::time::Duration;
 
-fn execute_with_retry<Op: SonosOperation>(
+fn get_volume_with_retry(
     client: &SonosClient,
     device_ip: &str,
-    request: &Op::Request,
     max_retries: u32,
-) -> Result<Op::Response, ApiError> {
+) -> Result<u8, Box<dyn std::error::Error>> {
     let mut last_error = None;
-    
+
     for attempt in 1..=max_retries {
-        match client.execute::<Op>(device_ip, request) {
-            Ok(response) => return Ok(response),
-            Err(ApiError::NetworkError(_)) if attempt < max_retries => {
-                println!("Network error on attempt {}, retrying...", attempt);
-                thread::sleep(Duration::from_millis(1000 * attempt as u64));
-                last_error = Some(ApiError::NetworkError("Network error".to_string()));
+        let operation = rendering_control::get_volume_operation("Master".to_string()).build()?;
+
+        match client.execute_enhanced(device_ip, operation) {
+            Ok(response) => return Ok(response.current_volume),
+            Err(ApiError::NetworkError(msg)) if attempt < max_retries => {
+                println!("Network error on attempt {attempt}, retrying...");
+                thread::sleep(Duration::from_millis(1000 * u64::from(attempt)));
+                last_error = Some(ApiError::NetworkError(msg));
             }
-            Err(e) => return Err(e),
+            Err(e) => return Err(e.into()),
         }
     }
-    
-    Err(last_error.unwrap())
+
+    Err(last_error.expect("loop ran at least once").into())
 }
 ```
+
+### 4. Event Subscriptions
+
+Control operations and event subscriptions are independent. A subscription points a service's
+`/Event` endpoint at a callback URL you host, and the returned `ManagedSubscription` tracks
+expiry:
+
+```rust
+use sonos_api::{Service, SonosClient};
+
+let client = SonosClient::new();
+
+let subscription = client.subscribe(
+    "192.168.1.100",
+    Service::RenderingControl,
+    "http://192.168.1.50:8080/callback",
+)?;
+
+println!("SID: {}", subscription.subscription_id());
+println!("Expires at: {:?}", subscription.expires_at());
+
+if subscription.needs_renewal() {
+    subscription.renew()?;
+}
+
+subscription.unsubscribe()?;
+```
+
+Receiving the resulting NOTIFY bodies means running an HTTP server at that callback URL. If you
+want that handled for you, along with polling fallback when a firewall blocks callbacks, use
+[`sonos-sdk`](https://crates.io/crates/sonos-sdk) rather than building it on this crate.
 
 ## Integration with Other Crates
 
 ### With sonos-discovery
 
 ```rust
-use sonos_discovery::{get_with_timeout, Device, DiscoveryError};
+use sonos_discovery::{get_with_timeout, Device};
 use std::time::Duration;
 
 fn find_device_by_name(name: &str) -> Result<Device, Box<dyn std::error::Error>> {
     let devices = get_with_timeout(Duration::from_secs(10));
-    
-    devices.into_iter()
+
+    devices
+        .into_iter()
         .find(|d| d.name.contains(name) || d.room_name.contains(name))
-        .ok_or_else(|| format!("Device '{}' not found", name).into())
+        .ok_or_else(|| format!("Device '{name}' not found").into())
 }
-
-// Usage
-let kitchen_speaker = find_device_by_name("Kitchen")?;
 ```
 
-### With sonos-stream (Event Handling)
+### With sonos-sdk
 
-```rust
-// This would typically be in a separate application using sonos-stream
-// The sonos-api crate focuses on stateless operations
-// For event handling, see the sonos-stream crate examples
-```
+`sonos-api` is stateless and speaks to one speaker at a time. For device discovery, speaker
+grouping, cached properties and a blocking iterator over live property changes, use
+[`sonos-sdk`](../sonos-sdk/README.md), which builds all of that on top of this crate.
 
 ## Common Patterns and Best Practices
 
 ### 1. Device Selection UI
 
 ```rust
+use sonos_discovery::Device;
+
 fn select_device_interactive(devices: &[Device]) -> Result<&Device, Box<dyn std::error::Error>> {
     if devices.is_empty() {
         return Err("No devices found".into());
     }
-    
+
     println!("Available devices:");
     for (i, device) in devices.iter().enumerate() {
         println!("{}. {} ({})", i + 1, device.name, device.room_name);
     }
-    
+
     print!("Select device (1-{}): ", devices.len());
     // ... input handling logic
-    
+
     Ok(&devices[0]) // Simplified
 }
 ```
@@ -334,21 +364,25 @@ struct OperationInfo {
 
 fn build_operation_registry() -> HashMap<String, OperationInfo> {
     let mut registry = HashMap::new();
-    
-    registry.insert("play".to_string(), OperationInfo {
-        name: "Play".to_string(),
-        description: "Start playback".to_string(),
-        service: "AVTransport".to_string(),
-    });
-    
-    registry.insert("pause".to_string(), OperationInfo {
-        name: "Pause".to_string(),
-        description: "Pause playback".to_string(),
-        service: "AVTransport".to_string(),
-    });
-    
-    // ... more operations
-    
+
+    registry.insert(
+        "play".to_string(),
+        OperationInfo {
+            name: "Play".to_string(),
+            description: "Start playback".to_string(),
+            service: "AVTransport".to_string(),
+        },
+    );
+
+    registry.insert(
+        "pause".to_string(),
+        OperationInfo {
+            name: "Pause".to_string(),
+            description: "Pause playback".to_string(),
+            service: "AVTransport".to_string(),
+        },
+    );
+
     registry
 }
 ```
@@ -356,6 +390,8 @@ fn build_operation_registry() -> HashMap<String, OperationInfo> {
 ### 3. Configuration Management
 
 ```rust
+use std::time::Duration;
+
 #[derive(Debug)]
 struct SonosConfig {
     default_volume: u8,
@@ -391,7 +427,7 @@ impl Default for SonosConfig {
 
 #### "SOAP fault" errors
 - **Operation state**: Some operations only work in certain states
-- **Parameter validation**: Check parameter values and types
+- **Coordinator-only actions**: AVTransport, GroupRenderingControl and GroupManagement actions must be sent to the group coordinator
 - **Speaker capabilities**: Not all speakers support all operations
 
 #### "Parse error" responses
@@ -399,54 +435,69 @@ impl Default for SonosConfig {
 - **Network corruption**: Check for network packet corruption
 - **Response format**: Some speakers may return non-standard responses
 
-### Debug Mode
+### Debug Logging
 
-Enable debug logging to troubleshoot issues:
+The crate emits `tracing` spans and events. Install a subscriber and set `RUST_LOG`:
 
-```rust
-// This would depend on the logging setup in your application
-env_logger::init(); // If using env_logger
+```bash
+RUST_LOG=sonos_api=debug,soap_client=debug cargo run -p sonos-api --example cli_example
+```
 
-// Set RUST_LOG=debug when running
-// RUST_LOG=debug cargo run --example cli_example
+To probe a single action without writing code, `test_operation` sends a raw SOAP body and
+prints the response:
+
+```bash
+cargo run -p sonos-api --example test_operation -- 192.168.1.100 RenderingControl GetVolume Channel=Master
 ```
 
 ## Performance Considerations
 
 ### 1. Connection Reuse
-The SonosClient reuses HTTP connections internally for better performance.
+`SonosClient::new()` takes a handle to a process-wide shared SOAP client, so every client
+instance reuses the same HTTP connection pool.
 
 ### 2. Concurrent Operations
+
+`SonosClient` is `Clone`, and cloning is cheap because the underlying transport is shared:
+
 ```rust
+use sonos_api::services::rendering_control;
+use sonos_api::SonosClient;
+use sonos_discovery::get;
 use std::thread;
 
-// Execute operations on multiple devices concurrently
-let handles: Vec<_> = devices.iter().map(|device| {
-    let client = client.clone(); // SonosClient is Clone
-    let device_ip = device.ip_address.clone();
-    
-    thread::spawn(move || {
-        let request = GetVolumeRequest {
-            instance_id: 0,
-            channel: "Master".to_string(),
-        };
-        client.execute::<GetVolumeOperation>(&device_ip, &request)
-    })
-}).collect();
+let client = SonosClient::new();
+let devices = get();
 
-// Collect results
+let handles: Vec<_> = devices
+    .iter()
+    .map(|device| {
+        let client = client.clone();
+        let device_ip = device.ip_address.clone();
+
+        thread::spawn(move || {
+            let operation = rendering_control::get_volume_operation("Master".to_string())
+                .build()
+                .expect("volume request is valid");
+            client.execute_enhanced(&device_ip, operation)
+        })
+    })
+    .collect();
+
 for handle in handles {
-    match handle.join().unwrap() {
+    match handle.join().expect("worker thread panicked") {
         Ok(response) => println!("Volume: {}", response.current_volume),
-        Err(e) => eprintln!("Error: {}", e),
+        Err(e) => eprintln!("Error: {e}"),
     }
 }
 ```
 
 ### 3. Caching Device Information
+
 ```rust
+use sonos_discovery::{get_with_timeout, Device};
 use std::collections::HashMap;
-use std::time::{Instant, Duration};
+use std::time::{Duration, Instant};
 
 struct DeviceCache {
     devices: HashMap<String, Device>,
@@ -455,34 +506,33 @@ struct DeviceCache {
 }
 
 impl DeviceCache {
-    fn get_devices(&mut self) -> Result<&HashMap<String, Device>, DiscoveryError> {
+    fn get_devices(&mut self) -> &HashMap<String, Device> {
         if self.last_discovery.elapsed() > self.cache_duration {
-            self.refresh()?;
+            self.refresh();
         }
-        Ok(&self.devices)
+        &self.devices
     }
-    
-    fn refresh(&mut self) -> Result<(), DiscoveryError> {
+
+    fn refresh(&mut self) {
         let discovered = get_with_timeout(Duration::from_secs(5));
         self.devices.clear();
         for device in discovered {
             self.devices.insert(device.ip_address.clone(), device);
         }
         self.last_discovery = Instant::now();
-        Ok(())
     }
 }
 ```
 
 ## Next Steps
 
-1. **Explore the CLI Example**: Run `cargo run --example cli_example` to see all features
-2. **Read the API Documentation**: Use `cargo doc --open` to browse the full API
-3. **Event Handling**: Explore `../../sonos-stream/` for real-time event subscriptions
+1. **Explore the CLI Example**: Run `cargo run -p sonos-api --example cli_example` to see all features
+2. **Read the API Documentation**: Use `cargo doc -p sonos-api --open` to browse the full API
+3. **Event Handling**: For live property updates without hosting your own callback server, use [`sonos-sdk`](../sonos-sdk/README.md)
 4. **Build Your App**: Use these patterns to build your own Sonos applications
 
 ## Related Documentation
 
 - [sonos-api README](README.md) - Crate overview and basic usage
-- [CLI Example README](examples/README.md) - Detailed CLI example documentation  
-- [sonos-stream examples](../../sonos-stream/examples/) - Event handling examples
+- [Examples README](examples/README.md) - What each example does and how to run it
+- [Services README](src/services/README.md) - Service layout and how to add a new UPnP service

@@ -12,7 +12,7 @@ Modern Rust SDK for Sonos device control via UPnP/SOAP with a DOM-like API and s
 **Requirements:** Sonos speakers on the local network. Discovery uses SSDP multicast (`239.255.255.250:1900`); once a device is found, control requests go to its HTTP/SOAP endpoint on port 1400.
 
 ```rust
-use sonos_sdk::{SonosSystem, SdkError};
+use sonos_sdk::{SdkError, SonosSystem};
 
 fn main() -> Result<(), SdkError> {
     // Discover devices and create system (sync)
@@ -25,7 +25,8 @@ fn main() -> Result<(), SdkError> {
         return Ok(());
     }
 
-    let speaker = system.speaker(&speaker_names[0])
+    let speaker = system
+        .speaker(&speaker_names[0])
         .ok_or_else(|| SdkError::SpeakerNotFound(speaker_names[0].clone()))?;
 
     // Control playback and properties
@@ -40,31 +41,46 @@ fn main() -> Result<(), SdkError> {
 Add to your `Cargo.toml`:
 ```toml
 [dependencies]
-sonos-sdk = "0.5.3"
+sonos-sdk = "0.8"
 ```
+
+The minimum supported Rust version is **1.98**, and the workspace builds on edition 2021.
+
+## Crates
+
+Two crates are user-facing:
+
+| Crate | Purpose |
+|-------|---------|
+| [`sonos-sdk`](sonos-sdk/) | Sync-first, DOM-like API over a whole Sonos system. Start here. |
+| [`sonos-api`](sonos-api/) | Stateless, type-safe UPnP/SOAP operations against a single speaker. |
+
+The rest — `sonos-state`, `sonos-stream`, `sonos-event-manager`, `sonos-discovery`, `callback-server`, `soap-client` — are implementation details. They are published to crates.io so `sonos-sdk` resolves as a transitive dependency, and their APIs carry no stability promise.
 
 ## Key Concepts
 
 ### DOM-like API
 Access properties directly on speaker objects using familiar syntax:
 ```rust
-speaker.volume.get()       // Get cached value (instant)
-speaker.volume.fetch()     // Fresh API call
-speaker.volume.watch()     // Start reactive updates
+let cached = speaker.volume.get();    // cached value, no network call
+let fresh = speaker.volume.fetch()?;  // fresh SOAP call, updates the cache
+let handle = speaker.volume.watch()?; // reactive updates while the handle lives
 ```
 
 ### Three-Method Pattern
 Every property provides three access methods:
-- **`get()`** - Returns cached value, no network calls (instant)
-- **`fetch()`** - Makes API call to device, updates cache (fresh data)
-- **`watch()`** - Registers for change notifications (reactive)
+- **`get()`** - Returns the cached value as an `Option`, no network calls (instant)
+- **`fetch()`** - Makes a SOAP call to the device, updates the cache (fresh data)
+- **`watch()`** - Returns a `WatchHandle` that keeps a subscription alive (reactive)
 
 ### Change Events Carry Values
 `system.iter()` yields a `ChangeEvent` that includes the new value, so you match on it
 directly instead of re-reading the cache:
 
 ```rust
-let _watch = speaker.volume.watch()?;   // hold the handle to keep receiving
+use sonos_sdk::PropertyChange;
+
+let _watch = speaker.volume.watch()?; // hold the handle to keep receiving
 
 for event in system.iter() {
     match &event.change {

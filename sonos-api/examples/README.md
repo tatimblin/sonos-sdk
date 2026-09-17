@@ -1,6 +1,13 @@
-# Sonos API CLI Example
+# Sonos API Examples
 
-This directory contains interactive examples demonstrating the functionality of the sonos-api crate.
+Four examples ship with `sonos-api`. All are synchronous and talk to real hardware on the local network.
+
+| Example | Purpose |
+|---------|---------|
+| [`cli_example`](cli_example.rs) | Interactive menu for discovering a speaker and running operations against it |
+| [`validate_rendering_control`](validate_rendering_control.rs) | Round-trips every RenderingControl operation against the first discovered speaker |
+| [`managed_subscription_example`](managed_subscription_example.rs) | `ManagedSubscription` lifecycle: create, inspect expiry, renew, unsubscribe |
+| [`test_operation`](test_operation.rs) | Sends an arbitrary raw SOAP action, for probing behavior with no operation defined yet |
 
 ## CLI Example (`cli_example.rs`)
 
@@ -9,7 +16,7 @@ An interactive command-line interface that demonstrates device discovery, operat
 ### Features
 
 - **🔍 Device Discovery**: Automatically finds Sonos speakers on your network
-- **📱 Interactive Menus**: Simple numbered menus for device and operation selection  
+- **📱 Interactive Menus**: Simple numbered menus for device and operation selection
 - **🎛️ Operation Execution**: Execute AVTransport and RenderingControl operations
 - **📝 Parameter Collection**: Dynamic parameter collection with validation
 - **❌ Error Handling**: Comprehensive error handling with user-friendly messages
@@ -24,7 +31,7 @@ An interactive command-line interface that demonstrates device discovery, operat
 
 2. **Run the Example**:
    ```bash
-   cargo run --example cli_example
+   cargo run -p sonos-api --example cli_example
    ```
 
 3. **Follow the Interactive Prompts**:
@@ -50,6 +57,14 @@ An interactive command-line interface that demonstrates device discovery, operat
 | `GetVolume` | Get current volume level | `channel` (optional, default: "Master") |
 | `SetVolume` | Set volume to specific level | `volume` (required: 0-100), `channel` (optional) |
 | `SetRelativeVolume` | Adjust volume relatively | `adjustment` (required: -128 to +127), `channel` (optional) |
+| `GetMute` | Get mute state | `channel` (optional) |
+| `SetMute` | Set mute state | `mute` (required: bool), `channel` (optional) |
+| `GetBass` | Get bass level | None |
+| `SetBass` | Set bass level (-10 to +10) | `bass` (required: i8) |
+| `GetTreble` | Get treble level | None |
+| `SetTreble` | Set treble level (-10 to +10) | `treble` (required: i8) |
+| `GetLoudness` | Get loudness compensation state | `channel` (optional) |
+| `SetLoudness` | Set loudness compensation | `loudness` (required: bool), `channel` (optional) |
 
 ### Example Session
 
@@ -72,7 +87,6 @@ You can discover Sonos devices and execute various control operations.
    • Network discovery allowed (check firewall)
 
 ✓ Sonos API client initialized
-✓ Operation registry loaded with 7 operations
 ✓ Signal handling configured (Ctrl+C to exit)
 
 🔍 Discovering Sonos devices... (attempt 1/3)
@@ -83,7 +97,7 @@ Discovered Sonos Devices:
 1. Living Room (Living Room)
    IP: 192.168.1.100 | Model: Sonos One
 
-2. Kitchen (Kitchen)  
+2. Kitchen (Kitchen)
    IP: 192.168.1.101 | Model: Sonos Play:1
 
 🎵 Ready to control your Sonos speakers!
@@ -118,12 +132,12 @@ Enter your choice (0-2): 1
 📂 RenderingControl:
   5. GetVolume - Get current volume
   6. SetVolume - Set volume level
-  7. SetRelativeVolume - Adjust volume relatively
+  ...
 
 0. ← Return to device selection
 
 💡 Tip: Select an operation to execute on Living Room
-Enter your choice (0-7): 6
+Enter your choice: 6
 
 🚀 Executing: SetVolume - Set volume level
    Target device: Living Room (Living Room)
@@ -211,7 +225,92 @@ SOAP API Error: Network timeout after 30 seconds
 Press Enter to continue...
 ```
 
-### Troubleshooting
+### Code Structure
+
+The CLI example demonstrates the crate's core patterns.
+
+#### Type-Safe Operations
+
+Every operation has a generated request struct and is executed through `OperationBuilder`:
+
+```rust
+use sonos_api::services::rendering_control::{SetVolumeOperation, SetVolumeOperationRequest};
+use sonos_api::{OperationBuilder, SonosClient};
+
+let client = SonosClient::new();
+
+let request = SetVolumeOperationRequest {
+    instance_id: 0,
+    channel: "Master".to_string(),
+    desired_volume: 50,
+};
+
+let operation = OperationBuilder::<SetVolumeOperation>::new(request).build()?;
+client.execute_enhanced("192.168.1.100", operation)?;
+```
+
+#### Dynamic Parameter Collection
+
+Parameters are collected from an `OperationInfo` registry the example builds itself, then
+parsed into the typed request fields:
+
+```rust,ignore
+let params = collect_parameters(operation)?;
+let volume: u8 = params.get("volume").unwrap().parse()?;
+```
+
+#### Comprehensive Error Handling
+
+```rust
+use sonos_api::services::av_transport;
+use sonos_api::{ApiError, SonosClient};
+
+let client = SonosClient::new();
+let operation = av_transport::play_operation("1".to_string()).build()?;
+
+match client.execute_enhanced("192.168.1.100", operation) {
+    Ok(_) => println!("✓ Playback started"),
+    Err(ApiError::NetworkError(msg)) => eprintln!("Network error: {msg}"),
+    Err(ApiError::SoapFault(code)) => eprintln!("Device error: {code}"),
+    Err(e) => eprintln!("Other error: {e}"),
+}
+```
+
+## `validate_rendering_control.rs`
+
+Discovers speakers, picks the first one, and exercises every RenderingControl operation —
+GetVolume, GetMute, GetBass, GetTreble, GetLoudness, then a write/read/restore round trip for
+each setter. Useful after changing operation definitions or XML parsing.
+
+```bash
+cargo run -p sonos-api --example validate_rendering_control
+```
+
+## `managed_subscription_example.rs`
+
+Creates a `ManagedSubscription` against a hard-coded device IP and callback URL, then shows the
+lifecycle methods: `subscription_id()`, `expires_at()`, `needs_renewal()`, `renew()` and
+`unsubscribe()`. Edit the IP at the top before running.
+
+```bash
+cargo run -p sonos-api --example managed_subscription_example
+```
+
+## `test_operation.rs`
+
+Sends a raw SOAP body for any service and action, with arbitrary parameters, and prints the
+response. This bypasses the typed operation layer entirely, which is what makes it useful for
+probing actions that have no operation defined yet.
+
+```bash
+cargo run -p sonos-api --example test_operation -- 192.168.1.100 AVTransport GetTransportInfo
+cargo run -p sonos-api --example test_operation -- 192.168.1.100 RenderingControl GetVolume Channel=Master
+cargo run -p sonos-api --example test_operation -- 192.168.1.100 AVTransport Play Speed=1
+```
+
+`InstanceID=0` is supplied by default; any `Name=value` argument overrides or adds to it.
+
+## Troubleshooting
 
 #### No Devices Found
 - Ensure Sonos speakers are powered on
@@ -221,7 +320,7 @@ Press Enter to continue...
 
 #### Operation Failures
 - Check if the speaker is currently playing music from another source
-- Ensure the speaker isn't grouped with other speakers in a way that prevents control
+- AVTransport, GroupRenderingControl and GroupManagement actions must target the group coordinator
 - Try a simpler operation like `GetTransportInfo` first
 - Restart the speaker if issues persist
 
@@ -231,57 +330,9 @@ Press Enter to continue...
 - Try running the example from a different network location
 - Verify the speaker's IP address hasn't changed
 
-### Code Structure
+## Related Documentation
 
-The CLI example demonstrates several key patterns:
-
-#### Type-Safe Operations
-```rust
-// Each operation has strongly-typed request/response structures
-let request = SetVolumeRequest {
-    instance_id: 0,
-    channel: "Master".to_string(),
-    desired_volume: 50,
-};
-
-let response = client.execute::<SetVolumeOperation>(device_ip, &request).await?;
-```
-
-#### Dynamic Parameter Collection
-```rust
-// Parameters are collected dynamically based on operation metadata
-let params = collect_parameters(operation)?;
-let volume: u8 = params.get("volume").unwrap().parse()?;
-```
-
-#### Comprehensive Error Handling
-```rust
-match client.execute::<PlayOperation>(device_ip, &request).await {
-    Ok(_) => println!("✓ Playback started"),
-    Err(ApiError::NetworkError(msg)) => eprintln!("Network error: {}", msg),
-    Err(ApiError::SoapFault(code)) => eprintln!("Device error: {}", code),
-    Err(e) => eprintln!("Other error: {}", e),
-}
-```
-
-### Integration with Other Crates
-
-This example demonstrates integration with:
-
-- **`sonos-discovery`**: For finding devices on the network
-- **`sonos-api`**: For type-safe operation execution
-- **`soap-client`**: (Used internally by sonos-api for SOAP communication)
-
-### Next Steps
-
-After exploring this example:
-
-1. **Read the Source**: Check `cli_example.rs` to understand the implementation
-2. **Explore the API**: Look at the `sonos-api` crate documentation
-3. **Build Your Own**: Use these patterns in your own applications
-4. **Add Operations**: Extend the example with additional Sonos operations
-5. **Event Handling**: Explore the `sonos-stream` crate for real-time events
-
-### Related Examples
-
-- **Stream Examples**: Check `../../sonos-stream/examples/` for event streaming examples
+- [sonos-api README](../README.md) - Crate overview and basic usage
+- [Usage Guide](../USAGE.md) - Patterns for building your own applications
+- [Services README](../src/services/README.md) - Service layout and how to add a new UPnP service
+- [sonos-stream examples](../../sonos-stream/examples/) - Event streaming examples

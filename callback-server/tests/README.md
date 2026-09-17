@@ -1,6 +1,6 @@
 # Callback Server Integration Tests
 
-This directory contains comprehensive integration tests for the callback server that verify end-to-end functionality.
+This directory contains end-to-end integration tests for the callback server. Every test drives a real HTTP server over real requests; nothing is mocked.
 
 ## Test Coverage
 
@@ -35,17 +35,35 @@ This directory contains comprehensive integration tests for the callback server 
 - Verifies proper HTTP status codes for different error conditions
 - Ensures malformed requests don't generate notifications
 
+### `test_oversized_notify_body_rejected`
+- An oversized NOTIFY body is rejected before it is buffered in memory
+- Guards against any host on the LAN exhausting memory through an unbounded read
+
+### `test_invalid_nt_without_nts_is_rejected`
+- `NT` and `NTS` are validated independently
+- A request carrying only one of the two is still checked, so a bogus `NT` cannot slip through
+
+### `test_notify_without_content_length_is_rejected`
+- The size cap keys off `Content-Length`, so a chunked body has nothing to check against and is refused
+- Driven over a raw socket, since `reqwest` always sets `Content-Length` for a sized body
+
+### `test_notify_before_register_is_replayed`
+- Covers the SUBSCRIBE/NOTIFY race, where a device delivers the first event before the SUBSCRIBE response has been processed
+- The notification is held and replayed once the subscription registers
+
 ## Running Tests
+
+The published package name is what `-p` takes:
 
 ```bash
 # Run only integration tests
-cargo test --package callback-server --test integration_tests
+cargo test -p sonos-sdk-callback-server --test integration_tests
 
 # Run all callback-server tests (unit + integration)
-cargo test --package callback-server
+cargo test -p sonos-sdk-callback-server
 
 # Run with output
-cargo test --package callback-server --test integration_tests -- --nocapture
+cargo test -p sonos-sdk-callback-server --test integration_tests -- --nocapture
 ```
 
 ## Test Dependencies
@@ -61,3 +79,4 @@ cargo test --package callback-server --test integration_tests -- --nocapture
 4. **Error Conditions**: Validates proper error handling and status codes
 5. **Subscription Management**: Tests dynamic registration/unregistration
 6. **UPnP Protocol Compliance**: Validates UPnP header handling
+7. **Resource Limits**: Validates body size caps and `Content-Length` requirements
