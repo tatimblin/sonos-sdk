@@ -1805,7 +1805,12 @@ mod tests {
     ///
     /// The cold-and-parallel row is the shape CI actually runs. 8 µs sits ~2.5x
     /// above the worst fast-path number and ~1.8x below the best slow-path one,
-    /// and `main` exceeds it in every shape measured.
+    /// and `main` exceeds it in every shape measured. Linux CI measured 1.71 µs.
+    ///
+    /// The thread assertion is a delta, not an absolute count: `Threads:` is
+    /// process-wide and the harness runs the rest of the suite in parallel. An
+    /// absolute bound of 16 was tried and failed CI at a peak of 20 threads
+    /// with no per-release thread anywhere in the picture.
     ///
     /// An earlier draft used 20 µs, on the assumption that a thread spawn costs
     /// 45–82 µs. It does not on this hardware — `main` passed at 20 µs in the
@@ -1850,7 +1855,14 @@ mod tests {
         // Phase 2 — 1,000 single-key cycles, timing only the release.
         const CYCLES: usize = 1_000;
         let mut releases = Vec::with_capacity(CYCLES);
-        let mut peak_threads = process_thread_count();
+
+        // Baseline first: `Threads:` counts the whole *process*, and the
+        // harness runs the other 26 tests in parallel, each holding a worker
+        // thread and a timer thread. Only the growth during phase 2 is
+        // attributable to releases. An absolute bound was tried and failed in
+        // CI at 20 threads with no per-release threads involved at all.
+        let baseline_threads = process_thread_count();
+        let mut peak_threads = baseline_threads;
 
         for cycle in 0..CYCLES {
             let guard = manager
@@ -1873,7 +1885,8 @@ mod tests {
         let median = releases[releases.len() / 2];
         eprintln!(
             "release cost over {CYCLES} cycles: median {median:?}, \
-             min {:?}, max {:?}; peak process threads {peak_threads}",
+             min {:?}, max {:?}; process threads {baseline_threads} -> peak \
+             {peak_threads}",
             releases[0],
             releases[releases.len() - 1],
         );
@@ -1884,13 +1897,16 @@ mod tests {
              thread (median {median:?} over {CYCLES} cycles)"
         );
 
-        // A resource assertion, not a timing one: with a thread per release,
-        // 1,000 releases at 50 ms apiece overlap into hundreds of live threads.
+        // A resource assertion, not a timing one, and a *delta*: 1,000 releases
+        // at 50 ms apiece overlap almost completely, so a thread per release
+        // shows up as hundreds of extra threads, not sixteen. 16 is therefore
+        // slack for whatever the other tests happen to be doing during the ~2 ms
+        // phase 2 takes, not a measurement of anything.
         #[cfg(target_os = "linux")]
         assert!(
-            peak_threads <= 16,
-            "releases must not spawn threads (peak {peak_threads} threads in \
-             this process)"
+            peak_threads <= baseline_threads + 16,
+            "releases must not spawn threads (process went from \
+             {baseline_threads} to {peak_threads} threads during phase 2)"
         );
     }
 

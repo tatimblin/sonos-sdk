@@ -718,7 +718,7 @@ The crate is thin (bridges sonos-state and sonos-stream), so testing focuses on:
 | `test_guard_drop_with_disconnected_worker` | Dropping a guard after shutdown still clears the watched set |
 | `test_shutdown_drains_pending_grace_timers` | Shutdown tears down exactly once, and stays at once |
 | `test_manager_drop_during_teardown_fire` | Dropping the manager mid-teardown completes rather than deadlocking |
-| `test_immediate_mode_churn_costs_no_threads` | Median release under 8 us over 1,000 cycles, plus a Linux-only peak-thread bound |
+| `test_immediate_mode_churn_costs_no_threads` | Median release under 8 us over 1,000 cycles, plus a Linux-only bound on the *growth* in process threads across those cycles |
 | `test_unrepresentable_deadline_is_refused` | `Duration::MAX` is refused, not panicked on |
 | `test_schedule_after_stop_is_refused` | A stopped timer hands the teardown back |
 | `test_earliest_deadline_pops_first` | The heap is min-by-deadline |
@@ -760,7 +760,7 @@ use; new tests continue from 5400.
 
 | Metric | Target | Measured | Rationale |
 |--------|--------|----------|-----------|
-| `release_watch` (ref count → 0, teardown scheduled) | < 8 us median | 0.92–1.00 us alone; 2.71–3.17 us under the full suite on a cold binary | The immediate-mode TUI path runs ~9 handles at 60 fps ≈ 540 releases/sec |
+| `release_watch` (ref count → 0, teardown scheduled) | < 8 us median | 0.92–1.00 us alone and 2.71–3.17 us under the full suite on a cold binary (Apple M-series); 1.71 us on Linux CI | The immediate-mode TUI path runs ~9 handles at 60 fps ≈ 540 releases/sec |
 | First subscription latency | < 500ms | not measured | Includes UPnP network round-trip |
 | Memory per subscription | < 100 bytes | not measured | Support many devices without excessive memory |
 | Teardown latency under a wedged worker | ≈ `GRACE_PERIOD` | 50.4 ms (dedicated thread) vs 5,002.7 ms (worker runtime) | Teardown timing must not depend on broker health |
