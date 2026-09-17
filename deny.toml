@@ -34,9 +34,14 @@ unmaintained = "workspace"
 # *here*, so a reviewer can re-check the argument instead of trusting the list.
 #
 # Everything that a lockfile bump could fix has already been fixed: `bytes`
-# 1.11.0 -> 1.12.1 (RUSTSEC-2026-0007) and `rustls-webpki` 0.103.8 -> 0.103.14
-# (RUSTSEC-2026-0049/0098/0099/0104). The three below cannot be, and each is
-# accompanied by the reason it does not apply.
+# 1.11.0 -> 1.12.1 (RUSTSEC-2026-0007), `rustls-webpki` 0.103.8 -> 0.103.14
+# (RUSTSEC-2026-0049/0098/0099/0104) and `rustls` 0.23.43 -> 0.23.45
+# (RUSTSEC-2026-0285). RUSTSEC-2026-0258 (`h2` 0.3 empty DATA frames) needed a
+# manifest bump rather than a lockfile one — `h2` 0.3 arrived only through the
+# test-only `reqwest` 0.11, so moving that dev-dependency to 0.12 (hyper 1.x,
+# `http2` off) dropped `h2` from the graph instead of ignoring the advisory.
+# The three below cannot be fixed either way, and each is accompanied by the
+# reason it does not apply.
 ignore = [
     { id = "RUSTSEC-2024-0436", reason = """
 `paste` is unmaintained, not vulnerable. It is a compile-time-only proc macro
@@ -110,10 +115,14 @@ allow = ["MPL-2.0"]
 # ---------------------------------------------------------------------------
 [bans]
 # Duplicate versions are a warning, not an error. The graph legitimately holds
-# several: `hyper` 0.14 + 1.x (dev-only reqwest 0.11 alongside axum 0.8),
-# multiple `windows-sys` generations, and the deliberate `ureq` 2.x/3.x split
-# documented in soap-client/Cargo.toml. Promoting this to "deny" would mean
-# either pinning transitive deps we do not control or a permanent skip-list.
+# several: the deliberate `ureq` 2.x/3.x split documented in
+# soap-client/Cargo.toml (and `webpki-roots` 0.26/1.0 behind it), `base64`
+# 0.22/0.23 and `syn` 2/3. Promoting this to "deny" would mean either pinning
+# transitive deps we do not control or a permanent skip-list.
+#
+# The `hyper` 0.14 + 1.x split that used to be listed here is gone: it came from
+# the test-only `reqwest` 0.11, now on 0.12 and so on the same hyper 1.x major
+# as the shipped `axum` 0.8 callback server.
 multiple-versions = "warn"
 wildcards = "deny"
 highlight = "all"

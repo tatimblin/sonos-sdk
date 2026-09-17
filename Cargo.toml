@@ -54,9 +54,16 @@ proptest = "1.4"
 # which otherwise pulls `native-tls` -> `openssl-sys` into the dev graph (and a
 # C toolchain with it). Nothing in the test suite speaks HTTPS.
 #
+# 0.12 rather than 0.11: 0.11 is the workspace's only consumer of `hyper` 0.14,
+# which pins `h2` 0.3 and with it RUSTSEC-2026-0258. 0.12 moves to `hyper` 1.x —
+# the same major the shipped `axum` 0.8 callback server already uses — and with
+# `default-features = false` the `http2` feature is off, so `h2` leaves the
+# graph entirely. reqwest 0.12 declares rust-version 1.64, well under this
+# workspace's 1.85 floor.
+#
 # `ureq` is deliberately *not* centralized here: soap-client pins 2.x while
 # sonos-discovery uses 3.x (see those manifests for why).
-reqwest = { version = "0.11", default-features = false }
+reqwest = { version = "0.12", default-features = false }
 
 # Lint policy for every member crate (`[lints] workspace = true`).
 #
