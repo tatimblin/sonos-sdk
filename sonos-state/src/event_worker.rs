@@ -103,7 +103,7 @@ fn run_event_loop<I>(
                 panic_count
             );
 
-            if panic_count % PANIC_ESCALATION_INTERVAL == 0 {
+            if panic_count.is_multiple_of(PANIC_ESCALATION_INTERVAL) {
                 tracing::error!(
                     "State event worker has now panicked {} times — state updates \
                      are being dropped and this is a bug that needs fixing",

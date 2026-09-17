@@ -17,10 +17,10 @@ env:
   # file, so the version is repeated here and the two are asserted equal by the
   # `toolchain-sync` job below — a silent drift between local and CI toolchains
   # is what made version-sensitive lints fire in only one of the two places.
-  PINNED_TOOLCHAIN: "1.88.0"
+  PINNED_TOOLCHAIN: "1.98.1"
   # Declared in `[workspace.package] rust-version`. Kept in sync by the `msrv`
   # job, which reads the manifest rather than trusting this value.
-  MSRV: "1.85"
+  MSRV: "1.98"
 
 jobs:
   # Guards the duplication of the toolchain version between rust-toolchain.toml
@@ -97,11 +97,13 @@ jobs:
   # ---------------------------------------------------------------------------
   # Minimum supported Rust version.
   #
-  # `rust-version` had never been verified before this job existed, and the
-  # previously declared 1.80 was wrong: `ureq` 3.4 is an edition-2024 crate, so
-  # Cargo 1.80 cannot even parse its manifest. The floor is 1.85 (edition 2024
-  # stabilized). Note this builds lib targets only — dev-dependencies (ratatui
-  # -> instability -> darling) declare 1.88 and are not part of the MSRV promise
+  # This job silently tested nothing until 2026-09-17: `dtolnay/rust-toolchain`
+  # sets the default toolchain, but `rust-toolchain.toml` overrides the default,
+  # so every `cargo build` here ran on the pinned toolchain instead of MSRV --
+  # rustup even says so in the log. `RUSTUP_TOOLCHAIN` is the only thing that
+  # outranks the file, so it is set explicitly below.
+  #
+  # Builds lib targets only: dev-dependencies are not part of the MSRV promise
   # made to downstream users.
   # ---------------------------------------------------------------------------
   msrv:
@@ -123,7 +125,11 @@ jobs:
         with:
           toolchain: ${{ env.MSRV }}
       - uses: Swatinem/rust-cache@v2
+        # RUSTUP_TOOLCHAIN outranks rust-toolchain.toml; without it this step
+        # silently builds on the pinned toolchain and proves nothing.
       - run: cargo build --workspace --locked
+        env:
+          RUSTUP_TOOLCHAIN: ${{ env.MSRV }}
 
   # ---------------------------------------------------------------------------
   # Supply chain: advisories, licenses, bans, sources. Config and the reasoning

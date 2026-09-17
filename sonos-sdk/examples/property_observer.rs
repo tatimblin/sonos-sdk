@@ -434,7 +434,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Redisplay dashboard periodically (every 10 events or so)
             let total_events: u64 = observations.values().map(|o| o.update_count).sum();
-            if total_events % 5 == 0 {
+            if total_events.is_multiple_of(5) {
                 display_dashboard(&observations, &speaker_display);
             }
         }

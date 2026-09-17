@@ -6,7 +6,7 @@
 # Keep clippy's suggestions compatible with the declared MSRV so it never
 # proposes an API newer than what we promise to compile on. Must stay in sync
 # with `workspace.package.rust-version`.
-msrv = "1.85"
+msrv = "1.98"
 
 # UPnP/SOAP identifiers that clippy would otherwise flag as prose typos if
 # `clippy::doc_markdown` is ever enabled, plus product names that appear
