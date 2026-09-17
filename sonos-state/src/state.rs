@@ -672,6 +672,22 @@ pub struct StateManager {
 /// Separated from StateManager because `mpsc::Sender` is `!Sync`,
 /// preventing StateManager itself from satisfying `WatchRegistry: Sync`.
 /// This struct holds only the Arc-wrapped fields needed for watch management.
+///
+/// # Contract this must keep
+///
+/// `unregister_watches_for_service` is called from the event manager's shared
+/// teardown thread **while that manager holds its pending-unsubscribe mutex**.
+/// Both methods must therefore stay short and lock-local — `watched`,
+/// `ip_to_speaker` and `key_to_service` only — with no I/O, no waiting on
+/// another thread, and no call back into `SonosEventManager`, which would
+/// deadlock on that same mutex. The event manager catches a panic here and logs
+/// it; it cannot do anything about a hang.
+///
+/// Note also that `acquire_watch` now calls `register_watch` *after* it has
+/// resolved any pending teardown, not before, so a re-acquire racing an expiry
+/// is guaranteed to register on top of the unregister rather than underneath
+/// it. Nothing here depends on the old order, but an implementor that assumed
+/// "register always precedes the matching unregister" would be wrong.
 struct StateWatchRegistry {
     watched: Arc<RwLock<WatchCounts>>,
     ip_to_speaker: Arc<RwLock<HashMap<IpAddr, SpeakerId>>>,
