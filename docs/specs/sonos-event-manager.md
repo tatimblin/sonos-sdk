@@ -145,6 +145,7 @@ pub struct SonosEventManager {
 - A subscription exists in EventBroker if and only if the reference count is > 0, or a grace period is pending for that key
 - Device map entries are never removed (devices can be added but not explicitly removed)
 - At most one pending teardown per `(ip, service)`, and its token has exactly one claimant
+- Every path that takes a key's reference count from 0 to 1 claims the pending teardown token first — `acquire_watch` and `ensure_service_subscribed` alike. They share `service_refs`, so a path that skipped the claim would let a teardown fire under a caller holding a live reference, which is precisely how the second invariant above becomes false
 - Locks are taken in the order given in §4.2 and never the reverse
 
 **Ownership**: Created once per application, typically owned by `sonos-state::StateManager`. Handed out as `Arc<SonosEventManager>`; every `WatchGuard` holds one.

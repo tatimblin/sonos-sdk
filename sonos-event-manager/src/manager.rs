@@ -681,6 +681,24 @@ impl SonosEventManager {
     ///
     /// Increments the reference count for the (device_ip, service) pair.
     /// If this is the first reference, triggers a subscription via the background worker.
+    ///
+    /// # Why this claims pending teardowns
+    ///
+    /// This shares `service_refs` with [`acquire_watch`](Self::acquire_watch),
+    /// so it can be the call that takes a key from 0 refs back to 1 — including
+    /// inside a grace period a dropped [`WatchGuard`] just started. It used to
+    /// ignore `pending_unsubscribes` entirely, which left the teardown's token
+    /// unclaimed: 50 ms later the timer fired under a caller that believed it
+    /// was subscribed, sending `Unsubscribe` and wiping the watched set for the
+    /// service. That falsifies the invariant the spec states in §2.3 — *a
+    /// subscription exists iff the reference count is > 0, or a grace period is
+    /// pending* — because the ref count was 1 with neither a subscription nor a
+    /// pending grace period behind it.
+    ///
+    /// Claiming the token is the same protocol `acquire_watch` uses, and for
+    /// the same reason. The one asymmetry is deliberate: there is no
+    /// `(speaker_id, key)` pair here, so there is nothing to register in the
+    /// watched set and no `register_watch` call to order against the claim.
     pub fn ensure_service_subscribed(&self, device_ip: IpAddr, service: Service) -> Result<()> {
         let should_subscribe = {
             let mut refs = self.service_refs.write();
@@ -700,7 +718,14 @@ impl SonosEventManager {
             was_zero
         };
 
-        if should_subscribe {
+        // Claim any grace period in flight for this key, exactly as
+        // `acquire_watch` does — and, as there, only after `service_refs` has
+        // been released, so the lock order stays `service_refs ->
+        // pending_unsubscribes`. Winning the claim means the subscription is
+        // still live and must be reused rather than re-established.
+        let cancelled = should_subscribe && self.claim_pending_teardown(device_ip, service);
+
+        if should_subscribe && !cancelled {
             self.command_tx
                 .send(Command::Subscribe {
                     ip: device_ip,
@@ -1642,6 +1667,67 @@ mod tests {
             "a cancelled grace period must never unregister the watched set"
         );
         assert_eq!(manager.service_ref_count(ip, service), 1);
+    }
+
+    /// `ensure_service_subscribed` inside a grace window must claim the token.
+    ///
+    /// It shares `service_refs` with `acquire_watch` but used to ignore
+    /// `pending_unsubscribes` entirely, so it could take a key from 0 refs back
+    /// to 1 while a teardown was still queued for it. The teardown then fired
+    /// anyway: `Unsubscribe` sent and the watched set wiped under a caller that
+    /// believed it was subscribed — reachable in shipping code through
+    /// `StateManager::watch_property_with_subscription`.
+    ///
+    /// Expiry is driven by hand rather than raced against a sleep, so this is
+    /// deterministic and single-threaded.
+    #[test]
+    fn test_ensure_subscribed_inside_grace_window_claims_the_teardown() {
+        let config = BrokerConfig::default().with_callback_ports(6000, 6100);
+        let manager = Arc::new(SonosEventManager::with_config(config).unwrap());
+        let registry = MockRegistry::new();
+        manager.set_watch_registry(registry.clone());
+
+        let ip: IpAddr = "192.168.1.100".parse().unwrap();
+        let service = Service::RenderingControl;
+        let speaker_id = SpeakerId::new("RINCON_123");
+
+        // A guard-based watch opens the subscription, then drops: grace period.
+        drop(
+            manager
+                .acquire_watch(&speaker_id, "volume", ip, service)
+                .unwrap(),
+        );
+
+        // Take the queued copy off the real timer and hold an equivalent one,
+        // so expiry happens exactly where this test says it does.
+        let teardown = in_flight_teardown(&manager, ip, service);
+        manager.teardown_timer.drain();
+
+        // The other API arrives inside the window.
+        manager.ensure_service_subscribed(ip, service).unwrap();
+        assert_eq!(manager.service_ref_count(ip, service), 1);
+
+        assert!(
+            manager.pending_unsubscribes.lock().is_empty(),
+            "ensure_service_subscribed must claim the pending teardown, not \
+             subscribe alongside it"
+        );
+
+        // The grace period now expires. Having lost the claim, it must decline.
+        assert!(
+            !teardown.fire(&manager.command_tx),
+            "a teardown whose token was claimed must not fire"
+        );
+        assert_eq!(
+            registry.unregisters(),
+            0,
+            "the watched set must not be wiped under a live ensure_service_subscribed \
+             caller"
+        );
+        assert!(
+            manager.is_service_subscribed(ip, service),
+            "the invariant in spec §2.3: ref count > 0 means a live subscription"
+        );
     }
 
     /// Dropping the manager while a teardown is mid-flight must finish, not hang.
