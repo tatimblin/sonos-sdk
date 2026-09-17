@@ -628,14 +628,10 @@ pub struct BrokerConfig {
     pub callback_port_range: (u16, u16),
     /// Timeout before considering UPnP events failed (default: 30s)
     pub event_timeout: Duration,
-    /// Currently has no effect — retained for API compatibility (see 14.2)
-    pub polling_activation_delay: Duration,
     /// Base polling interval (default: 5s)
     pub base_polling_interval: Duration,
     /// Maximum adaptive polling interval (default: 30s)
     pub max_polling_interval: Duration,
-    /// UPnP subscription timeout (default: 1800s/30min)
-    pub subscription_timeout: Duration,
     /// Enable proactive firewall detection (default: true)
     pub enable_proactive_firewall_detection: bool,
     /// Timeout for firewall detection (default: 15s)
@@ -1127,7 +1123,6 @@ BrokerConfig::firewall_simulation()
 
 | Debt Item | Location | Severity | Remediation Plan |
 |-----------|----------|----------|------------------|
-| `BrokerConfig::polling_activation_delay` is unused | `config.rs` | Low | Its only reader was `EventDetector::should_stop_polling`, a dead time-based heuristic replaced by the explicit `polling_reason` state machine (3.2). The field is still public and settable but has no effect; remove it in a follow-up that owns `config.rs`. |
 | eprintln! instead of tracing | Throughout | Low | Replace with tracing macros |
 | Incomplete position info polling | `strategies.rs:84-90` | Medium | Add get_position_info_operation call |
 | Hardcoded error thresholds | `scheduler.rs:287` | Low | Move to BrokerConfig |
@@ -1178,3 +1173,4 @@ BrokerConfig::firewall_simulation()
 | 2026-08-15 | Claude Code | Deleted `broker::get_local_ip` (a duplicate route-to-8.8.8.8 probe) and made the broker consume `CallbackServer::base_url()` as the single authoritative callback URL (3.1). Added a first-subscription reachability warning based on real netmasks. Recorded the single-callback-URL multi-subnet limitation as a named follow-up (14.1). |
 | 2026-08-15 | Claude Code | Documented the polling-fallback lifecycle as reversible (3.2, 5.2): `record_event` liveness reporting, `PollingAction::Stop` on event resumption, and EventRouter SID release on unregistration. Noted `polling_activation_delay` is now unread. |
 | 2026-08-16 | Claude Code | Closed the duplicate-registration SID leak (3.1, 5.2): `register_speaker_service` now short-circuits an already-registered pair instead of re-subscribing and orphaning the previous SID, and `was_duplicate` is computed by `SpeakerServiceRegistry::register_reporting_duplicate` under the insert's own lock — it was previously an `is_registered` call made *after* `register`, so it always answered `true`. Made polling shutdown prompt and non-blocking (3.2): the shutdown signal now carries a `Notify` that interrupts both the interval sleep and the previously unguarded error-backoff sleep, and `stop_polling`/`shutdown_all` release the `active_tasks` guard before awaiting shutdown so `stats()`, `is_polling` and `start_polling` are no longer blocked. Refreshed stale line references. |
+| 2026-09-17 | Claude Code | Removed two `BrokerConfig` fields that nothing read (5.1, 14.2). `polling_activation_delay` was already flagged as scheduled for removal. `subscription_timeout` never reached a subscribe call: `SubscriptionManager::create_subscription` calls `SonosClient::subscribe`, which hard-codes 1800s (`sonos-api/src/client.rs:197`) — the same value the field defaulted to, so removal is behaviour-preserving. Wiring it up would mean plumbing `BrokerConfig` into `SubscriptionManager` and switching to `subscribe_with_timeout`; that is a feature, tracked separately. |
