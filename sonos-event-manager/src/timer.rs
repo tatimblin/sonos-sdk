@@ -91,7 +91,7 @@ impl TeardownTimer {
         let worker_shared = Arc::clone(&shared);
         std::thread::Builder::new()
             .name("sonos-teardown-timer".to_string())
-            .spawn(move || run(&worker_shared, &command_tx))
+            .spawn(move || timer_thread(&worker_shared, &command_tx))
             // A failure to spawn leaves `shared` with no servicing thread:
             // teardowns still enqueue and are simply never fired, which is the
             // same degraded-but-silent outcome as a dead worker.
@@ -150,6 +150,35 @@ impl Drop for TeardownTimer {
         // blocking a `Drop` on that invites lock-order surprises during
         // teardown. It owns nothing but `Arc`s and exits on its own.
         self.stop();
+    }
+}
+
+/// Thread body: `run` under a restart loop.
+///
+/// A panic escaping `run` — from a registry callback that slipped past
+/// `call_unregister`, or from the timer's own code — would otherwise terminate
+/// the single thread that services *every* teardown, silently and permanently.
+/// One panicking teardown must cost one teardown, not the service.
+///
+/// Restarting is safe because the thread owns no state: everything lives behind
+/// `Arc<Shared>`, `parking_lot` mutexes do not poison, their guards unlock on
+/// unwind, and the teardown that panicked was already popped off the heap. So
+/// there is nothing to replay and no restart storm to fear.
+fn timer_thread(shared: &Arc<Shared>, command_tx: &tokio_mpsc::WeakUnboundedSender<Command>) {
+    loop {
+        let outcome =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(shared, command_tx)));
+
+        if outcome.is_ok() {
+            // `run` returns only when the timer has been stopped.
+            return;
+        }
+
+        tracing::error!("Teardown timer thread panicked; resuming the timer loop");
+
+        if shared.queue.lock().stopped {
+            return;
+        }
     }
 }
 

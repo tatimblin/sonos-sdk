@@ -125,10 +125,43 @@ impl PendingTeardown {
         });
 
         if let Some(registry) = &self.registry {
-            registry.unregister_watches_for_service(self.ip, self.service);
+            call_unregister(registry, self.ip, self.service);
         }
 
         true
+    }
+}
+
+/// Invoke a registry's unregister callback, containing any panic it raises.
+///
+/// The callback is implementor-supplied (`StateManager` today) and runs on the
+/// shared teardown thread. A panic escaping it would unwind out of the timer's
+/// `run` loop and kill the one thread every *later* teardown depends on. That
+/// failure is silent and permanent: watched-set entries stay forever and no
+/// subscription is ever released again. Swapping N failure domains for one is
+/// only a regression if the one is terminable, so it is made non-terminable
+/// here and in [`crate::timer`].
+///
+/// Deliberately called *inside* the pending-map guard's scope in
+/// [`PendingTeardown::fire`]: the guard is never unwound through, and `fire`
+/// still returns `true`, so "exactly one winner" stays true in the panic case.
+///
+/// `AssertUnwindSafe` is required because `Arc<dyn WatchRegistry>` is not
+/// `RefUnwindSafe`. `catch_unwind` is a safe function, so `#![forbid(unsafe_code)]`
+/// is unaffected. A registry that panics has broken the contract documented on
+/// [`WatchRegistry`]; whatever state it left behind is its own to repair.
+fn call_unregister(registry: &Arc<dyn WatchRegistry>, ip: IpAddr, service: Service) {
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        registry.unregister_watches_for_service(ip, service);
+    }));
+
+    if outcome.is_err() {
+        tracing::error!(
+            "WatchRegistry::unregister_watches_for_service panicked for {}:{:?}; \
+             the watched set is now stale for that service",
+            ip,
+            service
+        );
     }
 }
 
@@ -159,6 +192,25 @@ pub(crate) mod test_support {
 ///
 /// Defined in sonos-event-manager, implemented by StateManager in sonos-state.
 /// Bridges the two crates without circular dependencies.
+///
+/// # Implementor contract
+///
+/// Both methods are called from the manager's hot paths, and
+/// [`unregister_watches_for_service`](WatchRegistry::unregister_watches_for_service)
+/// runs **on the shared teardown thread while the manager's pending-map mutex
+/// is held**. Implementations must therefore be:
+///
+/// - short and non-blocking — no network or disk I/O, no sleeping, no waiting
+///   on another thread;
+/// - free of re-entry into `SonosEventManager` (`acquire_watch`,
+///   `release_watch` and `shutdown` all take that same mutex, so re-entering
+///   deadlocks);
+/// - tolerant of being called for a `(ip, service)` pair they know nothing
+///   about.
+///
+/// A **panic** is caught and logged (see `call_unregister`) and costs only that
+/// one teardown. A **hang** is not recoverable and blocks every subsequent
+/// teardown for the lifetime of the process.
 pub trait WatchRegistry: Send + Sync + 'static {
     /// Register a property as watched (called during acquire_watch)
     fn register_watch(&self, speaker_id: &SpeakerId, key: &'static str, service: Service);
@@ -688,7 +740,7 @@ impl SonosEventManager {
             let _ = self.command_tx.send(Command::Unsubscribe { ip, service });
             // Clean up watched set
             if let Some(registry) = self.watch_registry.get() {
-                registry.unregister_watches_for_service(ip, service);
+                call_unregister(registry, ip, service);
             }
         }
 
@@ -750,6 +802,77 @@ mod tests {
         fn unregister_watches_for_service(&self, _ip: IpAddr, _service: Service) {
             self.unregister_count.fetch_add(1, Ordering::SeqCst);
         }
+    }
+
+    /// A registry whose *first* unregister call panics, so a test can prove the
+    /// timer survives it. The panic backtrace it prints is expected output.
+    struct PanickingRegistry {
+        calls: AtomicUsize,
+    }
+
+    impl PanickingRegistry {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                calls: AtomicUsize::new(0),
+            })
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    impl WatchRegistry for PanickingRegistry {
+        fn register_watch(&self, _speaker_id: &SpeakerId, _key: &'static str, _service: Service) {}
+
+        fn unregister_watches_for_service(&self, ip: IpAddr, service: Service) {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                panic!("registry panic on {ip}:{service:?} (expected by this test)");
+            }
+        }
+    }
+
+    /// One panicking registry callback must cost one teardown, not the timer.
+    ///
+    /// Before `call_unregister`, the panic unwound out of the timer thread's
+    /// `run` loop and killed it, so every *later* teardown — here a second,
+    /// unrelated service — was silently dropped and its pending entry stuck
+    /// forever.
+    #[test]
+    fn test_registry_panic_does_not_kill_the_timer() {
+        let config = BrokerConfig::default().with_callback_ports(5400, 5500);
+        let manager = Arc::new(SonosEventManager::with_config(config).unwrap());
+        let registry = PanickingRegistry::new();
+        manager.set_watch_registry(registry.clone());
+
+        let ip: IpAddr = "192.168.1.100".parse().unwrap();
+        let speaker_id = SpeakerId::new("RINCON_123");
+
+        // First teardown: its registry callback panics.
+        drop(
+            manager
+                .acquire_watch(&speaker_id, "volume", ip, Service::RenderingControl)
+                .unwrap(),
+        );
+
+        // Second, unrelated teardown, queued behind it on the same thread.
+        drop(
+            manager
+                .acquire_watch(&speaker_id, "playback_state", ip, Service::AVTransport)
+                .unwrap(),
+        );
+
+        std::thread::sleep(Duration::from_millis(200));
+
+        assert_eq!(
+            registry.calls(),
+            2,
+            "the teardown after a panicking one must still run"
+        );
+        assert!(
+            manager.pending_unsubscribes.lock().is_empty(),
+            "no teardown may be left stranded by a panicking registry"
+        );
     }
 
     #[test]
