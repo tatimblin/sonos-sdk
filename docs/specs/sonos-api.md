@@ -763,7 +763,7 @@ fn test_play_validation_basic() {
 
 ### 8.4 Integration Tests
 
-**Location**: `examples/cli_example.rs`, `examples/integration_test.rs`
+**Location**: `examples/cli_example.rs`
 
 **Prerequisites**:
 - Sonos device on network
@@ -1039,3 +1039,4 @@ The crate has `tracing` available as a dependency but does not currently instrum
 | 2026-08-15 | Claude Opus 5 | Document RenderingControl per-channel event state variables and master-selection semantics |
 | 2026-08-15 | Claude Opus 5 | Document `request_xml_mapping:` for explicit UPnP request element names (§4.5) and SOAP payload escaping requirements (§10.3) |
 | 2026-08-17 | Claude Opus 5 | Hand-rolled XML replaced by public crates: `strip_namespaces()` and `extract_xml_value()` deleted, `parse_response` now takes `&str`, `xml_escape` delegates to `quick_xml::escape::escape`, `xmltree` removed. Updated §2.2, §4.1, §4.4, §5.2, §6.1, §9.2, §10.3 |
+| 2026-09-17 | Claude Opus 5 | Deleted `examples/integration_test.rs` and dropped it from §8.4. Despite the name and location it was not an integration test of this crate: it contained zero `sonos_api::` references, defined its own `OperationRegistry`/validator types that exist nowhere else in the workspace, and asserted against `vec!` literals declared in the same function. Its own header said "For now, we'll just verify the concept works." §8.4 integration testing is `examples/cli_example.rs`, which does drive real devices. |
