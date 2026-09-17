@@ -21,10 +21,135 @@ use sonos_stream::BrokerConfig;
 
 use crate::error::{EventManagerError, Result};
 use crate::iter::EventManagerIterator;
+use crate::timer::TeardownTimer;
 use crate::worker::{spawn_event_worker, Command};
 
 /// Grace period duration before unsubscribing after last guard drops
 const GRACE_PERIOD: Duration = Duration::from_millis(50);
+
+/// Grace-period timers in flight, keyed by `(ip, service)`.
+///
+/// The `AtomicBool` is a *claim token*, not merely a cancellation flag: whoever
+/// swaps it from `false` to `true` owns the outcome of that teardown. Exactly
+/// one of `acquire_watch` (cancelling) and [`PendingTeardown::fire`] (expiring)
+/// can win, and both perform the swap while holding the map's mutex, so the two
+/// can never interleave. See [`PendingTeardown::fire`] for the full argument.
+type PendingUnsubscribes = HashMap<(IpAddr, Service), Arc<AtomicBool>>;
+
+/// Everything a deferred teardown needs to resolve itself once its grace period
+/// expires.
+///
+/// Handed to the [`TeardownTimer`] thread, which fires it once `delay` elapses.
+/// It deliberately carries the shared pending-map handle rather than a
+/// reference to the manager: the timer must not hold an
+/// `Arc<SonosEventManager>`, or the manager could never be dropped.
+pub(crate) struct PendingTeardown {
+    pub(crate) ip: IpAddr,
+    pub(crate) service: Service,
+    /// How long to wait before firing. Always [`GRACE_PERIOD`] today; carried
+    /// explicitly so the timer never has to know the manager's policy.
+    pub(crate) delay: Duration,
+    pub(crate) cancelled: Arc<AtomicBool>,
+    pub(crate) pending: Arc<parking_lot::Mutex<PendingUnsubscribes>>,
+    pub(crate) registry: Option<Arc<dyn WatchRegistry>>,
+}
+
+impl fmt::Debug for PendingTeardown {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // `registry` is a trait object and cannot be formatted; it is also not
+        // interesting here.
+        f.debug_struct("PendingTeardown")
+            .field("ip", &self.ip)
+            .field("service", &self.service)
+            .field("delay", &self.delay)
+            .field("cancelled", &self.cancelled.load(Ordering::SeqCst))
+            .finish_non_exhaustive()
+    }
+}
+
+impl PendingTeardown {
+    /// Resolve the teardown now that the grace period has elapsed.
+    ///
+    /// Returns `true` if the teardown actually fired, `false` if a concurrent
+    /// `acquire_watch` had already claimed it.
+    ///
+    /// # Why the lock and the swap are both needed
+    ///
+    /// The claim (`swap`) happens *while holding the pending-map mutex*, which
+    /// is the same mutex `acquire_watch` holds when it cancels. That gives two
+    /// guarantees:
+    ///
+    /// 1. **Exactly one winner.** `swap` returns the previous value, so only the
+    ///    caller that observes `false` proceeds. A re-acquire inside the grace
+    ///    window therefore keeps the live subscription and no `Unsubscribe` is
+    ///    ever sent for it.
+    /// 2. **No inverted command order.** `Unsubscribe` is sent *before* the
+    ///    guard is released, so a racing `acquire_watch` — which can only send
+    ///    its `Subscribe` after taking the same lock — is guaranteed to enqueue
+    ///    behind it. The channel is FIFO, so the worker always sees
+    ///    unsubscribe-then-subscribe and ends up subscribed, never the reverse.
+    pub(crate) fn fire(&self, command_tx: &tokio_mpsc::UnboundedSender<Command>) -> bool {
+        let mut pending = self.pending.lock();
+
+        if self.cancelled.swap(true, Ordering::SeqCst) {
+            tracing::debug!(
+                "Grace period for {}:{:?} was cancelled by a re-acquire, keeping subscription",
+                self.ip,
+                self.service
+            );
+            return false;
+        }
+
+        // Only clear the map entry if it is still *ours*. A later
+        // release_watch may have installed a fresh token for the same key.
+        let key = (self.ip, self.service);
+        if pending
+            .get(&key)
+            .is_some_and(|current| Arc::ptr_eq(current, &self.cancelled))
+        {
+            pending.remove(&key);
+        }
+
+        tracing::debug!(
+            "Grace period expired for {}:{:?}, unsubscribing",
+            self.ip,
+            self.service
+        );
+
+        // Ordering between these two is load-bearing and matches the original
+        // implementation: drop the UPnP subscription, then clear the watched
+        // set. A closed channel here just means the worker is already gone.
+        let _ = command_tx.send(Command::Unsubscribe {
+            ip: self.ip,
+            service: self.service,
+        });
+
+        if let Some(registry) = &self.registry {
+            registry.unregister_watches_for_service(self.ip, self.service);
+        }
+
+        true
+    }
+}
+
+/// Constructors for test fixtures that other modules' unit tests need.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::{Arc, AtomicBool, HashMap, PendingTeardown, Service, GRACE_PERIOD};
+
+    /// A teardown wired to nothing: enough to exercise queue ordering and
+    /// scheduling without a manager behind it.
+    pub(crate) fn dummy_teardown() -> PendingTeardown {
+        PendingTeardown {
+            ip: "192.0.2.1".parse().expect("test IP is valid"),
+            service: Service::RenderingControl,
+            delay: GRACE_PERIOD,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            pending: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            registry: None,
+        }
+    }
+}
 
 // ============================================================================
 // WatchRegistry trait
@@ -130,6 +255,11 @@ pub struct SonosEventManager {
     /// Send commands to background worker (tokio unbounded — send() is sync)
     command_tx: tokio_mpsc::UnboundedSender<Command>,
 
+    /// Deadline queue for grace-period teardowns, serviced by one thread.
+    ///
+    /// Deliberately not the worker runtime: see [`crate::timer`] for why.
+    teardown_timer: TeardownTimer,
+
     /// Receive events from background worker
     event_rx: Arc<Mutex<mpsc::Receiver<EnrichedEvent>>>,
 
@@ -139,8 +269,11 @@ pub struct SonosEventManager {
     /// Service subscription ref counts (sync access)
     service_refs: Arc<RwLock<HashMap<(IpAddr, Service), usize>>>,
 
-    /// Pending grace-period timers: cancelled via AtomicBool when re-acquired
-    pending_unsubscribes: parking_lot::Mutex<HashMap<(IpAddr, Service), Arc<AtomicBool>>>,
+    /// Pending grace-period timers: cancelled via AtomicBool when re-acquired.
+    ///
+    /// Shared (`Arc`) with the timer thread so that expiry and cancellation
+    /// contend on one mutex. See [`PendingTeardown::fire`].
+    pending_unsubscribes: Arc<parking_lot::Mutex<PendingUnsubscribes>>,
 
     /// Watch registry for managing the watched-property set (set once)
     watch_registry: OnceLock<Arc<dyn WatchRegistry>>,
@@ -168,12 +301,19 @@ impl SonosEventManager {
         // Spawn background worker with its own tokio runtime
         let worker = spawn_event_worker(config, command_rx, event_tx);
 
+        // The timer gets a *weak* command sender so it can feed `Unsubscribe`
+        // back in without keeping the command channel alive: a strong clone
+        // would mean the receiver never observes a close, and the worker's
+        // shutdown-on-disconnect path would be dead code.
+        let teardown_timer = TeardownTimer::start(command_tx.downgrade());
+
         Ok(Self {
             command_tx,
+            teardown_timer,
             event_rx: Arc::new(Mutex::new(event_rx)),
             devices: Arc::new(RwLock::new(HashMap::new())),
             service_refs: Arc::new(RwLock::new(HashMap::new())),
-            pending_unsubscribes: parking_lot::Mutex::new(HashMap::new()),
+            pending_unsubscribes: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             watch_registry: OnceLock::new(),
             _worker: worker,
         })
@@ -229,16 +369,15 @@ impl SonosEventManager {
         };
 
         if should_subscribe {
-            // 3. Check for pending grace period to cancel
-            let cancelled = self
-                .pending_unsubscribes
-                .lock()
-                .remove(&(ip, service))
-                .map(|flag| {
-                    flag.store(true, Ordering::SeqCst);
-                    true
-                })
-                .unwrap_or(false);
+            // 3. Try to claim any pending grace period.
+            //
+            // The claim is a swap performed *under the pending-map mutex*, the
+            // same one the expiring timer takes. `swap` returns the previous
+            // value, so observing `false` means we got there first and the
+            // subscription is still live. Observing `true` means the timer
+            // already won: it has queued its `Unsubscribe`, so we must send a
+            // fresh `Subscribe` (which the FIFO channel orders behind it).
+            let cancelled = self.claim_pending_teardown(ip, service);
 
             if cancelled {
                 tracing::debug!(
@@ -268,11 +407,35 @@ impl SonosEventManager {
         })
     }
 
+    /// Claim a pending grace-period teardown for `(ip, service)`, cancelling it.
+    ///
+    /// Returns `true` if this caller won the claim, meaning the subscription is
+    /// still live and can be reused. Returns `false` if there was no pending
+    /// teardown, or if the timer already claimed it — in both cases the caller
+    /// must issue a fresh `Subscribe`.
+    ///
+    /// The counterpart is [`PendingTeardown::fire`]; both take this mutex and
+    /// swap the same token under it, so exactly one of them can win.
+    fn claim_pending_teardown(&self, ip: IpAddr, service: Service) -> bool {
+        let mut pending = self.pending_unsubscribes.lock();
+        match pending.remove(&(ip, service)) {
+            Some(flag) => !flag.swap(true, Ordering::SeqCst),
+            None => false,
+        }
+    }
+
     /// Release a watch (called from WatchGuard::Drop). Must never panic.
     ///
-    /// Decrements the service ref count. If it hits zero, starts a grace period:
-    /// spawns a thread that sleeps for 50ms, then sends Unsubscribe if not
-    /// cancelled.
+    /// Decrements the service ref count. If it hits zero, starts a grace
+    /// period: queues a [`PendingTeardown`] on the [`TeardownTimer`], which
+    /// fires it once [`GRACE_PERIOD`] elapses unless a re-acquire claims it
+    /// first.
+    ///
+    /// This used to spawn one OS thread per release. Because an immediate-mode
+    /// TUI drops and re-acquires every handle each frame, that meant hundreds
+    /// of 50ms-sleeping threads per second — the exact cost the grace period
+    /// exists to avoid. All releases now share one timer thread, so a release
+    /// costs a mutex, a heap push and a condvar notify.
     pub(crate) fn release_watch(
         &self,
         _speaker_id: &SpeakerId,
@@ -312,28 +475,28 @@ impl SonosEventManager {
                 .lock()
                 .insert((ip, service), Arc::clone(&cancelled));
 
-            let tx = self.command_tx.clone();
-            let registry = self.watch_registry.get().cloned();
+            let teardown = PendingTeardown {
+                ip,
+                service,
+                delay: GRACE_PERIOD,
+                cancelled,
+                pending: Arc::clone(&self.pending_unsubscribes),
+                registry: self.watch_registry.get().cloned(),
+            };
 
-            std::thread::spawn(move || {
-                std::thread::sleep(GRACE_PERIOD);
-
-                if !cancelled.load(Ordering::SeqCst) {
-                    tracing::debug!(
-                        "Grace period expired for {}:{:?}, unsubscribing",
-                        ip,
-                        service
-                    );
-
-                    // Unsubscribe from UPnP service
-                    let _ = tx.send(Command::Unsubscribe { ip, service });
-
-                    // Clean up watched set
-                    if let Some(registry) = registry {
-                        registry.unregister_watches_for_service(ip, service);
-                    }
-                }
-            });
+            // Panic-free by contract: this runs from `Drop`. Scheduling is a
+            // mutex, a heap push and a condvar notify — no blocking, no
+            // allocation beyond the box, and no OS thread. It only fails once
+            // the timer is stopped, in which case there is nothing left to tear
+            // down, so drop the token rather than leaving it pending forever.
+            if !self.teardown_timer.schedule(Box::new(teardown)) {
+                tracing::debug!(
+                    "release_watch: timer stopped, skipping grace period for {}:{:?}",
+                    ip,
+                    service
+                );
+                self.pending_unsubscribes.lock().remove(&(ip, service));
+            }
         }
     }
 
@@ -514,6 +677,9 @@ impl SonosEventManager {
     ///
     /// Called automatically on drop, but can be called manually for graceful shutdown.
     pub fn shutdown(&self) {
+        // Stop the timer first so nothing new fires while we drain by hand.
+        self.teardown_timer.stop();
+
         // Cancel all pending grace timers
         let pending: Vec<_> = self.pending_unsubscribes.lock().drain().collect();
         for ((ip, service), flag) in pending {
@@ -730,6 +896,11 @@ mod tests {
         assert_eq!(registry.unregisters(), 0);
     }
 
+    /// Also guards timer independence: `acquire_watch` queues a `Subscribe`
+    /// for an unreachable IP, and the worker's current-thread runtime blocks
+    /// inside `ureq` servicing it. The teardown must still fire on time, which
+    /// it only does because the timer has its own thread. An earlier attempt
+    /// that slept on the worker runtime failed exactly here.
     #[test]
     fn test_grace_period_fires_after_timeout() {
         let config = BrokerConfig::default().with_callback_ports(4600, 4700);
@@ -821,6 +992,232 @@ mod tests {
         assert_eq!(manager.service_ref_count(ip, Service::AVTransport), 1);
 
         drop(guard_av);
+    }
+
+    /// Build a `PendingTeardown` that shares the *same* claim token as the
+    /// teardown currently in flight for `(ip, service)`, so a test can drive
+    /// expiry by hand instead of waiting on the worker's timer.
+    fn in_flight_teardown(
+        manager: &Arc<SonosEventManager>,
+        ip: IpAddr,
+        service: Service,
+    ) -> PendingTeardown {
+        let cancelled = manager
+            .pending_unsubscribes
+            .lock()
+            .get(&(ip, service))
+            .cloned()
+            .expect("a grace period should be pending");
+
+        PendingTeardown {
+            ip,
+            service,
+            delay: GRACE_PERIOD,
+            cancelled,
+            pending: Arc::clone(&manager.pending_unsubscribes),
+            registry: manager.watch_registry.get().cloned(),
+        }
+    }
+
+    /// Expiry wins the race, then a re-acquire arrives.
+    ///
+    /// The re-acquire must *not* mistake the just-fired teardown for a
+    /// cancellable one — the subscription is already gone, so it has to
+    /// resubscribe.
+    ///
+    /// This is the regression test for the old implementation, which neither
+    /// set the flag nor removed the map entry when the timer fired. The stale
+    /// entry made the next `acquire_watch` report "cancelled the grace period"
+    /// and skip its `Subscribe`, leaving a live guard with no subscription
+    /// behind it.
+    #[test]
+    fn test_expiry_then_reacquire_must_resubscribe() {
+        let config = BrokerConfig::default().with_callback_ports(5000, 5100);
+        let manager = Arc::new(SonosEventManager::with_config(config).unwrap());
+        let registry = MockRegistry::new();
+        manager.set_watch_registry(registry.clone());
+
+        let ip: IpAddr = "192.168.1.100".parse().unwrap();
+        let service = Service::RenderingControl;
+        let speaker_id = SpeakerId::new("RINCON_123");
+
+        let guard = manager
+            .acquire_watch(&speaker_id, "volume", ip, service)
+            .unwrap();
+        drop(guard);
+
+        let teardown = in_flight_teardown(&manager, ip, service);
+
+        // The timer wins.
+        assert!(
+            teardown.fire(&manager.command_tx),
+            "an unclaimed teardown must fire"
+        );
+        assert_eq!(registry.unregisters(), 1);
+
+        // It must have cleared its own entry, so the next acquire sees nothing
+        // to cancel and resubscribes.
+        assert!(
+            manager.pending_unsubscribes.lock().is_empty(),
+            "a fired teardown must remove its own pending entry"
+        );
+        assert!(
+            !manager.claim_pending_teardown(ip, service),
+            "after expiry there is nothing to claim — the caller must resubscribe"
+        );
+
+        // Firing twice is a no-op, not a double unsubscribe.
+        assert!(!teardown.fire(&manager.command_tx));
+        assert_eq!(registry.unregisters(), 1);
+    }
+
+    /// Cancellation wins the race, then the timer fires late.
+    ///
+    /// The late timer must decline: the subscription is live again and must not
+    /// be torn down underneath the new guard.
+    #[test]
+    fn test_cancel_then_late_expiry_keeps_subscription() {
+        let config = BrokerConfig::default().with_callback_ports(5100, 5200);
+        let manager = Arc::new(SonosEventManager::with_config(config).unwrap());
+        let registry = MockRegistry::new();
+        manager.set_watch_registry(registry.clone());
+
+        let ip: IpAddr = "192.168.1.100".parse().unwrap();
+        let service = Service::RenderingControl;
+        let speaker_id = SpeakerId::new("RINCON_123");
+
+        let guard = manager
+            .acquire_watch(&speaker_id, "volume", ip, service)
+            .unwrap();
+        drop(guard);
+
+        let teardown = in_flight_teardown(&manager, ip, service);
+
+        // Re-acquire inside the window claims the teardown.
+        let _guard2 = manager
+            .acquire_watch(&speaker_id, "volume", ip, service)
+            .unwrap();
+        assert!(manager.pending_unsubscribes.lock().is_empty());
+
+        // The timer now fires late and must do nothing at all.
+        assert!(
+            !teardown.fire(&manager.command_tx),
+            "a claimed teardown must not fire"
+        );
+        assert_eq!(
+            registry.unregisters(),
+            0,
+            "a cancelled grace period must never unregister the watched set"
+        );
+        assert_eq!(manager.service_ref_count(ip, service), 1);
+    }
+
+    /// Expiry and cancellation racing on the same token: exactly one may win.
+    ///
+    /// Both sides swap the token under the pending-map mutex, so this holds for
+    /// every interleaving. The assertion is deterministic even though the
+    /// scheduling is not — "exactly one winner" is never allowed to be 0 or 2.
+    #[test]
+    fn test_cancel_and_expiry_have_exactly_one_winner() {
+        let config = BrokerConfig::default().with_callback_ports(5200, 5300);
+        let manager = Arc::new(SonosEventManager::with_config(config).unwrap());
+        let registry = MockRegistry::new();
+        manager.set_watch_registry(registry.clone());
+
+        let ip: IpAddr = "192.168.1.100".parse().unwrap();
+        let service = Service::RenderingControl;
+        let speaker_id = SpeakerId::new("RINCON_123");
+
+        const ROUNDS: usize = 500;
+
+        for round in 0..ROUNDS {
+            let guard = manager
+                .acquire_watch(&speaker_id, "volume", ip, service)
+                .unwrap();
+            drop(guard);
+
+            let teardown = in_flight_teardown(&manager, ip, service);
+
+            let fire_side = {
+                let manager = Arc::clone(&manager);
+                std::thread::spawn(move || teardown.fire(&manager.command_tx))
+            };
+            let claim_side = {
+                let manager = Arc::clone(&manager);
+                std::thread::spawn(move || manager.claim_pending_teardown(ip, service))
+            };
+
+            let fired = fire_side.join().unwrap();
+            let claimed = claim_side.join().unwrap();
+
+            assert!(
+                fired ^ claimed,
+                "round {round}: exactly one of expiry/cancel must win \
+                 (fired={fired}, claimed={claimed})"
+            );
+
+            // Whoever lost must have left no entry behind.
+            assert!(
+                manager.pending_unsubscribes.lock().is_empty(),
+                "round {round}: pending map must be empty after the race resolves"
+            );
+
+            // The ref count is left at 1 by the claim side when it wins, so
+            // normalize before the next round.
+            if claimed {
+                manager.release_watch(&speaker_id, "volume", ip, service);
+                manager.pending_unsubscribes.lock().clear();
+            }
+        }
+
+        // Every round that the timer won must have unregistered exactly once,
+        // and no round may have unregistered twice.
+        assert!(
+            registry.unregisters() <= ROUNDS,
+            "no round may unregister more than once"
+        );
+    }
+
+    /// The TUI hot path: drop and re-acquire every handle each frame.
+    ///
+    /// This is the workload the grace period exists for. It must not leak
+    /// pending entries, and (the point of this change) each release costs a
+    /// channel send rather than an OS thread.
+    #[test]
+    fn test_immediate_mode_churn_does_not_leak_pending_entries() {
+        let config = BrokerConfig::default().with_callback_ports(5300, 5400);
+        let manager = Arc::new(SonosEventManager::with_config(config).unwrap());
+        let registry = MockRegistry::new();
+        manager.set_watch_registry(registry.clone());
+
+        let ip: IpAddr = "192.168.1.100".parse().unwrap();
+        let speaker_id = SpeakerId::new("RINCON_123");
+        let keys = ["volume", "mute", "bass", "treble", "loudness"];
+
+        // 200 frames x 5 handles. Under the old implementation this was 1,000
+        // OS threads, each sleeping 50ms.
+        for _frame in 0..200 {
+            let guards: Vec<_> = keys
+                .iter()
+                .map(|key| {
+                    manager
+                        .acquire_watch(&speaker_id, key, ip, Service::RenderingControl)
+                        .unwrap()
+                })
+                .collect();
+
+            assert_eq!(
+                manager.service_ref_count(ip, Service::RenderingControl),
+                keys.len()
+            );
+
+            drop(guards);
+        }
+
+        // One (ip, service) pair churned repeatedly must never accumulate more
+        // than the single entry it is keyed by.
+        assert!(manager.pending_unsubscribes.lock().len() <= 1);
+        assert_eq!(manager.service_ref_count(ip, Service::RenderingControl), 0);
     }
 
     #[test]

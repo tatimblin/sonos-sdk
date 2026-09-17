@@ -71,6 +71,7 @@
 pub mod error;
 pub mod iter;
 pub mod manager;
+mod timer;
 pub mod worker;
 
 // Re-export main types for convenience
