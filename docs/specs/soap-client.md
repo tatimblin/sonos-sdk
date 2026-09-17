@@ -32,7 +32,7 @@ The soap-client crate provides a unified, resource-efficient transport layer tha
 - **Connection pooling configuration**: The singleton pattern with default timeouts covers 99% of use cases. Connection pool tuning is not exposed.
 - **Generic SOAP support**: This crate is specifically designed for UPnP/Sonos communication, not general-purpose SOAP services.
 - **Response caching**: Caching is a higher-level concern handled by sonos-state.
-- **Public API**: This crate is marked `publish = false` and is intended only for workspace-internal use.
+- **Public API surface**: the crate publishes to crates.io as `sonos-sdk-soap-client` so that the rest of the workspace can depend on a released version, but it is documented and versioned as a workspace-internal transport layer. Its API is shaped for `sonos-api`, not for general use.
 
 ### 1.4 Success Criteria
 
@@ -207,9 +207,8 @@ refuse? Returning text draws that line cleanly:
 - **The guarantee is still enforced here.** Fault detection did *not* move up a layer. An
   `Ok(String)` is contractually an envelope containing `<{action}Response>` and no
   `<Fault>`, so callers cannot forget to check.
-- **No wasted parse.** The old path parsed the whole document into a tree, read two or
-  three elements out of it, and dropped it. Now there is one streaming scan here and one
-  streaming read in `sonos-api`, with no intermediate tree.
+- **No wasted parse.** There is one streaming scan here and one streaming read in
+  `sonos-api`, with no intermediate tree built in between.
 
 The cost is that the guarantee is documented rather than encoded in the type — hence the
 explicit contract on `call()`'s doc comment.
@@ -230,17 +229,17 @@ explicit contract on `call()`'s doc comment.
 
 **Step-by-step**:
 
-1. **Entry** (`src/lib.rs:133-140`): The `subscribe()` method receives device IP, port, endpoint, callback URL, and timeout.
+1. **Entry** (`src/lib.rs:130-138`): The `subscribe()` method receives device IP, port, endpoint, callback URL, and timeout.
 
-2. **Header Construction** (`src/lib.rs:144-150`):
+2. **Header Construction** (`src/lib.rs:142-147`):
    - HOST: `{ip}:{port}`
    - CALLBACK: `<{callback_url}>` (angle brackets required by UPnP spec)
    - NT: `upnp:event`
    - TIMEOUT: `Second-{timeout_seconds}`
 
-3. **HTTP SUBSCRIBE** (`src/lib.rs:144-151`): Uses `ureq`'s generic `request()` method for non-standard HTTP verb.
+3. **HTTP SUBSCRIBE** (`src/lib.rs:139-149`): Uses `ureq`'s generic `request()` method for non-standard HTTP verb.
 
-4. **Response Parsing** (`src/lib.rs:160-177`): Extracts SID and TIMEOUT from response headers.
+4. **Response Parsing** (`src/lib.rs:153-164`): Extracts SID from the response headers and the granted TIMEOUT via `granted_timeout()`.
 
 ### 3.3 Error Flow
 
@@ -440,16 +439,14 @@ Three properties of this design are deliberate, and two of them fixed real gaps:
 - **Truncated envelopes are rejected.** `quick-xml` reports `Eof` for a document whose tags
   are still open rather than erroring, so a body cut off mid-transfer would otherwise scan
   as a perfectly good `<{action}Response>` and be handed upstream as a success.
-  `xmltree::Element::parse` rejected those for us; the scanner now asserts the element
-  stack is empty at EOF and reports `<{tag}> was never closed`. A half-received body is not
-  an answer.
+  The scanner therefore asserts the element stack is empty at EOF and reports
+  `<{tag}> was never closed`. A half-received body is not an answer.
 
 - **Text is appended, not overwritten.** An element split across several text/CDATA nodes
-  reads the same as `xmltree`'s `get_text`, which concatenated them.
+  is concatenated into one value.
 
-Per-spelling accumulation (rather than one shared buffer) means the spec spelling wins
-wholesale if a device somehow emits both, matching the old `get_child(..).or_else(..)`
-which picked one element and read both fields from it.
+Each spelling accumulates into its own buffer rather than a shared one, so the spec spelling
+wins wholesale if a device somehow emits both, instead of the two interleaving field by field.
 
 #### Trade-offs
 
@@ -524,7 +521,6 @@ pub struct SubscriptionResponse {
 |-------|---------------|---------------------|
 | `sonos-api` | `SonosClient` wraps `SoapClient` for all device communication | Primary consumer; changes here require sonos-api updates |
 | `sonos-stream` | References `SoapClient` in error types | Minimal coupling via error types only |
-| `callback-server` | Dependency declared but not actively used | May be removed or used in future for subscription management |
 
 ### 6.3 External Systems
 
@@ -599,7 +595,7 @@ pub enum SoapError {
 | `Fault` code 500-599 | Sometimes | Device-side error; may be transient |
 | `Fault` code 700-799 | Sometimes | UPnP action-specific (e.g. 701 transition not available) - depends on device state, may succeed later |
 
-**Retry implication**: Because faults were previously reported as `Network`, upstream retry logic could not distinguish a permanently-invalid request from a transient outage. Correct fault classification lets higher layers avoid retrying 4xx faults.
+**Retry implication**: classifying a device refusal as `Fault` rather than `Network` is what lets upstream retry logic tell a permanently-invalid request from a transient outage, and skip retrying 4xx faults.
 
 ---
 
@@ -805,13 +801,10 @@ removed in 0.9.0 (unreleased) — see §13.3. Changing them means editing
 
 **Current deprecations**: none.
 
-### 13.3 Version History
+### 13.3 Version
 
-| Version | Changes | Migration Guide |
-|---------|---------|-----------------|
-| 0.1.0 | Initial release | N/A |
-| 0.2.0 | Added singleton pattern, deprecated `new()` | Replace `SoapClient::new()` with `SoapClient::get().clone()` |
-| 0.9.0 (unreleased) | Removed `new()` and `with_agent()` | Use `SoapClient::get().clone()` or `SoapClient::default()`. Custom agents are no longer supported |
+The crate is published as `sonos-sdk-soap-client` and takes its version from the workspace
+(`version.workspace = true`), so it moves in lockstep with every other crate in the SDK.
 
 ---
 
@@ -823,14 +816,14 @@ removed in 0.9.0 (unreleased) — see §13.3. Changing them means editing
 |------------|--------|------------|-------------|
 | Hardcoded timeouts in singleton | Cannot adjust timeouts globally | None — edit `SHARED_SOAP_CLIENT` in `src/lib.rs` | None planned |
 | No connection pool metrics | Cannot monitor pool health | None | Consider adding metrics |
-| callback-server dependency unused | Unnecessary compilation | May be used in future | Review and remove if unneeded |
+| No `tracing` instrumentation | Request failures are visible only through returned errors | Log at the call site in `sonos-api` | Consider adding `tracing` |
 
 ### 14.2 Technical Debt
 
 | Debt Item | Location | Severity | Remediation Plan |
 |-----------|----------|----------|------------------|
-| Deprecated `new()` method | `src/lib.rs:69-77` | Low | Remove in next major version |
-| Unused callback-server dependency | `Cargo.toml` | Low | Review usage, potentially remove |
+| Timeouts are constants inside the singleton initialiser | `src/lib.rs:52-58` | Low | Accept a config struct if a caller ever needs different values |
+| `ureq` pinned to 2.x | `Cargo.toml` | Medium | Port `Agent::request` / `Error::Status` / `Error::Transport` usage to `ureq` 3.x |
 
 ---
 
@@ -845,8 +838,8 @@ removed in 0.9.0 (unreleased) — see §13.3. Changing them means editing
 
 ### 15.2 Open Questions
 
-- [ ] **Should we add async support?**: The blocking design was intentional, but async would enable better integration with sonos-stream. May add a feature-gated async variant.
-- [ ] **Remove callback-server dependency?**: Currently listed but not used. Verify if planned for future use.
+- [ ] **Should we add async support?**: The blocking design is deliberate, but async would enable tighter integration with sonos-stream. A feature-gated async variant is the likely shape.
+- [ ] **When to move to `ureq` 3.x?**: requires replacing `Agent::request` and the `Error::Status` / `Error::Transport` split that §3.3 depends on.
 
 ---
 
@@ -867,12 +860,3 @@ removed in 0.9.0 (unreleased) — see §13.3. Changing them means editing
 - [SOAP 1.1 Specification](https://www.w3.org/TR/2000/NOTE-SOAP-20000508/)
 - [ureq Documentation](https://docs.rs/ureq)
 - [quick-xml Documentation](https://docs.rs/quick-xml)
-
-### C. Changelog
-
-| Date | Author | Change |
-|------|--------|--------|
-| 2024-01-14 | Claude | Initial specification created |
-| 2026-08-15 | Claude | Documented the `ureq` error-status trap (§3.3): UPnP faults arrive as HTTP 500 and must be read out of `ureq::Error::Status`. Corrected fault element spelling to `UPnPError` (§4.3), widened `SoapError::Fault` to carry `errorDescription` (§2.3), and replaced `status() != 200` checks with `is_success()`. |
-| 2026-08-17 | Claude Opus 5 | `call()` now returns `Result<String, SoapError>` instead of `Result<xmltree::Element, _>`, and fault detection is a streaming `quick-xml` scan (`scan_envelope`). `xmltree` removed from the workspace. Documented why text and not a DOM (§3.1), path-exact `<Fault>` matching and truncated-envelope rejection (§4.3), and the `ureq` 2.x pin (§6.1). |
-| 2026-09-17 | Claude Opus 5 | Removed `SoapClient::new()` and `SoapClient::with_agent()` (§2.1, §5.1, §12, §13.1, §13.2, §13.3, §14.1). `new()` had been `#[deprecated]` since 0.1.0 with no callers anywhere, including its own tests; `with_agent()`'s only caller in the workspace was that dead `new()`. All real traffic has always gone through `SoapClient::get()`. With both gone, `agent` is private and no remaining constructor accepts one, so every `SoapClient` is provably the singleton or a clone of it — the resource-efficiency claim in §2.1 is now enforced by the type rather than by convention. The cost is that the documented workaround for §14.1's hardcoded timeouts disappears; that row now says so rather than pointing at an escape hatch nothing exercised. |

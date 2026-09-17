@@ -6,39 +6,63 @@
 
 ### 1.1 Problem Statement
 
-The lower-level crates in the Sonos SDK workspace (sonos-api, sonos-state, sonos-discovery) provide powerful capabilities but require developers to understand and coordinate multiple subsystems to build applications. Developers must:
+The lower-level crates in this workspace each solve one problem well and none of them alone.
+`sonos-discovery` finds speakers, `sonos-api` speaks UPnP/SOAP, `sonos-state` caches values and
+announces changes, `sonos-event-manager` reference-counts subscriptions, `sonos-stream` delivers
+events and falls back to polling. Building an application directly on those five means:
 
-1. **Manually discover devices** using sonos-discovery and track their IPs
-2. **Construct typed requests** for each UPnP operation
-3. **Manage state separately** by integrating with sonos-state for reactive updates
-4. **Coordinate API calls with state updates** when fetching fresh values
+1. **Discovering devices and tracking their IPs**, including across a DHCP move.
+2. **Constructing and validating a typed operation** for every read and every command.
+3. **Wiring the state cache** so a fetched value is visible to the rest of the process.
+4. **Owning subscription lifetime** — knowing which UPnP service backs which property, when to
+   subscribe, and when it is safe to tear down.
+5. **Keeping those four in agreement**, especially around groups, where the coordinator owns
+   playback state for every member.
 
-Without this crate, developers face a fragmented API surface where simple operations like "get the volume of a speaker" require understanding three different crates and their integration patterns. The sonos-sdk crate solves this by providing a unified, DOM-like API that feels natural to developers familiar with web development patterns.
+`sonos-sdk` is the single crate an application depends on. It exposes a DOM-like surface —
+`speaker.volume.get()`, `speaker.volume.fetch()`, `speaker.volume.watch()`, `speaker.play()` —
+and owns the coordination behind it.
 
 ### 1.2 Design Goals
 
 | Priority | Goal | Rationale |
 |----------|------|-----------|
-| P0 | DOM-like property access pattern | Enable intuitive API like `speaker.volume.get()` that mirrors browser DOM patterns developers already know |
-| P0 | Unified get/fetch/watch triad | Provide consistent access patterns: cached reads, API fetches, and reactive subscriptions through the same property handle |
-| P1 | Transparent state management | Automatically synchronize API fetches with the reactive state system without manual coordination |
-| P1 | Resource efficiency through sharing | Share StateManager and API client instances across all speakers to minimize resource usage |
-| P2 | Extensible property model | Use macros to minimize boilerplate when adding new properties |
+| P0 | Fully synchronous API | Every public method is a plain `fn`. The target consumer is a blocking render loop or a CLI; neither should need a runtime handle or an `.await` |
+| P0 | DOM-like property access | `speaker.volume` is a field carrying `get`/`fetch`/`watch`, so the three ways to read one property are discoverable from one place and cannot drift apart |
+| P0 | Read and control in one surface | Reading volume and setting it belong on the same type. Properties cover reads; methods on `Speaker` and `Group` cover commands |
+| P0 | Correct under grouping | A grouped member must report its coordinator's playback state, and a command sent to a member must land where the reads look |
+| P1 | Pay only for what you use | A fetch-only program creates no subscriptions, no callback server, no runtime and no threads. Event infrastructure is built on the first `watch()` |
+| P1 | RAII subscription lifetime | Holding a `WatchHandle` holds a subscription; dropping it releases one. There is no `unwatch()` to forget |
+| P1 | No leaks across construction | Dropping a `SonosSystem` releases the state manager, the event-worker thread, the runtime and the callback socket |
+| P2 | Offline-constructible for tests | Consumers must be able to build a fully-formed system from a synthetic device list with provably zero network I/O |
 
 ### 1.3 Non-Goals
 
-- **Low-level UPnP control**: Direct SOAP operations should use sonos-api; this crate is for high-level access patterns
-- **Custom subscription management**: Subscription lifecycle is handled automatically; manual control requires lower-level crates
-- **Polling-based updates**: The `watch()` method uses UPnP events exclusively; polling is abstracted in sonos-stream
-- **Speaker control actions**: This initial version focuses on reading properties; write operations (play, pause, set volume) are deferred
+- **Low-level UPnP access.** Operations that the SDK does not surface are reached through
+  `sonos-api` directly. This crate does not aim to expose all 52 of them.
+- **Manual subscription management.** Ref counting, grace periods, renewal and polling fallback
+  live in `sonos-event-manager` and `sonos-stream`. The SDK says which service a property needs
+  and holds a guard.
+- **Async.** There is no `tokio` dependency, no `async fn` and no `.await` in this crate. A
+  tokio runtime exists inside `sonos-event-manager`, created lazily on the first `watch()` and
+  never surfaced here.
+- **Persistence beyond a discovery cache.** The only thing written to disk is the device list
+  (§4.6); property values live for the life of the `SonosSystem`.
+- **Content browsing.** There is no ContentDirectory or music-service support.
 
 ### 1.4 Success Criteria
 
-- [x] Access speaker properties via `speaker.property.get()` syntax
-- [x] Fresh API calls via `speaker.property.fetch().await` that update reactive state
-- [x] UPnP event streaming via `speaker.property.watch().await`
-- [x] Single entry point via `SonosSystem::new().await`
-- [x] Automatic device discovery on initialization
+- [x] Every public method on `SonosSystem`, `Speaker`, `Group` and the property handles is
+      synchronous
+- [x] `speaker.volume.get()` returns the cached value with no network call
+- [x] `speaker.volume.fetch()` performs one SOAP round trip and updates the shared cache
+- [x] `speaker.volume.watch()` returns a `WatchHandle` whose `value()` is live for the handle's
+      whole lifetime
+- [x] `speaker.play()` and the rest of the control surface write the cache optimistically, so a
+      subsequent `get()` reflects the command without waiting for an event
+- [x] A `PerCoordinator` property read through a grouped member resolves to the coordinator
+- [x] `drop(system)` releases the `StateManager` — asserted through a `Weak` that outlives it
+- [x] `SonosSystem::from_devices_offline` performs no network I/O
 
 ---
 
@@ -47,320 +71,616 @@ Without this crate, developers face a fragmented API surface where simple operat
 ### 2.1 High-Level Design
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         sonos-sdk (Public)                          │
-├─────────────────────────────────────────────────────────────────────┤
-│  SonosSystem                                                        │
-│    ├── StateManager (shared Arc)                                    │
-│    ├── SonosClient (shared)                                         │
-│    └── HashMap<name, Speaker>                                       │
-├─────────────────────────────────────────────────────────────────────┤
-│  Speaker                                                            │
-│    ├── id: SpeakerId                                                │
-│    ├── name: String                                                 │
-│    ├── ip: IpAddr                                                   │
-│    ├── volume: VolumeHandle ──────────┐                             │
-│    └── playback_state: PlaybackStateHandle ─┐                       │
-├─────────────────────────────────────────────┼───────────────────────┤
-│  PropertyHandle<P>                          │ (macro-generated)     │
-│    ├── get()   → Option<P>          [cached value from StateStore]  │
-│    ├── fetch() → Result<P>          [API call + state update]       │
-│    └── watch() → WatchHandle<P>     [RAII subscription guard]        │
-└─────────────────────────────────────────────────────────────────────┘
-                                │
-                                ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    Internal Crate Dependencies                       │
-├─────────────────────────────────────────────────────────────────────┤
-│  sonos-state                                                        │
-│    └── StateManager (reactive state + UPnP subscriptions)           │
-├─────────────────────────────────────────────────────────────────────┤
-│  sonos-api                                                          │
-│    └── SonosClient (direct UPnP SOAP operations)                    │
-├─────────────────────────────────────────────────────────────────────┤
-│  sonos-discovery                                                    │
-│    └── get() (SSDP device discovery)                                │
-└─────────────────────────────────────────────────────────────────────┘
++---------------------------------------------------------------------------+
+|                          sonos-sdk (public)                               |
++---------------------------------------------------------------------------+
+|  SonosSystem                             src/system.rs:75                 |
+|    state_manager: Arc<StateManager>      (shared; sole owner of events)   |
+|    api_client:    SonosClient            (clone of the SOAP singleton)    |
+|    speakers:      RwLock<HashMap<String, Speaker>>   keyed on room name   |
+|    last_rediscovery: AtomicU64           rediscovery cooldown             |
+|    offline:       bool                   test constructors only (8.5)     |
++---------------------------------------------------------------------------+
+|  Speaker  src/speaker.rs:123        |  Group  src/group.rs:76             |
+|    id / name / ip / model_name      |    id / coordinator_id / member_ids |
+|    volume, mute, bass, treble,      |    volume, mute,                    |
+|    loudness, playback_state,        |    volume_changeable                |
+|    position, current_track,         |    coordinator(), members(),        |
+|    group_membership                 |    add_speaker(), remove_speaker(), |
+|    play/pause/stop/seek/queue/...   |    dissolve(), set_volume(), ...    |
++---------------------------------------------------------------------------+
+|  PropertyHandle<P>  src/property/handles.rs:306                           |
+|    get()   -> Option<P>          cached read, one RwLock read             |
+|    fetch() -> Result<P>          SOAP round trip + stamped cache write    |
+|    watch() -> Result<WatchHandle<P>>   RAII lease + live read closure     |
+|                                                                           |
+|  GroupPropertyHandle<P>  src/property/handles.rs:937   same triad, group  |
++---------------------------------------------------------------------------+
+                 |                    |                    |
+                 v                    v                    v
++----------------------+  +----------------------+  +----------------------+
+| sonos-state          |  | sonos-api            |  | sonos-discovery      |
+| StateManager:        |  | SonosClient:         |  | get_with_timeout():  |
+|  cache + fan-out     |  |  execute_enhanced    |  |  SSDP sweep          |
++----------------------+  +----------------------+  +----------------------+
+                 |
+                 v  (lazily, on first watch())
++---------------------------------------------------------------------------+
+| sonos-event-manager -> sonos-stream -> callback-server                    |
+|   subscription ref counting, event delivery, polling fallback             |
++---------------------------------------------------------------------------+
 ```
 
-**Design Rationale**: The architecture follows the Facade pattern, providing a simplified interface to the complex subsystem of state management, API operations, and device discovery. The DOM-like property access pattern (`speaker.volume.get()`) was chosen because:
+**Design Rationale**: the crate is a facade. The DOM-like shape — a property as a *field* that
+carries its own verbs — was chosen over `speaker.get_property::<Volume>()` because it makes the
+API navigable by autocomplete, and because it puts `get`, `fetch` and `watch` for one property
+in one type where they cannot acquire inconsistent semantics.
 
-1. It is familiar to web developers who work with DOM properties
-2. It groups related operations (get/fetch/watch) on a single handle
-3. It enables IDE autocomplete to guide API discovery
-4. It encapsulates the complexity of coordinating multiple crates
+Everything is synchronous because the two layers below the SDK already are: `sonos-api` blocks
+on `ureq`, and `sonos-state` is a `std::thread` plus `std::sync::mpsc`. The async machinery
+that does exist is confined to `sonos-event-manager`'s worker thread, which owns its own
+current-thread runtime. A caller never sees it.
 
 ### 2.2 Module Structure
 
 ```
 sonos-sdk/src/
-├── lib.rs              # Public API surface, re-exports, module documentation
-├── prelude.rs          # Convenience re-exports (SonosSystem, Speaker, etc.)
-├── system.rs           # SonosSystem entry point with discovery and speaker registry
-├── speaker.rs          # Speaker struct with property handles + fluent navigation
-├── group.rs            # Group handle with member access + fluent navigation
-├── error.rs            # SdkError enum (#[non_exhaustive])
-├── cache.rs            # Discovery cache management
-└── property/           # Property handle implementations
-    ├── mod.rs          # Re-exports VolumeHandle, PlaybackStateHandle, etc.
-    └── handles.rs      # Generic PropertyHandle + GroupPropertyHandle
+├── lib.rs              # Public surface and re-exports
+├── prelude.rs          # pub mod prelude — the common subset
+├── system.rs           # SonosSystem: discovery, registry, groups, iter()  (private mod)
+├── speaker.rs          # Speaker, SeekTarget, PlayMode                     (private mod)
+├── group.rs            # Group, GroupChangeResult                          (private mod)
+├── error.rs            # SdkError                                          (private mod)
+├── cache.rs            # Discovery cache on disk                           (private mod)
+└── property/           # pub mod property
+    ├── mod.rs          # Re-exports every handle type
+    └── handles.rs      # PropertyHandle, GroupPropertyHandle, WatchHandle,
+                        #   Fetchable / FetchableWithContext / GroupFetchable,
+                        #   SpeakerContext, GroupContext, type aliases
 ```
 
 | Module | Responsibility | Visibility |
 |--------|---------------|------------|
-| `system` | System initialization, discovery, speaker registry | `pub` (SonosSystem) |
-| `speaker` | Speaker representation with property handles | `pub` (Speaker) |
-| `error` | SDK-specific error types | `pub` (SdkError) |
-| `property` | Property handle implementations | `pub` (handles only) |
-| `property::handles` | Macro-generated handle types | `pub(crate)` (macro), `pub` (types) |
+| `system` | Construction, discovery, speaker/group registry, change iteration | `mod` (private); `SonosSystem` re-exported at `src/lib.rs:75` |
+| `speaker` | `Speaker` plus the AVTransport and RenderingControl command surface | `mod` (private); types re-exported at `src/lib.rs:74` |
+| `group` | `Group` plus group lifecycle and GroupRenderingControl commands | `mod` (private); types re-exported at `src/lib.rs:73` |
+| `error` | `SdkError` | `mod` (private); re-exported at `src/lib.rs:72` |
+| `cache` | Disk cache of discovered devices | `mod` (private); nothing is `pub` |
+| `property` | Handle types and fetch traits | `pub mod` (`src/lib.rs:126`) |
+| `prelude` | The subset most programs need | `pub mod` (`src/lib.rs:120`) |
+
+Only `property` and `prelude` are public modules. Everything else reaches the user through
+re-exports, so the module layout is free to change without breaking callers.
+
+`Fetchable`, `FetchableWithContext` and `GroupFetchable` are deliberately **not** re-exported
+at the crate root: they are the extension points for adding a property to this crate, not part
+of a consumer's vocabulary. They are reachable as `sonos_sdk::property::Fetchable`.
 
 ### 2.3 Key Types
 
-#### `SonosSystem`
+#### `SonosSystem` (`src/system.rs:75`)
 
 ```rust
 pub struct SonosSystem {
-    state_manager: Arc<StateManager>,    // Shared state; sole owner of the event manager
-    api_client: SonosClient,             // Shared SOAP client
-    speakers: RwLock<HashMap<String, Speaker>>,  // Name -> Speaker registry
-    last_rediscovery: AtomicU64,         // Rediscovery cooldown timestamp
-    offline: bool,                       // Test constructors only (§8.5)
+    state_manager: Arc<StateManager>,            // :85
+    api_client: SonosClient,                     // :88
+    speakers: RwLock<HashMap<String, Speaker>>,  // :91  keyed on display name
+    last_rediscovery: AtomicU64,                 // :94
+    offline: bool,                               // :102 test constructors only
 }
 ```
 
-**Purpose**: Main entry point that initializes the entire SDK, discovers devices, and provides access to speakers. The constructor is cheap — event infrastructure is lazily created on first `watch()` call.
+**Purpose**: the entry point. Discovers devices, owns the shared `StateManager` and SOAP client,
+and hands out `Speaker` and `Group` handles.
+
+It derives nothing — it is not `Clone`, not `Debug`, not `Default`. `new()` returns
+`Result<Self, SdkError>`.
 
 **Invariants**:
-- After construction, all discovered speakers are registered in the map
-- StateManager is initialized with all discovered devices
-- The event manager is unset until the first `watch()` triggers lazy initialization
-- Dropping a `SonosSystem` releases its `StateManager` (see §8.7)
+- Every visible discovered device has an entry in `speakers`; satellites do not (§3.1)
+- The `StateManager` knows every discovered device
+- The event manager is unset until the first `watch()` triggers lazy initialisation
+- Dropping a `SonosSystem` releases its `StateManager` (§8.7)
 
-**Ownership**: Created once per application; owns the StateManager and speaker registry.
+**Ownership**: created once per application. `Speaker` and `Group` handles clone the
+`Arc<StateManager>` and the `SonosClient`, so they are cheap and independent of the system's
+own lifetime for reads — but the event infrastructure lives and dies with the manager.
 
-**Why there is no `event_manager` field**: there used to be one,
-`Mutex<Option<Arc<SonosEventManager>>>`, documented as "kept alive here to
-prevent the Arc from being dropped". It was permanently `None` and therefore
-kept nothing alive. It was populated by `Arc::try_unwrap` on an `Arc` the
-lazy-init closure also held, so the unwrap could never succeed and the fallback
-arm cloned an `Option` that was still `None` at construction time. The
-`StateManager`'s own `OnceLock` was — and remains — the single owner, which is
-sufficient because `state_manager` outlives every `watch()`. The field was
-removed rather than repaired: a second handle bought nothing, and a field whose
-doc comment contradicts its runtime value is worse than no field. It was private,
-so removing it is not a breaking change (`cargo semver-checks` confirms).
-
-#### `Speaker`
+#### `Speaker` (`src/speaker.rs:123`)
 
 ```rust
+#[derive(Clone)]
 pub struct Speaker {
-    pub id: SpeakerId,                   // Unique speaker identifier
-    pub name: String,                    // Human-readable name ("Living Room")
-    pub ip: IpAddr,                      // Network address
-    pub volume: VolumeHandle,            // Property handle for volume
-    pub playback_state: PlaybackStateHandle,  // Property handle for playback
+    pub id: SpeakerId,            // :126
+    pub name: String,             // :128  display name, prefers room_name
+    pub ip: IpAddr,               // :130
+    pub model_name: String,       // :132
+
+    // RenderingControl
+    pub volume: VolumeHandle,                 // :138
+    pub mute: MuteHandle,                     // :140
+    pub bass: BassHandle,                     // :142
+    pub treble: TrebleHandle,                 // :144
+    pub loudness: LoudnessHandle,             // :146
+
+    // AVTransport
+    pub playback_state: PlaybackStateHandle,  // :152
+    pub position: PositionHandle,             // :154
+    pub current_track: CurrentTrackHandle,    // :156
+
+    // ZoneGroupTopology
+    pub group_membership: GroupMembershipHandle,  // :162
+
+    context: Arc<SpeakerContext>,             // :165
 }
 ```
 
-**Purpose**: Represents a single Sonos speaker with typed property handles for DOM-like access.
+**Purpose**: one speaker, with nine property handles and the full command surface.
 
 **Invariants**:
-- All property handles share the same StateManager and SonosClient
-- The speaker's IP address is valid and reachable at construction time
+- Every handle shares the one `Arc<SpeakerContext>`, so they cannot disagree about identity,
+  address, state manager or client
+- `ip` is refreshed from the store during construction and after a topology update
 
-**Ownership**: Cloneable; contains Arc references to shared resources.
+**Ownership**: `Clone`. Cloning clones four `Arc`s and a `SonosClient` (itself an `Arc` clone).
 
-#### `VolumeHandle` / `PlaybackStateHandle` (macro-generated)
+#### `Group` (`src/group.rs:76`)
 
 ```rust
-pub struct VolumeHandle {
-    speaker_id: SpeakerId,
-    speaker_ip: IpAddr,
-    state_manager: Arc<StateManager>,
-    api_client: SonosClient,
+#[derive(Clone)]
+pub struct Group {
+    pub id: GroupId,                   // :79
+    pub coordinator_id: SpeakerId,     // :81
+    pub member_ids: Vec<SpeakerId>,    // :83
+
+    pub volume: GroupVolumeHandle,                      // :89
+    pub mute: GroupMuteHandle,                          // :91
+    pub volume_changeable: GroupVolumeChangeableHandle, // :93
+
+    coordinator_ip: IpAddr,            // :96
+    state_manager: Arc<StateManager>,  // :97
+    api_client: SonosClient,           // :98
 }
 ```
 
-**Purpose**: Provides get/fetch/watch triad for a specific property type.
+**Purpose**: a zone group. Every command it issues targets `coordinator_ip`, because the
+coordinator is the only member with authority over group-wide state.
+
+`Group::from_info` (`src/group.rs:106`) is `pub(crate)`: a `Group` is always derived from the
+topology the `StateManager` holds, never constructed by a caller from parts that might not
+correspond to a real group.
+
+Note the deliberate type asymmetry with `Speaker`: `Group::set_volume` takes `u16` and
+`set_relative_volume` takes `i16`, matching the GroupRenderingControl UPnP arguments, where the
+per-speaker equivalents take `u8`/`i8`.
+
+#### `PropertyHandle<P>` (`src/property/handles.rs:306`)
+
+```rust
+#[derive(Clone)]
+pub struct PropertyHandle<P: SonosProperty> {
+    context: Arc<SpeakerContext>,  // :308
+    _phantom: PhantomData<P>,      // :309
+}
+```
+
+**Purpose**: the get/fetch/watch triad for one property on one speaker. The nine `Speaker`
+fields are type aliases over it (`src/property/handles.rs:870-894`), so there is exactly one
+implementation of each verb regardless of property.
+
+| Method | Line | Cost |
+|--------|------|------|
+| `get(&self) -> Option<P>` | :334 | One read lock on the state store, one clone |
+| `watch(&self) -> Result<WatchHandle<P>, SdkError>` | :366 | Lazy event init on first call; then a ref-count increment |
+| `is_watched(&self) -> bool` | :498 | One read lock |
+| `speaker_id()` / `speaker_ip()` | :505 / :510 | Field reads |
+| `watch_or_fetch(&self) -> Result<WatchHandle<P>, SdkError>` | :525 | `watch()` plus, if the store is empty, one `fetch()` — requires `P: Fetchable` |
+| `fetch(&self) -> Result<P, SdkError>` | :556 | One SOAP round trip — requires `P: Fetchable` |
+
+`GroupMembership` gets a concrete `fetch()` (`:617`) rather than a generic one, because Rust
+forbids two generic impl blocks defining the same method and that property is
+`FetchableWithContext` rather than `Fetchable`.
+
+`GroupVolumeChangeable` has no `fetch()` at all (explained at `src/property/handles.rs:858`):
+the value only ever arrives on an event.
+
+**`SpeakerContext`** (`:25`) holds `speaker_id`, `speaker_ip`, `state_manager` and `api_client`;
+`SpeakerContext::new` (`:35`) returns `Arc<Self>` directly, because nothing ever wants an
+unshared one. `GroupContext` (`:904`) is its group equivalent, additionally carrying
+`group_id` and `coordinator_id`.
+
+#### `WatchHandle<P>` (`src/property/handles.rs:129`)
+
+```rust
+#[must_use = "dropping the handle starts the grace period — hold it to keep the subscription alive"]
+pub struct WatchHandle<P> {
+    read: Box<dyn Fn() -> Option<P> + Send + Sync>,  // :138
+    mode: WatchMode,                                 // :139
+    _cleanup: WatchCleanup,                          // :140
+}
+```
+
+**Purpose**: an RAII lease on a subscription that is also a **live view** of the property.
+
+| Method | Line | Behaviour |
+|--------|------|-----------|
+| `mode()` | :145 | Which delivery mode the watch got |
+| `value()` | :158 | Reads the store **on every call** and returns `Option<P>` by value |
+| `has_value()` | :166 | The same read, discarding the value |
+| `has_realtime_events()` | :171 | `mode() == WatchMode::Events` |
+
+The type parameter is unbounded — a `WatchHandle<P>` carries a closure, not a property
+constraint — and the type is not `Clone`, because each handle is exactly one hold.
 
 **Invariants**:
-- The speaker_id and speaker_ip are always consistent
-- All methods use the same shared resources
+- While the handle lives, `value()` reports the property's current value, including after a
+  regrouping the handle knew nothing about
+- Dropping the handle releases exactly one hold; the subscription survives if any other holder
+  remains, and otherwise enters a 50 ms grace period
 
-**Ownership**: Cloneable; references are Arc-cloned from Speaker.
+#### `WatchMode` (`src/property/handles.rs:58`)
+
+```rust
+pub enum WatchMode {
+    Events,     // :64  real-time UPnP
+    Polling,    // :71  event manager present, polling fallback in force
+    CacheOnly,  // :77  no event manager; the watched-set entry is held, nothing subscribes
+}
+```
+
+`CacheOnly` is what an offline-constructed system produces, and what any system produces before
+an `EventInitFn` has been installed. The cleanup for it is a `CacheOnlyGuard`
+(`src/property/handles.rs:212`), which releases one reference-counted hold on
+`(speaker_id, property_key)` — not the whole entry, so sibling watchers survive.
+
+#### `SdkError` (`src/error.rs:5`)
+
+```rust
+#[derive(Error, Debug)]
+#[non_exhaustive]
+pub enum SdkError {
+    #[error("state management error: {0}")]
+    StateError(#[from] sonos_state::StateError),                       // :7
+
+    #[error("api error: {0}")]
+    ApiError(#[from] sonos_api::ApiError),                             // :10
+
+    #[error("event manager error: {0}")]
+    EventManager(String),                                              // :13
+
+    #[error("speaker not found: {0}")]
+    SpeakerNotFound(String),                                           // :16
+
+    #[error("invalid ip address")]
+    InvalidIpAddress,                                                  // :19
+
+    #[error("property watcher closed")]
+    WatcherClosed,                                                     // :22
+
+    #[error("property fetch failed: {0}")]
+    FetchFailed(String),                                               // :25
+
+    #[error("validation failed: {0}")]
+    ValidationFailed(#[from] sonos_api::operation::ValidationError),   // :28
+
+    #[error("invalid operation: {0}")]
+    InvalidOperation(String),                                          // :31
+
+    #[error("discovery failed: {0}")]
+    DiscoveryFailed(String),                                           // :34
+
+    #[error("internal lock poisoned")]
+    LockPoisoned,                                                      // :37
+}
+```
+
+Eleven variants, and the enum **is** `#[non_exhaustive]` (`src/error.rs:4`). A downstream
+`match` must carry a wildcard arm; in exchange, adding a variant is not a breaking change.
 
 ---
 
 ## 3. Code Flow
 
-### 3.1 Primary Flow: System Initialization
+### 3.1 Primary Flow: System Initialisation
 
 ```
-┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐
-│  SonosSystem::   │────▶│  sonos-discovery │────▶│  StateManager::  │
-│  new()           │     │  ::get()         │     │  add_devices()   │
-└──────────────────┘     └──────────────────┘     └──────────────────┘
-       │                         │                        │
-       │                         │                        │
-       ▼                         ▼                        ▼
-   system.rs:18            discovery crate          state_manager
-                                                   registers devices
-       │
-       ▼
-┌──────────────────┐
-│  Create Speaker  │
-│  instances with  │
-│  property handles│
-└──────────────────┘
-       │
-       ▼
-   system.rs:29-41
+SonosSystem::new()                                    src/system.rs:116
+        |
+        +-- cache::load() / cache::is_stale()         src/cache.rs:36, :66
+        |     hit  -> use the cached device list
+        |     miss -> sonos_discovery::get_with_timeout(3s), then cache::save()
+        v
+from_devices_inner(devices)                           src/system.rs:265
+        v
+construct(devices, offline = false, seed = noop)      src/system.rs:274
+        |
+        +-- assemble(devices, offline)                src/system.rs:327   [no I/O]
+        |     StateManager::new() + add_devices()
+        |     build the EventInitFn, capturing a Weak<StateManager>
+        |     SonosClient::new()  (clone of the SOAP singleton)
+        |     build_speakers(devices, {} )            src/system.rs:551
+        |
+        +-- seed(&system)                             (test constructors only)
+        |
+        +-- ensure_topology()                         src/system.rs:796
+        |     SOAP-polls zone_group_topology::state::poll per speaker
+        |     until one answers; applies IP updates, then initialize(topology)
+        |
+        +-- rebuild_speakers_excluding_satellites()   src/system.rs:508
+        |     rebuilds the name map now that satellite IDs are known
+        |
+        +-- refresh each Speaker.ip from the store    src/system.rs:296
 ```
 
 **Step-by-step**:
 
-1. **Entry** (`src/system.rs:18`): `SonosSystem::new()` is called, creating the async initialization context
-2. **State initialization** (`src/system.rs:20`): Creates `StateManager::new().await` which initializes the reactive state system and event processing
-3. **API client creation** (`src/system.rs:21`): Creates `SonosClient::new()` which uses shared SOAP client singleton
-4. **Discovery** (`src/system.rs:24`): Calls `sonos_discovery::get()` to find all Sonos devices on the network via SSDP
-5. **Device registration** (`src/system.rs:25`): Registers discovered devices with StateManager for reactive updates
-6. **Speaker creation** (`src/system.rs:29-41`): Creates `Speaker` instances for each device with property handles
-7. **Return** (`src/system.rs:44-48`): Returns the initialized `SonosSystem` with all speakers registered
+1. **Cache or discover** (`src/system.rs:116`): `new()` prefers a non-stale cached device list
+   (24-hour TTL, §4.6) and otherwise runs a 3-second SSDP sweep, saving the result.
 
-**Shared vs. network-dependent construction**: The in-memory portion of steps 2-6 lives in `SonosSystem::assemble()`, which performs no I/O. `SonosSystem::construct()` calls `assemble()` and then layers on the three topology-dependent steps: topology prefetch, satellite re-key, and IP refresh. Both `from_devices_inner()` (production) and the offline test constructors (§8.5) go through `construct()`, so the Arc wiring *and* the order of the topology-dependent steps each have exactly one definition — the Arc graph is subtle, and the step order is load-bearing (see below).
+2. **Assemble** (`src/system.rs:327`): the in-memory half, which performs no network I/O. It
+   creates the `StateManager`, registers every device with it, installs the lazy `EventInitFn`,
+   clones the SOAP client and builds a provisional speaker map.
 
-**Satellite exclusion must precede name-keying**: `speakers` is a `HashMap<String, Speaker>` keyed on `display_name()`, which prefers `room_name`. Every device in a bonded home theater — a Playbar plus its surrounds and sub — reports the *same* `room_name`, so all of them hash to one key and only one can survive insertion. Satellites (`Invisible="1"`) are therefore skipped **inside** `build_speakers()`, before insertion, rather than filtered out of the finished map.
+3. **Topology** (`src/system.rs:796`): `ensure_topology()` polls `ZoneGroupTopology` state from
+   the known speaker IPs until one answers, applies the IP updates it reports, and calls
+   `StateManager::initialize(topology)`. Doing this *before* any subscription exists means group
+   structure is already known when the first AVTransport event arrives, so coordinator
+   suppression and member propagation work from event one.
 
-Filtering afterwards was a real defect: on a Playbar + 2 Sonos One set all named "Basement", the three devices collided down to one entry, and the post-hoc `retain()` could only inspect whichever device won. When the winner was a surround, `retain()` deleted it and the entire room vanished from `speakers()` — while `groups()`, which reads topology rather than the name map, still showed Basement with a live volume. Skipping first guarantees the visible coordinator (the one that accepts transport and volume commands) is the only candidate for the key.
+4. **Re-key** (`src/system.rs:508`): the speaker map is rebuilt, this time excluding satellites.
 
-Satellite identity comes from topology and the key comes from the device list, so the map can only be built correctly once both are known. That point is after `ensure_topology()`, which is why `construct()` *rebuilds* the map from `devices` there instead of mutating the provisional one. `try_rediscover()` re-applies the same exclusion, since it replaces the map wholesale and would otherwise resurrect every satellite.
+5. **Refresh addresses** (`src/system.rs:296`): each `Speaker.ip` is re-read from the store,
+   because topology may have reported a newer address than discovery did.
 
-**Two genuinely visible speakers sharing a room name** are disambiguated rather than dropped: the first keeps the plain room name and later ones are suffixed with their speaker ID (`"Basement (RINCON_…)"`). Sonos prevents duplicate room names in its app, so this state implies something unusual (a rename observed mid-discovery, a stale cache entry for a replaced unit) — but silently discarding a controllable speaker is the worse outcome in every such case, and the old behavior did exactly that with only a `warn!` to show for it. `speakers()` and `speaker_by_id()` consequently see the true device count.
+`assemble()` and `construct()` are shared by the production constructor and every offline test
+constructor, so the Arc wiring and the *order* of the three topology-dependent steps each have
+exactly one definition. That order is load-bearing — see below.
 
-**Why the init closure captures a `Weak<StateManager>`**: the `EventInitFn` built
-in `assemble()` needs the `StateManager` in order to call `set_event_manager()`
-on it — but the closure is then *stored on that same manager*, via
-`set_event_init()`, which parks it in a `OnceLock`. Capturing a strong
-`Arc<StateManager>` therefore closed a reference cycle:
+**Why satellite exclusion must precede name-keying.** `speakers` is keyed on `display_name()`
+(`src/system.rs:24`), which prefers `room_name`. Every device in a bonded home theater — a
+Playbar plus its surrounds and sub — reports the *same* `room_name`, so all of them hash to one
+key and only one survives insertion. Satellites (`Invisible="1"`) are therefore skipped **inside**
+`build_speakers()` (`src/system.rs:551`), before insertion, rather than filtered out of a
+finished map.
+
+Filtering afterwards can only inspect whichever device won the collision. If the winner is a
+surround, removing it deletes the entire room from `speakers()` — while `groups()`, which reads
+topology rather than the name map, still shows that room with a live volume. Skipping first
+guarantees the visible coordinator, the one that accepts transport and volume commands, is the
+only candidate for the key.
+
+Satellite identity comes from topology and the key comes from the device list, so the map can
+only be built correctly once both are known. That point is after `ensure_topology()`, which is
+why `construct()` *rebuilds* the map there instead of mutating the provisional one.
+`try_rediscover()` (`src/system.rs:637`) re-applies the same exclusion, since it replaces the
+map wholesale.
+
+**Two genuinely visible speakers sharing a room name** are disambiguated rather than dropped:
+the first keeps the plain room name and later ones are suffixed with their speaker ID
+(`"Basement (RINCON_…)"`). Sonos prevents duplicate room names in its own app, so this state
+implies something unusual — a rename observed mid-discovery, a stale cache entry for a replaced
+unit — but silently discarding a controllable speaker is the worse outcome in every such case.
+`speakers()` and `speaker_by_id()` consequently see the true device count.
+
+**Why the init closure captures a `Weak<StateManager>`** (`src/system.rs:311-326`): the
+`EventInitFn` built in `assemble()` needs the `StateManager` in order to call
+`set_event_manager()` on it — but the closure is then *stored on that same manager*, via
+`set_event_init()`, which parks it in a `OnceLock`. A strong `Arc<StateManager>` capture would
+close a reference cycle:
 
 ```
 StateManager --OnceLock<EventInitFn>--> closure --Arc--> StateManager
 ```
 
-Neither end of that loop could reach zero, so dropping a `SonosSystem` freed
-nothing. It was measurable: `Arc::strong_count` was 2 after `drop(system)` where
-1 was expected. Every construction permanently leaked the `StateManager`, its
-`StateStore`, the event-worker thread, and — once anything called `watch()` — the
-`SonosEventManager` with its tokio runtime and the callback server's socket. A
-long-running process that rebuilt its system (reconnect, config reload, a test
-binary constructing one per case) accumulated all of it.
+Neither end could reach zero, so dropping a `SonosSystem` would free nothing — not the manager,
+not its store, not the event-worker thread, and once anything called `watch()`, not the
+`SonosEventManager` with its tokio runtime or the callback server's socket. A long-running
+process that rebuilt its system on reconnect or config reload would accumulate all of it.
 
-`Arc::downgrade` breaks the cycle at the only edge that can be weak without
-changing behaviour. The closure `upgrade()`s on entry; while the system is alive
-that always succeeds, and the sole way it can fail is a `watch()` racing
-teardown, where declining to build a runtime and bind a socket for a
-dying system is exactly right. The failure is logged at `debug` and returns
-`Ok(())`, because a torn-down system is not a caller error.
+`Arc::downgrade` breaks the cycle at the only edge that can be weak without changing behaviour.
+The closure `upgrade()`s on entry; while the system is alive that always succeeds, and the sole
+way it can fail is a `watch()` racing teardown, where declining to build a runtime and bind a
+socket for a dying system is exactly right. That failure logs at `debug` and returns `Ok(())`,
+because a torn-down system is not a caller error.
 
-The one-shot guard inside the closure is a plain `Arc<Mutex<bool>>` rather than
-the old `Arc<Mutex<Option<Arc<SonosEventManager>>>>`: its only job is to keep two
-concurrent first-`watch()` calls from each constructing an event manager, and
-storing the manager there was what created the phantom second owner in the first
-place.
+The one-shot guard inside the closure is a plain `Arc<Mutex<bool>>`. Its only job is to keep two
+concurrent first-`watch()` calls from each constructing an event manager; it deliberately does
+not store the manager, because a second owner is what would recreate the cycle.
 
-### 3.2 Secondary Flow: Property Fetch (API Call + State Update)
+### 3.2 Secondary Flow: Property Fetch
 
 ```
-┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐
-│  speaker.volume  │────▶│  SonosClient::   │────▶│  StateManager::  │
-│  .fetch()        │     │  execute_enhanced│     │  update_property │
-└──────────────────┘     └──────────────────┘     └──────────────────┘
-       │                         │                        │
-       ▼                         ▼                        ▼
-   handles.rs:53           sonos-api              StateStore::set()
-                                                  triggers watchers
+speaker.volume.fetch()                     src/property/handles.rs:556
+        |
+        +-- P::build_operation()           the Fetchable impl, e.g. :686
+        |
+        +-- resolve target                 src/property/handles.rs:560-573
+        |     PerCoordinator -> state_manager.resolve_subscription_target()
+        |     PerSpeaker     -> own id, current IP from the store
+        |
+        +-- observed_at = Instant::now()   :580   BEFORE the request
+        |
+        +-- api_client.execute_enhanced()  :585   one blocking SOAP round trip
+        |
+        +-- P::from_response(response)     :589
+        |
+        +-- state_manager.set_property_stamped(target_id, value,
+        |       WriteStamp::observed_at(ChangeSource::Fetch, observed_at))   :594
+        |
+        +-- Ok(value)                      :601   returned regardless of the cache verdict
 ```
 
-**Step-by-step**:
+**Ordering, not just synchronisation.** A `fetch()` is a *read at request time* that lands at
+*response time*. If a UPnP event arrives in that window carrying a newer value, the fetch
+response must not overwrite it — otherwise a speaker visibly snaps back to its previous value a
+moment after changing. Stamping before the request and letting
+`sonos-state` compare observation instants is what prevents that; the store returns
+`WriteOutcome::Stale` and declines the write. See
+[sonos-state.md](sonos-state.md) §4.1a.
 
-1. **Entry** (`src/property/handles.rs:53`): `fetch()` is called on a property handle
-2. **Operation construction** (`src/property/handles.rs:55-57`): Uses builder pattern to construct the UPnP operation
-3. **API execution** (`src/property/handles.rs:60-62`): Executes operation via `SonosClient::execute_enhanced()`
-4. **Response conversion** (`src/property/handles.rs:65`): Converts API response to property type using closure
-5. **State update** (`src/property/handles.rs:68`): Updates StateManager, triggering any active watchers
-6. **Return** (`src/property/handles.rs:70`): Returns the fresh property value
+The caller still receives the value it fetched. It asked the device a question and got an
+answer; only the shared cache declines to regress.
 
-### 3.3 Secondary Flow: Property Watch (RAII WatchHandle)
+**Target resolution** is the same rule the read path uses. For a `PerCoordinator` service the
+write is routed to the coordinator, so it lands in the bag `get()` reads from. For a
+`PerSpeaker` service the current IP is re-read from the store first, so a fetch issued after a
+DHCP move still reaches the device.
 
-```
-┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐
-│  speaker.volume  │────▶│  SonosEvent      │────▶│  WatchHandle<P>  │
-│  .watch()        │     │  Manager::       │     │  returned        │
-│                  │     │  acquire_watch() │     │  (holds guard)   │
-└──────────────────┘     └──────────────────┘     └──────────────────┘
-       │                         │                        │
-       ▼                         ▼                        ▼
-   handles.rs            increments ref count      RAII guard + live
-                         (0→1 subscribes)          read closure
-```
-
-**Step-by-step**:
-
-1. **Entry**: `watch()` is called on a property handle
-2. **Lazy init**: If no event manager exists, triggers lazy initialization via `EventInitFn`
-3. **Acquire**: Calls `SonosEventManager::acquire_watch()` which increments the (ip, service) ref count
-4. **Guard creation**: Returns `WatchGuard` (RAII guard) holding one ref count
-5. **WatchHandle**: Wraps the guard + watch mode + a closure that reads the property
-   from the store on demand into `WatchHandle<P>`. No value is captured — see 4.4.
-6. **Drop**: When `WatchHandle` is dropped, `WatchGuard::Drop` calls `release_watch()`, starting a 50ms grace period if ref count hits zero
-
-### 3.4 Error Flow
+### 3.3 Secondary Flow: Property Watch
 
 ```
-[sonos-state::StateError] ──▶ SdkError::StateError ──▶ User
-[sonos-api::ApiError]     ──▶ SdkError::ApiError   ──▶ User
-[IP parse failure]        ──▶ SdkError::InvalidIpAddress ──▶ User
-[Speaker not found]       ──▶ SdkError::SpeakerNotFound ──▶ User
+speaker.volume.watch()                     src/property/handles.rs:366
+        |
+        +-- lazy event init                :375-390
+        |     no event manager yet? call the stored EventInitFn once
+        |
+        +-- resolve subscription target    :393
+        |     PerCoordinator -> (coordinator_id, coordinator_ip)
+        |
+        +-- event manager present?
+        |     yes -> SonosEventManager::acquire_watch(..) -> WatchGuard
+        |            (increments the (ip, service) ref count; 0 -> 1 subscribes)
+        |     no  -> StateManager::register_watch(..) -> CacheOnlyGuard
+        |
+        +-- build the read closure, capturing Arc<SpeakerContext>
+        |     it calls the same get_property() that `get()` calls
+        |
+        +-- WatchHandle { read, mode, _cleanup }
+        |
+        +-- drop -> WatchGuard::Drop -> release_watch()
+              at zero holds, a 50 ms grace period starts
 ```
 
-**Error handling philosophy**: Errors are wrapped into `SdkError` to provide a unified error type at the SDK level while preserving the original error information through `#[from]` attributes. This allows users to:
-1. Handle all SDK errors uniformly
-2. Pattern match on specific error variants when needed
-3. Access underlying errors for debugging
+**The handle is a live view, not a snapshot.** `value()` invokes the stored closure, which reads
+the store through the same accessor `get()` uses — `get_property` for `PropertyHandle`,
+`get_group_property` for `GroupPropertyHandle`. That is what keeps the read correct rather than
+merely fresh:
+
+- It inherits **coordinator resolution** ([sonos-state.md](sonos-state.md) §4.3), so a
+  `PerCoordinator` property read through a member's handle still resolves to the coordinator,
+  including after a regrouping the handle knew nothing about.
+- It inherits the **write-ordering guard** ([sonos-state.md](sonos-state.md) §4.1a). The store
+  only ever holds the newest-*observed* value, so re-reading cannot resurrect staleness. A read
+  has no stamp of its own; it observes whatever survived the ordering.
+- It can legitimately return `None` where a cached copy would have returned `Some`: if the
+  resolved location no longer holds a value — a dissolved group, a speaker that left the
+  topology — the honest answer is "unknown".
+
+**Why a boxed closure rather than a stored context.** The two `watch()` sites read different
+stores with different keys (`PropertyHandle` by speaker, `GroupPropertyHandle` by group). An
+enum or a second type parameter would put that difference in the public type; the closure keeps
+`WatchHandle<P>` single-shaped and makes it impossible for the two sites to drift into different
+notions of "current".
+
+**Why `Option<P>` by value.** The store sits behind a `parking_lot::RwLock` shared with the event
+worker. Returning `Option<&P>` would either pin that lock for the handle's lifetime or alias a
+value the worker is free to replace. Properties are small and `Clone` by trait bound. This also
+rules out `Deref<Target = Option<P>>`, which must return a reference and therefore requires a
+stored value — i.e. a snapshot.
+
+`watch_or_fetch()` (`src/property/handles.rs:525`) is the composition: acquire the handle, and
+if the store has no value yet, call `fetch()` and discard the result. Discarding is correct
+because the fetch writes into the store the handle reads from, and a stale-rejected fetch is
+handled for free — rejection means an event already delivered something newer, which is what
+`value()` will then return.
+
+### 3.4 Secondary Flow: Control Commands
+
+Every command on `Speaker` and `Group` follows one shape:
+
+```
+speaker.set_volume(42)                          src/speaker.rs:605
+        |
+        +-- build the operation                 rendering_control::set_volume("Master", 42)
+        |
+        +-- Speaker::exec(operation)            src/speaker.rs:280
+        |     operation.map_err(SdkError::ValidationFailed)?
+        |     api_client.execute_enhanced(&self.context.speaker_ip.to_string(), op)
+        |
+        +-- on success, write the cache optimistically
+              state_manager.set_property(&id, Volume(42))    src/speaker.rs:609
+```
+
+The optimistic write is what makes `speaker.set_volume(42)` immediately visible to
+`speaker.volume.get()` without waiting for the device's own event. It is stamped
+`ChangeSource::LocalAction` at write time, which is honest — the device just acknowledged the
+action — and it resolves to the coordinator for `PerCoordinator` properties, so it lands where
+the matching read looks.
+
+The commands that write the cache are `play`/`pause`/`stop` (`src/speaker.rs:298`, `:309`,
+`:320`), `set_volume` (`:605`), `set_relative_volume` (`:616`, which writes the device's
+*returned* volume rather than the requested delta), `set_mute` (`:632`), `set_bass` (`:641`),
+`set_treble` (`:650`), `set_loudness` (`:659`), and the group equivalents
+`Group::set_volume` (`src/group.rs:337`), `set_relative_volume` (`:347`) and `set_mute` (`:361`).
+
+Commands with no corresponding cached property — `next`, `previous`, `seek`, the queue
+operations, the alarm operations — write nothing and rely on the resulting device event.
+
+`Group::exec` (`src/group.rs:253`) is the group counterpart and always targets `coordinator_ip`.
+
+### 3.5 Error Flow
+
+```
+sonos_state::StateError            --> SdkError::StateError        (#[from])
+sonos_api::ApiError                --> SdkError::ApiError          (#[from])
+sonos_api::operation::ValidationError --> SdkError::ValidationFailed (#[from])
+event-manager init failure (boxed) --> SdkError::EventManager
+name lookup miss after rediscovery --> None from speaker(); SpeakerNotFound where a name is required
+unparseable device IP             --> SdkError::InvalidIpAddress
+coordinator self-add / self-remove --> SdkError::InvalidOperation
+SSDP failure with no cache        --> SdkError::DiscoveryFailed
+poisoned RwLock on `speakers`     --> SdkError::LockPoisoned
+```
+
+**Error handling philosophy**: upstream errors are wrapped with `#[from]` so `?` works and the
+source chain is preserved. Errors the SDK originates carry a `String` because the interesting
+detail is the message, not a further match. Lookups that can legitimately find nothing —
+`speaker()`, `group()`, `coordinator()` — return `Option` rather than an error.
+
+`Group::dissolve()` (`src/group.rs:314`) is the exception to "return `Result`": it returns a
+`GroupChangeResult` (`src/group.rs:34`) carrying `succeeded` and `failed` vectors, because a
+partial dissolve is a real and useful outcome that a single `Result` cannot express.
 
 ---
 
 ## 4. Features
 
-### 4.1 Feature: DOM-like Property Access
+### 4.1 Feature: DOM-like property access
 
 #### What
 
-Properties are accessed as fields on the Speaker struct, each providing `get()`, `fetch()`, and `watch()` methods.
+Properties are fields on `Speaker` and `Group`, each carrying `get()`, `fetch()` and `watch()`.
 
 #### Why
 
-This pattern was chosen to:
-1. Make the API discoverable through IDE autocomplete
-2. Group related operations on a single handle
-3. Provide a familiar pattern to web developers
-4. Enable compile-time type safety for property access
+Grouping the three reads on one handle means they cannot drift apart, and makes the API
+navigable by autocomplete rather than by documentation. It also gives each property one place to
+express its own constraints: `GroupVolumeChangeable` simply has no `fetch()`, because no UPnP
+operation returns it.
 
 #### How
 
 ```rust
-// Get speaker and access properties directly
+use sonos_sdk::prelude::*;
+
+let system = SonosSystem::new()?;
 let speaker = system.speaker("Living Room").unwrap();
 
-// Cached read (instant, no network)
+// Cached read — no network
 let volume = speaker.volume.get();
 
-// Fresh API call (network, updates cache)
-let fresh_volume = speaker.volume.fetch()?;
+// Fresh read — one SOAP round trip, updates the shared cache
+let fresh = speaker.volume.fetch()?;
 
-// Reactive subscription (triggers lazy event init on first call)
-// Hold the WatchHandle to keep the subscription alive
-let _watch = speaker.volume.watch()?;
+// Reactive — hold the handle for as long as you want updates
+let watch = speaker.volume.watch()?;
+for _event in system.iter() {
+    println!("volume now {:?}", watch.value());
+}
+
+// Commands live on the speaker itself
+speaker.play()?;
+speaker.set_volume(35)?;
 
 // Fluent navigation
 let group = speaker.group().unwrap();
@@ -371,87 +691,44 @@ let kitchen = group.speaker("Kitchen");
 
 | Decision | Alternative Considered | Why We Chose This |
 |----------|----------------------|-------------------|
-| Property as struct field | Method like `speaker.get_property::<Volume>()` | Better discoverability and IDE support |
-| Separate get/fetch/watch | Single method with enum parameter | Clearer intent and simpler types |
-| Macro-generated handles | Manual implementation per property | Reduces boilerplate and ensures consistency |
+| Property as a struct field | `speaker.get_property::<Volume>()` | Discoverability, and a natural home for per-property differences in capability |
+| Separate `get`/`fetch`/`watch` | One method with a freshness enum | Three different return types (`Option<P>`, `Result<P>`, `Result<WatchHandle<P>>`) and three different cost profiles; an enum would have to erase all of that |
+| Hand-written type aliases over `PropertyHandle<P>` | A declarative macro generating a struct per property | The generic handle already carries every behaviour; a per-property struct would only restate it. Adding a property is one `Fetchable` impl plus one alias |
+| Commands as methods, reads as handles | Commands on the handle too (`volume.set(35)`) | A command is an operation on the *speaker*, and several commands touch no property at all. Keeping the handle read-shaped keeps it honest |
 
-### 4.2 Feature: Automatic State Synchronization
+### 4.2 Feature: Automatic, ordered state synchronisation
 
 #### What
 
-When `fetch()` is called, the fresh value is automatically pushed to the reactive state system, triggering any active watchers.
+A successful `fetch()` or command writes its value into the shared `StateManager`, stamped with
+when the value was *observed*, so the cache reflects it immediately without waiting for a device
+event — and without ever overwriting something newer.
 
 #### Why
 
-Without automatic synchronization, developers would need to manually coordinate API calls with state updates, leading to:
-1. Stale cache values after API calls
-2. Watchers not receiving updates from API fetches
-3. Inconsistent application state
+Without the write, `get()` would disagree with the value `fetch()` just returned, and
+`speaker.play()` would leave `playback_state.get()` reporting the old state until an event
+arrived. Without the *ordering*, a slow fetch would clobber an event that overtook it, which is
+visible as a value snapping back moments after changing.
 
 #### How
 
 ```rust
+// src/property/handles.rs:556 (abridged)
 pub fn fetch(&self) -> Result<P, SdkError> {
-    // Stamped BEFORE the request: the device's answer describes it as of *now*,
-    // not as of whenever the response happens to arrive.
-    let observed_at = Instant::now();
+    let observed_at = Instant::now();   // BEFORE the request
 
-    let response = self.context.api_client.execute_enhanced(&ip, operation)?;
-    let property_value = P::from_response(response);
+    let response = self.context.api_client
+        .execute_enhanced(&target_ip.to_string(), P::build_operation()?)?;
+    let value = P::from_response(response);
 
-    // Ordered state update — triggers watchers, but loses to a newer event.
     self.context.state_manager.set_property_stamped(
         &target_id,
-        property_value.clone(),
+        value.clone(),
         WriteStamp::observed_at(ChangeSource::Fetch, observed_at),
     );
 
-    Ok(property_value)
-}
-```
-
-**Ordering, not just synchronisation** (since 0.7.0): a `fetch()` is a *read at request time*
-that lands at *response time*. If a UPnP event arrives in that window with a newer value, the
-fetch response must not overwrite it — otherwise a speaker visibly snaps back to its previous
-value moments after changing. `set_property_stamped` compares observation instants and rejects
-the stale write, returning `WriteOutcome::Stale`.
-
-The caller still receives the value it fetched; only the shared cache declines to regress. See
-`docs/specs/sonos-state.md` §4.1a.
-
-#### Trade-offs
-
-| Decision | Alternative Considered | Why We Chose This |
-|----------|----------------------|-------------------|
-| Automatic update on fetch | Manual state update required | Prevents state inconsistency |
-| Stamp before the request | Stamp when the response lands | Stamping on arrival makes every slow read look freshest, which is precisely the clobbering bug |
-| Return the fetched value even when the cache rejects it | Return an error or the cached value | The caller asked the device a question and got an answer; surprising them with a different value would be worse. The cache-level decision is separate |
-| Clone value before return | Return reference | Value types are small; cloning is simpler |
-
-### 4.3 Feature: Macro-Generated Property Handles
-
-#### What
-
-Property handles are generated using a declarative macro that specifies the operation, request, and response conversion.
-
-#### Why
-
-Each property handle follows the same pattern with only the operation details differing. The macro:
-1. Eliminates boilerplate code duplication
-2. Ensures consistent implementation across all properties
-3. Makes adding new properties straightforward
-4. Reduces the chance of implementation errors
-
-#### How
-
-```rust
-define_property_handle! {
-    /// Handle for speaker volume (0-100)
-    VolumeHandle for Volume {
-        operation: GetVolumeOperation,
-        request: rendering_control::get_volume_operation("Master".to_string()),
-        convert_response: |response: GetVolumeResponse| Volume::new(response.current_volume),
-    }
+    Ok(value)
 }
 ```
 
@@ -459,77 +736,150 @@ define_property_handle! {
 
 | Decision | Alternative Considered | Why We Chose This |
 |----------|----------------------|-------------------|
-| Declarative macro | Derive macro or trait-based | Simpler, no proc-macro crate needed |
-| Inline request builder | Separate builder struct | Less boilerplate per property |
-| Closure for conversion | Trait method | More flexible, handles edge cases |
+| Automatic cache update | Leave it to the caller | Every caller wants it, and the one that forgets produces a cache that silently disagrees with itself |
+| Stamp before the request | Stamp when the response lands | Stamping on arrival makes every slow read look freshest, which is precisely the clobbering failure |
+| Return the fetched value even when the cache rejects it | Return an error, or return the cached value | The caller asked the device a question and got an answer; substituting a different value would be worse. The cache-level decision is a separate concern |
+| Optimistic write after a command | Wait for the device event | The device has already acknowledged the action; waiting makes every UI feel laggy for no added correctness |
 
-### 4.4 Feature: `WatchHandle` is a live view, not a snapshot
+### 4.3 Feature: `WatchHandle` is a live view
 
 #### What
 
-`WatchHandle::value()` reads the state store on every call and returns `Option<P>` by value.
-A handle acquired once and held reports the property's *current* value for as long as it lives.
-`has_value()` is the same read. Neither is affected by how long ago `watch()` ran.
+`WatchHandle::value()` reads the state store on every call and returns `Option<P>` by value. A
+handle acquired once and held reports the property's *current* value for as long as it lives.
+`has_value()` is the same read.
 
 #### Why
 
-`WatchHandle` used to carry `value: Option<P>`, populated from `self.get()` at construction and
-never updated. The handle's `Deref<Target = Option<P>>` and `value()` therefore reported the
-store's contents *at the instant `watch()` returned* — so a handle held across a render loop
-showed one value forever, and a handle acquired before the first event stayed permanently
-empty. The documented workaround was to call `watch()` again every frame.
-
-That workaround is what made the refcount bug fixed in PR #93 reachable at all: re-watching per
-frame means frame N+1 acquires its handle before frame N's drops, which is exactly the
-overlapping-holds case that a presence-only watched set got wrong. PR #93 made the pattern
-*safe*; this makes it unnecessary. A `WatchHandle` is an RAII lease on a subscription, and
-reading through a live lease should give a live answer — the snapshot semantics contradicted the
-type's own purpose.
+A `WatchHandle` is an RAII lease on a subscription, and reading through a live lease should give
+a live answer. A handle that cached its value at construction would report the store's contents
+at the instant `watch()` returned, forever — so a handle held across a render loop would show one
+value permanently, and a handle acquired before the first event would stay permanently empty.
+The only workaround would be to re-`watch()` every frame, which is exactly the overlapping-hold
+churn the grace period and the reference-counted watched set exist to absorb. Making the read
+live removes the need for the pattern rather than merely making it survivable.
 
 #### How
 
-The value field is replaced by a read closure:
-
 ```rust
+// src/property/handles.rs:129
 pub struct WatchHandle<P> {
     read: Box<dyn Fn() -> Option<P> + Send + Sync>,
     mode: WatchMode,
     _cleanup: WatchCleanup,
 }
 
+// src/property/handles.rs:158
 pub fn value(&self) -> Option<P> { (self.read)() }
 ```
 
-Both construction sites capture an `Arc` of their context and read through the *same* accessor
-their `get()` uses — `get_property` for `PropertyHandle`, `get_group_property` for
-`GroupPropertyHandle`. That is what keeps the live read correct rather than merely fresh:
+`WatchCleanup` (`src/property/handles.rs:196`) is the RAII half, with three shapes:
 
-- It inherits **coordinator resolution** (§4.3 of the sonos-state spec), so a `PerCoordinator`
-  property read through a member's handle still resolves to the coordinator — including after a
-  regrouping the handle knew nothing about.
-- It inherits the **write-ordering guard** (§4.1a of the sonos-state spec). The store only ever
-  holds the newest-*observed* value, so re-reading cannot resurrect the staleness that guard
-  exists to prevent. A read is not a write and has no stamp of its own; it simply observes
-  whatever survived the ordering.
-- It can legitimately return `None` where the old snapshot returned `Some`: if the resolved
-  location no longer holds a value (a dissolved group, a speaker that left the topology), the
-  honest answer is "unknown". A snapshot would have reported the last value it happened to see
-  from a location that is no longer the right one to read.
-
-`watch_or_fetch()` gets simpler as a consequence. It used to assign `wh.value = Some(val)` after
-fetching; now it just calls `fetch()` and discards the result, because the fetch writes into the
-store the handle reads from. A stale-rejected fetch is handled correctly for free — rejection
-means an event already delivered something newer, which is what `value()` will then return.
+| Variant | When | What drop does |
+|---------|------|----------------|
+| `Guard(WatchGuard)` | Event manager present, property owned by this speaker | Releases one `(ip, service)` ref count; a 50 ms grace period starts at zero |
+| `CacheOnly(CacheOnlyGuard)` | No event manager | Releases one hold on `(speaker_id, property_key)` in the watched set |
+| `CoordinatorGuard { .. }` | `PerCoordinator` property routed to a coordinator | Both: the guard releases the coordinator's subscription, the cache-only guard releases the *member's* watched-set entry |
 
 #### Trade-offs
 
 | Decision | Alternative Considered | Why We Chose This |
 |----------|----------------------|-------------------|
-| `value()` re-reads the store | Keep the handle a pure lease and route reads through the manager or a separate accessor | Splitting them fixes staleness only by making the handle useless to read from, so every call site becomes `handle` *plus* `speaker.volume.get()` — two things to keep in sync, and the handle's `#[must_use]` no longer guards the thing you actually read. It also breaks the same three methods, so it is not cheaper in migration cost. Re-reading keeps one obvious way to read a watched property |
-| Boxed closure | Store `Arc<SpeakerContext>` / `Arc<GroupContext>` in the handle | The two `watch()` sites read different stores with different keys. An enum or a second type parameter would put that difference in the public type; the closure keeps `WatchHandle<P>` single-shaped and makes it impossible for the two sites to drift into different notions of "current" |
-| Return `Option<P>` by value | Return `Option<&P>` as before | The store is behind an `RwLock` shared with the event worker. A borrow would either pin that lock for the handle's lifetime or alias a value the worker may replace. Properties are small and `Clone` by trait bound |
-| Drop `Deref<Target = Option<P>>` | Keep `Deref` returning a borrow of a cached copy | `Deref` must return a reference, so keeping it requires keeping a stored value — i.e. keeping the bug. An interior-mutability cache (`RwLock<Option<P>>` refreshed on deref) would make `&*handle` return a borrow of a cell that the next call is free to overwrite |
-| `value()` costs a lock | Cache with an invalidation flag bumped by the event worker | A generation counter is a second source of truth about freshness, and the failure mode of getting it wrong is silent staleness — the exact bug being fixed. A read-lock acquisition on an uncontended `parking_lot::RwLock` is tens of nanoseconds, against a UI frame budget of 16ms |
+| `value()` re-reads the store | Make the handle a pure lease and read through `speaker.volume.get()` | Splitting them makes every call site carry two things to keep in sync, and the handle's `#[must_use]` no longer guards the thing you actually read |
+| Boxed closure | Store `Arc<SpeakerContext>` / `Arc<GroupContext>` in the handle | The two `watch()` sites read different stores with different keys; an enum or second type parameter would put that in the public type |
+| Return `Option<P>` by value | Return `Option<&P>` | A borrow would pin the store's `RwLock` for the handle's lifetime, or alias a value the event worker may replace |
+| No `Deref<Target = Option<P>>` | Keep `Deref` over a cached copy | `Deref` must return a reference, which requires a stored value — i.e. a snapshot |
+| Accept one lock per `value()` | Cache with an invalidation flag bumped by the event worker | A generation counter is a second source of truth about freshness whose failure mode is silent staleness. An uncontended `parking_lot` read lock is tens of nanoseconds against a 16 ms frame budget |
+
+### 4.4 Feature: Lazy event infrastructure
+
+#### What
+
+No subscription, no callback server, no tokio runtime and no worker thread exist until the first
+`watch()` call anywhere in the process.
+
+#### Why
+
+A CLI that fetches a volume and exits should not bind a socket, spawn a runtime and hold a UPnP
+subscription open. Making the cost opt-in on first use keeps the fetch-only path free while
+`watch()` stays a single call for the user.
+
+#### How
+
+`assemble()` (`src/system.rs:327`) builds an `EventInitFn` and installs it on the `StateManager`
+with `set_event_init()`. `PropertyHandle::watch()` (`src/property/handles.rs:375`) checks
+`state_manager.event_manager()` and, on a miss, invokes the stored closure exactly once. The
+closure constructs a `SonosEventManager`, hands it to `StateManager::set_event_manager()` — which
+wires the `WatchRegistry`, re-registers known devices, and spawns the state event worker — and is
+a no-op thereafter because the manager lives in a `OnceLock`.
+
+A `watch()` on a system with no `EventInitFn` — an offline test system — succeeds in
+`WatchMode::CacheOnly` rather than failing. The property is still registered in the watched set,
+so a `set_property` write still produces a `ChangeEvent`; only the UPnP subscription is absent.
+
+### 4.5 Feature: Group-aware reads, writes and subscriptions
+
+#### What
+
+For `PerCoordinator` services — AVTransport, GroupRenderingControl, GroupManagement — a property
+accessed through any member resolves to the group's coordinator, for reads, for writes, and for
+the subscription target.
+
+#### Why
+
+Sonos gives the coordinator authority over playback for the whole group. Members emit AVTransport
+events carrying empty defaults. Subscribing a member, storing its events, or reading its own bag
+would all produce wrong answers.
+
+#### How
+
+The SDK does not implement the rule; it routes through the one place that does.
+`PropertyHandle::watch()` and `fetch()` both call
+`StateManager::resolve_subscription_target()`, and `set_property()` resolves internally. See
+[sonos-state.md](sonos-state.md) §4.3 for the predicate and the store-side machinery.
+
+Where the SDK does add something is the *member's* watched-set entry. A member watching a
+coordinator-owned property gets a `WatchCleanup::CoordinatorGuard`: the subscription is held
+against the coordinator, and a separate `CacheOnlyGuard` registers the member's own
+`(speaker_id, property_key)` pair, so the member is notified through `system.iter()` when the
+coordinator's value changes. Dropping the handle releases both.
+
+### 4.6 Feature: Disk-cached discovery
+
+#### What
+
+`SonosSystem::new()` reads a cached device list from disk before falling back to a 3-second SSDP
+sweep, and writes the sweep's result back.
+
+#### Why
+
+SSDP costs a fixed 3 seconds every time, which dominates startup for a CLI that runs often.
+Household topology changes rarely.
+
+#### How
+
+`src/cache.rs`, none of which is public:
+
+| Item | Line | Behaviour |
+|------|------|-----------|
+| `CACHE_TTL_SECS` | :12 | 24 hours |
+| `cache_dir()` | :27 | `$SONOS_CACHE_DIR` if set, non-empty **and absolute**; otherwise `dirs::cache_dir().join("sonos")` |
+| `load()` | :36 | Reads `cache.json`; rejects a file declaring more than 256 devices |
+| `save()` | :46 | Writes `cache.json.tmp` then renames, removing the temp file if the rename fails |
+| `is_stale()` | :66 | Older than the TTL — **or** stamped in the future, which means a clock change rather than a fresh cache |
+
+A `speaker()` lookup that misses triggers `try_rediscover()` (`src/system.rs:637`), rate-limited
+by `REDISCOVERY_COOLDOWN_SECS = 30` (`src/system.rs:105`), so a stale cache self-heals on the
+first name that is not in it.
+
+#### Trade-offs
+
+| Decision | Alternative Considered | Why We Chose This |
+|----------|----------------------|-------------------|
+| Atomic write via temp + rename | Write in place | A crash mid-write would otherwise leave a truncated JSON file that every subsequent start must fail to parse |
+| Reject a cache declaring >256 devices | Trust the file | The file is user-writable; a bogus length is the cheapest way to make startup allocate wildly |
+| Future timestamps are stale | Treat them as fresh | A clock that moved backwards would otherwise pin a stale cache until the TTL elapsed in the new frame |
+| Absolute `SONOS_CACHE_DIR` only | Accept relative paths | A relative cache path resolves against the process CWD, so the same program caches to different places depending on where it was launched |
 
 ---
 
@@ -537,50 +887,118 @@ means an event already delivered something newer, which is what `value()` will t
 
 ### 5.1 Core Data Structures
 
-#### `SdkError`
+The public data model is mostly re-exported. `sonos-sdk` defines `SonosSystem`, `Speaker`,
+`Group`, `GroupChangeResult`, `SeekTarget`, `PlayMode`, `SdkError` and the handle types; the
+property *values* come from `sonos-state` and the identity types from `sonos-api` through it.
+
+#### `SeekTarget` (`src/speaker.rs:40`)
 
 ```rust
-#[derive(Error, Debug)]
-pub enum SdkError {
-    /// Wraps errors from reactive state management
-    #[error("State management error: {0}")]
-    StateError(#[from] sonos_state::StateError),
-
-    /// Wraps errors from API operations
-    #[error("API error: {0}")]
-    ApiError(#[from] sonos_api::ApiError),
-
-    /// Speaker lookup failed
-    #[error("Speaker not found: {0}")]
-    SpeakerNotFound(String),
-
-    /// IP address parsing failed
-    #[error("Invalid IP address")]
-    InvalidIpAddress,
-
-    /// Property watcher channel closed
-    #[error("Property watcher closed")]
-    WatcherClosed,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SeekTarget {
+    Track(u32),     // :43  absolute queue position
+    Time(String),   // :45  absolute "HH:MM:SS"
+    Delta(String),  // :47  relative "+00:00:30" / "-00:00:30"
 }
 ```
 
-**Lifecycle**:
-1. **Creation**: Errors are created by `?` operator with `#[from]` conversions or explicitly
-2. **Mutation**: Errors are immutable once created
-3. **Destruction**: Standard drop semantics
+The private `unit()` (`:52`) and `target()` (`:61`) map each variant onto the UPnP `Unit` and
+`Target` arguments, which is why the variants are not simply a string.
 
-**Memory considerations**: Error variants are small; String allocations only for error messages.
+#### `PlayMode` (`src/speaker.rs:71`)
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayMode {
+    Normal,             // :74  "NORMAL"
+    RepeatAll,          // :76  "REPEAT_ALL"
+    RepeatOne,          // :78  "REPEAT_ONE"
+    ShuffleNoRepeat,    // :80  "SHUFFLE_NOREPEAT"
+    Shuffle,            // :82  "SHUFFLE"
+    ShuffleRepeatOne,   // :84  "SHUFFLE_REPEAT_ONE"
+}
+```
+
+`Display` (`src/speaker.rs:87`) produces the UPnP strings. Neither enum is `#[non_exhaustive]`.
+
+#### `GroupChangeResult` (`src/group.rs:34`)
+
+```rust
+#[derive(Debug)]
+pub struct GroupChangeResult {
+    pub succeeded: Vec<SpeakerId>,          // :37
+    pub failed: Vec<(SpeakerId, SdkError)>, // :39
+}
+```
+
+With `is_success()` (`:44`) and `is_partial()` (`:49`). Returned by `Group::dissolve()` and
+`SonosSystem::create_group()`, both of which act on several speakers and can partially succeed.
 
 ### 5.2 Re-exported Types
 
-The SDK re-exports commonly used types from sonos-state to provide a complete API:
+`src/lib.rs` re-exports three groups of names.
 
-| Type | Source | Purpose |
-|------|--------|---------|
-| `Volume` | sonos-state | Represents speaker volume (0-100) |
-| `PlaybackState` | sonos-state | Enum: Playing, Paused, Stopped, Transitioning |
-| `PropertyWatcher<P>` | sonos-state | Async watcher for property changes |
-| `SpeakerId` | sonos-state | Unique speaker identifier wrapper |
+**Property values and change events**, from `sonos-state` (`src/lib.rs:103-107`):
+
+| Type | Purpose |
+|------|---------|
+| `Volume`, `GroupVolume`, `GroupMute`, `GroupVolumeChangeable` | Volume and mute values |
+| `PlaybackState`, `CurrentTrack` | Transport state and track metadata |
+| `SpeakerId`, `GroupId` | Identity newtypes (defined in `sonos-api`, re-exported through `sonos-state`) |
+| `ChangeEvent`, `ChangeIterator`, `ChangeSource`, `PropertyChange` | The `system.iter()` stream and its payload |
+| `WriteOutcome`, `WriteStamp` | The write-ordering vocabulary |
+
+`Property` and `SonosProperty` are re-exported separately (`src/lib.rs:117`) so a downstream
+crate can write code generic over a property without depending on `sonos-state` directly.
+
+Not re-exported here but reachable through `sonos_state`: `Mute`, `Bass`, `Treble`, `Loudness`,
+`Position`, `GroupMembership`, `Topology`.
+
+**Operation response types**, from `sonos-api` (`src/lib.rs:87-95`) — the return types of the
+`Speaker` and `Group` methods that report something back, such as `GetMediaInfoResponse` and
+`SetRelativeVolumeResponse`. They are re-exported so a caller never has to add a `sonos-api`
+dependency to name a return type.
+
+**`sonos_discovery`** itself (`src/lib.rs:99`), gated on `feature = "test-support"`, so a test
+can build the `Device` list that `from_devices_offline` takes.
+
+#### `prelude` (`src/prelude.rs`)
+
+`SdkError`, `Group`, `Speaker`, `PlayMode`, `SeekTarget`, `SonosSystem`, plus `GroupId`,
+`GroupMute`, `GroupVolume`, `PlaybackState`, `SpeakerId`, `Volume`, `ChangeSource` and
+`PropertyChange`.
+
+Deliberately absent: `WatchHandle`, `WatchMode`, `PropertyHandle`, `GroupChangeResult`,
+`CurrentTrack`, `ChangeEvent`, `ChangeIterator`. A program that needs those is doing something
+specific enough to import them by name.
+
+### 5.3 State Transitions
+
+```
+                SonosSystem::new()              first watch()
+                       |                              |
+ +-----------+         v          +--------------+    v     +------------------+
+ | no system |------------------->| fetch-only   |--------->| live             |
+ +-----------+                    | get/fetch OK |          | events flowing   |
+                                  | no threads   |<---------| worker + runtime |
+                                  +--------------+  drop()  +------------------+
+```
+
+**Invariants per state**:
+- **fetch-only**: the `StateManager` exists and holds the device list and topology; no event
+  manager, no worker thread, no runtime, no callback socket
+- **live**: the event manager is set (`OnceLock`, one-way for a given system), the state event
+  worker is running, and watched properties emit through `system.iter()`
+
+The transition to *live* is one-way for a given `SonosSystem`. What does come back is
+subscription state, managed by `sonos-event-manager` after its 50 ms grace period.
+
+### 5.4 Serialization
+
+| Format | Use Case | Library | Notes |
+|--------|----------|---------|-------|
+| JSON | The discovery cache | `serde_json` | `CachedDevices { devices, cached_at }`, `src/cache.rs:21` |
+| Serde derives | Property values, `Device` | `serde` | Inherited from `sonos-state` and `sonos-discovery`; this crate adds none |
 
 ---
 
@@ -590,35 +1008,52 @@ The SDK re-exports commonly used types from sonos-state to provide a complete AP
 
 | Crate | Purpose | Why This Dependency |
 |-------|---------|---------------------|
-| `sonos-state` | Reactive state management, PropertyWatcher | Core reactive system; no alternative within workspace |
-| `sonos-api` | Direct UPnP SOAP operations | Type-safe API operations; no alternative within workspace |
-| `sonos-discovery` | SSDP device discovery | Automatic device finding; no alternative within workspace |
-| `tokio` | Async runtime | Required for async/await; standard choice for Rust async |
-| `thiserror` | Error type derivation | Ergonomic error definitions; workspace standard |
+| `sonos-state` (pkg `sonos-sdk-state`) | `StateManager`, property types, `ChangeIterator` | The cache, the change stream, and the coordinator-resolution and write-ordering rules the SDK routes through |
+| `sonos-api` | `SonosClient`, `Service`, operations, `SpeakerId`/`GroupId` | Typed UPnP operations and the SOAP execution path |
+| `sonos-discovery` (pkg `sonos-sdk-discovery`) | `Device`, `get_with_timeout()` | SSDP discovery |
+| `sonos-event-manager` (pkg `sonos-sdk-event-manager`) | `SonosEventManager`, `WatchGuard` | Reference-counted subscription lifetime behind `watch()` |
+| `thiserror` | `SdkError` derive | Workspace convention |
+| `tracing` | Diagnostics | `trace`/`debug` on the watch and discovery paths |
+| `serde`, `serde_json` | The discovery cache | The only thing this crate serializes |
+| `dirs` | Platform cache directory | Resolving `~/.cache/sonos` and its platform equivalents |
+
+**Not a dependency: `tokio`.** The workspace defines it, but `sonos-sdk` never opts in. It
+enters the graph only transitively, inside `sonos-event-manager`, `sonos-stream` and
+`callback-server`.
+
+Dev-dependencies: `proptest`, `chrono`, `ctrlc`, `tracing-subscriber` — the last three for the
+examples, which CI compiles.
 
 ### 6.2 Dependents (Downstream)
 
 | Crate | How It Uses Us | API Stability Notes |
 |-------|---------------|---------------------|
-| End-user applications | Primary SDK entry point | API considered unstable (v0.1.0) |
-| Examples (`basic_usage`) | Demonstrates API patterns | Used for documentation |
+| End-user applications | The primary entry point | Pre-1.0; breaking changes may land in minor versions |
+| Examples (`sonos-sdk/examples/`) | Six programs exercising discovery, properties, groups and the watch lifecycle | Compiled by CI via `--all-targets` |
 
 ### 6.3 External Systems
 
 ```
-┌─────────────────┐              ┌─────────────────┐
-│   sonos-sdk     │◀────────────▶│  Sonos Speakers │
-│   (via deps)    │   UPnP/SOAP  │  (on network)   │
-└─────────────────┘              └─────────────────┘
++-----------------+     UPnP/SOAP over HTTP :1400     +-----------------+
+|   sonos-sdk     |<--------------------------------->|  Sonos speakers |
+| (via sonos-api) |                                   |                 |
++-----------------+                                   +-----------------+
+        |  SSDP multicast 239.255.255.250:1900 (discovery)      ^
+        |  HTTP NOTIFY inbound on 3400-3500 (events)            |
+        +-------------------------------------------------------+
 ```
 
-**Protocol**: UPnP/SOAP over HTTP (port 1400) via sonos-api
+**Protocol**: UPnP/SOAP over HTTP on port 1400 for control; SSDP multicast for discovery;
+inbound HTTP NOTIFY on a port in 3400-3500 for events.
 
-**Authentication**: None (local network trust model)
+**Authentication**: none. UPnP on the local network is an unauthenticated trust model.
 
-**Error handling**: Network errors wrapped in `SdkError::ApiError`
+**Error handling**: network errors surface as `SdkError::ApiError`; a device refusal surfaces as
+the same variant carrying a `SoapFault` with the UPnP error code.
 
-**Retry strategy**: None at SDK level; applications should implement retries
+**Retry strategy**: none at this layer. Applications that need retries should implement them
+around the call, distinguishing `SoapFault` codes in the 400s (retrying is futile) from the 500s
+and 700s (may be transient).
 
 ---
 
@@ -626,43 +1061,36 @@ The SDK re-exports commonly used types from sonos-state to provide a complete AP
 
 ### 7.1 Error Types
 
-```rust
-#[derive(Error, Debug)]
-pub enum SdkError {
-    #[error("State management error: {0}")]
-    StateError(#[from] sonos_state::StateError),
-
-    #[error("API error: {0}")]
-    ApiError(#[from] sonos_api::ApiError),
-
-    #[error("Speaker not found: {0}")]
-    SpeakerNotFound(String),
-
-    #[error("Invalid IP address")]
-    InvalidIpAddress,
-
-    #[error("Property watcher closed")]
-    WatcherClosed,
-}
-```
+See §2.3 for the full `SdkError` definition. Three `#[from]` conversions cover the upstream
+crates: `sonos_state::StateError`, `sonos_api::ApiError` and
+`sonos_api::operation::ValidationError`.
 
 ### 7.2 Error Philosophy
 
 | Principle | Implementation | Rationale |
 |-----------|---------------|-----------|
-| Error wrapping | `#[from]` for upstream errors | Preserves original error info while providing unified type |
-| Descriptive messages | Contextual error strings | Aids debugging without exposing internals |
-| Typed variants | Enum with specific variants | Enables pattern matching for recovery logic |
+| One error type at the SDK boundary | `SdkError` with `#[from]` on upstream errors | A caller handles one type; the source chain still reaches the original |
+| `#[non_exhaustive]` | `src/error.rs:4` | Adding a variant as the surface grows must not be a breaking change |
+| Absence is not an error | `speaker()`, `group()`, `coordinator()` return `Option` | "No speaker by that name" is a normal answer, not a failure |
+| Partial success is expressible | `GroupChangeResult` | A dissolve that reaches three of four members is neither a success nor a failure |
+| Validation before the network | `ValidationFailed` from `.build()` | A bad argument should not cost a round trip |
 
 ### 7.3 Error Recovery
 
 | Error | Recoverable | Recovery Strategy |
 |-------|-------------|-------------------|
-| `StateError` | Sometimes | May retry initialization; check underlying cause |
-| `ApiError` | Yes | Retry operation with exponential backoff |
-| `SpeakerNotFound` | Yes | Re-run discovery or check speaker name |
-| `InvalidIpAddress` | No | Bug in discovery or device configuration |
-| `WatcherClosed` | Yes | Create new watcher; subscription may have expired |
+| `StateError` | Sometimes | Depends on the underlying variant; check the source |
+| `ApiError::NetworkError` | Yes | Retry with backoff; the speaker may be briefly unreachable |
+| `ApiError::SoapFault(4xx)` | No | The request itself is wrong; retrying cannot help |
+| `ApiError::SoapFault(5xx / 7xx)` | Sometimes | Device-side or state-dependent; may succeed later |
+| `ValidationFailed` | No | A caller bug — the argument is out of range or malformed |
+| `InvalidOperation` | No | A caller bug — e.g. adding a coordinator to its own group |
+| `EventManager` | Sometimes | The event infrastructure failed to start; `get()`/`fetch()` still work |
+| `DiscoveryFailed` | Yes | Re-run discovery; check that SSDP multicast reaches the network |
+| `SpeakerNotFound` | Yes | The name is wrong, or discovery is stale — a lookup miss already retries once |
+| `InvalidIpAddress` | No | Malformed data from discovery or from a caller-supplied device list |
+| `LockPoisoned` | No | A panic unwound while holding the speaker-map lock |
+| `WatcherClosed` | — | Declared but never constructed; see §14.2 |
 
 ---
 
@@ -670,111 +1098,166 @@ pub enum SdkError {
 
 ### 8.1 Testing Philosophy
 
+111 `#[test]` functions — 60 unit, 51 integration — plus 32 doc-tests. None is a
+`#[tokio::test]`, because nothing in the crate is async. 20 of the integration tests are
+`#[ignore]`d because they need real hardware, leaving 91 that run by default.
+
 ```
-                    ┌───────────────────┐
-                    │  Integration/E2E  │  Requires real Sonos devices
-                    └─────────┬─────────┘
-              ┌───────────────┴───────────────┐
-              │       Example Validation      │  basic_usage.rs
-              └───────────────┬───────────────┘
-    ┌─────────────────────────┴─────────────────────────┐
-    │                   Unit Tests                       │  Macro expansion, type safety
-    └────────────────────────────────────────────────────┘
+              +-------------------------------+
+              | Hardware integration (ignored)|  20 tests, run with --ignored
+              +---------------+---------------+
+      +-----------------------+-----------------------+
+      |   Offline property tests (proptest)           |  31 tests in 14 proptest! blocks
+      +-----------------------+-----------------------+
+ +--------------------------------------------------------+
+ |                     Unit tests                          |  handles 24, system 21,
+ +--------------------------------------------------------+  group 12, speaker 3
 ```
+
+**Running them**: the offline constructors are gated `#[cfg(any(feature = "test-support", test))]`,
+and that `test` cfg covers only this crate's own unit tests. `tests/*.rs` are separate crates, so
+they need the feature:
+
+```bash
+cargo test -p sonos-sdk --features test-support
+```
+
+A bare `cargo test -p sonos-sdk` fails to compile `tests/property_tests.rs`.
 
 ### 8.2 Unit Tests
 
-**Location**: Inline `#[cfg(test)]` modules (to be added)
+**Location**: inline `#[cfg(test)] mod tests` — `src/property/handles.rs:1153` (24),
+`src/system.rs:1026` (21), `src/group.rs:375` (12), `src/speaker.rs:668` (3).
 
-**What to test**:
-- [ ] Macro-generated handle types compile correctly
-- [ ] Error type conversions work as expected
-- [ ] Property type constraints are enforced
+**What is covered**:
+- [x] Name-keyed registry behaviour: satellite exclusion, duplicate room-name disambiguation,
+      case-insensitive lookup
+- [x] Group navigation: `coordinator()`, `members()`, `speaker()`, `is_coordinator()`,
+      `member_count()`, `is_standalone()`
+- [x] Validation and guard clauses that return before any network call —
+      `test_group_set_volume_rejects_over_100`, `test_add_speaker_rejects_coordinator_self_add`,
+      `test_remove_speaker_rejects_coordinator_removal`,
+      `test_dissolve_standalone_returns_empty_result`, and the `set_*_rejects_invalid` family
+- [x] `WatchHandle` semantics: `value()` re-reads, `mode()` reports `CacheOnly` with no event
+      manager, dropping one handle does not silence a sibling
+- [x] Leak assertions (§8.7)
 
-### 8.3 Integration Tests
+### 8.3 Component Tests
 
-**Location**: `examples/basic_usage.rs` (functional test)
+**Location**: `tests/property_tests.rs` — 31 tests inside 14 `proptest!` blocks, all offline,
+none `#[ignore]`d. They build systems with `SonosSystem::from_devices_offline` and
+`with_speakers`, then assert round-trip invariants over proptest-generated IDs, names and IPs:
+a speaker registered under a generated name is retrievable by it, `speakers()` counts match the
+device list, `speaker_by_id()` agrees with `speaker()`, and group membership is consistent in
+both directions.
+
+These tests deliberately build explicit `Device` lists rather than routing through
+`with_speakers()`, which hardcodes `RINCON_{i:03}` and `192.168.1.{100+i}` and would discard the
+generated values — leaving assertions that still pass while testing nothing.
+
+### 8.4 Integration Tests
+
+**Location**: `tests/integration_real_speakers.rs` (6), `tests/property_validation.rs` (6),
+`tests/data_freshness.rs` (8). All 20 are `#[ignore]`d.
 
 **Prerequisites**:
-- [ ] Sonos device(s) on the local network
-- [ ] Network access to port 1400
+- [ ] At least one Sonos speaker on the LAN
+- [ ] Inbound HTTP on a port in 3400-3500, or acceptance of the polling fallback
 
-**What to test**:
-- [x] System initialization discovers devices
-- [x] `get()` returns cached or None
-- [x] `fetch()` retrieves fresh values
-- [x] `watch()` creates valid PropertyWatcher
+```bash
+cargo test -p sonos-sdk --features test-support -- --ignored
+```
 
-### 8.4 Test Fixtures & Mocks
-
-| Dependency | Mock Strategy | Location |
-|------------|--------------|----------|
-| `sonos-discovery` | Mock device list | Not yet implemented |
-| `sonos-api` | Mock SOAP responses | Not yet implemented |
-| `sonos-state` | In-memory StateStore | Not yet implemented |
+`tests/data_freshness.rs` is structured so that adding a case is one `#[test] #[ignore]`
+function using the shared helpers; its subject is whether `get()` after `fetch()` and after a
+live event agrees with the device.
 
 ### 8.5 Offline Construction (`test-support`)
 
 #### What
 
-`SonosSystem::from_devices_offline(devices)` builds a fully-formed `SonosSystem` from a caller-supplied device list while guaranteeing zero network I/O. It is gated behind the `test-support` feature. `with_speakers()` and `with_groups()` share the same guarantee via the `offline: bool` field on `SonosSystem`.
+`SonosSystem::from_devices_offline(devices)` (`src/system.rs:192`) builds a fully-formed
+`SonosSystem` from a caller-supplied device list while guaranteeing zero network I/O. It is
+gated behind the `test-support` feature (or this crate's own `test` cfg). `with_speakers()`
+(`:424`) and `with_groups()` (`:471`) share the guarantee through the `offline` field.
 
-Two variants inject the topology the poll would have returned, so the topology-dependent construction steps still run in their real order:
+Two variants inject the topology a poll would have returned, so the topology-dependent
+construction steps still run in their real order:
 
-| Constructor | Seeds | Usable from |
-|---|---|---|
-| `from_devices_offline_with_topology(devices, seed)` | arbitrary state via a `&Self` closure | **this crate only** — `state_manager` is private, so the closure can seed nothing downstream |
-| `from_devices_offline_with_groups(devices, groups)` | `(GroupId, coordinator, members)` tuples | any crate with `test-support` |
+| Constructor | Line | Seeds | Usable from |
+|---|---|---|---|
+| `from_devices_offline_with_topology(devices, seed)` | :210 | Arbitrary state, via a `&Self` closure | **this crate only** — `state_manager` is private, so the closure can seed nothing downstream |
+| `from_devices_offline_with_groups(devices, groups)` | :249 | `(GroupId, coordinator, members)` tuples | Any crate with `test-support` |
 
-`from_devices_offline_with_groups` exists because multi-member topology was otherwise unreachable from outside this crate: `with_groups()` only ever builds single-member groups, and the closure form is unusable downstream. A consumer therefore could not test anything depending on group size or coordinator identity. sonos-cli hit exactly this trying to verify that its default speaker selection prefers the largest group.
+`from_devices_offline_with_groups` exists because multi-member topology is otherwise unreachable
+from outside this crate: `with_groups()` only ever builds single-member groups, and the closure
+form is unusable downstream. A consumer could not otherwise test anything depending on group size
+or coordinator identity.
 
 #### Why
 
-`SonosSystem` has exactly **two** paths that reach the network without the caller asking for it, and both are catastrophic in a test process where the device IPs are synthetic:
+`SonosSystem` has exactly **two** paths that reach the network without the caller asking, and
+both are catastrophic in a test process where the device IPs are synthetic:
 
-1. **Construction** — `from_devices_inner()` calls `ensure_topology()`, which SOAP-polls `zone_group_topology::state::poll` against every known speaker IP whenever `group_count() == 0`. Each unreachable IP costs soap-client's 5s connect + 10s read timeout, serially.
-2. **Lookup miss** — `speaker(name)` that misses calls `try_rediscover()`, which runs a 3s SSDP sweep, rate-limited by `REDISCOVERY_COOLDOWN_SECS = 30`. Property tests generating random names paid the full 30s cooldown per test binary.
+1. **Construction** — `ensure_topology()` (`src/system.rs:796`) SOAP-polls
+   `zone_group_topology::state::poll` against every known speaker IP whenever
+   `group_count() == 0`. Each unreachable IP costs `soap-client`'s 5s connect plus 10s read
+   timeout, serially.
+2. **Lookup miss** — `speaker(name)` that misses calls `try_rediscover()` (`src/system.rs:637`),
+   a 3s SSDP sweep rate-limited by `REDISCOVERY_COOLDOWN_SECS = 30` (`:105`). Property tests
+   generating random names pay the full cooldown per test binary.
 
-Neither timeout is a real failure — the IPs simply don't exist — so the suite was spending minutes proving nothing. Property tests that only exercise in-memory name/ID bookkeeping have no reason to pay for either. Before this constructor existed, `cargo test --workspace --features sonos-sdk/test-support` took 22+ minutes and CI took 32; afterwards it is well under two.
+Neither timeout represents a real failure — the IPs simply do not exist — so the suite spends
+minutes proving nothing. Property tests that exercise only in-memory name/ID bookkeeping have no
+reason to pay for either.
 
 #### How
 
-`offline: bool` is consulted at the top of both network entry points, so it closes both paths with one flag rather than requiring each test to remember which methods are safe:
+`offline: bool` is consulted at the top of both network entry points, so it closes both paths
+with one flag rather than requiring each test to remember which methods are safe:
 
 ```rust
+// src/system.rs:796
 fn ensure_topology(&self) {
     if self.offline || self.state_manager.group_count() > 0 { return; }
     // ... SOAP poll every speaker IP ...
 }
 
+// src/system.rs:637
 fn try_rediscover(&self, name: &str) {
     if self.offline { return; }
     // ... 3s SSDP sweep ...
 }
 ```
 
-Production paths (`new()` → `from_devices_inner()`) leave `offline = false`, so behavior there is byte-for-byte unchanged.
+Production paths (`new()` → `from_devices_inner()`) leave `offline = false`.
 
-`from_devices_offline` runs the same `construct()` sequence as production; only the topology *poll* inside `ensure_topology()` is skipped, via the `offline` flag. The post-topology steps still execute, and with no topology they are no-ops: `get_satellite_ids()` is empty so the satellite re-key returns early, and no IPs have changed. Tests that need groups call `state_manager.initialize(topology)` directly with the topology they want to assert against.
+`from_devices_offline` runs the same `construct()` sequence as production; only the topology
+*poll* is skipped. The post-topology steps still execute and, with no topology, are no-ops:
+`get_satellite_ids()` is empty so the satellite re-key returns early, and no IPs have changed.
 
-`from_devices_offline_with_topology(devices, seed)` exists for tests that must exercise the topology-dependent steps. The `seed` closure runs after `assemble()` and before the satellite re-key — the exact window `ensure_topology()` occupies in production — so a test can inject the satellite IDs a real poll would have returned. Satellite behavior is defined entirely by topology, so this is the only way to test it without a network. Such tests must **not** reproduce the sequence themselves: the *order* of these steps is the substance of the behavior (§3.2), so a test that re-implements the order cannot detect production's order regressing.
+`from_devices_offline_with_topology(devices, seed)` exists for tests that must exercise those
+steps. The `seed` closure runs after `assemble()` and before the satellite re-key — exactly the
+window `ensure_topology()` occupies in production — so a test can inject the satellite IDs a real
+poll would have returned. Such tests must **not** reproduce the sequence themselves: the *order*
+of these steps is the substance of the behaviour (§3.1), so a test that re-implements the order
+cannot detect production's order regressing.
 
 #### Trade-offs
 
 | Decision | Alternative Considered | Why We Chose This |
 |----------|----------------------|-------------------|
-| `offline: bool` field | Separate `OfflineSonosSystem` type or a trait-abstracted transport | One flag, two call sites, no API surface duplication; a mock transport is the right long-term fix but far larger |
-| Offline flag closes *both* paths | Only skip `ensure_topology()` in the constructor | Skipping construction alone leaves the 30s rediscovery cooldown on every lookup miss — the larger of the two costs |
-| Reuse `assemble()` for both paths | Copy the constructor body | The Arc wiring (init closure capturing a `Weak` to the manager that stores it) is subtle enough that two copies would drift; when the cycle bug was fixed, one edit covered both paths |
-| Wall-clock bound to prove no I/O | Mock transport / network namespace | Without a mock transport, a time bound is the only pure-unit assertion available; the 500ms threshold is ~10x headroom over the real cost and ~10x below the cheapest timeout it guards |
-| Signature assertions as never-called `fn`s | `#[test]` fns that invoke each action | Invoking an action to check its *type* pays a real 5s connect timeout per call for zero added coverage. A never-called `#[allow(dead_code)] fn` is still type-checked, so it fails the build identically if a signature drifts, at 0s. See §8.6. |
-| Tests keep building explicit `Device` lists | Route property tests through `with_speakers()` | `with_speakers()` hardcodes `RINCON_{i:03}` / `192.168.1.{100+i}`, discarding proptest-generated IDs, names and IPs. Round-trip assertions would still pass while testing nothing. Vacuous-but-green is worse than slow. |
+| `offline: bool` field | A separate `OfflineSonosSystem`, or a trait-abstracted transport | One flag, two call sites, no API duplication. A mock transport is the right long-term fix and a much larger one |
+| The flag closes *both* paths | Skip only `ensure_topology()` | Skipping construction alone leaves the 30s rediscovery cooldown on every lookup miss — the larger of the two costs |
+| Reuse `assemble()` for both paths | Copy the constructor body | The Arc wiring (§3.1) is subtle enough that two copies would drift |
+| A wall-clock bound to prove no I/O | Mock transport, or a network namespace | Without a mock transport a time bound is the only pure-unit assertion available; the 500 ms threshold is ~10x headroom over the real cost and ~10x below the cheapest timeout it guards |
 
 ### 8.6 Signature Assertions
 
 #### What
 
-Action methods that require a live speaker are type-checked by never-called functions rather than executed by `#[test]` fns:
+Action methods that require a live speaker are type-checked by never-called functions rather
+than executed by `#[test]` fns:
 
 ```rust
 #[allow(dead_code)]
@@ -786,60 +1269,75 @@ fn _assert_action_signatures(speaker: &Speaker) {
 }
 ```
 
-Four of these exist: `_assert_action_signatures` (`src/speaker.rs`), `_assert_group_action_signatures` and `_assert_group_lifecycle_signatures` (`src/group.rs`), and `_assert_create_group_signature` (`src/system.rs`).
+Four exist: `_assert_action_signatures` (`src/speaker.rs`), `_assert_group_action_signatures`
+and `_assert_group_lifecycle_signatures` (`src/group.rs`), and `_assert_create_group_signature`
+(`src/system.rs`).
 
 #### Why
 
-These assertions are about **types, not behavior** — the original versions said so in their own comments ("will fail at network level but prove signatures compile"). Executing them was pure cost: each call opened a real TCP connection to a synthetic IP and waited out soap-client's 5s connect timeout, and the returned `Result` was discarded unexamined. The four together accounted for ~55s of a ~60s `sonos-sdk` unit-test run.
+These assertions are about **types, not behaviour**. Executing them is pure cost: each call
+opens a real TCP connection to a synthetic IP and waits out `soap-client`'s 5s connect timeout,
+and the returned `Result` is discarded unexamined.
 
-Rust type-checks the body of a function even when nothing calls it, so a never-called `fn` fails the build the instant a signature drifts — the exact guarantee the `#[test]` version provided — while contributing 0s of runtime. The `_` prefix and `#[allow(dead_code)]` document the intent and silence the unused warning under `-D warnings`.
+Rust type-checks the body of a function even when nothing calls it, so a never-called `fn` fails
+the build the instant a signature drifts — the exact guarantee a `#[test]` version provides —
+while contributing no runtime. The `_` prefix and `#[allow(dead_code)]` document the intent and
+silence the unused warning under `-D warnings`.
 
 #### Trade-offs
 
 | Decision | Alternative Considered | Why We Chose This |
 |----------|----------------------|-------------------|
-| Never-called fn | Delete the assertions | Signature drift in a public API should break the build; the assertion has real value, only its execution was worthless |
-| Never-called fn | `let _ = ...` inside a `#[test]` | Still executes the call and still pays the timeout — the cost is the invocation, not the assertion |
-| Take params by reference | Construct fixtures inside the fn | Nothing constructs them, so params keep the fn free of fixture setup and avoid dragging helpers into the dead-code graph |
+| Never-called fn | Delete the assertions | Signature drift in a public API should break the build; the assertion has real value, only its execution does not |
+| Never-called fn | `let _ = ...` inside a `#[test]` | Still executes the call and still pays the timeout — the cost is the invocation |
+| Take params by reference | Construct fixtures inside the fn | Nothing constructs them, so params keep the fn free of fixture setup |
 
-**Boundary**: this pattern applies *only* where the assertion is purely about types. Tests that assert real behavior on paths returning before any network call — `test_group_set_volume_rejects_over_100`, `test_add_speaker_rejects_coordinator_self_add`, `test_remove_speaker_rejects_coordinator_removal`, `test_dissolve_standalone_returns_empty_result`, and the `set_*_rejects_invalid` family — remain executing `#[test]` fns. Validation and guard-clause logic must keep running.
+**Boundary**: this pattern applies *only* where the assertion is purely about types. Tests that
+assert real behaviour on paths returning before any network call remain executing `#[test]` fns
+(§8.2). Validation and guard-clause logic must keep running.
 
 ### 8.7 Leak Assertions (`state_manager_weak`)
 
 #### What
 
-`SonosSystem::state_manager_weak()` returns a `std::sync::Weak<StateManager>`. It
-is gated behind `test-support` (or the crate's own `test` cfg), alongside
-`from_devices_offline`. Two tests use it:
+`SonosSystem::state_manager_weak()` (`src/system.rs:743`) returns a
+`std::sync::Weak<StateManager>`. It is gated behind `test-support` (or the crate's own `test`
+cfg), alongside `from_devices_offline`. Two tests use it:
 `test_dropping_system_releases_state_manager` and
 `test_dropping_system_after_watch_releases_state_manager` (`src/system.rs`).
 
 #### Why
 
-The Arc cycle described in §3.1 was invisible to every other kind of test.
-Construction succeeded, teardown "succeeded", and every functional assertion
-passed — the only symptom was that memory, a thread, a tokio runtime and a socket
-were never reclaimed. Detecting that requires a handle that **outlives the
-system** and can then be asked whether the target is gone.
+The Arc cycle described in §3.1 is invisible to every other kind of test. Construction succeeds,
+teardown "succeeds", and every functional assertion passes — the only symptom is that memory, a
+thread, a runtime and a socket are never reclaimed. Detecting that requires a handle that
+**outlives the system** and can then be asked whether the target is gone.
 
-Nothing already public can answer the question. `state_manager()` returns
-`&Arc<StateManager>` borrowed from `&self`, so it cannot survive the drop, and
-cloning the `Arc` first would itself keep the manager alive and mask the very
-condition under test. A `Weak` is the only observer that does not perturb what it
-measures.
+Nothing already public can answer the question. `state_manager()` (`src/system.rs:727`) returns
+`&Arc<StateManager>` borrowed from `&self`, so it cannot survive the drop, and cloning the `Arc`
+first would itself keep the manager alive and mask the condition under test. A `Weak` is the only
+observer that does not perturb what it measures.
 
-The second test exists because the first does not exercise the closure. The cycle
-is created at `assemble()` time, but the closure only *runs* on the first
-`watch()`; testing both means the assertion holds whether or not lazy init ever
-fired.
+The second test exists because the first does not exercise the closure. The cycle is created at
+`assemble()` time, but the closure only *runs* on the first `watch()`; testing both means the
+assertion holds whether or not lazy init ever fired.
 
 #### Trade-offs
 
 | Decision | Alternative Considered | Why We Chose This |
 |----------|----------------------|-------------------|
-| `Weak` accessor behind `test-support` | Assert `Arc::strong_count` via `state_manager()` while alive | A live count is not the invariant: `Speaker` handles legitimately hold their own `Arc`s, so the number tracks the device count. The invariant is "zero *after* drop", which needs a handle that outlives the system |
-| Add a test-only accessor | Leave the cycle untested | The bug is silent by construction and was reintroduced-prone; an untested fix here is indistinguishable from no fix |
-| `Weak` | A `Drop` impl on `SonosSystem` setting a flag | A flag proves `SonosSystem` dropped, which was never in doubt — the question is whether the *manager* was released |
+| `Weak` accessor behind `test-support` | Assert `Arc::strong_count` via `state_manager()` while alive | A live count is not the invariant: `Speaker` handles legitimately hold their own `Arc`s, so the number tracks the device count. The invariant is "zero *after* drop" |
+| Add a test-only accessor | Leave the cycle untested | The bug is silent by construction; an untested fix is indistinguishable from no fix |
+| `Weak` | A `Drop` impl setting a flag | A flag proves `SonosSystem` dropped, which was never in doubt — the question is whether the *manager* was released |
+
+### 8.8 Test Fixtures & Mocks
+
+| Dependency | Strategy | Location |
+|------------|----------|----------|
+| `sonos-discovery` | Caller-supplied `Vec<Device>` | `from_devices_offline` and friends; `sonos_discovery` is re-exported under `test-support` so tests can name `Device` |
+| Topology | Injected via `from_devices_offline_with_groups` / `_with_topology` | §8.5 |
+| `sonos-api` | Not mocked | Anything needing a real SOAP response is an `#[ignore]`d hardware test |
+| `StateManager` | Real instance | Cheap to construct; no I/O until a subscription exists |
 
 ---
 
@@ -849,29 +1347,44 @@ fired.
 
 | Metric | Target | Rationale |
 |--------|--------|-----------|
-| `get()` latency | < 1ms | Cache read should be instant |
-| `fetch()` latency | < 100ms | Network round-trip plus parsing |
-| Memory per speaker | < 10KB | Handles are lightweight Arc wrappers |
+| `get()` latency | < 1 us | One uncontended read lock plus a clone of a small value; it is called per property per frame |
+| `WatchHandle::value()` latency | < 1 us | Same cost as `get()` — it is the same read |
+| `fetch()` latency | < 100 ms | One SOAP round trip on a LAN |
+| `SonosSystem::new()` with a warm cache | < 50 ms | No SSDP; the cost is the topology poll |
+| `SonosSystem::new()` with a cold cache | ~3 s | The SSDP sweep timeout, which is fixed |
+| Memory per speaker | < 10 KB | Handles are `Arc` clones plus a `PhantomData` |
 
 ### 9.2 Critical Paths
 
-1. **Property get()** (`src/property/handles.rs:48-50`)
-   - **Complexity**: O(1) - direct StateStore lookup
-   - **Bottleneck**: None (memory read)
-   - **Optimization**: Uses StateStore's optimized key-value storage
+1. **`PropertyHandle::get()`** (`src/property/handles.rs:334`)
+   - **Complexity**: O(1) — one read lock, one or two hash lookups (coordinator resolution adds
+     one), one clone
+   - **Bottleneck**: the property's own clone cost, which is why property types are small
+   - **Note**: `WatchHandle::value()` (`:158`) is this same read behind a boxed closure
 
-2. **Property fetch()** (`src/property/handles.rs:53-71`)
-   - **Complexity**: O(1) network call
-   - **Bottleneck**: Network latency to Sonos device
-   - **Optimization**: Shared SOAP client with connection pooling
+2. **`PropertyHandle::fetch()`** (`src/property/handles.rs:556`)
+   - **Complexity**: O(1) network calls
+   - **Bottleneck**: network latency; blocking, and it blocks the calling thread
+   - **Optimization**: the shared `SoapClient` singleton pools connections
+
+3. **`SonosSystem::speaker()`** (`src/system.rs:614`)
+   - **Complexity**: O(1) on a hit; a 3s SSDP sweep on a miss
+   - **Bottleneck**: the miss path, rate-limited to once per 30 s per system
+   - **Note**: `offline` systems skip it entirely (§8.5)
+
+4. **`SonosSystem::groups()`** (`src/system.rs:866`)
+   - **Complexity**: O(groups x members), plus `ensure_topology()` if no topology is known
+   - **Bottleneck**: the first call on a system with no topology, which SOAP-polls
 
 ### 9.3 Resource Management
 
 | Resource | Acquisition | Release | Pooling |
 |----------|-------------|---------|---------|
-| StateManager | System::new() | System drop | Yes - shared Arc |
-| SonosClient | System::new() | System drop | Yes - shared singleton |
-| PropertyWatcher | watch() call | Watcher drop | Reference counted subscriptions |
+| `StateManager` | `SonosSystem::new()` | When the last `Arc` drops — including every `Speaker` and `Group` handle | Yes; one per system |
+| `SonosClient` | `SonosSystem::new()` | Cheap clone of the process-wide SOAP singleton | Yes; the `ureq::Agent` is shared |
+| Event manager, runtime, callback socket | First `watch()` anywhere | With the `StateManager` | One per system |
+| UPnP subscription | `WatchHandle` acquisition at zero holds | Handle drop, after a 50 ms grace period | Reference-counted per `(ip, service)` |
+| Discovery cache file | `SonosSystem::new()` on a cold start | Never; overwritten on the next cold start | N/A |
 
 ---
 
@@ -881,25 +1394,29 @@ fired.
 
 | Threat | Likelihood | Impact | Mitigation |
 |--------|------------|--------|------------|
-| Malicious device on network | Low | Medium | Trust local network; no auth on UPnP by design |
-| SOAP response injection | Low | Low | XML parsing with strict schemas |
-| Denial of service via discovery | Low | Low | Discovery is bounded by network timeout |
+| Hostile device answering SSDP | Low | Low | Device descriptions are validated (manufacturer and device type) before a speaker is created |
+| Forged UPnP event on the LAN | Low | Medium | Events from IPs absent from the state manager's map are dropped; see [sonos-state.md](sonos-state.md) §10.1 |
+| Tampered discovery cache | Low | Medium | The cache is user-writable by design. A declared device count above 256 is rejected; every cached IP is still contacted over plain UPnP, so a poisoned entry can misdirect commands |
+| Denial of service via discovery | Low | Low | Discovery is bounded by a fixed 3s timeout |
 
 ### 10.2 Sensitive Data
 
 | Data Type | Sensitivity | Protection |
 |-----------|-------------|------------|
-| Speaker IPs | Low | Local network only |
-| Speaker names | Low | User-configured values |
-| Volume/playback state | Low | Non-sensitive device state |
+| Speaker IPs and UUIDs | Low | LAN-local; written to the discovery cache in plaintext |
+| Speaker names | Low | User-configured |
+| Track metadata | Low | Passed through, not persisted |
 
 ### 10.3 Input Validation
 
 | Input Source | Validation | Location |
 |--------------|------------|----------|
-| Discovery responses | IP address parsing | `src/system.rs:31` |
-| API responses | XML schema validation | sonos-api crate |
-| Speaker names | None (trusted from device) | N/A |
+| Discovery responses | Device description must identify as Sonos; IP must parse | `sonos-discovery`; `Speaker::from_device` (`src/speaker.rs:184`) |
+| Command arguments | `Validate` impls run at `.build()`, before any network call | `sonos-api`; surfaced as `SdkError::ValidationFailed` |
+| Group membership operations | A coordinator may not be added to or removed from its own group | `src/group.rs:272`, `:293` |
+| `SONOS_CACHE_DIR` | Must be non-empty **and** absolute | `src/cache.rs:27` |
+| Cache file contents | Rejected above 256 devices; a future timestamp counts as stale | `src/cache.rs:40`, `:66` |
+| Speaker names | None — trusted from the device | N/A |
 
 ---
 
@@ -907,22 +1424,26 @@ fired.
 
 ### 11.1 Logging
 
-Currently minimal logging; relies on underlying crates:
+`tracing` is a direct dependency and the crate emits records on the watch, discovery and
+construction paths.
 
-| Level | What's Logged | Location |
+| Level | What's Logged | Example |
 |-------|--------------|---------|
-| `error` | State/API failures | Via error propagation |
-| `debug` | Event processing | sonos-state reactive.rs |
-| `trace` | UPnP event details | sonos-stream |
+| `debug` | Lazy event-manager init, satellite exclusion, rediscovery, topology fetch failures | "Event manager not initialized, triggering lazy init"; "Topology fetch failed for {ip}" |
+| `trace` | Every `watch()` call, with property service and speaker | `src/property/handles.rs:367` |
+| `warn` | Duplicate room names, cache write failures | — |
 
-### 11.2 Tracing
+Deeper diagnostics live downstream: event decoding in `sonos-state`, subscription lifetime in
+`sonos-event-manager`, delivery and polling in `sonos-stream`.
 
-**Span structure** (inherited from sonos-state):
-```
-[state_manager]
-  └── [event_processor]
-      └── [property_update]
-```
+### 11.2 Metrics
+
+None exposed. `WatchHandle::mode()` is the closest thing — it reports whether a given watch is
+receiving real-time events, polling, or nothing.
+
+### 11.3 Tracing
+
+No `#[instrument]` spans. Observability is event-based logging on the flows above.
 
 ---
 
@@ -930,11 +1451,18 @@ Currently minimal logging; relies on underlying crates:
 
 ### 12.1 Configuration Options
 
-The SDK currently has no runtime configuration options. All settings are determined at compile time or from device discovery.
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `test-support` | cargo feature | off | Exposes `from_devices_offline*`, `with_speakers`, `with_groups`, `state_manager_weak`, `from_discovered_devices` and the `sonos_discovery` re-export |
+
+There are no runtime configuration options. Discovery timeout (3 s), rediscovery cooldown (30 s),
+cache TTL (24 h) and the watch grace period (50 ms) are all constants.
 
 ### 12.2 Environment Variables
 
-None required.
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `SONOS_CACHE_DIR` | No | `dirs::cache_dir().join("sonos")` | Directory for `cache.json`. Ignored unless non-empty and absolute (`src/cache.rs:27`) |
 
 ---
 
@@ -944,31 +1472,34 @@ None required.
 
 | API | Stability | Notes |
 |-----|-----------|-------|
-| `SonosSystem::new()` | Unstable | May add configuration options |
-| `speaker.volume.get()` | Stable | Core pattern, unlikely to change |
-| `speaker.volume.fetch()` | Stable | Core pattern, unlikely to change |
-| `speaker.volume.watch()` | Stable | Core pattern, unlikely to change |
+| `SonosSystem::new()` | Unstable | May gain a configuration argument |
+| `speaker.<property>.get() / .fetch() / .watch()` | Stable | The core pattern |
+| `WatchHandle` | Stable | `value()` is a live read; the handle is the subscription lease |
+| `Speaker` command methods | Evolving | The set grows as operations are surfaced; existing signatures are stable |
+| `Group` lifecycle methods | Evolving | `add_speaker`, `remove_speaker`, `dissolve`, `create_group` |
+| `SdkError` | Stable | `#[non_exhaustive]`, so adding a variant is not breaking |
+| `property::{Fetchable, FetchableWithContext, GroupFetchable}` | Unstable | Extension points for this crate, not part of the consumer vocabulary |
+| `test-support` items | Unstable | Test scaffolding; shape follows the tests' needs |
 
 ### 13.2 Breaking Changes
 
-**Policy**: Pre-1.0, breaking changes may occur in minor versions. Post-1.0, semantic versioning will be followed.
+**Policy**: pre-1.0, breaking changes may land in minor versions. Post-1.0, semantic versioning.
 
-**Current deprecations (0.2.0)**:
-- `get_speaker_by_name()` → `speaker()`
-- `get_speaker_by_id()` → `speaker_by_id()`
-- `get_group_by_name()` → `group()`
-- `get_group_by_id()` → `group_by_id()`
-- `get_group_for_speaker()` → `group_for_speaker()` (or use `speaker.group()`)
+**Current deprecations**, all `#[deprecated(since = "0.2.0")]`:
 
-### 13.3 Version History
+| Deprecated | Replacement | Line |
+|------------|-------------|------|
+| `get_speaker_by_name()` | `speaker()` | `src/system.rs:629` |
+| `get_speaker_by_id()` | `speaker_by_id()` | `src/system.rs:714` |
+| `get_group_by_id()` | `group_by_id()` | `src/system.rs:904` |
+| `get_group_by_name()` | `group()` | `src/system.rs:979` |
+| `get_group_for_speaker()` | `group_for_speaker()`, or `speaker.group()` | `src/system.rs:939` |
 
-| Version | Changes | Migration Guide |
-|---------|---------|-----------------|
-| `0.7.0` | **Breaking**: `system.iter()` now returns an independent iterator per call — every iterator receives every event, instead of concurrent iterators silently splitting the stream between them | An iterator now only receives events emitted *after* it is created, where the single shared queue used to buffer everything since startup. Move `let iter = system.iter()` *before* the writes you want to observe. Code that already drained from one place is unaffected. See `sonos-state.md` 4.1b |
-| `0.7.0` | **Breaking**: `ChangeEvent` carries the changed value (`event.change: PropertyChange`); `property_key` and `service` become methods; `fetch()` writes are ordered by observation time | Replace `event.property_key` with `event.property_key()` and `event.service` with `event.service()`. Prefer matching on `event.change` over re-reading the store — a store re-read cannot see intermediate values in a queued burst |
-| `0.3.0` | RAII `WatchHandle`, remove `unwatch()`, 50ms grace period, `WatchGuard` | Replace `watch()` result handling: hold `WatchHandle`, drop to unsubscribe instead of calling `unwatch()` |
-| `0.2.0` | Lazy event init, method renames, fluent navigation, prelude, `#[non_exhaustive]` | Replace `get_` prefixed methods with short names; use `sonos_sdk::prelude::*` |
-| `0.1.0` | Initial release | N/A |
+### 13.3 Version
+
+Published as `sonos-sdk`, versioned from the workspace (`version.workspace = true`), so it moves
+in lockstep with every other crate in the SDK. A per-crate `CHANGELOG.md` sits beside the
+manifest.
 
 ---
 
@@ -978,17 +1509,23 @@ None required.
 
 | Limitation | Impact | Workaround | Planned Fix |
 |------------|--------|------------|-------------|
-| Read-only properties | Cannot control playback | Use sonos-api directly | Future version |
-| Two properties only | Limited functionality | Use sonos-state for more | Add as sonos-api operations available |
-| No manual discovery | Cannot add speakers post-init | Recreate SonosSystem | Future version |
-| Blocking discovery | Startup may be slow | Accept delay | Async discovery option |
+| Blocking discovery | `SonosSystem::new()` can take 3 s on a cold cache | Accept it, or keep the cache warm | An async or incremental constructor |
+| Blocking `fetch()` and commands | Each call occupies the calling thread for a round trip | Call from a worker thread | An async variant, which needs an async `soap-client` |
+| No speaker may be added after construction | A speaker that appears later is invisible until a lookup miss triggers rediscovery | Look the speaker up by name — the miss path rediscovers | An explicit refresh method |
+| Rediscovery is rate-limited to once per 30 s per system | A speaker that appears twice within the window stays invisible | Wait out the cooldown | Make the cooldown configurable |
+| `Group::set_volume` takes `u16`, `Speaker::set_volume` takes `u8` | Surprising asymmetry | None needed | It mirrors the UPnP argument types; changing it would hide that |
+| Multi-subnet households are not supported for events | Speakers on a subnet the callback URL cannot reach fall back to polling | Polling still delivers state, less promptly | Per-subscription callback URLs; see [callback-server.md](callback-server.md) §14.1 |
+| No content browsing | Cannot list or search a music library | Use `sonos-api` directly | ContentDirectory support |
 
 ### 14.2 Technical Debt
 
 | Debt Item | Location | Severity | Remediation Plan |
 |-----------|----------|----------|------------------|
-| TODO comments for missing properties | `src/speaker.rs:17-23` | Low | Add as operations implemented |
-| Missing unit tests | All modules | Medium | Add test coverage |
+| `SdkError::WatcherClosed` is never constructed | `src/error.rs:22` | Low | Remove it; `#[non_exhaustive]` makes that non-breaking |
+| A `PropertyHandle::watch()` doc comment refers to `system.configure_events()`, which does not exist | `src/property/handles.rs:76` | Low | Delete the reference |
+| `from_discovered_devices` changes visibility with the `test-support` feature | `src/system.rs:158-168` | Low | Make it consistently `pub(crate)` and route tests through the offline constructors |
+| `ensure_topology()` polls speakers serially until one answers | `src/system.rs:796` | Medium | With every speaker unreachable this costs 15 s per speaker; poll concurrently or bound the total |
+| Command coverage is uneven across services | `src/speaker.rs`, `src/group.rs` | Low | AVTransport and RenderingControl are well covered; GroupManagement is reached only indirectly |
 
 ---
 
@@ -998,17 +1535,23 @@ None required.
 
 | Enhancement | Priority | Rationale | Dependencies |
 |-------------|----------|-----------|--------------|
-| Write operations (set volume, play/pause) | P0 | Complete the API surface | sonos-api operations |
-| Mute property | P1 | Commonly needed | sonos-api GetMute operation |
-| Position/CurrentTrack properties | P1 | Media control use cases | sonos-api operations |
-| Async discovery | P2 | Non-blocking initialization | sonos-discovery changes |
-| Speaker groups | P2 | Multi-room audio control | sonos-state group support |
+| `Mute`, `Bass`, `Treble`, `Loudness`, `Position` in the prelude | P2 | They are already handles on `Speaker`; the prelude lags the surface | — |
+| Explicit `refresh()` on `SonosSystem` | P1 | Adding a speaker mid-session currently depends on a lookup miss | — |
+| Concurrent topology prefetch | P2 | Bounds the worst case in §14.2 | — |
+| Async variant | P2 | Lets the SDK be used from an async application without `spawn_blocking` | An async `soap-client` |
+| ContentDirectory support | P2 | Library browsing and search | New `sonos-api` service |
 
 ### 15.2 Open Questions
 
-- [ ] **Should fetch() return old value on error?**: Currently returns error; could return cached value
-- [ ] **Should property handles support set() operations?**: Waiting on write operation implementation pattern
-- [ ] **Should SonosSystem support dynamic speaker addition?**: Requires rethinking initialization
+- [ ] **Should `fetch()` fall back to the cached value on a network error?** It currently returns
+      the error. Returning stale data silently would be worse for a caller that asked for
+      freshness, but a `fetch_or_cached()` might be worth having explicitly.
+- [ ] **Should property handles carry `set()`?** Commands live on `Speaker` and `Group` today
+      (§4.1). A `volume.set(35)` would read well, but several commands map to no property at all,
+      so the two surfaces would not be symmetric.
+- [ ] **Should the discovery cache record topology as well as devices?** It would remove the
+      topology poll from warm starts, at the cost of a staleness class that is harder to detect
+      than a missing speaker.
 
 ---
 
@@ -1018,25 +1561,24 @@ None required.
 
 | Term | Definition |
 |------|------------|
-| Property Handle | Struct providing get/fetch/watch methods for a single property type |
-| DOM-like API | API pattern where properties are accessed as fields, similar to browser DOM |
-| PropertyWatcher | Async iterator for receiving property change events |
-| ChangeIterator | Blocking per-subscriber iterator over change events; each `system.iter()` call returns an independent one that receives every event |
-| StateManager | Central reactive state management component from sonos-state |
-| UPnP | Universal Plug and Play protocol used by Sonos for device communication |
+| Property handle | `PropertyHandle<P>` or `GroupPropertyHandle<P>` — a field on `Speaker`/`Group` carrying `get`/`fetch`/`watch` for one property |
+| DOM-like API | Properties accessed as fields rather than through a generic getter |
+| `WatchHandle` | RAII lease on a subscription that also reads the property live (§4.3) |
+| Watch mode | Whether a watch is served by UPnP events, by polling, or by the cache alone |
+| Grace period | The 50 ms window after the last `WatchHandle` for an `(ip, service)` drops, during which the subscription survives and can be reclaimed |
+| Coordinator | The speaker that owns playback state for its group |
+| Satellite | A speaker marked `Invisible="1"` in topology — a home-theater surround or sub |
+| `ChangeIterator` | Blocking per-subscriber iterator over `ChangeEvent`; each `system.iter()` returns an independent one that receives every event |
+| Offline system | A `SonosSystem` built by a `test-support` constructor, with both network paths closed (§8.5) |
 
 ### B. References
 
-- [CLAUDE.md](/Users/tristantimblin/repos/sonos-sdk/CLAUDE.md) - Project development guide
-- [sonos-state specification](./sonos-state.md) - Reactive state management details
-- [sonos-api specification](./sonos-api.md) - UPnP operation details
-
-### C. Changelog
-
-| Date | Author | Change |
-|------|--------|--------|
-| 2026-08-16 | Claude Opus 5 | `WatchHandle` became a live view instead of a frozen snapshot (§4.4): `value()`/`has_value()` read the store on each call, `Deref<Target = Option<P>>` removed, `value()` now returns `Option<P>` by value. Breaking for `sonos-sdk` 0.6.0 |
-| 2026-08-15 | Claude Opus 5 | Documented the `Weak<StateManager>` capture that breaks the init-closure Arc cycle (§3.1), the removal of the dead `event_manager` field (§2.3), and §8.7 leak assertions |
-| 2026-08-15 | Claude Opus 5 | Added §8.5 offline construction (`from_devices_offline`, `offline` flag), §8.6 signature assertions, and the `assemble()` split in §3.1 |
-| 2026-03-11 | Claude Opus 4.6 | Updated for v0.2.0: lazy event init, method renames, fluent navigation, prelude, #[non_exhaustive] |
-| 2026-01-14 | Claude Opus 4.5 | Initial specification created |
+- [sonos-state specification](sonos-state.md) — the cache, the change stream, coordinator
+  resolution and write ordering
+- [sonos-api specification](sonos-api.md) — UPnP operations and SOAP execution
+- [sonos-event-manager specification](sonos-event-manager.md) — subscription reference counting
+  and the grace period
+- [sonos-discovery specification](sonos-discovery.md) — SSDP discovery
+- [callback-server specification](callback-server.md) — inbound NOTIFY handling and callback
+  address selection
+- [docs/STATUS.md](../STATUS.md) — per-service implementation status across the layers

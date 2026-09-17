@@ -180,7 +180,7 @@ pub struct EnrichedEvent {
   from `NotificationPayload::received_at`; a buffered event replayed after late SID registration
   keeps its original arrival instant. For a poll it is the instant the poll *request* was issued,
   captured by the polling loop before `poll_device_state` — a poll response describes the device
-  as of the request, exactly like `fetch()`. See `sonos-state` spec §4.1a for the ordering rule
+  as of the request, exactly like `fetch()`. See [sonos-state.md](./sonos-state.md) §4.1a for the ordering rule
   these stamps feed
 - `event_source` accurately identifies whether this came from UPnP or polling
 
@@ -221,25 +221,25 @@ pub struct RegistrationId(u64);
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
 │ Subscription    │     │   Firewall      │     │   Polling       │
 │   Manager       │     │  Coordinator    │     │  Scheduler      │
-│ broker.rs:420   │     │ broker.rs:406   │     │ broker.rs:449   │
+│ manager.rs:163  │     │ broker.rs:627   │     │ scheduler.rs:467│
 └────────┬────────┘     └────────┬────────┘     └────────┬────────┘
          │                       │                       │
          └───────────────────────┼───────────────────────┘
                                  ▼
                         ┌─────────────────┐
                         │ EventProcessor  │
-                        │ processor.rs:51 │
+                        │ processor.rs:65 │
                         └────────┬────────┘
                                  ▼
                         ┌─────────────────┐
                         │ EventIterator   │
-                        │ iterator.rs:56  │
+                        │ iterator.rs:53  │
                         └─────────────────┘
 ```
 
 **Step-by-step**:
 
-1. **Registration** (`src/broker.rs`): User calls `register_speaker_service()` which:
+1. **Registration** (`src/broker.rs:535`): the consumer calls `register_speaker_service()`, which:
    - Registers the speaker/service pair in the registry
    - **Returns immediately if the pair was already registered** (see below)
    - Checks if this is the first subscription for this device
@@ -254,53 +254,47 @@ registry's own lock.** `SpeakerServiceRegistry::register_reporting_duplicate` de
 duplicate verdict inside the critical section that performs the insert, and
 `register_speaker_service` returns straight away when it is `true`.
 
-Two defects made this wrong. The verdict was computed as `registry.register(..)` followed
-by `registry.is_registered(..)` — asked *after* the insert, so it always answered `true`:
-`RegistrationResult::was_duplicate` was `true` for every registration, including
-brand-new ones. And nothing short-circuited on it, so a repeat registration re-ran the
-whole subscribe path: a second UPnP SUBSCRIBE producing a **new SID**, with
-`subscriptions.insert(registration_id, wrapper)` overwriting the wrapper that held the
-old one. The superseded SID was then unnameable by any code path yet remained in the
-`EventRouter`'s active set for the process lifetime — the router kept accepting and
-forwarding its events — and a later `unregister_speaker_service` released only the
-newest. That is the duplicate-registration counterpart to the unregistration leak in
-§5.2.
+Both halves are load-bearing. Short-circuiting is what stops a repeat registration from
+re-running the subscribe path — a second UPnP SUBSCRIBE would produce a **new SID**, and
+`subscriptions.insert(registration_id, wrapper)` would overwrite the wrapper holding the old
+one. The superseded SID would then be unnameable by any code path yet still sit in the
+`EventRouter`'s active set for the process lifetime, with the router forwarding its events,
+while a later `unregister_speaker_service` released only the newest. That is the
+duplicate-registration counterpart to the unregistration leak in §5.2.
 
-Deciding the verdict under the insert's own lock is what makes it race-free: a "check,
-then register" pair in the caller would report two genuinely concurrent
-first-registrations as both new. The duplicate return reports `polling_reason: None`,
-because the call activated nothing; whether the reused registration is *currently*
-polling is a separate question answered by `stats()`.
+Deciding the verdict under the insert's own lock is what makes it race-free: a "check, then
+register" pair in the caller would report two genuinely concurrent first-registrations as both
+new, and a check made *after* the insert would answer `true` for every registration including
+brand-new ones. The duplicate return reports `polling_reason: None`, because the call activated
+nothing; whether the reused registration is *currently* polling is a separate question answered
+by `stats()`.
 
-**Callback URL: one authoritative source.** `subscription_callback_url()` returns
-`CallbackServer::base_url()` verbatim, and `SubscriptionManager` is constructed
-from it. The broker previously ran its own `get_local_ip()` — a second
-route-to-8.8.8.8 UDP probe — and rebuilt `http://{ip}:{port}` by hand, duplicating
-a derivation `CallbackServer` had already performed. Two copies of one derivation
-is what let them drift; whichever was wrong, speakers were handed an address they
-could not reach, so **events were silently lost and the firewall detector
-misattributed the silence to a firewall**, sending the device to polling. With a
-VPN up, the probe returned the tunnel address and this happened for every speaker.
-`get_local_ip()` is deleted; the broker never derives an address itself.
+**Callback URL: one authoritative source.** `subscription_callback_url()`
+(`src/broker.rs:129`) returns `CallbackServer::base_url()` verbatim, and
+`SubscriptionManager` is constructed from it. The broker never derives an address itself.
+A second derivation here — a local-IP probe plus a hand-built `http://{ip}:{port}` — could
+drift from the server's own answer, and whichever was wrong, speakers would be handed an
+address they could not reach. The failure is silent: events are simply never delivered, and
+the firewall detector reads that silence as a firewall and sends the device to polling.
 
-`warn_if_speaker_unreachable` calls `CallbackServer::local_ip_for_speaker`, which
-does real subnet containment using each interface's actual netmask. A /24
-assumption would be wrong here: this project's network is one flat
-`192.168.4.0/22`, so a `192.168.5.x` speaker *is* reachable from `192.168.4.32`,
-and a /24 check would emit a false warning for half the household. See
-`docs/specs/callback-server.md` §4.5.
+`warn_if_speaker_unreachable` (`src/broker.rs:140`) calls
+`CallbackServer::local_ip_for_speaker`, which does real subnet containment using each
+interface's actual netmask. A /24 assumption would be wrong here: a flat `192.168.4.0/22`
+network makes a `192.168.5.x` speaker reachable from `192.168.4.32`, and a /24 check would emit
+a false warning for half the household. See
+[callback-server.md](./callback-server.md) §4.5.
 
-2. **Firewall Detection** (`src/broker.rs:625-640`): Per-device firewall detection:
+2. **Firewall Detection** (`src/broker.rs:627-640`): per-device firewall detection:
    - First subscription triggers proactive detection
    - Subsequent subscriptions use cached status
    - Detection runs concurrently with subscription creation
 
-3. **Subscription Creation** (`src/subscription/manager.rs:181-211`):
+3. **Subscription Creation** (`src/subscription/manager.rs:163-190`):
    - Creates UPnP subscription using SonosClient
    - Registers subscription ID with EventRouter for event routing
    - Wraps in ManagedSubscriptionWrapper with additional context
 
-4. **Event Arrival** (`src/events/processor.rs`):
+4. **Event Arrival** (`src/events/processor.rs:65`):
    - Callback server receives UPnP NOTIFY message
    - EventProcessor looks up subscription by SID
    - **Reports liveness to the EventDetector via `record_event()`** — this is what
@@ -309,7 +303,7 @@ and a /24 check would emit a false warning for half the household. See
    - Enriches with registration context
    - Sends through unified event channel
 
-5. **Event Consumption** (`src/events/iterator.rs:56-91`):
+5. **Event Consumption** (`src/events/iterator.rs:53-96`):
    - EventIterator receives from unified channel
    - Provides sync or async iteration interfaces
    - Supports filtering by registration, service, or source
@@ -322,7 +316,7 @@ and a /24 check would emit a false warning for half the household. See
 │   Blocked       │     │                 │     │   Scheduler     │
 └─────────────────┘     └─────────────────┘     └─────────────────┘
          │                                              │
-         │ broker.rs:669-684                           │
+         │ broker.rs:791                                │
          │                                              ▼
          │                                     ┌─────────────────┐
          │                                     │  PollingTask    │
@@ -332,8 +326,8 @@ and a /24 check would emit a false warning for half the household. See
          └──────────────────────────────────────────────┤
                                                         ▼
                                                ┌─────────────────┐
-                                               │ DevicePoller    │
-                                               │strategies.rs:309│
+                                               │DeviceStatePoller│
+                                               │strategies.rs:275│
                                                └────────┬────────┘
                                                         │
                                                         ▼
@@ -394,46 +388,43 @@ The broker's polling-request task handles `Stop` by calling
 `PollingScheduler::stop_polling()` (which removes the task and awaits its shutdown)
 and clearing the subscription's `polling_active` flag.
 
-**Stopping is prompt, and does not block unrelated callers.** Two properties, both
-previously violated:
+**Stopping is prompt, and does not block unrelated callers.** Two properties hold:
 
-1. *Shutdown is signalled, not just flagged.* `PollingTask`'s shutdown signal is an
-   `AtomicBool` **plus a `tokio::sync::Notify`**, and every sleep in the polling loop is
-   a `select!` over the sleep and that notify. Previously the flag was read only at the
-   *top* of the loop, so a stop had to wait out the whole in-flight iteration:
-   `current_interval` (≤5s by default), a full poll (several sequential SOAP calls, each
-   with a 5s connect / 10s read timeout), and — worst — an error-backoff sleep capped at
-   `max_polling_interval` (30s) that was **not guarded at all**. Against an unreachable
-   speaker that totalled roughly 85s. Now only the in-flight poll delays shutdown.
-   `notify_one` rather than `notify_waiters` is deliberate: the latter is dropped when no
-   task is parked at that instant, so a stop issued mid-poll would let the *next* sleep
-   run to completion.
-2. *`stop_polling` does not hold `active_tasks` across the await.* `remove()` has already
-   taken the task out of the map, so the write guard protects nothing during
-   `shutdown().await` — it only blocks every other accessor: `start_polling`,
-   `is_polling`, and `stats()`. Because `EventBroker::stats()` calls the last of those, a
-   caller merely asking for statistics could hang for the full shutdown window; and since
-   polling requests are handled by a single serialized task, every queued `Start`/`Stop`
-   behind it stalled too. The guard is now released before awaiting, which is safe
-   precisely because the map no longer references the task: no concurrent caller can
-   observe or re-enter it, and a racing `start_polling` for the same registration
-   correctly sees "not polling" and spawns a fresh task rather than blocking on the
-   outgoing one. `shutdown_all()` drains under the lock and releases it before awaiting,
-   for the same reason.
+1. *Shutdown is signalled, not just flagged.* `PollingTask`'s `ShutdownSignal`
+   (`src/polling/scheduler.rs:37`) is an `AtomicBool` **plus a `tokio::sync::Notify`**, and
+   every sleep in the polling loop goes through `sleep_or_shutdown` (`:62`) — a `select!`
+   over the sleep and that notify. Reading a bare flag only at the *top* of the loop would
+   make a stop wait out the whole in-flight iteration: `current_interval` (≤5s by default), a
+   full poll (several sequential SOAP calls, each with a 5s connect / 10s read timeout), and
+   the error-backoff sleep capped at `max_polling_interval` (30s) — roughly 85s against an
+   unreachable speaker. As written, only the in-flight poll delays shutdown. `notify_one`
+   rather than `notify_waiters` is deliberate: the latter is dropped when no task is parked at
+   that instant, so a stop issued mid-poll would let the *next* sleep run to completion.
+2. *`stop_polling` does not hold `active_tasks` across the await.* `remove()`
+   (`src/polling/scheduler.rs:522`) takes the task out of the map first, so the write guard
+   would protect nothing during `shutdown().await` while blocking every other accessor:
+   `start_polling`, `is_polling`, and `stats()`. `EventBroker::stats()` calls the last of
+   those, so a caller merely asking for statistics would hang for the full shutdown window;
+   and since polling requests are handled by a single serialized task, every queued
+   `Start`/`Stop` behind it would stall too. Releasing the guard before awaiting is safe
+   precisely because the map no longer references the task: no concurrent caller can observe
+   or re-enter it, and a racing `start_polling` for the same registration correctly sees "not
+   polling" and spawns a fresh task rather than blocking on the outgoing one.
+   `shutdown_all()` (`:575`) drains under the lock and releases it before awaiting, for the
+   same reason.
 
-**Why `record_event` is load-bearing.** Both properties above depend on it being
-called on the hot path. When it was not (it had no production caller at all), every
-registration's `last_event_time` was frozen at registration time, so *every*
-registration was declared timed out after `event_timeout` and began polling on top
-of perfectly working UPnP events — and because `Stop` was never constructed, it
-never stopped.
+**Why `record_event` is load-bearing.** Both properties above depend on it being called on the
+hot path, from `EventProcessor::process_notification_for_registration`
+(`src/events/processor.rs:123`). Without it, every registration's `last_event_time` would stay
+frozen at registration time, so *every* registration would be declared timed out after
+`event_timeout` and begin polling on top of perfectly working UPnP events — and with no `Stop`
+ever constructed, it would never stop.
 
 Any future refactor that moves event handling must preserve this call.
-`events::processor::tests::test_processor_records_event_with_detector` guards it by
-driving `process_notification_for_registration` — the real path — with a real UPnP
-event body, and has been verified to fail when the `record_event` call is deleted. Note
-that a test calling a thin one-line delegator instead would *not* catch that deletion;
-the guard is only meaningful because it exercises the production call site.
+`events::processor::tests::test_processor_records_event_with_detector` guards it by driving
+`process_notification_for_registration` — the real path — with a real UPnP event body. A test
+calling a thin one-line delegator instead would *not* catch the deletion; the guard is
+meaningful only because it exercises the production call site.
 
 **Failure handling.** If a requested `Start` fails, the broker calls
 `clear_polling_active()`. Without that the registration would keep
@@ -481,7 +472,8 @@ Traditional UPnP event systems wait 30+ seconds for event timeouts before discov
 
 #### How
 
-The system uses a per-device detection model (`src/broker.rs:164-181`):
+The system uses a per-device detection model, driven from `register_speaker_service`
+(`src/broker.rs:620-640`):
 
 ```rust
 // On first subscription for a device
@@ -514,7 +506,8 @@ Applications should not need to implement separate code paths for UPnP and polli
 
 #### How
 
-Events from both sources flow through the same channel (`src/broker.rs:139-140`):
+Events from both sources flow through the same unbounded channel, created in
+`EventBroker::new` (`src/broker.rs:185`):
 
 ```rust
 let (event_sender, event_receiver) = mpsc::unbounded_channel();
@@ -549,7 +542,7 @@ Fixed polling intervals waste resources on idle devices while potentially missin
 
 #### How
 
-Adaptive intervals calculated in `src/polling/scheduler.rs:322-340`:
+Adaptive intervals are calculated in `src/polling/scheduler.rs:338-356`:
 
 ```rust
 fn calculate_adaptive_interval(
@@ -593,18 +586,27 @@ Different services have different state structures, APIs, and change patterns. A
 
 #### How
 
-Service pollers implement the `ServicePoller` trait (`src/polling/strategies.rs:49-60`):
+Service pollers implement the `ServicePoller` trait (`src/polling/strategies.rs:21-35`):
 
 ```rust
 #[async_trait]
 pub trait ServicePoller: Send + Sync {
-    async fn poll_state(&self, client: &SonosClient, pair: &SpeakerServicePair) -> PollingResult<String>;
-    async fn parse_for_changes(&self, old_state: &str, new_state: &str) -> Vec<StateChange>;
+    async fn poll_state(
+        &self,
+        client: &SonosClient,
+        pair: &SpeakerServicePair,
+    ) -> PollingResult<String>;
+    fn state_to_event_data(&self, json_state: &str) -> PollingResult<EventData>;
     fn service_type(&self) -> Service;
 }
 ```
 
-Implemented for: AVTransport, RenderingControl, ZoneGroupTopology (stub), GroupManagement (stub)
+`poll_state` returns the polled state as JSON and `state_to_event_data` turns it back into a
+typed `EventData`, which is why `serde_json` is a direct dependency. All five services are
+implemented — `AVTransportPoller` (`:40`), `RenderingControlPoller` (`:79`),
+`ZoneGroupTopologyPoller` (`:120`), `GroupManagementPoller` (`:168`),
+`GroupRenderingControlPoller` (`:199`) — and `DeviceStatePoller::new` (`:253`) registers all
+five.
 
 **Observation stamping.** The polling loop captures an `Instant` immediately before
 `poll_device_state` and passes it to `EnrichedEvent::observed_at`, so the synthetic event is
@@ -622,9 +624,11 @@ stale, which loses real data rather than merely mis-ordering it.
 
 #### `BrokerConfig`
 
+All 14 fields, `src/config.rs:14-71`:
+
 ```rust
 pub struct BrokerConfig {
-    /// Port range for callback server (default: 3400-3500)
+    /// Port range for callback server (default: (3400, 3500))
     pub callback_port_range: (u16, u16),
     /// Timeout before considering UPnP events failed (default: 30s)
     pub event_timeout: Duration,
@@ -632,34 +636,52 @@ pub struct BrokerConfig {
     pub base_polling_interval: Duration,
     /// Maximum adaptive polling interval (default: 30s)
     pub max_polling_interval: Duration,
+    /// Event channel buffer size (default: 1000)
+    pub event_buffer_size: usize,
+    /// Maximum concurrent polling tasks (default: 50)
+    pub max_concurrent_polls: usize,
     /// Enable proactive firewall detection (default: true)
     pub enable_proactive_firewall_detection: bool,
     /// Timeout for firewall detection (default: 15s)
     pub firewall_event_wait_timeout: Duration,
+    /// Cache firewall status per device (default: true)
+    pub enable_firewall_caching: bool,
+    /// Maximum cached device firewall states (default: 100)
+    pub max_cached_device_states: usize,
     /// Maximum registrations (default: 1000)
     pub max_registrations: usize,
-    /// Force polling mode — skip UPnP subscriptions entirely (default: false)
+    /// Adapt the polling interval to observed change rate (default: true)
+    pub adaptive_polling: bool,
+    /// How long before expiry to renew a subscription (default: 300s)
+    pub renewal_threshold: Duration,
+    /// Force polling mode — skip UPnP subscriptions entirely (default: false).
     /// Useful for testing firewall fallback behavior without a real firewall
     pub force_polling_mode: bool,
-    // ... additional fields
 }
 ```
 
 **Lifecycle**:
-1. **Creation**: Built via `Default`, `new()`, or preset methods (`fast_polling()`, `resource_efficient()`)
-2. **Validation**: `validate()` called during broker creation
+1. **Creation**: `Default` (`src/config.rs:73`), `new()` (`:96`), or a preset —
+   `fast_polling()` (`:101`), `resource_efficient()` (`:112`), `no_firewall_detection()`
+   (`:125`), `firewall_simulation()` (`:134`) — then the `with_*` builders (`:191`-`:217`)
+2. **Validation**: `validate()` (`src/config.rs:144`) is called during broker creation
 3. **Usage**: Immutable after broker creation
 
 #### `EventData`
 
 ```rust
+// src/events/types.rs:135
 pub enum EventData {
-    AVTransportEvent(AVTransportEvent),
-    RenderingControlEvent(RenderingControlEvent),
-    ZoneGroupTopologyEvent(ZoneGroupTopologyEvent),
-    GroupManagementEvent(GroupManagementEvent),
+    AVTransport(AVTransportState),
+    RenderingControl(RenderingControlState),
+    ZoneGroupTopology(ZoneGroupTopologyState),
+    GroupManagement(GroupManagementState),
+    GroupRenderingControl(GroupRenderingControlState),
 }
 ```
+
+Each variant carries a *state* struct from `sonos-api`, not a raw event, so a UPnP NOTIFY and a
+poll response converge on the same shape before they reach a consumer.
 
 **Lifecycle**:
 1. **Creation**: Parsed from UPnP XML or constructed from polling state
@@ -714,10 +736,11 @@ The UPnP-Only ↔ Polling transition is bidirectional for the reversible sub-cas
 and is driven entirely by `EventDetector::record_event`; see "Polling Fallback
 Lifecycle" in 3.2.
 
-**Unregistration ordering** (`EventBroker::unregister_speaker_service`): the UPnP
-subscription ID must be read *before* `remove_subscription()` drops the
-subscription, because it is needed to call `EventRouter::unregister()`. Skipping
-that call leaks the SID in the router's active set for the process lifetime.
+**Unregistration ordering** (`EventBroker::unregister_speaker_service`, `src/broker.rs:737`):
+the UPnP subscription ID must be read *before* `remove_subscription()` drops the subscription,
+because it is needed to call `EventRouter::unregister()`. `release_router_sid`
+(`src/broker.rs:163`) is the one place that does both. Skipping that call leaks the SID in the
+router's active set for the process lifetime.
 
 ---
 
@@ -729,11 +752,17 @@ that call leaks the SID in the router's active set for the process lifetime.
 |-------|---------|---------------------|
 | `callback-server` | HTTP server for UPnP callbacks | Handles complex HTTP/firewall detection |
 | `sonos-api` | UPnP operations and event parsing | Type-safe Sonos API, shared with consumers |
-| `sonos-discovery` | Device discovery utilities | Not directly used, but referenced in examples |
-| `soap-client` | Low-level SOAP transport | Indirect via sonos-api |
-| `tokio` | Async runtime | Background tasks, channels, timers |
-| `dashmap` | Concurrent HashMap | Lock-free concurrent access patterns |
-| `crossbeam` | Lock-free data structures | High-performance event processing |
+| `sonos-discovery` | `Device` for the examples | **Dev-dependency only**; the library itself does not use it |
+| `tokio` | Async runtime | Background tasks, unbounded channels, `RwLock`/`Mutex`/`Notify`, timers |
+| `futures` | `Stream` for `EventIterator` | Lets a consumer treat the iterator as a `Stream` alongside the sync interface |
+| `async-trait` | `ServicePoller` | The trait has an `async fn`, which needs desugaring on the 1.98 floor |
+| `serde_json` | Polling state round-trip | `ServicePoller::poll_state` returns JSON that `state_to_event_data` parses back into a typed `EventData`. Nothing here derives, so `serde` is not a direct dependency |
+| `thiserror` | Error derives | Five error enums (§7.1) |
+| `tracing` | Logging | Visibility into subscription and polling lifecycle |
+
+`soap-client` is reached only indirectly, through `sonos-api`. There is no concurrent-map or
+lock-free-structure dependency: every shared structure here is a `std` collection behind a
+`tokio::sync::RwLock` or `Mutex`.
 
 ### 6.2 Dependents (Downstream)
 
@@ -773,43 +802,66 @@ that call leaks the SID in the router's active set for the process lifetime.
 
 ### 7.1 Error Types
 
+Five enums in `src/error.rs`, none of them `#[non_exhaustive]`. `BrokerError` (`:9`) is the
+crate-level type and absorbs the three domain enums through `#[from]`:
+
 ```rust
-#[derive(Debug, thiserror::Error)]
+// src/error.rs:9 — 9 variants
 pub enum BrokerError {
-    #[error("Registry error: {0}")]
     Registry(#[from] RegistryError),
-
-    #[error("Subscription error: {0}")]
     Subscription(#[from] SubscriptionError),
-
-    #[error("Polling error: {0}")]
     Polling(#[from] PollingError),
-
-    #[error("Event processing error: {0}")]
     EventProcessing(String),
-
-    #[error("Callback server error: {0}")]
     CallbackServer(String),
-
-    #[error("Configuration error: {0}")]
     Configuration(String),
-
-    #[error("Firewall detection error: {0}")]
     FirewallDetection(String),
+    Io(#[from] std::io::Error),
+    Serialization(#[from] serde_json::Error),
 }
 
-#[derive(Debug, thiserror::Error)]
+// src/error.rs:40 — 4 variants
+pub enum RegistryError {
+    DuplicateRegistration { speaker_ip: IpAddr, service: Service },
+    NotFound(RegistrationId),
+    InvalidIpAddress(String),
+    RegistryFull { max_registrations: usize },
+}
+
+// src/error.rs:59 — 7 variants
+pub enum SubscriptionError {
+    Expired,
+    CreationFailed(String),
+    RenewalFailed(String),
+    NetworkError(String),
+    ServiceError(String),
+    CallbackRegistration(String),
+    InvalidState,
+}
+
+// src/error.rs:84 — 7 variants
 pub enum PollingError {
-    #[error("Network error during polling: {0}")]
     Network(String),
-
-    #[error("Service not supported for polling: {service:?}")]
+    StateParsing(String),
     UnsupportedService { service: Service },
-
-    #[error("Too many consecutive errors: {error_count}")]
+    DeviceUnreachable { device_ip: IpAddr },
+    TaskSpawn(String),
     TooManyErrors { error_count: u32 },
+    SoapClient(String),
+}
+
+// src/error.rs:109 — 5 variants
+pub enum EventProcessingError {
+    Parsing(String),
+    Enrichment(String),
+    ChannelClosed,
+    Timeout,
+    IteratorConsumed,
 }
 ```
+
+`EventProcessingError` is **not** re-exported at the crate root (`src/lib.rs:63` lists the
+other four), so a consumer reaches it as `sonos_stream::error::EventProcessingError`. The five
+`*Result<T>` aliases live at `src/error.rs:128-140`.
 
 ### 7.2 Error Philosophy
 
@@ -850,7 +902,10 @@ pub enum PollingError {
 
 ### 8.2 Unit Tests
 
-**Location**: Inline `#[cfg(test)]` modules in each source file
+**Location**: inline `#[cfg(test)]` modules in each source file — 63 tests in total (19
+`#[test]`, 44 `#[tokio::test]`). There is no `tests/` directory. Heaviest: `src/broker.rs` (10),
+`src/polling/scheduler.rs` (10), `src/registry.rs` (9), `src/events/iterator.rs` (9),
+`src/subscription/event_detector.rs` (6).
 
 **What to test**:
 - [x] Configuration validation (`src/config.rs`)
@@ -899,18 +954,17 @@ pub enum PollingError {
   - `polling::scheduler::tests::test_shutdown_interrupts_pending_sleep` — a stop cuts
     short a 60s interval sleep instead of waiting it out
   - `polling::scheduler::tests::test_shutdown_interrupts_error_backoff` — a stop also
-    cuts short the *error-backoff* sleep, the offender that was previously unguarded
-    entirely. Distinct from the previous test: reverting only the backoff guard leaves
-    that one passing. Timing-sensitive by nature (it distinguishes "returns at once" from
-    "waits ~9s" with a 6s bound), so the timings are chosen with margin on both sides.
+    cuts short the *error-backoff* sleep, which is the longest of the two and therefore the
+    one that matters most. Distinct from the previous test: removing only the backoff guard
+    leaves that one passing. Timing-sensitive by nature (it distinguishes "returns at once"
+    from "waits ~9s" with a 6s bound), so the timings carry margin on both sides.
 
 **Mutation-testing note.** These guards are only meaningful because they drive the real
 call sites. A test that exercises a thin extracted helper directly can pass with the
-production call to that helper deleted — which is the same "code that is never called"
-failure this crate already shipped once. When adding coverage here, delete the call site
-and confirm the test actually fails.
+production call to that helper deleted. When adding coverage here, delete the call site and
+confirm the test actually fails.
 
-**Example**:
+**Example** (`src/registry.rs:340`):
 ```rust
 #[tokio::test]
 async fn test_duplicate_detection() {
@@ -947,7 +1001,7 @@ async fn test_duplicate_detection() {
 | `SonosClient` | Real client in tests | No mocking needed for unit tests |
 | `CallbackServer` | Skipped in unit tests | Broker creation may fail gracefully |
 | Network | Test with real devices | Examples require real Sonos |
-| `ManagedSubscription` | Not constructible offline | Only `ManagedSubscription::create()` builds one, and it performs a real UPnP SUBSCRIBE. Logic that would otherwise need one is extracted into functions taking plain arguments (`EventProcessor::record_event_liveness`, `broker::release_router_sid`) so it can be unit-tested with no network. |
+| `ManagedSubscription` | Not constructible offline | `ManagedSubscription::create()` is the only constructor and it performs a real UPnP SUBSCRIBE. Logic that would otherwise need one is extracted into functions taking plain arguments — `broker::release_router_sid` (`src/broker.rs:163`) is the pattern — so it can be unit-tested with no network |
 
 ---
 
@@ -964,12 +1018,12 @@ async fn test_duplicate_detection() {
 
 ### 9.2 Critical Paths
 
-1. **UPnP Event Processing** (`src/events/processor.rs:51-126`)
+1. **UPnP Event Processing** (`src/events/processor.rs:65-188`)
    - **Complexity**: O(1) for subscription lookup, O(n) for XML parsing
    - **Bottleneck**: XML parsing of large metadata
    - **Optimization**: Uses sonos-api's optimized event framework
 
-2. **Registry Lookup** (`src/registry.rs:221-229`)
+2. **Registry Lookup** (`src/registry.rs:221-225`)
    - **Complexity**: O(1) HashMap lookup
    - **Bottleneck**: Write lock contention under high registration churn
    - **Optimization**: Uses bidirectional HashMap for O(1) both directions
@@ -1009,9 +1063,9 @@ async fn test_duplicate_detection() {
 
 | Input Source | Validation | Location |
 |--------------|------------|----------|
-| UPnP XML | Subscription ID matching | `src/events/processor.rs:62-71` |
-| Configuration | Range and type validation | `src/config.rs:156-199` |
-| Registration requests | IP validation, service enum | `src/broker.rs:385-489` |
+| UPnP XML | Subscription ID must match a live subscription; unknown SIDs error out | `src/events/processor.rs:75-85` |
+| Configuration | Range and type validation | `src/config.rs:144-189` |
+| Registration requests | Registry capacity, duplicate detection, service enum | `src/registry.rs:104-178`, `src/broker.rs:535` |
 
 ---
 
@@ -1027,7 +1081,8 @@ async fn test_duplicate_detection() {
 | `debug` | Detailed state transitions | "Event processed: {} {:?}" |
 | `trace` | Full event payloads | XML content (not enabled by default) |
 
-Note: Current implementation uses `eprintln!` extensively for visibility during development. Production should migrate to `tracing` macros.
+Note: four call sites in `src/subscription/manager.rs` (renewal and shutdown reporting) still
+use `eprintln!` rather than `tracing`; see §14.2.
 
 ### 11.2 Statistics
 
@@ -1112,18 +1167,19 @@ BrokerConfig::firewall_simulation()
 
 | Limitation | Impact | Workaround | Planned Fix |
 |------------|--------|------------|-------------|
-| ZoneGroupTopology polling is stubbed | Topology changes only via UPnP | Ensure firewall allows callbacks | Add GetZoneGroupState polling |
-| Single EventIterator per broker | Can't fan-out events | Create wrapper channel | Consider multi-consumer support |
-| Blocking SOAP client in polling | Thread pool usage | Uses tokio::task::spawn_blocking | Migrate to async SOAP client |
+| `GroupManagementPoller` returns a constant `"{}"` | Polling never surfaces GroupManagement state | None needed — the service is action-only and `sonos-state` ignores its events | Remove the poller, or add Get operations upstream |
+| Single `EventIterator` per broker | Cannot fan out events; `event_iterator()` takes the receiver and later calls fail | Wrap it in your own broadcast, as `sonos-state` does | Consider multi-consumer support |
+| Blocking SOAP client in polling | Occupies a blocking-pool thread per poll | Every poller already wraps its call in `tokio::task::spawn_blocking` | Migrate to an async SOAP client |
 | **One callback URL for all subscriptions** | A household spanning genuinely different subnets gets a URL only one half can reach; the rest logs a warning and falls back to polling | Polling still delivers state, just less promptly | **Named follow-up**: per-subscription callback URL. `SubscriptionManager::callback_url` is a single `String`, so this needs a signature change from `create_subscription` down. `CallbackServer::local_ip_for_speaker` is the piece to consume. Moot on the current dev network (one flat /22), but multi-subnet households are **not** supported today. |
 
 ### 14.2 Technical Debt
 
 | Debt Item | Location | Severity | Remediation Plan |
 |-----------|----------|----------|------------------|
-| eprintln! instead of tracing | Throughout | Low | Replace with tracing macros |
-| Incomplete position info polling | `strategies.rs:84-90` | Medium | Add get_position_info_operation call |
-| Hardcoded error thresholds | `scheduler.rs:287` | Low | Move to BrokerConfig |
+| `eprintln!` instead of `tracing` | `src/subscription/manager.rs:245`, `:252`, `:310`, `:313` | Low | Replace with `tracing` macros |
+| Error threshold for polling backoff is hardcoded at 5 | `src/polling/scheduler.rs:303` | Low | Move to `BrokerConfig` |
+| `EventParserRegistry` in `sonos-api` is unused here | `src/events/processor.rs` | Low | `EventProcessor` dispatches on a `match`; either adopt the registry or retire it upstream |
+| `EventProcessor` holds `Arc<RwLock<EventProcessorStats>>` but exposes no reset | `src/events/processor.rs:32` | Low | Counters grow for the broker's lifetime |
 
 ---
 
@@ -1140,7 +1196,7 @@ BrokerConfig::firewall_simulation()
 
 ### 15.2 Open Questions
 
-- [ ] **Should EventIterator support cloning?** Currently single-consumer only. Fan-out would require internal broadcast channel.
+- [ ] **Should `EventIterator` support cloning?** Currently single-consumer only — `event_iterator()` takes the receiver out of the broker. Fan-out would need an internal broadcast, of the shape `sonos-state` already implements for its own consumers (see [sonos-state.md](sonos-state.md) §4.1b).
 - [ ] **How to handle device disappearance?** Currently registration persists. Should we auto-unregister after extended failures?
 
 ---
@@ -1160,19 +1216,6 @@ BrokerConfig::firewall_simulation()
 
 - [UPnP Device Architecture 2.0](http://upnp.org/specs/arch/UPnP-arch-DeviceArchitecture-v2.0.pdf)
 - [Sonos API Documentation (unofficial)](https://github.com/SoCo/SoCo/wiki)
-- [callback-server crate](../callback-server)
-- [sonos-api crate](../sonos-api)
-
-### C. Changelog
-
-| Date | Author | Change |
-|------|--------|--------|
-| 2025-01-14 | Claude Code | Initial specification |
-| 2026-08-15 | Claude Code | Deleted `broker::get_local_ip` (a duplicate route-to-8.8.8.8 probe) and made the broker consume `CallbackServer::base_url()` as the single authoritative callback URL (3.1). Added a first-subscription reachability warning based on real netmasks. Recorded the single-callback-URL multi-subnet limitation as a named follow-up (14.1). |
-| 2026-08-15 | Claude Code | Documented the polling-fallback lifecycle as reversible (3.2, 5.2): `record_event` liveness reporting, `PollingAction::Stop` on event resumption, and EventRouter SID release on unregistration. Noted `polling_activation_delay` is now unread. |
-| 2026-08-16 | Claude Code | Closed the duplicate-registration SID leak (3.1, 5.2): `register_speaker_service` now short-circuits an already-registered pair instead of re-subscribing and orphaning the previous SID, and `was_duplicate` is computed by `SpeakerServiceRegistry::register_reporting_duplicate` under the insert's own lock — it was previously an `is_registered` call made *after* `register`, so it always answered `true`. Made polling shutdown prompt and non-blocking (3.2): the shutdown signal now carries a `Notify` that interrupts both the interval sleep and the previously unguarded error-backoff sleep, and `stop_polling`/`shutdown_all` release the `active_tasks` guard before awaiting shutdown so `stats()`, `is_polling` and `start_polling` are no longer blocked. Refreshed stale line references. |
-| 2026-09-17 | Claude Code | Removed two `BrokerConfig` fields that nothing read (5.1, 14.2). `polling_activation_delay` was already flagged as scheduled for removal. `subscription_timeout` never reached a subscribe call: `SubscriptionManager::create_subscription` calls `SonosClient::subscribe`, which hard-codes 1800s (`sonos-api/src/client.rs:197`) — the same value the field defaulted to, so removal is behaviour-preserving. Wiring it up would mean plumbing `BrokerConfig` into `SubscriptionManager` and switching to `subscribe_with_timeout`; that is a feature, tracked separately. |
-| 2026-09-17 | Claude Code | Removed the `firewall-detection` cargo feature. It was default-on and gated no library code — there was not one `#[cfg(feature = "firewall-detection")]` in the workspace. Its only effect was `required-features` on five `[[example]]` blocks, which are now covered by cargo's `examples/` autodiscovery. Proactive firewall detection stays exactly as it was: it is controlled at runtime by `BrokerConfig::enable_proactive_firewall_detection` (5.1), and `callback-server`'s `FirewallDetectionCoordinator` is untouched. The CI `no-default-features` job loses the third step that existed only to re-compile those gated examples. |
-| 2026-09-17 | Claude Code | Deleted the resync subsystem, which could not execute. `EventIterator::check_and_emit_resync` was a placeholder returning `None`, and the `ResyncDetector` its comment named as the real collaborator does not exist in the workspace — so the branch in `next_async` was unreachable and `EventIteratorStats::resync_events_emitted` was permanently 0. On the processor side, `EventProcessor::start_resync_processing` had no callers, nothing ever constructed a `resync_receiver`, and its only callee `process_resync_event` was called from nowhere else, leaving `EventProcessorStats::resync_events_received` permanently 0. Both counters are removed rather than left printing a constant zero in the stats dumps (§13). |
-| 2026-09-17 | Claude Code | Removed `EventData::DeviceProperties` and its payload type `DevicePropertiesEvent` (5.1, 14.1). Nothing ever constructed either one — every reference in the workspace was a match arm or a `Debug`-print in an example. The real consumer, `sonos-state/src/decoder.rs`, already mapped it to an empty vec. This also removes `EventData::service_type()`, whose only callers were its own unit tests, and with it the `FIXME` about `DeviceProperties` having no `sonos_api::Service` variant and falling back to `ZoneGroupTopology` — the misrouting hazard that `FIXME` described is now structurally impossible rather than merely unexercised. Adding DeviceProperties support later means adding a `Service` variant first, then the `EventData` variant, in that order. |
-| 2026-09-17 | Claude Opus 5 | Swept the stranded broker-level firewall-status API (§5.1, §13). `EventBroker::firewall_status()` had no callers and its whole body was the literal `FirewallStatus::Unknown`; `BrokerStats::firewall_status`, `SubscriptionStats::firewall_status` and `EventDetectorStats::firewall_status` were the same constant reaching three stats dumps. `SubscriptionManager`'s `firewall_status` field went with them: `set_firewall_status()` was its only writer and had no caller outside a `#[cfg(test)]` assertion, so both readers could only ever answer `Unknown`. `EventBroker::trigger_firewall_detection()` is removed for having no caller at all. These accessors did not merely return nothing useful — they returned a confident wrong answer to a caller asking a real question, on a system where per-device status (`get_device_firewall_status()`, which stays) has been the truth since detection went per-device. `PollingReason::SubscriptionFailed` is untouched; it is live and drives the polling fallback. |
+- [callback-server specification](callback-server.md)
+- [sonos-api specification](sonos-api.md)
+- [sonos-event-manager specification](sonos-event-manager.md) — the crate that reference-counts registrations on top of this one

@@ -54,12 +54,13 @@ Without this crate, developers must manually construct SOAP XML, manage HTTP con
 │  SonosClient  │  services::*  │  ManagedSubscription  │  events::*      │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                        Operation Framework                               │
-│  SonosOperation (legacy)  │  UPnPOperation  │  OperationBuilder         │
-│  Validate trait  │  ComposableOperation  │  ValidationLevel             │
+│  UPnPOperation  │  OperationBuilder  │  ComposableOperation            │
+│  Validate trait  │  ValidationLevel  │  SonosOperation (dead, see §14)  │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                        Service Definitions                               │
 │  av_transport  │  rendering_control  │  zone_group_topology             │
-│  (operations + events per service)                                       │
+│  group_rendering_control  │  group_management                            │
+│  (operations + events + state per service)                               │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                        Support Infrastructure                            │
 │  Service enum  │  ServiceInfo  │  ServiceScope  │  xml_utils            │
@@ -91,10 +92,13 @@ src/
 ├── error.rs                   # ApiError and Result types
 ├── service.rs                 # Service enum and ServiceInfo
 ├── subscription.rs            # ManagedSubscription lifecycle management
+├── types.rs                   # SpeakerId, GroupId newtypes
 ├── operation/
-│   ├── mod.rs                 # SonosOperation, UPnPOperation traits
+│   ├── mod.rs                 # UPnPOperation, Validate, ValidationLevel,
+│   │                          #   response helpers, SonosOperation (dead)
 │   ├── builder.rs             # OperationBuilder, ComposableOperation
-│   └── macros.rs              # define_upnp_operation! macro
+│   └── macros.rs              # define_upnp_operation!,
+│                              #   define_operation_with_response!
 ├── events/
 │   ├── mod.rs                 # Event framework re-exports
 │   ├── types.rs               # EnrichedEvent, EventSource, EventParser
@@ -103,19 +107,35 @@ src/
 └── services/
     ├── mod.rs                 # Service modules
     ├── events.rs              # Subscription operations (Subscribe, Renew, Unsubscribe)
-    ├── av_transport/
+    ├── av_transport/          # 30 operations
     │   ├── mod.rs             # AVTransport service
-    │   ├── operations.rs      # Play, Pause, Stop, GetTransportInfo
-    │   └── events.rs          # AVTransportEvent parsing
-    ├── rendering_control/
-    │   ├── mod.rs             # RenderingControl service
-    │   ├── operations.rs      # GetVolume, SetVolume, SetRelativeVolume
-    │   └── events.rs          # RenderingControlEvent parsing
-    └── zone_group_topology/
-        ├── mod.rs             # ZoneGroupTopology service
+    │   ├── operations.rs      # Play, Pause, Stop, Seek, queue, alarms, ...
+    │   ├── events.rs          # AVTransportEvent parsing
+    │   └── state.rs           # AVTransportState + poll()
+    ├── rendering_control/     # 11 operations
+    │   ├── mod.rs
+    │   ├── operations.rs      # GetVolume, SetVolume, mute, bass, treble, loudness
+    │   ├── events.rs
+    │   └── state.rs
+    ├── group_rendering_control/   # 6 operations
+    │   ├── mod.rs
+    │   ├── operations.rs      # group volume / mute / snapshot
+    │   ├── events.rs
+    │   └── state.rs
+    ├── group_management/      # 4 operations
+    │   ├── mod.rs             # SERVICE + subscribe helpers live here, not in operations.rs
+    │   ├── operations.rs      # AddMember, RemoveMember, ...
+    │   ├── events.rs
+    │   └── state.rs           # no poll(): the service is action-only
+    └── zone_group_topology/   # 1 operation
+        ├── mod.rs
         ├── operations.rs      # GetZoneGroupState
-        └── events.rs          # ZoneGroupTopologyEvent parsing
+        ├── events.rs
+        └── state.rs
 ```
+
+Every service directory has the same four-file shape: `mod.rs`, `operations.rs`, `events.rs`,
+`state.rs`. There are exactly five of them.
 
 | Module | Responsibility | Visibility |
 |--------|---------------|------------|
@@ -149,18 +169,28 @@ pub struct SonosClient {
 #### `Service`
 
 ```rust
+// src/service.rs:6 — five variants
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Service {
-    AVTransport,
-    RenderingControl,
-    GroupRenderingControl,
-    ZoneGroupTopology,
+    AVTransport,            // :8
+    RenderingControl,       // :11
+    GroupRenderingControl,  // :14
+    ZoneGroupTopology,      // :17
+    GroupManagement,        // :20
 }
 ```
 
-**Purpose**: Identifies UPnP services for routing operations and subscriptions.
+**Purpose**: identifies UPnP services for routing operations and subscriptions.
 
-**Invariants**: Each variant maps to exactly one UPnP service with known endpoints.
+**Invariants**: each variant maps to exactly one UPnP service with known endpoints.
+
+**Methods**: `name()` (`:52`), `info()` (`:66`, returning `ServiceInfo { endpoint, service_uri,
+event_endpoint }`, `:25`), and `scope()` (`:101`, returning `ServiceScope`, `:38`). The scope
+mapping is what downstream crates use to decide whether a subscription is per-speaker
+(`RenderingControl`), per-network (`ZoneGroupTopology`) or per-coordinator (`AVTransport`,
+`GroupRenderingControl`, `GroupManagement`).
+
+There is no `Display` impl, no `FromStr`, and no `all()` iterator.
 
 #### `ManagedSubscription`
 
@@ -191,32 +221,53 @@ pub struct ManagedSubscription {
 
 ```
 ┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐
-│  User creates    │────▶│  Build payload   │────▶│  SOAP call via   │
-│  request struct  │     │  with validation │     │  soap_client     │
+│  Convenience fn  │────▶│  .build()        │────▶│ execute_enhanced │
+│  -> Builder      │     │  validates       │     │                  │
 └──────────────────┘     └──────────────────┘     └──────────────────┘
        │                        │                        │
        ▼                        ▼                        ▼
-  client.rs:82              operation/mod.rs:175    client.rs:90-102
+  macros.rs:74             builder.rs:72           client.rs:123
                                                           │
-                                                          ▼
-                                                  ┌──────────────────┐
-                                                  │  Parse response  │
-                                                  │  XML to struct   │
-                                                  └──────────────────┘
-                                                          │
-                                                          ▼
-                                                   client.rs:104
+                                        ┌─────────────────┴────────────────┐
+                                        ▼                                  ▼
+                              ┌──────────────────┐             ┌──────────────────┐
+                              │ build_payload    │             │  soap_client     │
+                              │ (revalidates)    │             │  .call()         │
+                              └──────────────────┘             └──────────────────┘
+                                 builder.rs:153                    client.rs:146
+                                                                          │
+                                                                          ▼
+                                                                 ┌──────────────────┐
+                                                                 │  parse_response  │
+                                                                 │  XML to struct   │
+                                                                 └──────────────────┘
+                                                                    builder.rs:164
 ```
 
 **Step-by-step**:
 
-1. **Entry** (`src/client.rs:82-105`): User calls `client.execute::<Op>(ip, &request)`. The client retrieves service info from the operation's `SERVICE` constant.
+1. **Construct** (`src/operation/macros.rs:74`): a macro-generated convenience function — e.g.
+   `av_transport::play_operation(..)` — returns an `OperationBuilder<Op>`.
 
-2. **Payload Construction** (`src/operation/mod.rs:175`): `Op::build_payload(&request)` constructs XML. For `UPnPOperation`, this includes validation.
+2. **Build** (`src/operation/builder.rs:72`): `.build()` runs `Validate::validate` at the
+   configured `ValidationLevel` and freezes the result into a `ComposableOperation<Op>`.
+   `build_unchecked()` (`:92`) skips that check and sets the level to `None`.
 
-3. **SOAP Transport** (`src/client.rs:90-102`): The client delegates to `soap_client.call()` with endpoint, service URI, action name, and payload.
+3. **Entry** (`src/client.rs:123`): the caller invokes
+   `client.execute_enhanced::<Op>(ip, operation)`. This is the only execution path real call
+   sites use — for example `sonos-sdk/src/speaker.rs:287`,
+   `sonos-sdk/src/property/handles.rs:585`, and each service's `state::poll` such as
+   `sonos-api/src/services/rendering_control/state.rs:55`.
 
-4. **Response Parsing** (`src/client.rs:104`): `Op::parse_response(&xml)` deserializes the XML response into the typed response struct.
+4. **Payload Construction** (`src/operation/builder.rs:153`): `ComposableOperation::build_payload()`
+   calls `Op::build_payload(&request)`, which the macros generate to revalidate at
+   `ValidationLevel::Basic` before emitting XML.
+
+5. **SOAP Transport** (`src/client.rs:146`): the client resolves `Op::SERVICE.info()` and
+   delegates to `soap_client.call()` with endpoint, service URI, action name, and payload.
+
+6. **Response Parsing** (`src/operation/builder.rs:164`): `parse_response(&xml)` forwards to
+   `Op::parse_response`, deserializing the raw envelope text into the typed response struct.
 
 ### 3.2 Secondary Flow: Subscribe to Events
 
@@ -228,16 +279,24 @@ pub struct ManagedSubscription {
 └──────────────────┘     └──────────────────┘     └──────────────────┘
        │                        │                        │
        ▼                        ▼                        ▼
-  client.rs:204            services/events.rs:52   subscription.rs:76-96
+  client.rs:191            services/events.rs:52   subscription.rs:72-99
 ```
 
 **Step-by-step**:
 
-1. **Entry** (`src/client.rs:204-211`): User calls `client.subscribe(ip, service, callback_url)`.
+1. **Entry** (`src/client.rs:191`): the caller invokes `client.subscribe(ip, service, callback_url)`,
+   which hard-codes a 1800-second timeout and delegates to `create_managed_subscription()`
+   (`:259`). `subscribe_with_timeout()` (`:212`) is the variant that takes the timeout.
 
-2. **Subscribe Request** (`src/services/events.rs:52-78`): `SubscribeOperation::execute()` sends HTTP SUBSCRIBE to the service's event endpoint.
+2. **Subscribe Request** (`src/services/events.rs:52`): `SubscribeOperation::execute()` sends
+   HTTP SUBSCRIBE to the service's event endpoint. This and its siblings
+   (`UnsubscribeOperation::execute`, `:106`; `RenewOperation::execute`, `:161`) take a raw
+   `&SoapClient` and implement neither operation trait — the UPnP subscription verbs are not
+   SOAP actions.
 
-3. **Managed Subscription** (`src/subscription.rs:76-96`): `ManagedSubscription::create()` stores the SID, calculates expiration, and returns the managed wrapper.
+3. **Managed Subscription** (`src/subscription.rs:72`): `ManagedSubscription::create()` — which
+   is `pub(crate)`, so the client is the only way in — stores the SID, calculates expiration,
+   and returns the managed wrapper.
 
 ### 3.3 Error Flow
 
@@ -257,7 +316,15 @@ pub struct ManagedSubscription {
 
 #### What
 
-Operations are defined as marker structs implementing `SonosOperation` or `UPnPOperation` traits with associated request/response types.
+Operations are unit structs implementing `UPnPOperation` (`src/operation/mod.rs:153`) with
+associated request and response types. 52 operations implement it across the five services:
+47 generated by `define_upnp_operation!` / `define_operation_with_response!`
+(`src/operation/macros.rs:27`, `:140`) and 5 hand-written where the response needs parsing the
+macros cannot express — `AddURIToQueueOperation`
+(`src/services/av_transport/operations.rs:460`), `GetMuteOperation`
+(`src/services/rendering_control/operations.rs:127`), `GetLoudnessOperation` (`:329`),
+`GetGroupMuteOperation` (`src/services/group_rendering_control/operations.rs:129`) and
+`AddMemberOperation` (`src/services/group_management/operations.rs:50`).
 
 #### Why
 
@@ -269,16 +336,31 @@ Compile-time type checking prevents common errors like:
 #### How
 
 ```rust
+// src/operation/mod.rs:153
 pub trait UPnPOperation {
-    type Request: Serialize + Validate;
-    type Response: for<'de> Deserialize<'de>;
-    const SERVICE: Service;
-    const ACTION: &'static str;
+    type Request: Serialize + Validate;              // :155
+    type Response: for<'de> Deserialize<'de>;        // :158
+    const SERVICE: Service;                          // :161
+    const ACTION: &'static str;                      // :164
 
-    fn build_payload(request: &Self::Request) -> Result<String, ValidationError>;
-    fn parse_response(xml: &str) -> Result<Self::Response, ApiError>;
+    fn build_payload(request: &Self::Request) -> Result<String, ValidationError>;  // :176
+    fn parse_response(xml: &str) -> Result<Self::Response, ApiError>;              // :188
+
+    // Provided
+    fn dependencies() -> &'static [&'static str] { &[] }        // :197
+    fn can_batch_with<T: UPnPOperation>() -> bool { true }      // :211
+    fn metadata() -> OperationMetadata { /* ... */ }            // :218
 }
 ```
+
+Two required methods; the three provided ones describe an operation rather than executing it.
+The macros do not generate a `Validate` impl (`src/operation/macros.rs:47`, `:240`), so each
+operation module hand-writes its own — which is where per-parameter range and enum checks live.
+
+A safety rail sits in the no-mapping macro arm: it emits
+`assert_derivable_arg_name(stringify!($field))` (`src/operation/macros.rs:266`), a `const fn`
+(`src/operation/mod.rs:380`) that makes a multi-word request field a **compile error** unless
+`request_xml_mapping:` is supplied.
 
 `parse_response` receives the **raw response body as text**, not a parsed DOM.
 `soap-client` deliberately returns `String`: it owns transport and SOAP-fault detection,
@@ -289,7 +371,7 @@ XML library (`quick-xml`) end to end.
 
 ```rust
 // Example usage
-let play_op = av_transport::play("1".to_string()).build()?;
+let play_op = av_transport::play_operation("1".to_string()).build()?;
 client.execute_enhanced("192.168.1.100", play_op)?;
 ```
 
@@ -316,16 +398,24 @@ client.execute_enhanced("192.168.1.100", play_op)?;
 #### How
 
 ```rust
-let play_op = av_transport::play("1".to_string())
+let play_op = av_transport::play_operation("1".to_string())
     .with_validation(ValidationLevel::Basic)
     .with_timeout(Duration::from_secs(30))
     .build()?;
 ```
 
-**Implementation** (`src/operation/builder.rs:24-84`):
-- Builder stores request, validation level, timeout
-- `build()` validates request and returns `ComposableOperation`
-- `build_unchecked()` bypasses validation for performance-critical scenarios
+**Implementation** (`src/operation/builder.rs:17-115`):
+- `OperationBuilder<Op>` (`:17`) stores request, validation level, and timeout
+- `build()` (`:72`) validates the request and returns a `ComposableOperation<Op>` (`:120`)
+- `build_unchecked()` (`:92`) bypasses that validation and sets the stored level to
+  `ValidationLevel::None`; `build_payload()` still revalidates at execute time
+
+`ValidationLevel` (`src/operation/mod.rs:119`) has exactly two variants: `None` and `Basic`
+(the `#[default]`).
+
+Despite the "composable" naming and the trait's `dependencies()` / `can_batch_with()` hooks,
+there is no chaining, batching or sequencing API — no `and_then`, no `Batch`, no `Sequence`.
+Those hooks describe operations; nothing consumes them yet.
 
 ### 4.3 Feature: Managed Subscriptions
 
@@ -360,10 +450,16 @@ if subscription.needs_renewal() {
 // Automatic cleanup when dropped
 ```
 
-**Implementation** (`src/subscription.rs`):
-- `create()` executes subscribe operation and stores SID
-- `renew()` sends renewal request and updates expiration
-- `Drop::drop()` sends unsubscribe request
+**Implementation** (`src/subscription.rs:47`):
+- `create()` (`:72`, `pub(crate)`) executes the subscribe operation and stores the SID
+- `renew()` (`:183`) sends the renewal request and updates the expiration
+- `unsubscribe()` (`:220`) ends it explicitly; `Drop` (`:237`) does the same on a best-effort
+  basis
+
+Both `renew()` and `unsubscribe()` take `&self`, not `&mut self` — the mutable state lives
+behind an `Arc<Mutex<SubscriptionState>>` (`:55`), so a subscription can be renewed from a
+shared handle. The read-only accessors are `subscription_id()` (`:122`), `is_active()` (`:127`),
+`needs_renewal()` (`:136`), `time_until_renewal()` (`:144`) and `expires_at()` (`:167`).
 
 ### 4.4 Feature: Service-Specific Event Parsing
 
@@ -400,15 +496,15 @@ let enriched = create_enriched_event(speaker_ip, event_source, event);
 #### Why there is no namespace preprocessing
 
 UPnP event XML is heavily namespaced (`e:propertyset`, `e:property`, `dc:title`,
-`upnp:albumArtURI`), and this crate used to run every body through a hand-written
-`xml_utils::strip_namespaces()` tokenizer first. That step was **always redundant**:
-quick-xml's serde deserializer matches on the element's *local* name, so `<e:property>`
-deserializes as `property` with no preprocessing at all.
+`upnp:albumArtURI`), and it is tempting to strip prefixes with a hand-written tokenizer
+before deserializing. That step is **redundant**: quick-xml's serde deserializer matches on
+the element's *local* name, so `<e:property>` deserializes as `property` with no
+preprocessing at all.
 
-It was also actively harmful. The tokenizer treated `<!...>` as "copy until the first
-`>`", so any CDATA section, comment or DOCTYPE internal subset containing a `>` was
-truncated mid-document — a `<dc:title><![CDATA[3 > 2]]></dc:title>` corrupted the whole
-body. Deleting it fixed that class of bug and removed 8 of the crate's `unwrap()` calls.
+It is also unsafe to attempt. A tokenizer that treats `<!...>` as "copy until the first `>`"
+truncates any CDATA section, comment or DOCTYPE internal subset containing a `>` — a
+`<dc:title><![CDATA[3 > 2]]></dc:title>` corrupts the whole body. Letting the real parser
+handle namespaces avoids that class of bug entirely.
 
 **Consequence for anyone adding an event type**: write `#[serde(rename = "...")]` values
 *without* prefixes. `rename = "dc:title"` cannot match anything. There is a regression
@@ -723,7 +819,11 @@ pub enum ValidationError {
 
 ### 8.2 Unit Tests
 
-**Location**: Inline `#[cfg(test)]` modules in each source file
+**Location**: inline `#[cfg(test)]` modules in each source file — 218 tests in total, and no
+`tests/` directory. Heaviest: `src/services/rendering_control/operations.rs` (36),
+`src/services/av_transport/operations.rs` (32),
+`src/services/group_rendering_control/operations.rs` (23),
+`src/services/group_management/operations.rs` (16), `src/operation/mod.rs` (13).
 
 **What to test**:
 - [x] Payload construction for each operation
@@ -733,22 +833,28 @@ pub enum ValidationError {
 - [x] Service info retrieval
 - [x] Event XML parsing
 
-**Example** (`src/services/av_transport/operations.rs:176-207`):
+**Example** (`src/services/av_transport/operations.rs:802-822`):
 ```rust
 #[test]
 fn test_play_operation_builder() {
-    let play_op = play_operation("1".to_string()).build().unwrap();
-    assert_eq!(play_op.request().speed, "1");
-    assert_eq!(play_op.metadata().action, "Play");
+    let op = play_operation("1".to_string()).build().unwrap();
+    assert_eq!(op.request().speed, "1");
+    assert_eq!(op.metadata().action, "Play");
 }
 
 #[test]
-fn test_play_validation_basic() {
+fn test_play_validation() {
     let request = PlayOperationRequest {
         instance_id: 0,
         speed: "".to_string(),
     };
     assert!(request.validate_basic().is_err());
+
+    let request = PlayOperationRequest {
+        instance_id: 0,
+        speed: "1".to_string(),
+    };
+    assert!(request.validate_basic().is_ok());
 }
 ```
 
@@ -783,20 +889,26 @@ fn test_play_validation_basic() {
 
 ### 8.6 Property-Based Testing
 
-**Available via**: `proptest` in dev-dependencies
+**Available via**: `proptest` in dev-dependencies. It is used in exactly one service today —
+`group_management` — across three `proptest!` blocks, each configured with
+`ProptestConfig::with_cases(100)`:
+
+| Property | Location |
+|----------|----------|
+| `prop_event_group_coordinator_is_local_parsing` | `src/services/group_management/events.rs:406` |
+| `prop_add_member_bool_parsing` | `src/services/group_management/operations.rs:366` |
+| `prop_remove_member_validation_passes` | `src/services/group_management/operations.rs:413` |
 
 ```rust
-// Example property: volume validation always rejects values > 100
-#[test]
-fn prop_volume_range() {
-    proptest!(|(volume in 101..=255u8)| {
-        let request = SetVolumeOperationRequest {
-            instance_id: 0,
-            channel: "Master".to_string(),
-            desired_volume: volume,
-        };
-        prop_assert!(request.validate_basic().is_err());
-    });
+// src/services/group_management/operations.rs:413
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
+
+    #[test]
+    fn prop_remove_member_validation_passes(member_id in member_id_strategy()) {
+        let request = RemoveMemberOperationRequest { instance_id: 0, member_id };
+        prop_assert!(request.validate_basic().is_ok());
+    }
 }
 ```
 
@@ -814,21 +926,19 @@ fn prop_volume_range() {
 
 ### 9.2 Critical Paths
 
-1. **`SonosClient::execute()`** (`src/client.rs`)
+1. **`SonosClient::execute_enhanced()`** (`src/client.rs:123`)
    - **Complexity**: O(n) where n = response size
-   - **Bottleneck**: Network I/O dominates
-   - **Optimization**: Connection reuse via `soap-client`
+   - **Bottleneck**: network I/O dominates
+   - **Optimization**: connection reuse via the `soap-client` singleton
 
-2. **`operation::response_text()`** (`src/operation/mod.rs`)
+2. **`operation::response_text()`** (`src/operation/mod.rs:252`)
    - **Complexity**: O(n) where n = XML length
    - **Bottleneck**: Nothing measurable; UPnP response bodies are small
-   - **Design**: A single streaming pass with `quick_xml::Reader`, matching on the
-     argument's local name at any depth. No intermediate DOM and no whole-document
-     copy — the previous design built one of each (a `strip_namespaces()` string
-     rewrite, then an `xmltree::Element` tree). This path is *not* where the time
-     goes, so it is optimized for correctness: nested markup is depth-tracked so its
-     end tag cannot terminate the search early, and only direct text children are
-     collected.
+   - **Design**: a single streaming pass with `quick_xml::Reader`, matching on the
+     argument's local name at any depth. No intermediate DOM and no whole-document copy.
+     This path is *not* where the time goes, so it is optimized for correctness: nested
+     markup is depth-tracked so its end tag cannot terminate the search early, and only
+     direct text children are collected.
 
 ### 9.3 Resource Management
 
@@ -862,8 +972,9 @@ fn prop_volume_range() {
 
 | Input Source | Validation | Location |
 |--------------|------------|----------|
-| User parameters | `Validate` trait | `src/operation/mod.rs:127-143` |
-| User parameters | `xml_escape` before SOAP interpolation | `src/operation/mod.rs:253` |
+| User parameters | `Validate` trait | `src/operation/mod.rs:128-142` |
+| Channel arguments | `validate_channel`: `Master`, `LF` or `RF` only | `src/operation/mod.rs:396` |
+| User parameters | `xml_escape` before SOAP interpolation | `src/operation/mod.rs:351` |
 | Device responses | XML parsing with serde | Service event modules |
 | Subscription IDs | String format check | `src/subscription.rs` |
 
@@ -880,13 +991,10 @@ problem:
 
 `operation::xml_escape` is a thin wrapper over `quick_xml::escape::escape`, which escapes
 all five XML predefined entities — `<`, `>`, `&`, `'` and `"`. Delegating rather than
-hand-rolling the character loop means the escaping cannot drift out of step with the
-parser that has to read the result back, and it is one less place to get the `&`-first
-ordering right. A previous plan
-([2026-02-28 PR41 follow-ups](../plans/2026-02-28-refactor-pr41-review-followups-plan.md))
-declined this change on the premise that `escape` "does not escape `'`"; that premise was
-false, and the delegation has since landed. The `test_xml_escape` unit test asserts all
-five characters, which is what keeps the guarantee if quick-xml is ever upgraded.
+hand-rolling the character loop means the escaping cannot drift out of step with the parser
+that has to read the result back, and it is one less place to get the `&`-first ordering
+right. The `test_xml_escape` unit test asserts all five characters, which is what keeps the
+guarantee if quick-xml is ever upgraded.
 
 Both `define_operation_with_response!` arms and the `request_xml_mapping:` path escape
 automatically. **Only hand-written `UPnPOperation` impls can omit escaping**, so those
@@ -894,7 +1002,7 @@ require review when added. Current hand-written impls and their status:
 
 | Impl | String arguments | Escaped |
 |------|-----------------|---------|
-| `AddURIToQueueOperation` | `enqueued_uri`, `enqueued_uri_meta_data` | Yes (fixed; previously raw) |
+| `AddURIToQueueOperation` | `enqueued_uri`, `enqueued_uri_meta_data` | Yes |
 | `AddMemberOperation` (GroupManagement) | `member_id` | Yes |
 | `GetMuteOperation` (RenderingControl) | `channel` | No — constrained to `Master`/`LF`/`RF` by `validate_channel` |
 | `GetLoudnessOperation` (RenderingControl) | `channel` | No — same constraint |
@@ -914,11 +1022,14 @@ require review when added. Current hand-written impls and their status:
 | `debug` | Request/response payloads | Not currently logged |
 | `trace` | XML parsing details | Not currently logged |
 
-*Note: Current logging is minimal. The crate uses `eprintln!` in subscription drop only.*
+*Note: this crate does not depend on `tracing` and emits no log records. The only diagnostic
+output is an `eprintln!` in `ManagedSubscription::drop` (`src/subscription.rs:244`). Everything
+in the table above describes what a consumer would log, not what this crate emits.*
 
 ### 11.2 Tracing
 
-The crate has `tracing` available as a dependency but does not currently instrument operations. Future versions may add spans for:
+`tracing` is **not** a dependency of this crate, so there is no instrumentation. Adding it
+would mean taking the dependency first. The natural span structure would be:
 
 ```
 [execute_operation]
@@ -935,9 +1046,9 @@ The crate has `tracing` available as a dependency but does not currently instrum
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| Validation level | `ValidationLevel` | `Basic` | Controls request validation depth |
-| Operation timeout | `Duration` | None | Optional timeout for individual operations |
-| Subscription timeout | `u32` (seconds) | 1800 | UPnP subscription duration |
+| Validation level | `ValidationLevel` | `Basic` | Controls request validation depth. Only `None` and `Basic` exist |
+| Operation timeout | `Option<Duration>` | `None` | Set via `OperationBuilder::with_timeout`. See §14.1 — it is checked before the SOAP call and so has no effect on it |
+| Subscription timeout | `u32` (seconds) | 1800 | UPnP subscription duration. `subscribe()` hard-codes it; `subscribe_with_timeout()` takes it |
 
 ### 12.2 Environment Variables
 
@@ -951,9 +1062,11 @@ The crate has `tracing` available as a dependency but does not currently instrum
 
 | API | Stability | Notes |
 |-----|-----------|-------|
-| `SonosClient` | Stable | Core public API |
-| `SonosOperation` | Deprecated | Legacy trait, use `UPnPOperation` |
-| `UPnPOperation` | Stable | Recommended operation trait |
+| `SonosClient::execute_enhanced` | Stable | The execution path every call site uses |
+| `SonosClient::execute` | Dead | Bounded on `SonosOperation`, which nothing implements, so it cannot be called |
+| `UPnPOperation` | Stable | The operation trait |
+| `SonosOperation` | Dead | Zero implementors workspace-wide (§14.2) |
+| `ApiError` | Stable | **Not** `#[non_exhaustive]`, so adding a variant is breaking |
 | Service modules | Stable | Adding operations is non-breaking |
 | Event types | Evolving | Fields may be added (non-breaking) |
 
@@ -961,14 +1074,13 @@ The crate has `tracing` available as a dependency but does not currently instrum
 
 **Policy**: Semantic versioning. Breaking changes require major version bump.
 
-**Current deprecations**:
-- `SonosOperation` trait: Use `UPnPOperation` with `OperationBuilder` instead
+**Current deprecations**: none carry a `#[deprecated]` attribute. `SonosOperation` and
+`SonosClient::execute` are dead rather than deprecated — see §14.2.
 
-### 13.3 Version History
+### 13.3 Version
 
-| Version | Changes | Migration Guide |
-|---------|---------|-----------------|
-| 0.1.0 | Initial release | N/A |
+Published as `sonos-api`, versioned from the workspace (`version.workspace = true`), so it
+moves in lockstep with `sonos-sdk`. A per-crate `CHANGELOG.md` sits beside this manifest.
 
 ---
 
@@ -978,17 +1090,23 @@ The crate has `tracing` available as a dependency but does not currently instrum
 
 | Limitation | Impact | Workaround | Planned Fix |
 |------------|--------|------------|-------------|
-| Blocking I/O only | Can't use with async runtimes directly | `spawn_blocking()` wrapper | Consider async variant |
-| No retry logic | Network failures require manual retry | Implement retry in consumer | May add retry policy |
-| Limited operation set | Not all UPnP operations implemented | Add operations via macros | Expand as needed |
+| Blocking I/O only | Cannot be used from an async runtime directly | `spawn_blocking()` wrapper, as `sonos-stream` does | Consider an async variant |
+| No retry logic | Network failures require manual retry | Implement retry in the consumer | May add a retry policy |
+| Limited operation set | Not every UPnP operation is implemented; there is no DeviceProperties or ContentDirectory service | Add operations via the macros | Expand as needed |
+| `OperationBuilder::with_timeout` has no effect | A per-operation timeout is checked before the SOAP call (`src/client.rs:139-143`), where no time has elapsed, so it never fires | Rely on `soap-client`'s fixed 5s connect / 10s read timeouts | Thread the timeout into the transport |
+| `execute_enhanced` reports a validation failure as `ApiError::ParseError` | A bad argument looks like a malformed response | Match on the message | Use the `From<ValidationError>` impl (`src/error.rs:82`), which yields `InvalidParameter` |
 
 ### 14.2 Technical Debt
 
 | Debt Item | Location | Severity | Remediation Plan |
 |-----------|----------|----------|------------------|
-| Legacy `SonosOperation` trait | `src/operation/mod.rs` | Low | Remove after migration period |
-| `eprintln!` in drop | `src/subscription.rs:244` | Low | Use proper logging |
-| Minimal logging | Throughout | Medium | Add tracing instrumentation |
+| `SonosOperation` trait has zero implementors, and `SonosClient::execute` is bounded on it | `src/operation/mod.rs:30`, `src/client.rs:80` | Medium | Delete both; nothing can be calling them |
+| `EventParserRegistry` / `EventParser` / `EventParserDyn` have no in-crate consumer — `EventProcessor` dispatches on a hardcoded `match` | `src/events/types.rs:105-180`, `src/events/processor.rs:89` | Low | Adopt the registry in `EventProcessor`, or retire it |
+| `EventProcessorStats` is never incremented; `EventProcessor` is a unit struct with no state | `src/events/processor.rs:11`, `:151` | Low | Give the processor state, or move the counters to the caller that owns them |
+| `ComposableOperation` is not re-exported from `lib.rs` despite appearing in `execute_enhanced`'s signature | `src/lib.rs:181-183` | Low | Add it to the re-export list |
+| `group_management` puts `SERVICE` and the subscribe helpers in `mod.rs`, unlike the other four services | `src/services/group_management/mod.rs:47-67` | Low | Move them to `operations.rs` for consistency |
+| `eprintln!` in `Drop` | `src/subscription.rs:244` | Low | Use proper logging |
+| No logging at all: `tracing` is not a dependency | Throughout | Medium | Take the dependency and instrument `execute_enhanced` |
 
 ---
 
@@ -1030,13 +1148,3 @@ The crate has `tracing` available as a dependency but does not currently instrum
 - [UPnP AVTransport:2 Service](http://upnp.org/specs/av/UPnP-av-AVTransport-v2-Service.pdf)
 - [UPnP RenderingControl:2 Service](http://upnp.org/specs/av/UPnP-av-RenderingControl-v2-Service.pdf)
 - [Sonos UPnP Documentation](https://developer.sonos.com/) (requires account)
-
-### C. Changelog
-
-| Date | Author | Change |
-|------|--------|--------|
-| 2025-01-14 | Claude Opus 4.5 | Initial specification |
-| 2026-08-15 | Claude Opus 5 | Document RenderingControl per-channel event state variables and master-selection semantics |
-| 2026-08-15 | Claude Opus 5 | Document `request_xml_mapping:` for explicit UPnP request element names (§4.5) and SOAP payload escaping requirements (§10.3) |
-| 2026-08-17 | Claude Opus 5 | Hand-rolled XML replaced by public crates: `strip_namespaces()` and `extract_xml_value()` deleted, `parse_response` now takes `&str`, `xml_escape` delegates to `quick_xml::escape::escape`, `xmltree` removed. Updated §2.2, §4.1, §4.4, §5.2, §6.1, §9.2, §10.3 |
-| 2026-09-17 | Claude Opus 5 | Deleted `examples/integration_test.rs` and dropped it from §8.4. Despite the name and location it was not an integration test of this crate: it contained zero `sonos_api::` references, defined its own `OperationRegistry`/validator types that exist nowhere else in the workspace, and asserted against `vec!` literals declared in the same function. Its own header said "For now, we'll just verify the concept works." §8.4 integration testing is `examples/cli_example.rs`, which does drive real devices. |
