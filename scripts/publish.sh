@@ -17,7 +17,6 @@ set -euo pipefail
 LEAF_CRATES=(
   sonos-sdk-soap-client
   sonos-sdk-discovery
-  sonos-sdk-state-store
   sonos-sdk-callback-server
 )
 
