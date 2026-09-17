@@ -126,7 +126,25 @@ impl TeardownTimer {
         true
     }
 
-    /// Stop the timer, discarding anything still pending. Idempotent.
+    /// Discard everything currently queued, leaving the timer running.
+    ///
+    /// `SonosEventManager::shutdown` uses this rather than [`stop`](Self::stop):
+    /// it has already claimed every pending token by hand, so the queued
+    /// teardowns have nothing left to resolve, but the manager stays usable and
+    /// a watch released afterwards must still get its grace period. Latching
+    /// the timer off is `Drop`'s job alone.
+    ///
+    /// No notify: the thread wakes at the deadline it was already waiting on,
+    /// finds an empty heap and goes back to waiting.
+    pub(crate) fn drain(&self) {
+        self.shared.queue.lock().heap.clear();
+    }
+
+    /// Stop the timer permanently, discarding anything still pending.
+    ///
+    /// Idempotent, and **one-way**: a stopped timer refuses all later work, so
+    /// this belongs to [`Drop`] and to tests. Anything that leaves the manager
+    /// alive wants [`drain`](Self::drain) instead.
     pub(crate) fn stop(&self) {
         let mut queue = self.shared.queue.lock();
         queue.stopped = true;

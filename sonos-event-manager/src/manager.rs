@@ -729,9 +729,6 @@ impl SonosEventManager {
     ///
     /// Called automatically on drop, but can be called manually for graceful shutdown.
     pub fn shutdown(&self) {
-        // Stop the timer first so nothing new fires while we drain by hand.
-        self.teardown_timer.stop();
-
         // Drain *and* claim in one locked scope.
         //
         // `self.pending_unsubscribes.lock().drain()` released the mutex at the
@@ -764,6 +761,18 @@ impl SonosEventManager {
             }
         }
         drop(pending);
+
+        // Now clear the timer's queue — `drain`, not `stop`. Stopping latches
+        // the timer off for the rest of the manager's life, so every later
+        // `release_watch` found `schedule` refusing work and its watch was
+        // never torn down at all. `shutdown()` is public and leaves the manager
+        // usable; only `TeardownTimer::drop` may latch.
+        //
+        // The queue lock is taken *after* the pending-map lock has been
+        // released, never the other way round: see the lock-order note on
+        // `SonosEventManager`. Anything the timer manages to fire in between
+        // finds its token already claimed and declines.
+        self.teardown_timer.drain();
 
         let _ = self.command_tx.send(Command::Shutdown);
     }
@@ -1092,10 +1101,18 @@ mod tests {
         assert_eq!(registry.unregisters(), 0);
     }
 
+    /// Dropping a guard after the worker is gone must be silent *and* complete.
+    ///
+    /// This test used to stop at "does not panic", which the C3 bug satisfied
+    /// trivially by doing nothing at all. The observable it was missing is the
+    /// watched-set cleanup.
     #[test]
     fn test_guard_drop_with_disconnected_worker() {
         let config = BrokerConfig::default().with_callback_ports(4800, 4900);
         let manager = Arc::new(SonosEventManager::with_config(config).unwrap());
+        let registry = MockRegistry::new();
+        manager.set_watch_registry(registry.clone());
+
         let ip: IpAddr = "192.168.1.100".parse().unwrap();
         let speaker_id = SpeakerId::new("RINCON_123");
 
@@ -1108,6 +1125,59 @@ mod tests {
 
         // Dropping guard should not panic even with disconnected worker
         drop(guard);
+
+        // And the teardown must still happen: the failed `Unsubscribe` send is
+        // ignored, but the watched set is not the worker's to clean up.
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(
+            registry.unregisters(),
+            1,
+            "a guard dropped after shutdown must still clear the watched set"
+        );
+    }
+
+    /// `shutdown()` must not latch the grace mechanism off.
+    ///
+    /// It stopped the timer, and stopping is permanent, so every watch released
+    /// after a `shutdown()` found `schedule` refusing work: the pending entry
+    /// was dropped and the watched set kept its stale entries forever. Only
+    /// dropping the manager may stop the timer.
+    #[test]
+    fn test_release_after_shutdown_still_unregisters() {
+        let config = BrokerConfig::default().with_callback_ports(5500, 5600);
+        let manager = Arc::new(SonosEventManager::with_config(config).unwrap());
+        let registry = MockRegistry::new();
+        manager.set_watch_registry(registry.clone());
+
+        let ip: IpAddr = "192.168.1.100".parse().unwrap();
+        let speaker_id = SpeakerId::new("RINCON_123");
+
+        // Hold one watch across the shutdown, so nothing is pending for
+        // shutdown to tear down itself.
+        let held = manager
+            .acquire_watch(&speaker_id, "volume", ip, Service::RenderingControl)
+            .unwrap();
+        manager.shutdown();
+        assert_eq!(registry.unregisters(), 0);
+
+        // Acquiring again after shutdown is deterministic precisely because the
+        // ref count is already 1: no command is sent, so the closed worker
+        // channel cannot turn this into a spurious failure.
+        let reacquired = manager
+            .acquire_watch(&speaker_id, "mute", ip, Service::RenderingControl)
+            .unwrap();
+
+        drop(held);
+        drop(reacquired);
+
+        std::thread::sleep(Duration::from_millis(200));
+
+        assert_eq!(
+            registry.unregisters(),
+            1,
+            "a watch released after shutdown must still be torn down"
+        );
+        assert!(manager.pending_unsubscribes.lock().is_empty());
     }
 
     #[test]
