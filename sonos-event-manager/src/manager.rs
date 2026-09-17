@@ -88,6 +88,32 @@ impl PendingTeardown {
     ///    its `Subscribe` after taking the same lock — is guaranteed to enqueue
     ///    behind it. The channel is FIFO, so the worker always sees
     ///    unsubscribe-then-subscribe and ends up subscribed, never the reverse.
+    /// 3. **The watched-set mutation is ordered too.** `acquire_watch` calls
+    ///    `registry.register_watch` only after its claim has resolved on this
+    ///    same mutex, so it either cancels this teardown or blocks until the
+    ///    unregister below has finished and then registers on top of it.
+    ///
+    /// # Why the guard is *not* dropped before the registry call
+    ///
+    /// Releasing the mutex early would look like an obvious improvement — it
+    /// takes a user callback out from under a lock. It is not. It opens this
+    /// interleaving on a single `(ip, service)`, which is precisely the TUI
+    /// frame loop:
+    ///
+    /// ```text
+    /// fire:          lock(pending); swap(token) -> wins; remove entry;
+    ///                send Unsubscribe; drop(pending)   <- the "improvement"
+    /// acquire_watch: lock(pending); nothing to claim -> send Subscribe;
+    ///                register_watch; returns a live guard
+    /// fire:          registry.unregister_watches_for_service(ip, service)
+    /// ```
+    ///
+    /// The result is a live guard over a live subscription whose watched-set
+    /// entry has just been wiped, so every event is filtered until the guard
+    /// drops — the same class of bug this type exists to prevent, re-entered
+    /// through the registry. Holding the mutex across the callback is what
+    /// makes that impossible. The cost is bounded by the contract on
+    /// [`WatchRegistry`]: short, non-blocking, no I/O.
     pub(crate) fn fire(&self, command_tx: &tokio_mpsc::UnboundedSender<Command>) -> bool {
         let mut pending = self.pending.lock();
 
@@ -397,12 +423,7 @@ impl SonosEventManager {
         ip: IpAddr,
         service: Service,
     ) -> Result<WatchGuard> {
-        // 1. Register in watched set via WatchRegistry
-        if let Some(registry) = self.watch_registry.get() {
-            registry.register_watch(speaker_id, property_key, service);
-        }
-
-        // 2. Increment ref count + check if we need to subscribe
+        // 1. Increment ref count + check if we need to subscribe
         let should_subscribe = {
             let mut refs = self.service_refs.write();
             let count = refs.entry((ip, service)).or_insert(0);
@@ -420,17 +441,38 @@ impl SonosEventManager {
             was_zero
         };
 
-        if should_subscribe {
-            // 3. Try to claim any pending grace period.
-            //
-            // The claim is a swap performed *under the pending-map mutex*, the
-            // same one the expiring timer takes. `swap` returns the previous
-            // value, so observing `false` means we got there first and the
-            // subscription is still live. Observing `true` means the timer
-            // already won: it has queued its `Unsubscribe`, so we must send a
-            // fresh `Subscribe` (which the FIFO channel orders behind it).
-            let cancelled = self.claim_pending_teardown(ip, service);
+        // 2. Try to claim any pending grace period.
+        //
+        // The claim is a swap performed *under the pending-map mutex*, the same
+        // one the expiring timer takes. `swap` returns the previous value, so
+        // observing `false` means we got there first and the subscription is
+        // still live. Observing `true` means the timer already won: it has
+        // queued its `Unsubscribe`, so we must send a fresh `Subscribe` (which
+        // the FIFO channel orders behind it).
+        let cancelled = should_subscribe && self.claim_pending_teardown(ip, service);
 
+        // 3. Register in the watched set — *after* the claim above, never
+        //    before.
+        //
+        // `PendingTeardown::fire` calls `unregister_watches_for_service` while
+        // holding the pending-map mutex, so the claim is the only thing that
+        // orders this registration against it. Registering first left a window
+        // — small, but exactly the immediate-mode TUI's interleaving — in which
+        // this call landed before an in-flight `fire` wiped the watched set,
+        // producing a live `WatchGuard` and a live subscription whose
+        // `(speaker, key)` pair is not watched, so every event for it is
+        // filtered until the guard drops. Claiming first means either we cancel
+        // the teardown, or we block until it has finished unregistering and
+        // then register on top of it.
+        //
+        // The reciprocal comment is on `PendingTeardown::fire`, which must keep
+        // holding that mutex across the callback for this to hold.
+        if let Some(registry) = self.watch_registry.get() {
+            registry.register_watch(speaker_id, property_key, service);
+        }
+
+        // 4. Subscribe if nothing was there to reuse.
+        if should_subscribe {
             if cancelled {
                 tracing::debug!(
                     "acquire_watch: cancelled grace period for {}:{:?}",
@@ -846,6 +888,38 @@ mod tests {
 
         fn unregister_watches_for_service(&self, _ip: IpAddr, _service: Service) {
             self.unregister_count.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    /// A registry that records the order of its calls, and can be made slow on
+    /// purpose so an ordering that is normally nanoseconds wide becomes
+    /// provable.
+    struct OrderingRegistry {
+        events: parking_lot::Mutex<Vec<&'static str>>,
+        unregister_delay: Duration,
+    }
+
+    impl OrderingRegistry {
+        fn new(unregister_delay: Duration) -> Arc<Self> {
+            Arc::new(Self {
+                events: parking_lot::Mutex::new(Vec::new()),
+                unregister_delay,
+            })
+        }
+
+        fn events(&self) -> Vec<&'static str> {
+            self.events.lock().clone()
+        }
+    }
+
+    impl WatchRegistry for OrderingRegistry {
+        fn register_watch(&self, _speaker_id: &SpeakerId, _key: &'static str, _service: Service) {
+            self.events.lock().push("register");
+        }
+
+        fn unregister_watches_for_service(&self, _ip: IpAddr, _service: Service) {
+            std::thread::sleep(self.unregister_delay);
+            self.events.lock().push("unregister");
         }
     }
 
@@ -1376,6 +1450,69 @@ mod tests {
             "a cancelled grace period must never unregister the watched set"
         );
         assert_eq!(manager.service_ref_count(ip, service), 1);
+    }
+
+    /// A re-acquire racing an expiry must end up *registered*.
+    ///
+    /// `acquire_watch` used to call `register_watch` before it claimed the
+    /// pending teardown, so it could register into a watched set that an
+    /// in-flight `fire` was about to wipe. The guard and the subscription were
+    /// then both live while the `(speaker, key)` pair was unwatched, and every
+    /// event for it was filtered until the guard dropped.
+    ///
+    /// The window is a few hundred nanoseconds in production, so this test
+    /// widens it: the registry sleeps 50 ms inside `unregister`, which
+    /// deliberately violates the [`WatchRegistry`] contract in order to make
+    /// the interleaving deterministic rather than probable. Under the fix the
+    /// re-acquire provably blocks on the pending mutex and its `register` lands
+    /// last; with `register_watch` first, it provably lands in the middle.
+    #[test]
+    fn test_expiry_racing_reacquire_keeps_the_watch_registered() {
+        let config = BrokerConfig::default().with_callback_ports(5700, 5800);
+        let manager = Arc::new(SonosEventManager::with_config(config).unwrap());
+        let registry = OrderingRegistry::new(Duration::from_millis(50));
+        manager.set_watch_registry(registry.clone());
+
+        let ip: IpAddr = "192.168.1.100".parse().unwrap();
+        let service = Service::RenderingControl;
+        let speaker_id = SpeakerId::new("RINCON_123");
+
+        let guard = manager
+            .acquire_watch(&speaker_id, "volume", ip, service)
+            .unwrap();
+        drop(guard);
+
+        // Expiry is driven by hand below, so take this teardown off the real
+        // timer's queue. `drain` leaves the pending map — and the timer —
+        // alone.
+        manager.teardown_timer.drain();
+        assert_eq!(registry.events(), vec!["register"]);
+
+        let teardown = in_flight_teardown(&manager, ip, service);
+        let fire_side = {
+            let manager = Arc::clone(&manager);
+            std::thread::spawn(move || teardown.fire(&manager.command_tx))
+        };
+
+        // Long enough for the expiry to have taken the pending mutex and
+        // entered the 50 ms callback; short enough to still be inside it.
+        std::thread::sleep(Duration::from_millis(20));
+
+        let reacquired = manager
+            .acquire_watch(&speaker_id, "volume", ip, service)
+            .unwrap();
+
+        assert!(
+            fire_side.join().unwrap(),
+            "the expiry got there first, so it must have fired"
+        );
+        assert_eq!(
+            registry.events(),
+            vec!["register", "unregister", "register"],
+            "the re-acquire must register *after* the expiry finished unregistering"
+        );
+
+        drop(reacquired);
     }
 
     /// Expiry and cancellation racing on the same token: exactly one may win.
