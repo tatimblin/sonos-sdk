@@ -3,7 +3,9 @@ title: Playback
 description: Transport controls, seeking, play modes, crossfade, and URI sources.
 ---
 
-All playback methods are synchronous SOAP calls that return `Result<(), SdkError>` unless otherwise noted. They update the internal state cache on success.
+All playback methods are synchronous SOAP calls that return `Result<(), SdkError>` unless otherwise noted.
+`play()`, `pause()`, and `stop()` also write the resulting `PlaybackState` into the cache on success; the
+other transport calls leave the cache to the device's own event.
 
 ## Transport controls
 
@@ -127,29 +129,47 @@ println!("Available: {}", actions.actions);
 
 ## Reactive playback state
 
-The `playback_state` property is watchable:
+The `playback_state` property is watchable. Acquire the handle before the loop —
+`sonos.iter()` only emits events for properties already under watch:
 
 ```rust
-for event in sonos.iter() {
-    let state = speaker.playback_state.watch()?;
+let state = speaker.playback_state.watch()?;
+
+for _event in sonos.iter() {
     println!("State: {:?}", state.value());
 }
 ```
 
 ## Current track info
 
+`CurrentTrack` fields are all `Option<String>`, because a stream may supply any
+subset of them. `display()` formats whatever is present as `"artist - title"`,
+falling back to whichever half exists.
+
 ```rust
 let track = speaker.current_track.fetch()?;
-println!("{} by {} ({})", track.title, track.artist, track.album);
+println!("{}", track.display());
+println!("album: {:?}, art: {:?}", track.album, track.album_art_uri);
 ```
 
 Watch for track changes:
 
 ```rust
-for event in sonos.iter() {
-    let track = speaker.current_track.watch()?;
+let track = speaker.current_track.watch()?;
+
+for _event in sonos.iter() {
     if let Some(t) = track.value() {
-        println!("Now playing: {} by {}", t.title, t.artist);
+        println!("Now playing: {}", t.display());
     }
 }
+```
+
+## Position
+
+`Position` reports milliseconds, and `progress()` turns it into a 0.0–1.0
+fraction for a progress bar:
+
+```rust
+let pos = speaker.position.fetch()?;
+println!("{}ms of {}ms ({:.0}%)", pos.position_ms, pos.duration_ms, pos.progress() * 100.0);
 ```

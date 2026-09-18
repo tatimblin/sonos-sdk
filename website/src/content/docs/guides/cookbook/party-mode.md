@@ -9,7 +9,7 @@ Group every speaker in the house, boost the EQ, and start playing from a single 
 use sonos_sdk::prelude::*;
 
 fn party_mode(sonos: &SonosSystem) -> Result<(), SdkError> {
-    let speakers: Vec<_> = sonos.speakers().collect();
+    let speakers = sonos.speakers();
     let main = &speakers[0];
     let main_group = main.group().unwrap();
 
@@ -44,7 +44,7 @@ Restore speakers to individual groups:
 
 ```rust
 fn end_party(sonos: &SonosSystem) -> Result<(), SdkError> {
-    let main = sonos.speakers().next().unwrap();
+    let main = sonos.speakers().into_iter().next().unwrap();
     let group = main.group().unwrap();
 
     // Stop playback

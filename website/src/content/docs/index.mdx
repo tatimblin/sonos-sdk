@@ -28,7 +28,7 @@ fn main() -> Result<(), SdkError> {
 
     speaker.play()?;
     let vol = speaker.volume.fetch()?;
-    println!("Playing at {}%", vol);
+    println!("Playing at {}%", vol.value());
 
     Ok(())
 }

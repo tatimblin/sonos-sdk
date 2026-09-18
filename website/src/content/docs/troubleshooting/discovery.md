@@ -5,21 +5,41 @@ description: Troubleshoot when speakers aren't found on the network.
 
 ## Symptoms
 
-- `SonosSystem::new()` returns an empty speaker list
+- `SonosSystem::new()` returns `Err(SdkError::DiscoveryFailed)`
 - Only some speakers are found
+- Speakers that no longer exist keep showing up
 - Discovery works intermittently
 
 ## How discovery works
 
-The SDK uses SSDP (Simple Service Discovery Protocol) to find Sonos devices:
+`SonosSystem::new()` is cache-first:
 
-1. Sends an `M-SEARCH` multicast packet to `239.255.255.250:1900`
-2. Sonos devices respond with their location and capabilities
-3. The SDK deduplicates and returns discovered devices
+1. It reads the device cache at `~/.cache/sonos/cache.json` (the directory is the
+   platform cache dir, or `SONOS_CACHE_DIR` when that is set to an absolute path)
+2. A cache younger than 24 hours is used as-is — no network traffic at all
+3. Otherwise it sends an `M-SEARCH` multicast to `239.255.255.250:1900` and
+   waits 3 seconds for replies, then writes the result back to the cache
+4. If SSDP finds nothing but a stale cache exists, the stale devices are used
+5. If there is no cache and SSDP finds nothing, `new()` returns
+   `SdkError::DiscoveryFailed`
 
-This requires multicast UDP to work on your network.
+Steps 3–5 require multicast UDP to work on your network.
 
 ## Common issues
+
+### A stale cache is answering instead of the network
+
+Because a fresh cache short-circuits SSDP entirely, a speaker you renamed,
+moved, or removed in the last 24 hours can still appear — and a newly added one
+will not. Delete the cache file to force a full SSDP pass:
+
+```bash
+rm -f "${SONOS_CACHE_DIR:-$HOME/Library/Caches/sonos}/cache.json"   # macOS
+rm -f "${SONOS_CACHE_DIR:-$HOME/.cache/sonos}/cache.json"           # Linux
+```
+
+Point `SONOS_CACHE_DIR` at a scratch directory to isolate a test run from your
+everyday cache.
 
 ### Speakers on a different subnet
 
@@ -48,17 +68,12 @@ macOS may throttle multicast reception when on battery or when the display is of
 
 **Fix:** For development, keep the machine plugged in and awake. In production, consider running on a wired connection.
 
-### Discovery timeout
+### Slow devices missing the window
 
-The default timeout gives devices ~2 seconds to respond. On slow networks or with many devices, this may not be enough.
-
-```rust
-use std::time::Duration;
-use sonos_sdk::prelude::*;
-
-// Increase discovery timeout to 5 seconds
-let sonos = SonosSystem::with_timeout(Duration::from_secs(5))?;
-```
+The SSDP window is a fixed 3 seconds. A device on poor Wi-Fi can miss it. The
+first successful run caches every device it did find, so a second
+`SonosSystem::new()` right after a failed one has a fresh chance at the
+stragglers — clear the cache first so it actually re-scans.
 
 ### Only some speakers found
 
@@ -66,7 +81,7 @@ If you consistently find some but not all speakers:
 
 1. **Different subnets:** Some speakers may be on a different VLAN
 2. **SonosNet vs. WiFi:** Speakers on SonosNet (Sonos's own mesh) bridge to Wi-Fi speakers, but discovery still requires being on the same subnet as at least one device
-3. **Timeouts:** Devices on poor Wi-Fi may respond slowly — increase the timeout
+3. **Cache:** A partial result from an earlier run is cached for 24 hours — clear it and retry
 
 ## Verifying network connectivity
 

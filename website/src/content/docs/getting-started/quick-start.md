@@ -22,22 +22,27 @@ fn main() -> Result<(), SdkError> {
 
     // Read properties directly from the device
     let volume = speaker.volume.fetch()?;
-    println!("Kitchen is playing at {}%", volume);
+    println!("Kitchen is playing at {}%", volume.value());
 
     Ok(())
 }
 ```
+
+Every property is a typed newtype rather than a bare integer, so unwrap it with
+the accessor — `Volume::value()`, `Mute::is_muted()`, `Bass::value()` — or match
+on it. The types carry `Debug` but not `Display`, so `{:?}` works and `{}` does
+not.
 
 ## Three ways to read properties
 
 Every property on a speaker supports three access patterns:
 
 ```rust
-// 1. get() — instant, returns cached value (None if never fetched)
-let cached = speaker.volume.get();
+// 1. get() — instant, returns the cached value (None if never observed)
+let cached: Option<Volume> = speaker.volume.get();
 
 // 2. fetch() — makes a live SOAP call to the device
-let live = speaker.volume.fetch()?;
+let live: Volume = speaker.volume.fetch()?;
 
 // 3. watch() — subscribes to real-time events; the handle reads live
 let volume = speaker.volume.watch()?;
@@ -64,16 +69,21 @@ let sonos = SonosSystem::new()?;
 // Speakers → Groups
 let kitchen = sonos.speaker("Kitchen").unwrap();
 let group = kitchen.group().unwrap();
-println!("Kitchen is in: {}", group.name);
+println!("Kitchen is in: {}", group.id);
 
 // Groups → Speakers
-for speaker in group.speakers() {
-    println!("  - {}", speaker.name());
+for speaker in group.members() {
+    println!("  - {}", speaker.name);
 }
 ```
+
+`Speaker::name`, `Speaker::id`, `Speaker::ip`, `Speaker::model_name`,
+`Group::id`, `Group::coordinator_id`, and `Group::member_ids` are plain public
+fields, not methods.
 
 ## Next steps
 
 - [Architecture](/sonos-sdk/guides/architecture/) — understand the layered design
 - [Properties](/sonos-sdk/guides/properties/) — deep dive into get/fetch/watch
-- [Cookbook](/sonos-sdk/guides/cookbook/control-playback/) — common recipes
+- [Playback](/sonos-sdk/guides/playback/) — transport controls, seeking, play modes
+- [Cookbook](/sonos-sdk/guides/cookbook/party-mode/) — common recipes

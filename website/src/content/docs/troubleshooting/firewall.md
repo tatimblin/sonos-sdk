@@ -6,6 +6,7 @@ description: Troubleshoot UPnP event delivery when firewalls block callbacks.
 ## Symptoms
 
 - `watch()` works but events never arrive
+- Updates land, but seconds late instead of immediately
 - Events work on one machine but not another
 - Events work on home Wi-Fi but not office/corporate network
 
@@ -13,19 +14,19 @@ description: Troubleshoot UPnP event delivery when firewalls block callbacks.
 
 When you call `watch()`, the SDK:
 
-1. Starts a local HTTP server on your machine
-2. Sends a SUBSCRIBE request to the Sonos device with your callback URL
+1. Starts a local HTTP callback server, binding the first free port in the range **3400–3500**
+2. Sends a SUBSCRIBE request to the Sonos device with that callback URL
 3. The device sends HTTP NOTIFY requests back to your machine when state changes
 
 If a firewall blocks incoming connections to your machine, step 3 fails silently.
 
 ## Automatic fallback
 
-The SDK detects firewall issues proactively and falls back to polling mode. You don't need to change your code — `watch()` and `sonos.iter()` work the same way regardless of whether events arrive via push or poll.
+The SDK detects this and falls back to polling. You don't need to change your code — `watch()` and `sonos.iter()` work the same way regardless of whether values arrive via push or poll.
 
-**How detection works:** After subscribing, the SDK sends a test event to itself. If it doesn't arrive within a short window, it switches to polling for that device.
+**How detection works:** detection is per device and needs no probe traffic. After the first subscription to a device, the SDK waits up to **15 seconds** for a real UPnP event from it. If one arrives, that device is marked accessible. If none does, the device is marked blocked and switched to polling. The verdict is cached per device, so later subscriptions to the same speaker skip the wait.
 
-**Polling interval:** ~1 second by default. This is slightly less responsive than real-time events (~50ms) but functionally equivalent for most applications.
+**Polling interval:** 5 seconds to start. Polling is adaptive — a property that rarely changes backs off toward a 30-second ceiling, and a busy one stays near the floor.
 
 ## Common firewall scenarios
 
@@ -44,38 +45,50 @@ Many corporate networks block all inbound connections. The SDK handles this auto
 ### Docker / containers
 
 If your code runs in a container, the callback URL must be reachable from the Sonos device. Ensure:
-- The container is on the same network as the Sonos devices (use `--network host` or bridge networking)
-- The callback port is exposed
+- The container is on the same network as the Sonos devices (use `--network host`, since SSDP multicast does not cross a bridge)
+- Ports 3400–3500 are reachable from the device
 
 ### Linux iptables / nftables
 
-Ensure the callback port is open for inbound TCP:
+Open the callback port range for inbound TCP. Note this is the range the SDK
+listens on — port 1400 is the port on the *speaker*, and nothing needs to accept
+inbound traffic there:
 
 ```bash
 # iptables
-sudo iptables -A INPUT -p tcp --dport 1400 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 3400:3500 -j ACCEPT
 
-# Or temporarily disable firewall for testing
-sudo ufw allow 1400/tcp
+# ufw
+sudo ufw allow 3400:3500/tcp
 ```
 
 ## Diagnosing issues
 
-If you want to verify whether events are arriving via push or poll, enable tracing:
+`WatchHandle::mode()` reports which transport is actually behind a given watch —
+`Events` for real-time UPnP, `Polling` when the subscription failed, `CacheOnly`
+when no event manager is configured. `has_realtime_events()` is the same answer
+narrowed to a bool:
+
+```rust
+let volume = speaker.volume.watch()?;
+println!("transport: {}", volume.mode());
+```
+
+For more detail, turn on tracing:
 
 ```rust
 // Add tracing-subscriber to your dependencies
 tracing_subscriber::fmt::init();
 
 // Run with RUST_LOG=sonos_stream=debug
-// Look for "Firewall detected, switching to polling" in output
+// Look for polling-mode messages naming the reason, e.g. "firewall blocked"
 ```
 
 ## Performance comparison
 
 | Mode | Latency | CPU usage | Network |
 |------|---------|-----------|---------|
-| Push (UPnP events) | ~50ms | Minimal (event-driven) | Low |
-| Poll (fallback) | ~1s | Slight (periodic requests) | Moderate |
+| Push (UPnP events) | As the device sends them | Minimal (event-driven) | Low |
+| Poll (fallback) | 5s, backing off to 30s when quiet | Slight (periodic requests) | Moderate |
 
-For most applications (dashboards, CLIs, automation), polling mode is indistinguishable from push mode.
+For most applications (dashboards, CLIs, automation), polling mode is workable, though a UI that mirrors physical button presses will feel the lag.

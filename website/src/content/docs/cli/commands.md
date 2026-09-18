@@ -3,6 +3,9 @@ title: Command Reference
 description: Every sonos-cli command with flags and examples.
 ---
 
+Running `sonos` with no subcommand launches the interactive TUI when stdout is a
+terminal. With a subcommand it runs that command and exits.
+
 ## Playback
 
 | Command | Description |
@@ -66,11 +69,24 @@ sonos bass 3 --speaker "Beam"
 
 | Command | Description |
 |---------|-------------|
-| `sonos sleep <duration>` | Set sleep timer (e.g., `30m`, `1h`) or `cancel` |
+| `sonos sleep <duration>` | Set sleep timer (e.g., `30m`, `1h`, `90m`) or `cancel` |
 
 ```bash
 sonos sleep 45m --group "Bedroom"
 sonos sleep cancel
+```
+
+## Config
+
+| Command | Description |
+|---------|-------------|
+| `sonos config alias` | List all aliases |
+| `sonos config alias <name> <alias>` | Assign a short alias to a speaker or group |
+| `sonos config alias <name>` | Clear that name's alias |
+
+```bash
+sonos config alias "Living Room" lr
+sonos volume 40 --speaker lr
 ```
 
 ## Global flags
@@ -78,9 +94,9 @@ sonos sleep cancel
 | Flag | Description |
 |------|-------------|
 | `--help`, `-h` | Show help |
-| `--version` | Print version |
-| `--quiet`, `-q` | Suppress non-error output |
-| `--verbose` | Show debug output |
+| `--version`, `-V` | Print version |
+| `--quiet`, `-q` | Suppress all non-error stdout output |
+| `--verbose`, `-v` | Increase log verbosity; repeatable (`-v` info, `-vv` debug, `-vvv` trace) |
 | `--no-input` | Disable interactive prompts |
-| `--speaker <name>` | Target a specific speaker |
-| `--group <name>` | Target a specific group |
+| `--speaker <name>`, `-s` | Target a specific speaker by friendly name or alias |
+| `--group <name>`, `-g` | Target a group by name or alias |

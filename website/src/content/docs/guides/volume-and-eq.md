@@ -57,12 +57,20 @@ let bass = speaker.bass.fetch()?;
 let treble = speaker.treble.fetch()?;
 let loudness = speaker.loudness.fetch()?;
 
-println!("Bass: {}, Treble: {}, Loudness: {}", bass, treble, loudness);
+println!(
+    "Bass: {}, Treble: {}, Loudness: {}",
+    bass.value(),
+    treble.value(),
+    loudness.is_enabled(),
+);
 ```
 
 ## Group volume
 
-Group volume adjusts all members proportionally. Controlled via the group handle:
+Group volume adjusts all members proportionally. Controlled via the group
+handle, which addresses the group's coordinator — sending GroupRenderingControl
+operations to a non-coordinator is a UPnP error 701, and `Group` routes around
+that for you:
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
@@ -85,20 +93,40 @@ println!("New group volume: {}", result.new_volume);
 group.set_mute(true)?;
 ```
 
-## Snapshot and restore
+## Snapshot group volume
 
-Capture current group volume levels before a temporary change (e.g., an announcement):
+`snapshot_volume()` sends `SnapshotGroupVolume` to the coordinator, which
+records the members' current volumes as the ratios that subsequent group volume
+changes scale against. Call it after changing an individual member's volume so
+the next `group.set_volume()` keeps the new balance:
 
 ```rust
 let group = sonos.speaker("Living Room").unwrap().group().unwrap();
 
-// Save current state
+// Re-baseline the members' relative levels
 group.snapshot_volume()?;
 
-// Temporarily lower for announcement
+// Members now scale from that baseline
+group.set_volume(20)?;
+```
+
+The SDK exposes no restore call. To put levels back, read each member's volume
+first and set them again afterwards:
+
+```rust
+let group = sonos.speaker("Living Room").unwrap().group().unwrap();
+
+let before: Vec<_> = group
+    .members()
+    .into_iter()
+    .map(|s| s.volume.fetch().map(|v| (s, v)))
+    .collect::<Result<_, _>>()?;
+
 group.set_volume(20)?;
 
-// Firmware restores after snapshot
+for (speaker, volume) in before {
+    speaker.set_volume(volume.value())?;
+}
 ```
 
 ## Watch for changes
@@ -106,13 +134,15 @@ group.set_volume(20)?;
 All volume and EQ properties support the reactive `watch()` pattern:
 
 ```rust
-for event in sonos.iter() {
-    let volume = speaker.volume.watch()?;
-    let mute = speaker.mute.watch()?;
-    let bass = speaker.bass.watch()?;
-    let treble = speaker.treble.watch()?;
-    let loudness = speaker.loudness.watch()?;
+// Acquire every handle before the loop: iter() only emits events for
+// properties that are already being watched.
+let volume = speaker.volume.watch()?;
+let mute = speaker.mute.watch()?;
+let bass = speaker.bass.watch()?;
+let treble = speaker.treble.watch()?;
+let loudness = speaker.loudness.watch()?;
 
+for _event in sonos.iter() {
     println!("Vol: {:?}, Mute: {:?}, Bass: {:?}, Treble: {:?}, Loudness: {:?}",
         volume.value(), mute.value(), bass.value(), treble.value(), loudness.value());
 }
@@ -123,9 +153,10 @@ Group volume is also watchable:
 ```rust
 let group = sonos.speaker("Living Room").unwrap().group().unwrap();
 
-for event in sonos.iter() {
-    let vol = group.volume.watch()?;
-    let mute = group.mute.watch()?;
+let vol = group.volume.watch()?;
+let mute = group.mute.watch()?;
+
+for _event in sonos.iter() {
     println!("Group vol: {:?}, mute: {:?}", vol.value(), mute.value());
 }
 ```
