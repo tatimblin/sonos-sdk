@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/tatimblin/sonos-sdk/compare/sonos-sdk-v0.8.0...sonos-sdk-v0.9.0) - 2026-09-18
+
+### Fixed
+
+- share one teardown timer thread and make grace-period expiry race-safe ([#108](https://github.com/tatimblin/sonos-sdk/pull/108))
+
+### Other
+
+- align every README with the current API ([#115](https://github.com/tatimblin/sonos-sdk/pull/115))
+- move to Rust 1.98.1 and make the msrv job actually test MSRV ([#110](https://github.com/tatimblin/sonos-sdk/pull/110))
+- remove verified dead code across the workspace ([#112](https://github.com/tatimblin/sonos-sdk/pull/112))
+
 ## [0.8.0](https://github.com/tatimblin/sonos-sdk/compare/sonos-sdk-v0.7.2...sonos-sdk-v0.8.0) - 2026-08-18
 
 ### Other
