@@ -8,7 +8,7 @@ description: Add sonos-sdk to your Rust project.
 ```toml
 # Cargo.toml
 [dependencies]
-sonos-sdk = "0.8"
+sonos-sdk = "0.9"
 ```
 
 ## Requirements
@@ -32,7 +32,7 @@ offline constructors.
 
 ```toml
 [dev-dependencies]
-sonos-sdk = { version = "0.8", features = ["test-support"] }
+sonos-sdk = { version = "0.9", features = ["test-support"] }
 ```
 
 ```rust

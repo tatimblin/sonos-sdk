@@ -41,7 +41,7 @@ fn main() -> Result<(), SdkError> {
 Add to your `Cargo.toml`:
 ```toml
 [dependencies]
-sonos-sdk = "0.8"
+sonos-sdk = "0.9"
 ```
 
 The minimum supported Rust version is **1.98**, and the workspace builds on edition 2021.
