@@ -30,22 +30,20 @@ The design answer to (4) shapes the whole crate: **`ChangeEvent` carries the val
 announces.** It is `{speaker_id, change: PropertyChange, source, timestamp}`, where
 `PropertyChange` is the same typed enum the decoder already produces.
 
-This reverses an earlier decision. Through 0.6.x the event was a valueless doorbell and
-consumers re-read through `get_property::<P>()`. That kept the channel non-generic — which is
-still a goal — but it made queued events lossy in a way that could not be worked around: by the
-time a consumer drains three queued events the store already holds the newest value, so a
-`Playing -> Transitioning -> Playing` sequence read as `Playing` three times. The intermediate
-state, and the fact that anything moved at all, were unrecoverable. It also cost one store lock
-per event per watcher.
+Carrying the value is what makes a queued backlog observable. A consumer draining three queued
+events sees every value the property passed through; reading the store per event would instead
+show whatever the store holds *now*, so a `Playing -> Transitioning -> Playing` burst would read
+as `Playing` three times and the intermediate state would be unrecoverable. It also saves one
+store lock per event per watcher.
 
-Reusing `PropertyChange` rather than introducing a parallel value type keeps the channel a
-single non-generic type: the enum is closed over the 12 decodable properties, so `ChangeEvent`
-stays concrete no matter how many watchers or property types exist. `property_key()` and
-`service()` are now derived from the payload rather than stored beside it, so they cannot drift
-from the value.
+Reusing `PropertyChange` rather than a parallel value type keeps the channel a single
+non-generic type: the enum is closed over the 12 decodable properties (`src/decoder.rs:59`), so
+`ChangeEvent` stays concrete no matter how many watchers or property types exist.
+`property_key()` and `service()` are derived from the payload rather than stored beside it, so
+they cannot drift from the value.
 
-The store remains the right source for a *full repaint* — a dashboard redrawing every field
-wants current state, not one property's history. Both readings are now available; the event is
+The store is the right source for a *full repaint* — a dashboard redrawing every field wants
+current state, not one property's history. Both readings are available: the event is
 authoritative for "what changed", the store for "what is true now".
 
 ### 1.2 Design Goals
@@ -104,34 +102,35 @@ authoritative for "what changed", the store for "what is true now".
        register_watch / get_property / set_property / iter
                                            v
 +----------------------------------------------------------------------------+
-|                      StateManager  (src/state.rs:303)                       |
+|                      StateManager  (src/state.rs:622)                       |
 |                                                                            |
 |  store:         Arc<parking_lot::RwLock<StateStore>>                        |
 |  watched:       Arc<RwLock<WatchCounts>>   (refcounted, see 4.2)           |
 |  ip_to_speaker: Arc<RwLock<HashMap<IpAddr, SpeakerId>>>                     |
-|  event_tx:      mpsc::Sender<ChangeEvent>  --------------+                  |
-|  event_rx:      Arc<Mutex<mpsc::Receiver<ChangeEvent>>>  |                  |
-|  event_manager: OnceLock<Arc<SonosEventManager>>         |                  |
-|  event_init:    OnceLock<EventInitFn>                    |                  |
-+---------------------------------+------------------------+------------------+
+|  fanout:        Arc<EventFanout>           ---------------+                 |
+|  event_manager: OnceLock<Arc<SonosEventManager>>          |                 |
+|  event_init:    OnceLock<EventInitFn>                     |                 |
+|  key_to_service / cleanup_timeout / _worker               |                 |
++---------------------------------+-------------------------+-----------------+
                  |                                         |
-     read/write  |                            ChangeIterator (src/iter.rs:39)
-                 v                                         ^
-+----------------------------------------+                 |
-| StateStore        (src/state.rs:90)    |                 | blocking recv()
+     read/write  |               EventFanout (src/iter.rs:82) clones each
+                 |               event into one mpsc queue per subscriber
+                 v                                         |
++----------------------------------------+                 v
+| StateStore        (src/state.rs:350)   |   ChangeIterator (src/iter.rs:173)
 |  speakers / ip_to_speaker              |                 |
-|  speaker_props: HashMap<SpeakerId, Bag>|                 |
+|  speaker_props: HashMap<SpeakerId, Bag>|                 | blocking recv()
 |  group_props:   HashMap<GroupId, Bag>  |                 |
 |  system_props:  PropertyBag            |                 |
 |  speaker_to_group / satellite_ids      |                 |
-|  PropertyBag = HashMap<TypeId, Box<Any>>  (:259)         |
+|  PropertyBag = HashMap<TypeId, Box<Any>>  (:545)         |
 +--------------------+-------------------+                 |
                      ^                                     |
      apply() + emit  |                                     |
 +--------------------+-------------------------------------+------------------+
-|            event worker thread  (src/event_worker.rs:31, std::thread)        |
-|  run_event_loop (:69): for event in SonosEventManager::iter()  <-- blocking  |
-|    each event body wrapped in catch_unwind (:97) -> a panic skips one event  |
+|            event worker thread  (src/event_worker.rs:32, std::thread)        |
+|  run_event_loop (:70): for event in SonosEventManager::iter()  <-- blocking  |
+|    each event body wrapped in catch_unwind (:92) -> a panic skips one event  |
 |    ZoneGroupTopology -> decode_topology_event -> apply_topology_changes      |
 |    otherwise         -> ip_to_speaker -> coordinator gate -> decode_event    |
 |                      -> PropertyChange::apply -> maybe emit ChangeEvent      |
@@ -143,17 +142,14 @@ authoritative for "what changed", the store for "what is true now".
 +----------------------------------------------------------------------------+
 ```
 
-**Design Rationale**: the crate is a cache plus a doorbell, and the two are deliberately
-separate. `StateStore` is the only thing that holds values; the `mpsc` channel carries only
-notifications. That split is why the whole API can be sync — there is no need for a
-per-property broadcast primitive, no need to keep senders alive per watcher, and no
-generic parameter leaking into the channel type. It also means back-pressure cannot lose
-state: if the consumer drains slowly, it may coalesce several notifications for one property,
-but the value it eventually reads is the newest one.
+**Design Rationale**: the crate is a cache plus a notification stream, and the two are
+deliberately separate. `StateStore` is the only thing that holds current values; the fan-out
+carries change notifications. That split is why the whole API can be sync — there is no need
+for a per-property broadcast primitive and no generic parameter leaks into the channel type,
+because `ChangeEvent` is one concrete type.
 
 `parking_lot::RwLock` guards the store rather than `std::sync::RwLock` because a panic in a
-consumer thread must not poison state the render loop still needs. The `mpsc::Sender` on
-`StateManager` is the reason `StateWatchRegistry` exists as a separate struct — see 2.3.
+consumer thread must not poison state the render loop still needs.
 
 ### 2.2 Module Structure
 
@@ -161,11 +157,12 @@ consumer thread must not poison state the render loop still needs. The `mpsc::Se
 src/
 +-- lib.rs            # Public surface and re-exports
 +-- state.rs          # StateManager, StateStore, PropertyBag, ChangeEvent,
+|                     #   WriteStamp/WriteOutcome, WatchCounts,
 |                     #   StateWatchRegistry, StateManagerBuilder
 +-- event_worker.rs   # spawn_state_event_worker: the std::thread event loop
 +-- decoder.rs        # PropertyChange enum + per-service decode functions
-+-- iter.rs           # ChangeIterator, TryIter, TimeoutIter
-+-- property.rs       # Scope, SonosProperty, the 14 built-in property types
++-- iter.rs           # EventFanout, ChangeIterator, TryIter, TimeoutIter
++-- property.rs       # Property, Scope, SonosProperty, the 13 property types + GroupInfo
 +-- model/            # SpeakerId/GroupId re-exports, SpeakerInfo
 |   +-- mod.rs
 |   +-- id_types.rs
@@ -177,55 +174,54 @@ src/
 | Module | Responsibility | Visibility |
 |--------|---------------|------------|
 | `state` | Manager, store, type-erased bags, watch registry, builder | `pub` |
-| `event_worker` | Background thread draining the event manager | `pub(crate)` (`src/lib.rs:67`) |
+| `event_worker` | Background thread draining the event manager | `pub(crate)` (`src/lib.rs:71`) |
 | `decoder` | `EnrichedEvent` -> `Vec<PropertyChange>` | `pub` |
-| `iter` | Blocking / try / timeout iteration over `ChangeEvent` | `pub` |
+| `iter` | Per-subscriber fan-out; blocking / try / timeout iteration over `ChangeEvent` | `pub` (`EventFanout` is `pub(crate)`) |
 | `property` | `Scope`, `SonosProperty`, built-in property types | `pub` |
 | `model` | Identity and static device metadata | `pub` |
-| `speaker` | Test-only module (`src/speaker.rs:6`) | `pub` (empty in non-test builds) |
+| `speaker` | Test-only module (`src/speaker.rs:7`) | `pub` (exports nothing) |
 | `error` | Error types | `pub` |
 
 ### 2.3 Key Types
 
-#### `StateManager` (`src/state.rs:303`)
+#### `StateManager` (`src/state.rs:622`)
 
 ```rust
 pub struct StateManager {
-    store: Arc<RwLock<StateStore>>,                              // parking_lot
+    store: Arc<RwLock<StateStore>>,                               // parking_lot
     watched: Arc<RwLock<WatchCounts>>,                            // refcounted, 4.2
     ip_to_speaker: Arc<RwLock<HashMap<IpAddr, SpeakerId>>>,
     event_manager: OnceLock<Arc<SonosEventManager>>,
-    event_tx: mpsc::Sender<ChangeEvent>,
-    event_rx: Arc<Mutex<mpsc::Receiver<ChangeEvent>>>,
-    _worker: Mutex<Option<JoinHandle<()>>>,
+    fanout: Arc<EventFanout>,                                     // src/state.rs:649
+    _worker: Mutex<Option<JoinHandle<()>>>,                       // std::sync::Mutex
     cleanup_timeout: Duration,
     key_to_service: Arc<RwLock<HashMap<&'static str, Service>>>,
     event_init: OnceLock<EventInitFn>,
 }
 ```
 
-**Purpose**: the single sync entry point. Owns the cache, the watched set, and both ends of
-the notification channel.
+**Purpose**: the single sync entry point. Owns the cache, the watched set, and the
+subscriber fan-out.
 
 **Why `OnceLock` for `event_manager` and `event_init`**: live events are opt-in and expensive
 (subscriptions, a callback HTTP server, a thread). A fetch-only application should pay none of
-that. `event_init` (`src/state.rs:53`) is a closure installed by the SDK that builds the event
+that. `event_init` (`src/state.rs:54`) is a closure installed by the SDK that builds the event
 manager on demand; `PropertyHandle::watch()` calls it on the first watch
-(`sonos-sdk/src/property/handles.rs:334`). `set_event_manager()` (`src/state.rs:771`) then
+(`sonos-sdk/src/property/handles.rs:366`). `set_event_manager()` (`src/state.rs:1221`) then
 wires the registry and spawns the worker. Both are set-once, so repeated watches are no-ops.
 
-**Why the receiver is `Arc<Mutex<..>>`**: `StateManager` is `Clone` (`src/state.rs:840`) and
-clones share one store and one channel. A single `mpsc::Receiver` cannot be cloned, so it is
-shared behind a mutex and every `iter()` (`src/state.rs:537`) hands out a `ChangeIterator`
-over the same receiver. Consequence worth knowing: multiple concurrent iterators *compete*
-for events rather than each seeing all of them.
+**Why `fanout` is an `Arc<EventFanout>` and not a channel pair**: `StateManager` is `Clone`
+(`src/state.rs:1290`) and clones share one store and one fan-out. Every `iter()`
+(`src/state.rs:899`) registers a **new subscriber with its own queue** (4.1b), so concurrent
+iterators each receive every event rather than competing over one receiver. A clone never owns
+the worker thread — `_worker` is reset to `None` on clone (`src/state.rs:1306`).
 
 **Invariants**:
 - Every speaker in `store.speakers` has a matching `ip_to_speaker` entry, maintained on
-  `add_devices()` (`src/state.rs:413`), `update_speaker_ip()` (`:500`), and topology IP updates
-- `_worker` holds at most one thread; the thread exits when all `event_tx` clones drop
+  `add_devices()` (`src/state.rs:764`), `update_speaker_ip()` (`:851`), and topology IP updates
+- `_worker` holds at most one thread; the thread exits when the event manager's iterator ends
 
-#### `StateWatchRegistry` (`src/state.rs:346`)
+#### `StateWatchRegistry` (`src/state.rs:691`)
 
 ```rust
 struct StateWatchRegistry {
@@ -236,16 +232,17 @@ struct StateWatchRegistry {
 ```
 
 **Purpose**: implements `sonos_event_manager::WatchRegistry`
-(`sonos-event-manager/src/manager.rs:37`) so the event manager can add and remove watches
+(`sonos-event-manager/src/manager.rs:251`) so the event manager can add and remove watches
 without depending on `sonos-state`.
 
-**Why it is not `StateManager` itself**: `WatchRegistry: Send + Sync`, but `StateManager`
-holds an `mpsc::Sender`, which is `!Sync`. Rather than swap the channel out, the registry is a
-separate struct holding only the `Arc`-shared fields it needs. `key_to_service` exists solely
-so `unregister_watches_for_service` (`src/state.rs:358`) can reverse a `Service` back into the
+**Why it is not `StateManager` itself**: the registry is handed to `sonos-event-manager`, which
+must not depend on `sonos-state`. Keeping it a separate struct holding only the `Arc`-shared
+fields it needs keeps that dependency edge one-way and keeps the store, the worker handle and
+the fan-out out of reach of the event manager. `key_to_service` exists so
+`unregister_watches_for_service` (`src/state.rs:703`) can reverse a `Service` back into the
 property keys that belong to it when a subscription is finally torn down.
 
-#### `StateStore` (`src/state.rs:90`)
+#### `StateStore` (`src/state.rs:350`)
 
 ```rust
 pub struct StateStore {
@@ -261,34 +258,41 @@ pub struct StateStore {
 ```
 
 **Purpose**: plain in-memory cache. No channels, no reactivity — reactivity is the manager's
-`event_tx`.
+fan-out. Every method on it is `pub(crate)` or private; nothing here is public API.
 
-**Key method — `get_resolved<P>()` (`src/state.rs:188`)**: if `P::SERVICE.scope()` is
+**Key method — `get_resolved<P>()` (`src/state.rs:448`)**: if `P::SERVICE.scope()` is
 `PerCoordinator` *and* `P::SCOPE == Scope::Speaker`, the read is redirected to the
-coordinator's bag via `resolve_coordinator()` (`:171`). This is how a group member reports the
+coordinator's bag via `resolve_coordinator()` (`:431`). This is how a group member reports the
 group's playback state without any data being copied into its own bag. Group-*scoped*
 properties are excluded from that redirect because they already live in `group_props`.
+`resolve_write_target()` (`:462`) applies the identical rule to writes, so a write lands where
+the matching read looks.
 
 **Invariants**:
-- Every `member_id` of a group in `groups` has a `speaker_to_group` entry (`add_group`, `:141`)
-- `clear_groups()` (`:161`) clears `groups`, `group_props`, and `speaker_to_group` together,
+- Every `member_id` of a group in `groups` has a `speaker_to_group` entry (`add_group`, `:401`)
+- `clear_groups()` (`:421`) clears `groups`, `group_props`, and `speaker_to_group` together,
   so no mapping outlives its group
 
-#### `PropertyBag` (`src/state.rs:259`)
+#### `PropertyBag` (`src/state.rs:545`)
 
 ```rust
 pub(crate) struct PropertyBag {
     values: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
+    stamps: HashMap<TypeId, WriteStamp>,
 }
 ```
 
 **Purpose**: heterogeneous storage keyed by `TypeId::of::<P>()`, so adding a property type
-requires no change to the store.
+requires no change to the store. The parallel `stamps` map records when each value was
+*observed*, which is what makes write ordering possible without widening the value type.
 
-**Why `set` returns `bool` (`:279`)**: it compares against the current value and returns
-`false` when unchanged. That single boolean is the crate's change-detection primitive — every
-emission path is gated on it, which is what keeps UPnP's habit of re-sending identical
-`LastChange` payloads from waking the consumer.
+**Why `set` returns `WriteOutcome` (`:578`)**: three outcomes matter and a boolean can only
+express two. `set` first rejects a write whose observation is older than the stored stamp
+(`Stale`), then compares against the current value (`Unchanged`), and only otherwise reports
+`Changed`. Every emission path is gated on `Changed`, which is what keeps UPnP's habit of
+re-sending identical `LastChange` payloads from waking the consumer. A `Stale` write leaves both
+the value and the stamp untouched; an `Unchanged` write still records the stamp (`:603`),
+because that observation is the most recent one and later writes must order against it.
 
 #### `ChangeEvent` (`src/state.rs`)
 
@@ -337,32 +341,38 @@ neither changes the value nor advances the stamp. The stamp *is* recorded on an 
 write, because that observation is still the most recent one and later writes must order against
 it.
 
-`WriteOutcome` replaces the previous `bool`: once writes are ordered, "the value differs" and
-"the write was allowed" are separate questions. Only `Changed` emits a notification.
+`WriteOutcome` exists because once writes are ordered, "the value differs" and "the write was
+allowed" are separate questions. Only `Changed` emits a notification; `WriteOutcome::changed()`
+(`src/state.rs:174`) is the predicate every emission path uses.
 
-#### `SonosProperty` (`src/property.rs:52`)
+#### `Property` / `SonosProperty` (`src/property.rs:25`, `:68`)
 
 ```rust
 pub trait Property: Clone + Send + Sync + PartialEq + 'static {
-    const KEY: &'static str;    // src/property.rs:25
+    const KEY: &'static str;    // src/property.rs:30
 }
 
 pub trait SonosProperty: Property {
-    const SCOPE: Scope;             // Speaker | Group | System  (src/property.rs:23)
-    const SERVICE: Service;
+    const SCOPE: Scope;                                  // src/property.rs:70
+    const SERVICE: Service;                              // src/property.rs:76
+    fn to_change(&self) -> Option<PropertyChange> { None }  // src/property.rs:92
 }
 ```
 
-**Purpose**: `KEY` is the domain-agnostic identifier; `SCOPE` and `SERVICE` are the
-Sonos-specific additions. `SERVICE` is what lets `watch()` know which UPnP service to
-subscribe to from the property type alone, with no lookup table to keep in sync.
+**Purpose**: `KEY` is the domain-agnostic identifier; `SCOPE` (`Speaker | Group | System`,
+`src/property.rs:39`) and `SERVICE` are the Sonos-specific additions. `SERVICE` is what lets
+`watch()` know which UPnP service to subscribe to from the property type alone, with no lookup
+table to keep in sync. `to_change()` converts a value back into the `PropertyChange` that
+`ChangeEvent` carries; it defaults to `None`, and a property that does not override it cannot
+be announced — `maybe_emit_change()` (`src/state.rs:1098`) warns and drops the notification.
 
-13 types implement it (`src/property.rs`): `Volume` (:69), `Mute` (:92), `Bass` (:115),
-`Treble` (:138), `Loudness` (:161), `GroupVolume` (:188), `GroupMute` (:211),
-`GroupVolumeChangeable` (:234), `PlaybackState` (:261), `Position` (:304), `CurrentTrack`
-(:364), `GroupMembership` (:419), and `Topology` (:451). `GroupInfo` (:494) is a plain data
-type carried inside `Topology`, not a property. Constructors clamp: `Volume::new` caps at
-100 (:81), `Bass`/`Treble::new` clamp to ±10 (:127, :150).
+13 types implement `SonosProperty` (`src/property.rs`): `Volume` (:103), `Mute` (:130), `Bass`
+(:157), `Treble` (:184), `Loudness` (:211), `GroupVolume` (:242), `GroupMute` (:269),
+`GroupVolumeChangeable` (:296), `PlaybackState` (:329), `Position` (:376), `CurrentTrack`
+(:440), `GroupMembership` (:499), and `Topology` (:537). `Topology` is the one that does not
+override `to_change()`. `GroupInfo` (:580) is a plain data type carried inside `Topology`, not
+a property. Constructors clamp: `Volume::new` caps at 100 (:119), `Bass`/`Treble::new` clamp to
+±10 (:173, :200), `GroupVolume::new` caps at 100 (:258).
 
 ---
 
@@ -371,85 +381,82 @@ type carried inside `Topology`, not a property. Constructors clamp: `Volume::new
 ### 3.1 Primary Flow: an event becomes a notification
 
 ```
-SonosEventManager::iter()          sonos-event-manager/src/manager.rs:483
+SonosEventManager::iter()          sonos-event-manager/src/manager.rs:864
         |  EnrichedEvent (blocking)
         v
-run_event_loop                     src/event_worker.rs:69
+run_event_loop                     src/event_worker.rs:70
         |  catch_unwind per event -> panic logs at error! and skips one event
         v
-handle_event                       src/event_worker.rs:117
+handle_event                       src/event_worker.rs:118
         |
         +-- EventData::ZoneGroupTopology? --> 3.2
         |
-        +-- ip_to_speaker lookup                    src/event_worker.rs:150
+        +-- ip_to_speaker lookup                    src/event_worker.rs:161
         |     miss -> warn + skip
         |
-        +-- PerCoordinator + not coordinator?       src/event_worker.rs:177
+        +-- PerCoordinator + not coordinator?       src/event_worker.rs:192
         |     yes -> skip (member events carry empty defaults)
         |
-        +-- decode_event()                          src/decoder.rs:182
+        +-- decode_event()                          src/decoder.rs:197
         |     -> DecodedChanges { Vec<PropertyChange> }
         |
-        +-- apply_property_change() per change      src/event_worker.rs:413
-        |     PropertyChange::apply(stamp) -> WriteOutcome   src/decoder.rs
-        |     outcome.changed() && watched -> event_tx.send(ChangeEvent { change, .. })
+        +-- apply_property_change() per change      src/event_worker.rs:450
+        |     PropertyChange::apply(stamp) -> WriteOutcome   src/decoder.rs:82
+        |     outcome.changed() && watched -> fanout.send(ChangeEvent { change, .. })
         |
-        +-- PerCoordinator? notify_group_members()   src/event_worker.rs:387
+        +-- PerCoordinator? notify_group_members()   src/event_worker.rs:419
               emits ChangeEvents carrying the coordinator's value; the store
               still holds one copy, in the coordinator's bag
                               |
-                              v
-        ChangeIterator::recv()                       src/iter.rs:52
+                              v  one cloned event per subscriber queue
+        ChangeIterator::recv()                       src/iter.rs:207
                               |
-        consumer re-reads get_property::<P>()        src/state.rs:545
-                              -> get_resolved()      src/state.rs:188
+        consumer re-reads get_property::<P>()        src/state.rs:907
+                              -> get_resolved()      src/state.rs:448
 ```
 
 **Step-by-step**:
 
-1. **Blocking drain** (`src/event_worker.rs:69`): a plain `std::thread` iterates
+1. **Blocking drain** (`src/event_worker.rs:70`): a plain `std::thread` iterates
    `SonosEventManager::iter()`. No tokio runtime is created or required by this crate.
-2. **Panic containment** (`src/event_worker.rs:97`): the body for each event runs inside
+2. **Panic containment** (`src/event_worker.rs:92`): the body for each event runs inside
    `std::panic::catch_unwind`. See 4.6 for why this exists and why it is sound.
-3. **Identity resolution** (`src/event_worker.rs:150`): the event's `speaker_ip` is mapped
+3. **Identity resolution** (`src/event_worker.rs:161`): the event's `speaker_ip` is mapped
    through `ip_to_speaker`. An unknown IP is logged and skipped rather than guessed at.
-4. **Coordinator gate** (`src/event_worker.rs:177`): for `PerCoordinator` services
+4. **Coordinator gate** (`src/event_worker.rs:192`): for `PerCoordinator` services
    (`sonos-api/src/service.rs:101`), events from non-coordinators are dropped. With no group
    data yet, the speaker is treated as its own coordinator — the safe default for a
-   standalone speaker — and that fallback is logged at `debug` (`:191`), because it is also
+   standalone speaker — and that fallback is logged at `debug` (`:204`), because it is also
    what an incomplete topology looks like and it silently promotes every member to
    coordinator.
-5. **Decode** (`src/decoder.rs:182`): dispatches on `EventData` to
-   `decode_rendering_control` (:201), `decode_av_transport` (:241), or
-   `decode_group_rendering_control` (:311). `GroupManagement` decodes to an empty vec — it is
-   action-only and surfaces its effects through topology events instead. `DeviceProperties` no
-   longer appears at all: `sonos-stream` never constructed the variant, so it was removed from
-   `EventData` (see `docs/specs/sonos-stream.md` changelog, 2026-09-17).
-6. **Apply** (`src/decoder.rs`): `PropertyChange::apply(.., stamp)` routes by scope —
-   speaker-scoped variants to `store.set()`, group-scoped variants resolve
+5. **Decode** (`src/decoder.rs:197`): dispatches on `EventData` to
+   `decode_rendering_control` (:215), `decode_av_transport` (:255), or
+   `decode_group_rendering_control` (:325). `GroupManagement` decodes to an empty vec — it is
+   action-only and surfaces its effects through topology events instead.
+6. **Apply** (`src/decoder.rs:82`): `PropertyChange::apply(.., stamp)` routes by scope —
+   the nine speaker-scoped variants to `store.set()`, the three group-scoped variants resolve
    `speaker_to_group` first and write to `store.set_group()`. A group-scoped change for a
    speaker with no group mapping returns `WriteOutcome::Unchanged` and is logged at `warn`
-   (`log_unmapped_group_change`, `src/decoder.rs:113`) rather than dropped silently.
-7. **Emit if watched** (`src/event_worker.rs`): only when `apply` reported a real change
-   *and* `(speaker_id, key)` is in `watched`. Both conditions must hold.
-8. **Fan out to members** (`src/event_worker.rs`): for `PerCoordinator` services,
-   `resolve_group_members` (`:367`) returns the non-coordinator members (empty for a
+   (`log_unmapped_group_change`, `src/decoder.rs:128`) rather than dropped silently.
+7. **Emit if watched** (`src/event_worker.rs:465`): only when `apply` reported
+   `WriteOutcome::Changed` *and* `(speaker_id, key)` is in `watched`. Both conditions must hold.
+8. **Fan out to members** (`src/event_worker.rs:419`): for `PerCoordinator` services,
+   `resolve_group_members` (`:394`) returns the non-coordinator members (empty for a
    standalone speaker or a non-coordinator), and each watching member gets its own
    `ChangeEvent` carrying the coordinator's value. The *store* still holds one copy — the
-   member's `get_property` resolves back to
-   the coordinator's bag.
+   member's `get_property` resolves back to the coordinator's bag.
 
 ### 3.2 Secondary Flow: topology replacement
 
-`ZoneGroupTopology` is handled before the IP lookup (`src/event_worker.rs:138`) because it
+`ZoneGroupTopology` is handled before the IP lookup (`src/event_worker.rs:146`) because it
 describes every speaker at once rather than the one that sent it.
 
-`decode_topology_event()` (`src/decoder.rs:341`) returns a `TopologyChanges`
-(`src/decoder.rs:36`) carrying groups, per-speaker `GroupMembership`, `boot_seq` values,
-current IPs parsed out of each `location` URL (`extract_ip_from_location`, `:397`), and the
-IDs of speakers marked `Invisible="1"` (satellites).
+`decode_topology_event()` (`src/decoder.rs:355`) returns a `TopologyChanges`
+(`src/decoder.rs:38`) carrying groups, per-speaker `GroupMembership`, `boot_seq` values,
+current IPs parsed out of each `location` URL (`extract_ip_from_location`, `:422`), and the
+IDs of speakers marked `Invisible="1"` (satellites, `:391`).
 
-`apply_topology_changes()` (`src/event_worker.rs:249`) then, under one write lock:
+`apply_topology_changes()` (`src/event_worker.rs:272`) then, under one write lock:
 `clear_groups()`, re-add every group, `set` each `GroupMembership` while recording which
 actually changed, update `boot_seq`, apply IP changes, and replace `satellite_ids`. It
 releases the store lock before touching `ip_to_speaker` and before emitting, so the two
@@ -458,14 +465,14 @@ releases the store lock before touching `ip_to_speaker` and before emitting, so 
 **Why replace instead of diff**: a topology event is a full snapshot. Rebuilding is
 straightforwardly correct; diffing would risk stale groups surviving a regrouping. The cost of
 correctness is bounded — `GroupMembership` emissions are still gated on real change
-(`src/event_worker.rs:352`), so rebuilding does not spam the consumer.
+(`src/event_worker.rs:373`), so rebuilding does not spam the consumer.
 
-**Why an empty snapshot is ignored** (`src/event_worker.rs:270`): "replace" is only correct
+**Why an empty snapshot is ignored** (`src/event_worker.rs:294`): "replace" is only correct
 when the event actually carries a snapshot, and a `ZoneGroupTopology` NOTIFY does not have to.
 Sonos sends topology events for other evented variables too — `AlarmRunSequence`,
 `ThirdPartyMediaServersX`, and (observed on real hardware) a bare
 `<VanishedDevices></VanishedDevices>` — and `ZoneGroupTopologyEvent::zone_groups()`
-(`sonos-api/src/services/zone_group_topology/events.rs:261`) returns an empty `Vec` whenever
+(`sonos-api/src/services/zone_group_topology/events.rs:260`) returns an empty `Vec` whenever
 the `ZoneGroupState` variable is absent. Clearing on that would drop `groups`, `group_props`,
 and `speaker_to_group` in response to an unrelated update, so `groups()` would report nothing
 and coordinator resolution would fall back to "every speaker is its own coordinator" until the
@@ -476,25 +483,27 @@ expressed by an empty event — but Sonos never sends one, because a speaker tha
 nothing is still its own single-member group.
 
 **Why `boot_seq` is stored**: GroupManagement's `AddMember` requires it, and topology events
-are the only place it appears. `get_boot_seq()` (`src/state.rs:495`) exposes it to the SDK.
+are the only place it appears. `get_boot_seq()` (`src/state.rs:846`) exposes it to the SDK.
 
 ### 3.3 Secondary Flow: watch registration
 
 `watch()` on an SDK handle (`sonos-sdk/src/property/handles.rs`) triggers lazy
-`event_init`, calls `resolve_subscription_target()` (`src/state.rs:1159`) to route
+`event_init`, calls `resolve_subscription_target()` (`src/state.rs:1186`) to route
 `PerCoordinator` subscriptions to the coordinator's `(SpeakerId, IpAddr)`, then acquires a
-`WatchGuard` from the event manager (`sonos-event-manager/src/manager.rs:201`). The guard's
-`register_watch` flows back through `StateWatchRegistry` (`src/state.rs:353`).
+`WatchGuard` from the event manager (`acquire_watch`,
+`sonos-event-manager/src/manager.rs:470`). The guard's `register_watch` flows back through
+`StateWatchRegistry` (`src/state.rs:698`).
 
 The returned `WatchHandle` holds the guard and *reads through* `get_property()` on each access
-rather than capturing a value — see §4.4 of the sonos-sdk spec. Reads therefore go through
+rather than capturing a value — see [sonos-sdk.md](sonos-sdk.md) §4.3. Reads therefore go through
 `get_resolved()` and observe only what survived the write ordering in 4.1a; a handle cannot
 report a value the store has already superseded.
 
-`StateManager` also offers `watch_property_with_subscription()` (`src/state.rs:610`) and
-`unwatch_property_with_subscription()` (`:636`), which register plus subscribe directly
-without a guard. These predate the guard-based path and are not what the SDK uses; the
-guard-based route is the one with grace-period cleanup.
+`StateManager` also offers `watch_property_with_subscription()` (`src/state.rs:1047`) and
+`unwatch_property_with_subscription()` (`:1073`), which register a watch and subscribe
+directly, without a guard. They are the manual route for a consumer that wants to own the
+lifetime itself; the SDK uses the guard-based route, which is the one with grace-period
+cleanup. There is no `watch_property()` — see 1.3.
 
 Writes from the SDK land via `set_property()` and `set_group_property()`, which update the
 cache and run the same `maybe_emit_change()` gate. `set_property()` routes the write through
@@ -505,25 +514,24 @@ registered.
 ### 3.4 Error Flow
 
 ```
-sonos-api            --> StateError::Api            (From impl, src/error.rs:82)
-unparseable IP       --> StateError::InvalidIpAddress   (src/state.rs:422)
-subscribe failure    --> tracing::warn, watch degrades (src/state.rs:622)
-unknown speaker IP   --> tracing::warn, event skipped   (src/event_worker.rs:159)
-groupless group prop --> tracing::warn, change dropped  (src/decoder.rs:113)
-empty topology event --> tracing::warn, event ignored   (src/event_worker.rs:270)
-unparseable RelTime  --> tracing::debug, no Position emitted (src/decoder.rs:272)
-overflowing duration --> None from parse_duration_ms     (src/decoder.rs:427)
-panic in one event   --> tracing::error + counter, next event runs (src/event_worker.rs:97)
+sonos-api            --> StateError::Api            (From impl, src/error.rs:19)
+unparseable IP       --> StateError::InvalidIpAddress   (src/state.rs:773)
+subscribe failure    --> tracing::warn, watch degrades (src/state.rs:1059)
+unknown speaker IP   --> tracing::warn, event skipped   (src/event_worker.rs:173)
+groupless group prop --> tracing::warn, change dropped  (src/decoder.rs:128)
+empty topology event --> tracing::warn, event ignored   (src/event_worker.rs:294)
+unparseable RelTime  --> tracing::debug, no Position emitted (src/decoder.rs:287)
+overflowing duration --> None from parse_duration_ms     (src/decoder.rs:431)
+panic in one event   --> tracing::error + counter, next event runs (src/event_worker.rs:92)
 undecodable field    --> field omitted from Vec<PropertyChange>
-closed channel       --> ChangeIterator returns None    (src/iter.rs:53)
+closed fan-out       --> ChangeIterator returns None    (src/iter.rs:207)
 ```
 
 **Error handling philosophy**: only `add_devices()` rejects input outright — an unparseable IP
 means the caller has bad data and nothing useful can be cached. Everything on the event path
 degrades instead of failing: a bad field is dropped, a bad event is skipped, a failed
 subscription is logged and leaves the property readable from cache. A single malformed event
-must not stop a long-running dashboard — which is also why a *panicking* event no longer stops
-one (see 4.6).
+must not stop a long-running dashboard, and neither must a *panicking* one (see 4.6).
 
 **Degrade loudly, not silently**: every one of those fallbacks logs. The distinction matters
 because several of them are indistinguishable from a real value at the API surface — a dropped
@@ -551,10 +559,11 @@ watcher.
 #### How
 
 ```rust
+// src/state.rs:1098
 fn maybe_emit_change<P: SonosProperty>(&self, speaker_id: &SpeakerId, value: &P, stamp: WriteStamp) {
     if !is_pair_watched(&self.watched.read(), speaker_id, P::KEY) { return; }
     let Some(change) = value.to_change() else { /* warn: no variant */ return };
-    let _ = self.event_tx.send(ChangeEvent::new(speaker_id.clone(), change, stamp));
+    self.fanout.send(ChangeEvent::new(speaker_id.clone(), change, stamp));
 }
 ```
 
@@ -582,26 +591,27 @@ for event in manager.iter() {
 | Derive `property_key()` / `service()` from the payload | Keep them as struct fields | Two sources of truth for "which property is this" can disagree; derivation makes that impossible |
 | Keep the store as well | Events only | A full repaint legitimately wants current state, not one property's history. Both readings now exist |
 | `std::sync::mpsc` | `tokio::sync::broadcast` | No runtime needed; blocking `recv()` is exactly what a sync render loop wants. `broadcast::Receiver::blocking_recv()` additionally *panics* inside a Tokio runtime and offers no `recv_timeout` — see 4.1b |
-| One unbounded queue per subscriber, fanned out | One shared receiver behind a `Mutex` | A shared receiver made concurrent `iter()` calls *compete*: each event went to whichever consumer won the lock, so each saw a random subset, silently. See 4.1b |
+| One unbounded queue per subscriber, fanned out | One shared receiver behind a `Mutex` | A shared receiver makes concurrent `iter()` calls *compete*: each event would go to whichever consumer won the lock, so each would see a random subset, silently. See 4.1b |
 
 ### 4.1b Feature: per-subscriber event fan-out
 
 #### What
 
 Every `iter()` call returns an **independent** `ChangeIterator` with its own unbounded queue.
-All subscribers receive all events. `EventFanout` (`src/iter.rs`) owns the registry of senders;
-`StateManager` holds one `Arc<EventFanout>` in place of the former `event_tx`/`event_rx` pair.
+All subscribers receive all events. `EventFanout` (`src/iter.rs:82`, `pub(crate)`) owns the
+registry of senders; `StateManager` holds one `Arc<EventFanout>` (`src/state.rs:649`).
+`ChangeIterator::new()` (`src/iter.rs:195`) is the only caller of `EventFanout::subscribe()`
+(`:104`), and `StateManager::iter()` (`src/state.rs:899`) is the only public door to it.
 
 #### Why
 
-`iter()` used to hand every caller a clone of one `Arc<Mutex<mpsc::Receiver>>`. Two
-`for event in system.iter()` loops therefore *split* the stream between them — each event went
-to whichever consumer happened to win the mutex. But `iter()` returning an independent iterator
-is the universal Rust idiom for "iterate the whole thing", so the API read as a broadcast and
-behaved as a work queue. Nothing errored, nothing was logged, and each consumer simply saw a
-random subset: a dashboard that added a second event loop in a background thread started
-dropping roughly half its updates with no signal at all. Silence instead of an error is exactly
-the failure class this campaign exists to remove.
+`iter()` returning an independent iterator is the universal Rust idiom for "iterate the whole
+thing". A single shared receiver handed to every caller would instead make two
+`for event in system.iter()` loops *split* the stream — each event going to whichever consumer
+won the lock — so the API would read as a broadcast and behave as a work queue. Nothing would
+error and nothing would be logged; each consumer would simply see a random subset. A dashboard
+that added a second event loop in a background thread would drop roughly half its updates with
+no signal at all. Fanning out makes the idiomatic reading the correct one.
 
 #### How
 
@@ -734,11 +744,12 @@ Watches are keyed `(SpeakerId, &'static str)` — per speaker *and* per property
 service — and each key maps to a `WatchHolds`, not to a bare presence bit:
 
 ```rust
-// src/state.rs
+// src/state.rs:259
 pub(crate) struct WatchHolds {
     subscription: bool,   // any WatchGuard registered for this pair
     direct: usize,        // outstanding StateManager::register_watch holds
 }
+// src/state.rs:273
 pub(crate) type WatchCounts = HashMap<(SpeakerId, &'static str), WatchHolds>;
 ```
 
@@ -747,17 +758,20 @@ clear *and* the count is zero. Registration comes either from `register_watch()`
 `StateWatchRegistry` when a `WatchGuard` is acquired; release happens on `unregister_watch()`
 or, when a subscription is finally torn down after its grace period, on
 `unregister_watches_for_service()`, which uses `key_to_service` to find every key belonging to
-that service. `is_pair_watched()` is the single read used by every emission gate.
+that service. `is_pair_watched()` (`src/state.rs:337`) is the single read used by every
+emission gate; `retain_direct_watch` (`:289`) and `release_direct_watch` (`:305`) are its
+counting counterparts, with `saturating_sub` on release.
 
 **Why a watch is a hold, not a flag.** Several independent watchers can hold the same pair at
 once: two widgets on one property, an SDK `WatchHandle` alongside a direct `register_watch()`, or
-a handle being reacquired while the previous one has not yet dropped. When `watched` was a
-`HashSet`, the first release removed the only entry, so a
-surviving watcher went silent while still holding its `WatchHandle`: `is_watched()` returned
-`false` and `system.iter()` stopped reporting the property. Worse, teardown was *wholesale* —
-`unregister_watches_for_service` removed every key belonging to the service — so releasing a
-`Volume` handle also unregistered `Mute`, `Bass`, `Treble` and `Loudness`, which all share
-`RenderingControl`. Dropping one handle silenced its siblings.
+a handle being reacquired while the previous one has not yet dropped. With a presence-only
+`HashSet` the first release would remove the only entry, so a surviving watcher would go silent
+while still holding its `WatchHandle` — `is_watched()` would answer `false` and `system.iter()`
+would stop reporting the property. Teardown is also *wholesale*:
+`unregister_watches_for_service` covers every key belonging to the service, so releasing a
+`Volume` handle would additionally unregister `Mute`, `Bass`, `Treble` and `Loudness`, which all
+share `RenderingControl`. Refcounting is what keeps one handle's release from silencing its
+siblings.
 
 **Why two fields instead of one counter.** The two kinds of hold are released by different
 events on different schedules, and no single integer models both:
@@ -784,7 +798,7 @@ properties — untouched.
 |----------|----------------------|-------------------|
 | Per-property watch keys | Per-service keys | A service carries several properties; per-service would emit for all of them |
 | Cache updates regardless of watch | Only cache watched properties | Keeps `get()` useful right after `watch()` and lets an unwatched property be read without a fetch |
-| Refcounted holds | Presence-only `HashSet` | One watcher releasing must not silence others holding the same pair; the set made the first drop win. Still required now that `watch()` need not be called per frame — overlapping holds arise from independent watchers, and the SDK's own `WatchHandle` tests cover exactly this |
+| Refcounted holds | Presence-only `HashSet` | One watcher releasing must not silence others holding the same pair, and a set would make the first drop win. Overlapping holds arise from independent watchers; the SDK's own `WatchHandle` tests cover exactly this |
 | Split `subscription` flag + `direct` count | A single `usize` covering both | Guard holds are cleared in bulk, individual holds one at a time. One counter must either leak or over-release |
 | `saturating_sub` on release | `panic!` / `debug_assert!` on over-release | An unbalanced release is a caller bug, but wrapping to `usize::MAX` would silently resurrect the watch forever — strictly the worse failure. Over-release is a no-op |
 
@@ -807,7 +821,7 @@ must still be able to report the group's `PlaybackState` when asked.
 Four cooperating pieces, all keyed off the same predicate:
 
 ```rust
-// src/state.rs — reads redirect
+// src/state.rs:448 — reads redirect
 pub(crate) fn get_resolved<P: SonosProperty>(&self, speaker_id: &SpeakerId) -> Option<P> {
     if P::SERVICE.scope() == ServiceScope::PerCoordinator && P::SCOPE == Scope::Speaker {
         let coordinator_id = self.resolve_coordinator(speaker_id);
@@ -817,7 +831,7 @@ pub(crate) fn get_resolved<P: SonosProperty>(&self, speaker_id: &SpeakerId) -> O
     }
 }
 
-// src/state.rs — SDK writes redirect, by the same rule
+// src/state.rs:462 — SDK writes redirect, by the same rule
 pub(crate) fn resolve_write_target<P: SonosProperty>(&self, speaker_id: &SpeakerId) -> SpeakerId {
     if P::SERVICE.scope() == ServiceScope::PerCoordinator && P::SCOPE == Scope::Speaker {
         self.resolve_coordinator(speaker_id)
@@ -828,27 +842,24 @@ pub(crate) fn resolve_write_target<P: SonosProperty>(&self, speaker_id: &Speaker
 ```
 
 - **Event writes**: the worker drops `PerCoordinator` events from non-coordinators
-  (`src/event_worker.rs`).
-- **SDK writes**: `set_property()` routes through `resolve_write_target()`.
-- **Notifications**: `notify_group_members()` (`src/event_worker.rs`) emits a
+  (`src/event_worker.rs:192`).
+- **SDK writes**: `set_property()` (`src/state.rs:936`) routes through `resolve_write_target()`.
+- **Notifications**: `notify_group_members()` (`src/event_worker.rs:419`) emits a
   `ChangeEvent` per watching member and copies nothing.
-- **Subscriptions**: `resolve_subscription_target()` points the member's subscription at the
-  coordinator's IP.
+- **Subscriptions**: `resolve_subscription_target()` (`src/state.rs:1186`) points the member's
+  subscription at the coordinator's IP.
 
-`resolve_coordinator()` returns the speaker's own ID when no group data exists, so a standalone
-speaker and a not-yet-known speaker both behave correctly.
+`resolve_coordinator()` (`src/state.rs:431`) returns the speaker's own ID when no group data
+exists, so a standalone speaker and a not-yet-known speaker both behave correctly.
 
-**Why writes must resolve too.** `set_property()` used to write the raw `speaker_id`, which
-made the write and the read disagree for exactly the properties this feature exists for. The
-SDK calls `set_property()` right after a successful SOAP action so the cache reflects the change
-without waiting for an event (`sonos-sdk`'s `play()`, `pause()`, `stop()`, and `fetch()`); on a
-*grouped member* that value landed in the member's own bag, while `get_property()` resolved to
-the coordinator's. The optimistic update was written somewhere nothing reads — `play()` on a
-grouped speaker left `playback_state.get()` reporting the old state until a real event arrived.
-`fetch()` (`sonos-sdk/src/property/handles.rs`) had already worked around this by resolving the
-target itself before calling `set_property`; moving the resolution into `set_property` makes
-every caller correct and leaves `fetch()`'s own call redundant-but-harmless (it resolves to the
-coordinator, and resolving twice is idempotent).
+**Why writes must resolve too.** If `set_property()` wrote the raw `speaker_id`, the write and
+the read would disagree for exactly the properties this feature exists for. The SDK calls
+`set_property()` right after a successful SOAP action so the cache reflects the change without
+waiting for an event (`sonos-sdk`'s `play()`, `pause()`, `stop()`, and `set_volume()`); on a
+*grouped member* that value would land in the member's own bag, while `get_property()` resolves
+to the coordinator's — an optimistic update written somewhere nothing reads, leaving
+`playback_state.get()` reporting the old state until a real event arrived. Resolving inside
+`set_property` makes every caller correct without each of them having to know the rule.
 
 Resolution happens *inside* the store write lock, not in a separate read beforehand: taking the
 coordinator under one lock and writing under another leaves a window in which a topology event
@@ -885,10 +896,10 @@ cheap while `watch()` stays a single call for the user.
 
 #### How
 
-`StateManagerBuilder::build()` (`src/state.rs:903`) leaves `event_manager` as an unset
-`OnceLock` unless one was supplied via `with_event_manager()` (`:897`). The SDK installs an
-`EventInitFn` (`:53`, `set_event_init` at `:827`); the first `watch()` calls it, which calls
-`set_event_manager()` (`:771`) — wiring `StateWatchRegistry`, re-registering known devices,
+`StateManagerBuilder::build()` (`src/state.rs:1352`) leaves `event_manager` as an unset
+`OnceLock` unless one was supplied via `with_event_manager()` (`:1346`). The SDK installs an
+`EventInitFn` (`:54`, `set_event_init` at `:1277`); the first `watch()` calls it, which calls
+`set_event_manager()` (`:1221`) — wiring `StateWatchRegistry`, re-registering known devices,
 and spawning the worker. `OnceLock` makes every subsequent watch a no-op.
 
 #### Trade-offs
@@ -902,9 +913,10 @@ and spawning the worker. `OnceLock` makes every subsequent watch a no-op.
 
 #### What
 
-`ChangeIterator` (`src/iter.rs:39`) offers `recv()` (:52), `recv_timeout()` (:67),
-`try_recv()` (:82), `try_iter()` (:98), and `timeout_iter()` (:106), plus `Iterator`
-(:114) delegating to `recv()`.
+`ChangeIterator` (`src/iter.rs:173`) offers `recv()` (:207), `recv_timeout()` (:222),
+`try_recv()` (:237), `try_iter()` (:257), and `timeout_iter()` (:268), plus `Iterator`
+(:286) delegating to `recv()`. `TryIter` (:298) and `TimeoutIter` (:311) are the borrowed
+views the last two return.
 
 #### Why
 
@@ -923,20 +935,20 @@ stream — see 4.1b.
 
 #### What
 
-`run_event_loop` (`src/event_worker.rs:69`) wraps the body for each event — and only the body,
+`run_event_loop` (`src/event_worker.rs:70`) wraps the body for each event — and only the body,
 never the loop — in `std::panic::catch_unwind`. A panic logs at `error!` with the event's IP and
 service, increments a per-worker counter, and the loop moves to the next event.
 
 #### Why
 
 The worker is a bare `thread::spawn` whose `JoinHandle` is never joined (`_worker` on
-`StateManager`). Without this guard, a single panic anywhere in decoding — a slice index, an
-arithmetic overflow in a debug build, a `unwrap` on a malformed field — terminated the thread
-and with it *every* subsequent state update for the whole process. There was no log, no `Err`,
-and no panic surfacing to the user; watches simply went quiet forever and a TUI kept rendering
-its last known values as though the household had frozen. That failure mode is strictly worse
-than dropping one event, and it is exactly the failure mode a long-running dashboard cannot
-detect.
+`StateManager`, `src/state.rs:652`). Without this guard, a single panic anywhere in decoding — a
+slice index, an arithmetic overflow in a debug build, an `unwrap` on a malformed field — would
+terminate the thread and with it *every* subsequent state update for the whole process. There
+would be no log, no `Err`, and no panic surfacing to the user; watches would simply go quiet
+forever while a TUI kept rendering its last known values as though the household had frozen.
+That failure mode is strictly worse than dropping one event, and it is the one a long-running
+dashboard cannot detect.
 
 #### How
 
@@ -946,7 +958,7 @@ Two facts make recovery sound rather than merely optimistic:
   unwind simply releases the lock; there is no poisoned flag and no `PoisonError` on the next
   acquisition. So the store, the watched set, and the IP map are all still usable after a panic.
   This is the non-poisoning property already listed as a P1 design goal in 1.2, now load-bearing.
-- **Events are independent.** `PropertyChange::apply` takes the write lock per change, so an
+- **Events are independent.** `PropertyChange::apply` (`src/decoder.rs:82`) takes the write lock per change, so an
   aborted event leaves the store partially updated but internally consistent, and the next event
   for that service overwrites it. Nothing spans two events.
 
@@ -956,7 +968,7 @@ and stated in a comment at the call site rather than left implicit.
 
 **Guarding against masked bugs**: `catch_unwind` can turn a crash into a slow leak of dropped
 updates, so panics are never swallowed. Every panic logs at `error!` individually, and every
-`PANIC_ESCALATION_INTERVAL` (10) panics logs an additional escalated `error!` naming the running
+`PANIC_ESCALATION_INTERVAL` (10, `src/event_worker.rs:57`) panics logs an additional escalated `error!` naming the running
 total. There is deliberately no health-check API — the log is the interface.
 
 #### Trade-offs
@@ -1001,20 +1013,22 @@ pub struct Speaker {
 ```
 
 Static device metadata, distinct from the dynamic values in `PropertyBag`. `add_devices()`
-sets `software_version` to `"unknown"` (`src/state.rs:437`) because discovery does not carry
-it. `ip_address` is mutable in place through `update_speaker_ip_address()` (`:227`), the only
+sets `software_version` to `"unknown"` (`src/state.rs:788`) because discovery does not carry
+it. `ip_address` is mutable in place through `update_speaker_ip_address()` (`:513`), the only
 field that changes after insertion.
 
-#### `PropertyChange` (`src/decoder.rs:51`)
+#### `PropertyChange` (`src/decoder.rs:59`)
 
-A 12-variant enum, one per decodable property, with `apply`, `key`, `scope`, and `service`. It
-exists so a decoded batch can be moved out of the decoder without generics and without holding
-the store lock during decode — the worker decodes first, then takes the write lock per change.
+A `#[non_exhaustive]` 12-variant enum, one per decodable property, with `apply` (`:82`), `key`
+(`:139`), `scope` (`:158`), and `service` (`:177`). It exists so a decoded batch can be moved
+out of the decoder without generics and without holding the store lock during decode — the
+worker decodes first, then takes the write lock per change.
 
-Since 0.7.0 it is also the **`ChangeEvent` payload**, reached through `SonosProperty::to_change()`
-for values written outside the decoder (local actions, `fetch()` results). That dual role is
+It is also the **`ChangeEvent` payload**, reached through `SonosProperty::to_change()` for
+values written outside the decoder (local actions, `fetch()` results). That dual role is
 deliberate: one closed, typed representation of "a property took this value", whether it came
-from a NOTIFY or from a SOAP write.
+from a NOTIFY or from a SOAP write. Being `#[non_exhaustive]`, a downstream `match` on it must
+carry a wildcard arm, so adding a property is not a breaking change.
 
 ### 5.2 State Transitions
 
@@ -1043,8 +1057,8 @@ does return is subscription state, managed by `sonos-event-manager` after its gr
 |--------|----------|---------|-------|
 | Serde derive | Property values, `SpeakerInfo`, `Topology`, `GroupInfo` | `serde` | For consumer persistence; not used internally |
 | DIDL-Lite XML | Track metadata | `quick-xml` + `serde` | `parse_track_metadata` deserializes a private `DidlLite`/`DidlItem` pair. See 5.3a |
-| Device/topology URLs | Speaker IP from a `location` value | `url` | `extract_ip_from_location` (`src/decoder.rs`); see 10.3 |
-| `HH:MM:SS[.mmm]` | Positions and durations | Hand-rolled | `parse_duration_ms` (`src/decoder.rs`); rejects `NOT_IMPLEMENTED` and returns `None` on overflow. Kept hand-rolled: this is not a standard duration format any crate parses |
+| Device/topology URLs | Speaker IP from a `location` value | `url` | `extract_ip_from_location` (`src/decoder.rs:422`); see 10.3 |
+| `HH:MM:SS[.mmm]` | Positions and durations | Hand-rolled | `parse_duration_ms` (`src/decoder.rs:431`); rejects `NOT_IMPLEMENTED` and returns `None` on overflow. Hand-rolled because this is not a standard duration format any crate parses |
 
 `Scope` and `SonosProperty` are deliberately not serializable — they are compile-time metadata.
 
@@ -1053,13 +1067,14 @@ does return is subscription state, managed by `sonos-event-manager` after its gr
 **The signature is a deliberately frozen cross-crate contract.**
 
 ```rust
+// src/decoder.rs:505
 pub fn parse_track_metadata(
     metadata: Option<&str>,
 ) -> (Option<String>, Option<String>, Option<String>, Option<String>)
 //     title           artist          album           album_art_uri
 ```
 
-`sonos-sdk` destructures the tuple positionally (`sonos-sdk/src/property/handles.rs`), so
+`sonos-sdk` destructures the tuple positionally (`sonos-sdk/src/property/handles.rs:808`), so
 the arity, order and infallibility are all load-bearing. Two consequences:
 
 - **Do not make it fallible.** A track whose metadata will not parse must read as "unknown
@@ -1084,11 +1099,13 @@ tracks that render fine today — a regression, not a fix. So:
 3. Only if *that* also fails (malformed markup, not merely a bad entity) is the item
    dropped and all-`None` returned, with the reason at `debug`.
 
-**The bug this replaced.** The previous implementation unescaped by chaining `.replace()`
-calls with `&amp;` **first**, so `&amp;apos;` decoded to `'` instead of the literal
-`&apos;` — double-escaped input silently lost a level. It also could not see CDATA,
-comments, or a matching tag name inside an attribute value. Ordering bugs of that shape are
-exactly why unescaping now belongs to the parser.
+**Why unescaping belongs to the parser.** Unescaping by hand — a chain of `.replace()` calls —
+is order-sensitive in a way that cannot be fixed: replacing `&amp;` first makes `&amp;apos;`
+decode to `'` instead of the literal `&apos;`, so double-escaped input silently loses a level,
+and replacing it last breaks the symmetric case. A hand-rolled pass also cannot see CDATA,
+comments, or a matching tag name inside an attribute value. `escape_stray_ampersands`
+(`src/decoder.rs:568`) deliberately does the *opposite* job — it repairs input so the parser can
+do the unescaping.
 
 **Field names are element *local* names.** quick-xml resolves namespace prefixes, so
 UPnP's `dc:title` deserializes as `title` and `upnp:albumArtURI` as `albumArtURI`;
@@ -1107,10 +1124,9 @@ hand-splitting got two cases wrong:
   truncated the host to `"[fe80"` and yielded `None`.
 - **Userinfo, or a host with no port**, shifted whichever segment the naive split picked.
 
-`Url::parse` also rejects a scheme-less string as a relative URL, which preserves the
-previous `strip_prefix("http://")` behaviour of returning `None` for
-`"192.168.1.1:1400/xml"`. A host that is a *name* rather than a literal address still
-returns `None`: this value is a cache key for `ip_to_speaker`, not something to resolve.
+`Url::parse` also rejects a scheme-less string as a relative URL, so
+`"192.168.1.1:1400/xml"` yields `None`. A host that is a *name* rather than a literal address
+also returns `None`: this value is a cache key for `ip_to_speaker`, not something to resolve.
 
 ---
 
@@ -1128,15 +1144,19 @@ returns `None`: this value is a cache key for `ip_to_speaker`, not something to 
 | `serde` | Derives on property types | Lets consumers persist values |
 | `tracing` | Logging | Workspace-wide convention |
 
-No async runtime dependency: the worker is a `std::thread` and the channel is `std::sync::mpsc`.
+No async runtime dependency: the worker is a `std::thread` and each subscriber queue is a
+`std::sync::mpsc` channel. `quick-xml` and `url` are also direct dependencies, used by the
+decoder (5.3).
 
 ### 6.2 Dependents (Downstream)
 
 | Crate | How It Uses Us | API Stability Notes |
 |-------|---------------|---------------------|
-| `sonos-sdk` | Sole consumer. Wraps `StateManager` in property handles; `system.iter()` (`sonos-sdk/src/system.rs:531`) returns our `ChangeIterator` | Internal crate — signatures may change with the SDK |
+| `sonos-sdk` | Sole consumer. Wraps `StateManager` in property handles; `system.iter()` (`sonos-sdk/src/system.rs:780`) returns our `ChangeIterator` | Internal crate — signatures may change with the SDK |
 
-`sonos-state` is published to crates.io only as a transitive dependency of `sonos-sdk`.
+The crate is published to crates.io as `sonos-sdk-state` (lib name `sonos_state`), so that
+`sonos-sdk` can depend on a released version; it is documented and versioned as an internal
+layer of the SDK.
 
 ### 6.3 External Systems
 
@@ -1151,7 +1171,7 @@ SSDP multicast on `239.255.255.250:1900` is likewise out of this crate's scope.
 ### 7.1 Error Types
 
 ```rust
-// src/error.rs:10
+// src/error.rs:8
 pub enum StateError {
     Init(String),
     Parse(String),
@@ -1169,20 +1189,20 @@ pub enum StateError {
 }
 ```
 
-Derived with `thiserror`: `#[derive(thiserror::Error)]` plus one `#[error("...")]` per
-variant. The hand-written `Display` and `Error::source` impls this crate used to carry
-were replaced with derives producing **byte-identical messages**, so nothing downstream
-that matches on error text changed. Only `Api` exposes a `source`, via `#[from]`, which
-also supplies the `From<ApiError>` conversion the `?` operator needs. A unit test pins
-both the message and the presence of the source, so an accidental `#[error]` reword or a
-dropped `#[from]` fails the build rather than silently changing observable behaviour.
+13 variants, derived with `thiserror`: `#[derive(Debug, thiserror::Error)]` plus one
+`#[error("...")]` per variant. It is **not** `#[non_exhaustive]`, so adding a variant is a
+breaking change for a downstream exhaustive `match`. Only `Api` exposes a `source`, via
+`#[from]`, which also supplies the `From<ApiError>` conversion the `?` operator needs. A unit
+test (`src/error.rs:63`) pins both the message text and the presence of that source, so an
+accidental `#[error]` reword or a dropped `#[from]` fails the build rather than silently
+changing observable behaviour. `Result<T>` (`src/error.rs:4`) is the crate-wide alias.
 
 ### 7.2 Error Philosophy
 
 | Principle | Implementation | Rationale |
 |-----------|---------------|-----------|
 | Reject bad input, degrade on bad events | `add_devices` returns `InvalidIpAddress`; the worker logs and skips | Caller data errors are fixable; a malformed event must not stop a dashboard |
-| Warn, do not fail, on subscription problems | `tracing::warn` in `watch_property_with_subscription` (`src/state.rs:622`) | The property stays readable from cache; the SDK can fall back to polling |
+| Warn, do not fail, on subscription problems | `tracing::warn` in `watch_property_with_subscription` (`src/state.rs:1059`) | The property stays readable from cache; the SDK can fall back to polling |
 | Partial decode over total failure | Decoders push only the fields they parsed | One bad field should not discard the rest of the event |
 
 ### 7.3 Error Recovery
@@ -1204,20 +1224,22 @@ remain for consumers and for paths that predate the current design.
 
 ### 8.1 Testing Philosophy
 
-106 inline unit tests, no `tests/` directory and no network access. Everything the crate does
-is a pure function over in-memory state plus one channel, so behaviour is testable by
-constructing a store, applying changes, and asserting on both the store and the channel.
+120 inline `#[test]` functions plus 3 proptest properties, no `tests/` directory and no network
+access. Everything the crate does is a pure function over in-memory state plus one fan-out, so
+behaviour is testable by constructing a store, applying changes, and asserting on both the store
+and a subscriber's queue. There are no `#[tokio::test]`s, because there is no runtime.
 
 ```
                     +-------------------+
                     | Live verification |  examples/minimal_example.rs (manual)
                     +--------+----------+
            +-----------------+------------------+
-           |    Worker + store integration      |  event_worker.rs (17)
+           |    Worker + store integration      |  event_worker.rs (20)
            +-----------------+------------------+
     +------+------+------+------+------+------+------+
-    |               Unit tests                        |  state 36, decoder 27,
-    +-------------------------------------------------+  property 15, iter 7, model 2, speaker 2
+    |               Unit tests                        |  state 42, decoder 28 (+3 proptest),
+    +-------------------------------------------------+  property 15, iter 10, model 2,
+                                                          speaker 2, error 1
 ```
 
 ### 8.2 Unit Tests
@@ -1225,15 +1247,16 @@ constructing a store, applying changes, and asserting on both the store and the 
 **Location**: inline `#[cfg(test)] mod tests` in each source file.
 
 **What is covered**:
-- [x] Constructor clamping — `test_volume_clamping` (`src/property.rs:527`), `test_bass_clamping` (:534)
-- [x] Property metadata constants — `test_property_constants` (`src/property.rs:601`)
-- [x] Per-service decoding — `test_decode_rendering_control` (`src/decoder.rs:640`), `test_decode_av_transport` (:675), `test_decode_group_rendering_control` (:706)
-- [x] Topology decode incl. IPs, satellites, `boot_seq` — `src/decoder.rs:588`, :1026, :1059
-- [x] `PropertyChange` key/service/scope mapping — `src/decoder.rs`
+- [x] Constructor clamping — `test_volume_clamping` (`src/property.rs:613`), `test_bass_clamping` (:620)
+- [x] Property metadata constants — `test_property_constants` (`src/property.rs:687`)
+- [x] Per-service decoding — `test_decode_rendering_control` (`src/decoder.rs:787`), `test_decode_av_transport` (:822), `test_decode_group_rendering_control` (:853)
+- [x] Topology decode incl. IPs, satellites, `boot_seq` — `test_decode_topology_extracts_ips_and_satellites` (`src/decoder.rs:735`), `test_decode_topology_extracts_boot_seq_values` (:1173), `test_decode_topology_boot_seq_defaults_to_zero` (:1206)
+- [x] `PropertyChange` key/service/scope mapping — `src/decoder.rs:619` onward
+- [x] Property-based DIDL/entity handling — `mod property_tests` (`src/decoder.rs:1229`), 3 proptest properties
 - [x] Queued events preserve every intermediate value —
       `test_queued_events_preserve_every_intermediate_value` (`src/state.rs`) queues
       `Playing -> Transitioning -> Playing` before draining and asserts all three are observed,
-      while the store holds only the last. Impossible to satisfy before 0.7.0
+      while the store holds only the last
 - [x] Monotonic write guard — `test_stale_fetch_does_not_clobber_newer_event_value` proves a
       `fetch()` observed before a stored event is rejected *and* that the newer value survives;
       `test_newer_write_is_accepted_after_an_earlier_one` proves the guard is not simply
@@ -1242,9 +1265,9 @@ constructing a store, applying changes, and asserting on both the store and the 
       `test_sdk_change_event_carries_value_and_source` (`sonos-sdk/src/property/handles.rs`)
 - [x] Group fan-out payload — `test_per_coordinator_notifies_members_without_data_copy` asserts
       the member's event carries the coordinator's value
-- [x] Channel semantics — `test_channel_closed` (`src/iter.rs:269`), `test_try_iter` (:233)
-- [x] Coordinator resolution — `test_get_resolved_per_coordinator_reads_from_coordinator` (`src/state.rs:1687`), `test_get_resolved_per_speaker_reads_own_props` (:1735)
-- [x] Watch gating — `test_change_event_emission` (`src/state.rs:1040`), `test_set_group_property_no_event_when_unwatched` (:1116)
+- [x] Fan-out semantics — `test_channel_closed` (`src/iter.rs:451`), `test_try_iter` (:411)
+- [x] Coordinator resolution — `test_get_resolved_per_coordinator_reads_from_coordinator` (`src/state.rs:2297`), `test_get_resolved_per_speaker_reads_own_props` (:2345)
+- [x] Watch gating — `test_change_event_emission` (`src/state.rs:1494`), `test_set_group_property_no_event_when_unwatched` (:1572)
 - [x] Registry unregistration — `test_state_watch_registry_register_and_unregister`
 - [x] Watch refcounting — `test_watch_refcount_survives_partial_release` proves *n* watchers
       of one property survive *n-1* releases and that an over-release does not resurrect the
@@ -1255,36 +1278,37 @@ constructing a store, applying changes, and asserting on both the store and the 
       `PerCoordinator` speaker-scoped property through a *group member* and asserts it is
       readable from both the member and the coordinator, then asserts a `PerSpeaker` write is
       *not* redirected
-- [x] IP updates — `test_update_speaker_ip` (`src/state.rs:1783`)
-- [x] Duration overflow — `test_parse_duration_ms_overflow_returns_none` (`src/decoder.rs:507`)
+- [x] IP updates — `test_update_speaker_ip` (`src/state.rs:2393`)
+- [x] Duration overflow — `test_parse_duration_ms_overflow_returns_none` (`src/decoder.rs:635`)
       proves `parse_duration_ms` returns `None` instead of panicking on components that
       overflow `u64`
 - [x] Garbage position — `test_decode_av_transport_skips_position_when_rel_time_garbage`
-      (`src/decoder.rs:515`) proves no `Position` change is emitted when `RelTime` will not
+      (`src/decoder.rs:643`) proves no `Position` change is emitted when `RelTime` will not
       parse, so 0:00 never masquerades as a real reading
 
 ### 8.3 Component Tests
 
-`src/event_worker.rs:443` exercises the worker's helpers directly against a real
-`StateStore`, a real `watched` set, and a real `mpsc` pair — no mocking, since all three are
+`src/event_worker.rs:480` exercises the worker's helpers directly against a real
+`StateStore`, a real `watched` set, and a real `EventFanout` — no mocking, since all three are
 cheap to construct.
 
-Notable cases: `test_apply_property_change_with_watch` (`:496`) asserts an event fires only
-when watched; `test_apply_topology_changes_no_event_when_membership_unchanged` (`:1061`) pins
-the change-detection gate; `test_per_coordinator_notifies_members_without_data_copy` (`:1114`)
+Notable cases: `test_apply_property_change_with_watch` (`:542`) asserts an event fires only
+when watched; `test_apply_topology_changes_no_event_when_membership_unchanged` (`:1360`) pins
+the change-detection gate; `test_per_coordinator_notifies_members_without_data_copy` (`:1422`)
 asserts the member is notified *and* that nothing was written to its bag;
-`test_per_speaker_service_not_notified` (`:1245`) asserts the inverse for `PerSpeaker`
+`test_per_speaker_service_not_notified` (`:1567`) asserts the inverse for `PerSpeaker`
 services.
 
-`test_partial_topology_event_does_not_clear_groups` (`:932`) is the regression test for 3.2's
+`test_partial_topology_event_does_not_clear_groups` (`:1012`) is the regression test for 3.2's
 empty-snapshot guard: it seeds a group plus a group-scoped property, applies a
 `TopologyChanges` with no groups, and asserts the group, its `group_props`, and its
 `speaker_to_group` entry all survive with no notification emitted.
 
-`test_worker_survives_decoder_panic` (`:991`) drives `run_event_loop` directly with two
+`test_worker_survives_decoder_panic` (`:1285`) drives `run_event_loop` directly with two
 events — one that panics, one valid — and asserts the valid event's `ChangeEvent` still
 arrives and its value reached the store. The panic is injected through a `#[cfg(test)]`
-sentinel IP (`PANIC_TRIGGER_IP`) checked at the top of `handle_event`, deliberately in place of
+sentinel IP (`PANIC_TRIGGER_IP`, `src/event_worker.rs:490`) checked at the top of
+`handle_event` (`:133`), deliberately in place of
 a permanent fault-injection API on an internal crate. A panic backtrace on stderr during this
 test is expected output, not a failure.
 
@@ -1300,7 +1324,7 @@ fallback).
 |------------|----------|----------|
 | `StateStore` | Real instance | `StateStore::new()` inline |
 | `SpeakerInfo` | Local factory functions | `create_test_speaker_info()` in the relevant test module |
-| `ChangeEvent` channel | Real `mpsc::channel()` | Assert on `try_recv()` and on `event.change` |
+| `ChangeEvent` delivery | Real `EventFanout` + `ChangeIterator` | Assert on `try_recv()` and on `event.change` |
 | `EnrichedEvent` | Direct struct construction | `src/decoder.rs` tests |
 | `SonosEventManager` | Not mocked | Worker helpers are tested directly instead of through `iter()` |
 
@@ -1318,16 +1342,16 @@ fallback).
 
 ### 9.2 Critical Paths
 
-1. **`get_property` / `get_resolved`** (`src/state.rs:545`, `:188`) — read lock, up to two
+1. **`get_property` / `get_resolved`** (`src/state.rs:907`, `:448`) — read lock, up to two
    hash lookups (coordinator resolution adds one), then a clone. Called per notification per
    frame, so the clone cost is the property's own clone cost; keeping property types small
    matters.
-2. **Worker apply loop** (`src/event_worker.rs:219`) — takes the store write lock *per
+2. **Worker apply loop** (`src/event_worker.rs:234`) — takes the store write lock *per
    change* rather than once per event. Simpler and it shortens the window the render loop can
    be blocked, at the cost of re-locking a few times per event.
-3. **`notify_group_members`** (`src/event_worker.rs:387`) — O(members x changes) with the
+3. **`notify_group_members`** (`src/event_worker.rs:419`) — O(members x changes) with the
    `watched` read lock held. Bounded by real group sizes.
-4. **Topology apply** (`src/event_worker.rs:284`) — the single largest write-lock hold: it
+4. **Topology apply** (`src/event_worker.rs:308`) — the single largest write-lock hold: it
    rebuilds all groups under one lock. Frequency is low (regrouping is user-driven), so the
    duration is acceptable.
 
@@ -1335,14 +1359,14 @@ fallback).
 
 | Resource | Acquisition | Release | Pooling |
 |----------|-------------|---------|---------|
-| Worker thread | First `set_event_manager()` | When all `event_tx` clones drop and the event-manager iterator ends | One per `StateManager` |
+| Worker thread | First `set_event_manager()` | When the event-manager iterator ends | One per `StateManager`; clones get `_worker: None` |
 | `PropertyBag` entry | First `set` for that speaker | With the speaker | One per `(entity, property type)` |
 | `watched` hold | `register_watch` (counted) / `WatchGuard` acquisition (flag) | `unregister_watch` releases one count; `unregister_watches_for_service` clears the flag after the grace period. Entry removed at zero holds | Shared across `StateManager` clones |
 | UPnP subscription | Delegated | Delegated | `sonos-event-manager` |
 
-`StateManager` has no `Drop` impl. Shutdown is by channel closure: dropping the last clone
-drops the last `event_tx`, the worker's next send fails, and the thread ends when the
-event-manager iterator terminates.
+`StateManager` has no `Drop` impl. Shutdown is by closure: dropping the last clone drops the
+`EventFanout` and every subscriber's `Sender`, so live `ChangeIterator`s see `recv()` return
+`None`, and the worker thread ends when the event-manager iterator terminates.
 
 ---
 
@@ -1352,8 +1376,8 @@ event-manager iterator terminates.
 
 | Threat | Likelihood | Impact | Mitigation |
 |--------|------------|--------|------------|
-| Forged UPnP event on the LAN | Low | Medium (wrong displayed state) | Events from IPs absent from `ip_to_speaker` are dropped (`src/event_worker.rs:159`) |
-| Event flooding | Low | Low | Unbounded `mpsc` grows but never blocks the worker; unwatched properties never enqueue at all |
+| Forged UPnP event on the LAN | Low | Medium (wrong displayed state) | Events from IPs absent from `ip_to_speaker` are dropped (`src/event_worker.rs:170`) |
+| Event flooding | Low | Low | Each subscriber's unbounded `mpsc` queue grows but never blocks the worker; unwatched properties never enqueue at all |
 | Malformed XML in track metadata | Medium | Low | `parse_track_metadata` is infallible: a real XML parser (`quick-xml`) with a lenient retry, and all-`None` if both attempts fail. No panic, no error propagated to the display path (5.3a) |
 
 ### 10.2 Sensitive Data
@@ -1367,13 +1391,13 @@ event-manager iterator terminates.
 
 | Input Source | Validation | Location |
 |--------------|------------|----------|
-| `Device.ip_address` | Must parse as `IpAddr` | `src/state.rs:419` |
-| Event source IP | Must be a known speaker | `src/event_worker.rs:150` |
-| Volume strings | `parse::<u8>()`, then `.min(100)` | `src/decoder.rs:206` |
-| Group volume | `.min(100)` | `src/decoder.rs:315` |
-| Durations | Exactly three `:`-separated parts, and checked arithmetic so an overflowing component yields `None` | `src/decoder.rs` (`parse_duration_ms`) |
-| Topology `location` | Parsed with `url::Url`; the host must be a literal IPv4 or IPv6 address | `src/decoder.rs` (`extract_ip_from_location`) |
-| Track metadata | Real XML parse, infallible by contract | `src/decoder.rs` (`parse_track_metadata`); see 5.3a |
+| `Device.ip_address` | Must parse as `IpAddr` | `src/state.rs:773` |
+| Event source IP | Must be a known speaker | `src/event_worker.rs:161` |
+| Volume strings | `parse::<u8>()`, then `.min(100)` | `src/decoder.rs:221` |
+| Group volume | `.min(100)` | `src/decoder.rs:329` |
+| Durations | Exactly three `:`-separated parts, and checked arithmetic so an overflowing component yields `None` | `src/decoder.rs:431` (`parse_duration_ms`) |
+| Topology `location` | Parsed with `url::Url`; the host must be a literal IPv4 or IPv6 address | `src/decoder.rs:422` (`extract_ip_from_location`) |
+| Track metadata | Real XML parse, infallible by contract | `src/decoder.rs:505` (`parse_track_metadata`); see 5.3a |
 
 ---
 
@@ -1383,10 +1407,10 @@ event-manager iterator terminates.
 
 | Level | What's Logged | Example |
 |-------|--------------|---------|
-| `warn` | Unknown speaker IP, failed subscribe/unsubscribe, event-manager device registration failure | "Received event from unknown speaker IP" (`src/event_worker.rs:159`); empty topology snapshot (`:270`); unmappable group-scoped change (`src/decoder.rs:113`) |
-| `info` | Manager creation, worker start/stop, speaker IP changes | "State event worker started" (`src/event_worker.rs:39`); `error` is reserved for contained panics (`:97`) |
-| `debug` | Per-event receipt, decode counts, per-change application, emissions | "Decoded {} property changes from event" (`src/event_worker.rs:213`); skipped Position and coordinator-lookup misses |
-| `trace` | Iterator yields | `ChangeIterator::recv` (`src/iter.rs:55`) |
+| `warn` | Unknown speaker IP, failed subscribe/unsubscribe, event-manager device registration failure | "Received event from unknown speaker IP" (`src/event_worker.rs:173`); empty topology snapshot (`:294`); unmappable group-scoped change (`src/decoder.rs:128`) |
+| `info` | Manager creation, worker start/stop, speaker IP changes | "State event worker started" (`src/event_worker.rs:40`); `error` is reserved for contained panics (`:96`) |
+| `debug` | Per-event receipt, decode counts, per-change application, emissions | "Decoded {} property changes from event" (`src/event_worker.rs:228`); skipped Position and coordinator-lookup misses |
+| `trace` | Iterator yields | `ChangeIterator::recv` (`src/iter.rs:207`) |
 
 The `debug` level is the intended level for diagnosing "why did my watch not fire?" — it
 traces IP resolution, the coordinator gate, decode output, and the watched-set check, which is
@@ -1404,8 +1428,8 @@ No explicit `#[instrument]` spans; observability is event-based logging on the f
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `cleanup_timeout` | `Duration` | 5s (`src/state.rs:878`) | Builder field, stored but not currently read by any code path — subscription teardown timing lives in `sonos-event-manager`'s `GRACE_PERIOD` (`sonos-event-manager/src/manager.rs:27`) |
-| `event_manager` | `Option<Arc<SonosEventManager>>` | `None` | Supply at build time (`:897`) for eager events; otherwise events arrive lazily via `EventInitFn` |
+| `cleanup_timeout` | `Duration` | 5s (`src/state.rs:1327`) | Builder field (`cleanup_timeout()`, `:1335`), stored but read by no code path — subscription teardown timing lives in `sonos-event-manager`'s `GRACE_PERIOD` (`sonos-event-manager/src/manager.rs:28`) |
+| `event_manager` | `Option<Arc<SonosEventManager>>` | `None` | Supply at build time (`with_event_manager()`, `:1346`) for eager events; otherwise events arrive lazily via `EventInitFn` |
 
 ### 12.2 Environment Variables
 
@@ -1431,14 +1455,10 @@ should depend on `sonos-sdk`.
 
 The workspace versions together; breaking changes ride the `sonos-sdk` version.
 
-### 13.3 Version History
+### 13.3 Version
 
-| Version | Changes |
-|---------|---------|
-| 0.7.0 | **Breaking**: `ChangeEvent` carries the value as `PropertyChange`; `property_key`/`service` become methods; `source`/`timestamp` reflect observation. Monotonic write guard (`WriteStamp`, `WriteOutcome`, `ChangeSource`); `StateStore::set*` and `PropertyChange::apply` take a stamp and return `WriteOutcome` |
-| 0.5.x–0.6.x | Sync-first design: `std::thread` worker, `mpsc` notifications, valueless `ChangeEvent`, coordinator resolution, lazy `EventInitFn` |
-| 0.2.1 | `StateWatchRegistry` implementing `WatchRegistry`; moved to `parking_lot::RwLock` |
-| 0.1.0 | Initial release |
+Published as `sonos-sdk-state`, versioned from the workspace (`version.workspace = true`), so
+it moves in lockstep with `sonos-sdk` and every other crate in the SDK.
 
 ---
 
@@ -1450,25 +1470,24 @@ The workspace versions together; breaking changes ride the `sonos-sdk` version.
 |------------|--------|------------|-------------|
 | Properties start as `None` | First `get()` before any event returns nothing | Use the SDK's `fetch()` or `watch_or_fetch()` | — |
 | `GroupManagement` decodes to empty | No properties from that service | — | Tracked in `docs/STATUS.md` |
-| Unbounded notification queues, now one per subscriber | A never-draining consumer grows memory, and each extra `iter()` adds its own queue plus a `ChangeEvent` clone (~168 bytes, plus heap strings for `CurrentTrack`) per event. Nothing is dropped, which is the intended tradeoff | Drain, or use `try_iter()` per frame; drop iterators you no longer read | Bounded queues with a *detectable* drop policy — a silent drop would reintroduce the bug 4.1b fixed |
+| Unbounded notification queues, one per subscriber | A never-draining consumer grows memory, and each extra `iter()` adds its own queue plus a `ChangeEvent` clone (~168 bytes, plus heap strings for `CurrentTrack`) per event. Nothing is dropped, which is the intended tradeoff | Drain, or use `try_iter()` per frame; drop iterators you no longer read | Bounded queues with a *detectable* drop policy — a silent drop is exactly what 4.1b rules out |
 | A `ChangeIterator` receives only events emitted after it was created | Taking an iterator after a write misses that write; there is no replay | Subscribe before the writes you want to observe; read current state from `get_property()` | None planned — see 4.1b trade-offs |
 | `cleanup_timeout` unused | Builder option has no effect | Ignore it | Remove or wire through |
-| `system_props` write-only in practice | `Topology` is stored by `initialize()` (`src/state.rs:681`) but has no public system-scoped getter | Use `groups()` / `speaker_infos()` | Add a system-scope accessor |
-| An empty `ZoneGroupTopology` snapshot cannot express "no groups" | A hypothetical genuine all-groups-dissolved event would be ignored (`src/event_worker.rs:270`) | None needed — Sonos always reports at least one single-member group per speaker | Diff against the previous snapshot instead of replacing |
+| `system_props` write-only in practice | `Topology` is stored by `initialize()` (`src/state.rs:1128`) but has no public system-scoped getter | Use `groups()` / `speaker_infos()` | Add a system-scope accessor |
+| An empty `ZoneGroupTopology` snapshot cannot express "no groups" | A hypothetical genuine all-groups-dissolved event would be ignored (`src/event_worker.rs:294`) | None needed — Sonos always reports at least one single-member group per speaker | Diff against the previous snapshot instead of replacing |
 | Contained panics drop the event that caused them | A recurring panic silently loses updates for one service while the rest keep working | Watch the `error!` log; the escalated line names the running total | Fix the panicking decode path; there is deliberately no health-check API |
 
 ### 14.2 Technical Debt
 
 | Debt Item | Location | Severity | Remediation Plan |
 |-----------|----------|----------|------------------|
-| Two overlapping watch paths: `watch_property_with_subscription` vs. the SDK's guard-based `acquire_watch` | `src/state.rs:610`, `:636` | Medium | Remove the pre-guard path once nothing depends on it |
+| Two overlapping watch paths: `watch_property_with_subscription` vs. the SDK's guard-based `acquire_watch` | `src/state.rs:1047`, `:1073` | Medium | Remove the manual path once nothing depends on it |
 | Watch holds are split across two crates: `WatchHolds.subscription` is a flag here because the real per-guard count lives in `sonos-event-manager`'s `service_refs`, keyed `(ip, service)` rather than `(speaker, key)` | `src/state.rs` (`WatchHolds`), `sonos-event-manager/src/manager.rs` | Low | Have `WatchGuard::drop` release its own `(speaker, key)` hold directly, so one counter covers both kinds and the flag can go |
-| Unconstructed `StateError` variants | `src/error.rs:10` | Low | Prune to the variants actually produced |
-| ~~Hand-rolled XML extraction while `sonos-stream` already depends on `quick-xml`~~ | ~~`src/decoder.rs`~~ | — | **Resolved 2026-08-17.** `extract_xml_element` deleted; `parse_track_metadata` now deserializes with `quick-xml` (5.3a) and `extract_ip_from_location` parses with `url` (5.3b). What remains is the duplicate DIDL model shared with `sonos_api::events::DidlItem` |
-| Two DIDL-Lite models: the private one here and `sonos_api::events::DidlItem` | `src/decoder.rs`, `sonos-api/src/events/xml_utils.rs` | Low | The api one lacks `albumArtist`, which the artist fallback needs. Add it there and drop the local copy |
-| `software_version` hardcoded to `"unknown"` | `src/state.rs:437` | Low | Read from the device description |
-| Write lock retaken per change inside one event | `src/event_worker.rs:423` | Low | Batch under one lock if profiling shows it matters |
-| Panic containment is a net, not a fix | `src/event_worker.rs:97` | Low | Any `error!` from it marks a real bug to be fixed at its source |
+| Unconstructed `StateError` variants | `src/error.rs:8` | Low | Prune to the variants actually produced |
+| Two DIDL-Lite models: the private one here and `sonos_api::events::DidlItem` | `src/decoder.rs:479`, `sonos-api/src/events/xml_utils.rs:166` | Low | The api one lacks `albumArtist`, which the artist fallback needs. Add it there and drop the local copy |
+| `software_version` hardcoded to `"unknown"` | `src/state.rs:788` | Low | Read from the device description |
+| Write lock retaken per change inside one event | `src/event_worker.rs:460` | Low | Batch under one lock if profiling shows it matters |
+| Panic containment is a net, not a fix | `src/event_worker.rs:92` | Low | Any `error!` from it marks a real bug to be fixed at its source |
 
 ---
 
@@ -1478,17 +1497,17 @@ The workspace versions together; breaking changes ride the `sonos-sdk` version.
 
 | Enhancement | Priority | Rationale | Dependencies |
 |-------------|----------|-----------|--------------|
-| Bounded notification channel | P1 | Bound memory when a consumer stalls | Choose a drop policy |
+| Bounded per-subscriber queues | P1 | Bound memory when a consumer stalls | Choose a *detectable* drop policy |
 | Coalesce notifications per property | P2 | A burst on one property need only wake the consumer once | Timer or dedup on the watched key |
 | System-scope property accessor | P2 | `Topology` is stored but unreachable | — |
 | Decoders for new services | P2 | Follows API/stream layers per `docs/STATUS.md` | `sonos-api`, `sonos-stream` |
 
 ### 15.2 Open Questions
 
-- [ ] **Should `ChangeEvent` be coalesced in the channel rather than by the consumer?**
-  Now materially harder than it looked: events carry values, so collapsing two events on one
-  `(speaker_id, property_key)` *discards an observed value* — exactly what 4.1 exists to
-  prevent. Any coalescing would have to be opt-in per consumer, not a channel-level default.
+- [ ] **Should `ChangeEvent` be coalesced in the queue rather than by the consumer?**
+  Events carry values, so collapsing two events on one `(speaker_id, property_key)` *discards an
+  observed value* — exactly what 4.1 exists to prevent. Any coalescing would have to be opt-in
+  per consumer, not a queue-level default.
 - [ ] **Should `get_resolved` be exposed directly?** Today coordinator resolution is implicit
   in `get_property`. An explicit "give me my own value, unresolved" accessor might be useful
   for diagnostics.
@@ -1502,10 +1521,11 @@ The workspace versions together; breaking changes ride the `sonos-sdk` version.
 | Term | Definition |
 |------|------------|
 | Property | A typed value with a `KEY`, a `Scope`, and an owning `Service` (e.g. `Volume`) |
-| Scope | Where a property is stored: `Speaker`, `Group`, or `System` (`src/property.rs:23`) |
+| Scope | Where a property is stored: `Speaker`, `Group`, or `System` (`src/property.rs:39`) |
 | ServiceScope | How a service subscribes: `PerSpeaker`, `PerNetwork`, `PerCoordinator` (`sonos-api/src/service.rs:38`) |
 | PropertyBag | `HashMap<TypeId, Box<dyn Any>>` holding one entity's property values |
 | Watched set | `HashMap<(SpeakerId, &'static str), WatchHolds>` gating notification emission; an entry exists while any watcher holds the pair (4.2) |
+| EventFanout | The per-subscriber registry that clones each `ChangeEvent` into one unbounded queue per `ChangeIterator` (4.1b) |
 | ChangeEvent | Notification that a watched property changed, carrying the new value as a `PropertyChange` |
 | WriteStamp | `{observed_at, source}` recording when a value was observed, used to reject out-of-order writes |
 | ChangeSource | Provenance of a value: `Event` (device NOTIFY), `LocalAction` (post-action write), `Fetch` (SOAP read) |
@@ -1521,14 +1541,3 @@ The workspace versions together; breaking changes ride the `sonos-sdk` version.
 - [docs/STATUS.md](../STATUS.md) — service completion matrix
 - [docs/specs/sonos-event-manager.md](sonos-event-manager.md) — subscription lifecycle
 - [docs/specs/sonos-stream.md](sonos-stream.md) — event delivery and polling fallback
-
-### C. Changelog
-
-| Date | Author | Change |
-|------|--------|--------|
-| 2026-01-14 | Claude Opus 4.5 | Initial specification created |
-| 2026-08-15 | Claude Opus 5 | Rewritten to match the implemented sync-first design. The prior revision documented an async `tokio::sync::watch` architecture (`reactive.rs`, `store.rs`, `watcher.rs`, `change_iterator.rs`, `decoders/*`, `PropertyWatcher<P>`, async `watch_property()`) that does not exist in the code |
-| 2026-08-15 | Claude Opus 5 | Documented the empty-topology-snapshot guard (3.2), per-event panic containment (4.6 and step 2 of 3.1), the "degrade loudly" rule in 3.4, and checked duration arithmetic; refreshed line references and test counts |
-| 2026-08-17 | Claude Opus 5 | Hand-rolled XML and URL handling replaced by crates. Added 5.3a (`parse_track_metadata`'s frozen 4-tuple contract, the strict-then-lenient parse strategy, and the `&amp;`-ordering unescape bug it fixed) and 5.3b (why `url::Url` for `location`); updated 5.3, 10.1, 10.3 and the 14.2 debt rows; `StateError` is now `thiserror`-derived with byte-identical messages |
-| 2026-08-16 | Claude Opus 5 | Recorded that SDK `WatchHandle`s read through `get_property()` live (3.3), and dropped the re-watch-per-frame framing from 4.2 — overlapping holds now come from independent watchers, not from a documented per-frame loop |
-| 2026-08-15 | Claude Opus 5 | `watched` became reference-counted `WatchCounts` so releasing one watcher no longer silences its siblings (4.2), and `set_property()` now resolves `PerCoordinator` writes to the coordinator so writes land where reads look (4.3) |

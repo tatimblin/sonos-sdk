@@ -38,7 +38,7 @@ The Sonos SDK requires efficient management of UPnP event subscriptions across m
 - [x] First watcher for a (device, service) pair triggers exactly one UPnP subscription
 - [x] Subsequent watchers for the same pair increment reference count without network calls
 - [x] Last watcher dropping triggers subscription cleanup
-- [x] Thread-safe operations with lock-free reference counting where possible
+- [x] Thread-safe operations under a documented lock order (§4.2)
 - [x] Clean integration with sonos-stream's EventBroker
 
 ---
@@ -50,7 +50,7 @@ The Sonos SDK requires efficient management of UPnP event subscriptions across m
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                         sonos-state                                      │
-│  (Public API: StateManager, PropertyWatcher, watch_property<P>())       │
+│  (StateManager: get_property / set_property / register_watch / iter)    │
 └────────────────────────────────┬────────────────────────────────────────┘
                                  │
                                  │ Uses
@@ -60,10 +60,10 @@ The Sonos SDK requires efficient management of UPnP event subscriptions across m
 │  ┌──────────────────────────────────────────────────────────────────┐   │
 │  │                     SonosEventManager                             │   │
 │  │  ┌────────────────┐  ┌──────────────────┐  ┌─────────────────┐   │   │
-│  │  │   Device       │  │   Reference      │  │   EventBroker   │   │   │
-│  │  │   Registry     │  │   Counting       │  │   (wrapped)     │   │   │
-│  │  │  HashMap<IP,   │  │  DashMap<Key,    │  │                 │   │   │
-│  │  │    Device>     │  │    AtomicUsize>  │  │                 │   │   │
+│  │  │   Device       │  │   Reference      │  │   Worker thread │   │   │
+│  │  │   Registry     │  │   Counting       │  │   owns the      │   │   │
+│  │  │  RwLock<Hash-  │  │  RwLock<HashMap  │  │   EventBroker   │   │   │
+│  │  │  Map<IP,Dev>>  │  │  <Key, usize>>   │  │   + a runtime   │   │   │
 │  │  └────────────────┘  └──────────────────┘  └─────────────────┘   │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
 └────────────────────────────────┬────────────────────────────────────────┘
@@ -173,9 +173,9 @@ pub(crate) struct TeardownTimer {
 }
 ```
 
-**Purpose**: One thread per manager, servicing a deadline-ordered queue of pending teardowns. Replaces the previous one-OS-thread-per-release design.
+**Purpose**: One thread per manager, servicing a deadline-ordered queue of pending teardowns, so that releasing *n* watches costs *n* heap pushes rather than *n* OS threads. An immediate-mode TUI holding ~9 handles at 60 fps produces ~540 releases per second, which is the load this exists to absorb (`src/timer.rs:1-21`).
 
-**Why a dedicated thread rather than the worker's runtime**: the worker runs `new_current_thread`, and the UPnP subscribe path reaches blocking `ureq` calls inside `async fn`s without `spawn_blocking`. One SUBSCRIBE to an unreachable speaker wedged that runtime for 5,002.7 ms, during which a `tokio::time::sleep` scheduled on it would not fire; the dedicated thread fired the same teardown at 50.4 ms. Teardown timing must be independent of broker health.
+**Why a dedicated thread rather than the worker's runtime**: the worker runs `new_current_thread`, and the UPnP subscribe path reaches blocking `ureq` calls inside `async fn`s without `spawn_blocking`. One SUBSCRIBE to an unreachable speaker wedges that runtime for the full ~5s connect timeout, during which a `tokio::time::sleep` scheduled on it would not fire; the dedicated thread fires the same teardown at ~50 ms. Teardown timing must be independent of broker health.
 
 **Invariants**:
 - The thread holds only an `Arc<Shared>` and a `WeakUnboundedSender<Command>`, so it borrows no manager state and cannot outlive anything it dereferences. The weak sender is what lets the worker still observe its command channel closing.
@@ -229,6 +229,7 @@ pub struct WatchGuard {
 #### `EventManagerError`
 
 ```rust
+// src/error.rs:5
 #[derive(Error, Debug)]
 pub enum EventManagerError {
     BrokerInitialization(#[from] sonos_stream::BrokerError),
@@ -240,10 +241,17 @@ pub enum EventManagerError {
     ChannelClosed,
     Discovery(#[from] sonos_discovery::DiscoveryError),
     Sync(String),
+    LockPoisoned,
+    InvalidIpAddress(String),
+    WorkerDisconnected,
 }
 ```
 
-**Purpose**: Comprehensive error type covering all failure modes in subscription management.
+**Purpose**: covers every failure mode in subscription management. 12 variants; **not**
+`#[non_exhaustive]`, so a downstream exhaustive `match` breaks when a variant is added.
+`WorkerDisconnected` is the one every command-sending method can return: the worker thread owns
+the `EventBroker`, so a closed command channel is the only way a subscribe or unsubscribe can
+fail synchronously. `Result<T>` (`src/error.rs:73`) is the crate-wide alias.
 
 ---
 
@@ -253,50 +261,81 @@ pub enum EventManagerError {
 
 ```
 ┌───────────────────┐     ┌────────────────────┐     ┌─────────────────┐
-│  sonos-state      │────▶│  SonosEventManager │────▶│  EventBroker    │
-│  watch_property() │     │  ensure_service_   │     │  register_      │
-│                   │     │  subscribed()      │     │  speaker_service│
-└───────────────────┘     └────────────────────┘     └─────────────────┘
-       │                          │                          │
-       ▼                          ▼                          ▼
-   User calls             Check ref count              Create UPnP
-   watch<Volume>()        (count == 0?)                subscription
+│  sonos-sdk        │────▶│  SonosEventManager │────▶│  worker thread  │
+│  handle.watch()   │     │  acquire_watch()   │     │  EventBroker::  │
+│                   │     │  -> WatchGuard     │     │  register_      │
+└───────────────────┘     └────────────────────┘     │  speaker_service│
+       │                          │                  └─────────────────┘
+       ▼                          ▼                          ▲
+   User holds             ref count 0 -> 1                   │
+   a WatchGuard           + claim pending teardown   Command::Subscribe
 ```
 
-**Step-by-step**:
+**Step-by-step** (`acquire_watch`, `src/manager.rs:470`):
 
-1. **Entry** (`src/manager.rs:78`): `ensure_service_subscribed()` is called with device IP and service
-2. **Key Creation** (`src/manager.rs:79`): Create tuple key `(device_ip, service)`
-3. **Reference Check** (`src/manager.rs:82-83`): Get or create atomic counter, fetch-and-add atomically
-4. **Conditional Registration** (`src/manager.rs:86-102`): If old count was 0, call `broker.register_speaker_service()`
-5. **Logging** (`src/manager.rs:106-109`): Debug log the reference count transition
+1. **Increment** (`src/manager.rs:478-493`): take the `service_refs` write lock, bump
+   `(device_ip, service)`, record whether it was zero, and **release the lock**.
+2. **Claim** (`src/manager.rs:503`): call `claim_pending_teardown()` (`:564`). Winning the claim
+   means a grace period was in flight and the subscription is still live, so it is reused.
+3. **Register the watch** (`src/manager.rs:521`): only now call
+   `WatchRegistry::register_watch`. Registering before the claim resolves would leave a window
+   in which an in-flight `fire()` wipes the watched set under a live guard (`:505-520`).
+4. **Subscribe if needed** (`src/manager.rs:526-544`): send `Command::Subscribe` only when the
+   count went 0 -> 1 *and* no teardown was cancelled. A closed command channel yields
+   `EventManagerError::WorkerDisconnected`.
+5. **Return** a `WatchGuard` holding `Arc<SonosEventManager>` plus the key.
+
+`ensure_service_subscribed()` (`src/manager.rs:726`) runs the same increment-then-claim
+sequence without step 3, because it has no `(speaker_id, property_key)` pair to register
+(`:722-725`).
 
 ### 3.2 Secondary Flow: Service Subscription (Subsequent Watchers)
 
-When reference count > 0, the flow is much simpler:
+When the reference count is already above zero:
 
-1. **Entry** (`src/manager.rs:78`): Same entry point
-2. **Atomic Increment** (`src/manager.rs:83`): `fetch_add(1, SeqCst)` returns old count > 0
-3. **Skip Registration** (`src/manager.rs:86`): Condition `old_count == 0` is false, no network call
-4. **Return** (`src/manager.rs:111`): Success without any broker interaction
+1. **Increment** (`src/manager.rs:478`): the count goes from *n* to *n+1*; `was_zero` is false.
+2. **No claim** (`src/manager.rs:503`): `should_subscribe` is false, so no teardown is claimed —
+   there cannot be one in flight while the count is non-zero.
+3. **Register the watch** (`src/manager.rs:521`): still happens, since watches are per
+   `(speaker_id, property_key)` rather than per subscription.
+4. **Return** (`src/manager.rs:546`): a second `WatchGuard`, with no command sent and no
+   network call.
 
 ### 3.3 Tertiary Flow: Subscription Release
 
 ```
 ┌───────────────────┐     ┌────────────────────┐     ┌─────────────────┐
-│  PropertyWatcher  │────▶│  SonosEventManager │────▶│  EventBroker    │
-│  drop()           │     │  release_service_  │     │  (cleanup if    │
-│                   │     │  subscription()    │     │   count == 0)   │
-└───────────────────┘     └────────────────────┘     └─────────────────┘
+│  WatchGuard::drop │────▶│  release_watch()   │────▶│ TeardownTimer   │
+│                   │     │  ref count -> 0    │     │ +50ms deadline  │
+└───────────────────┘     └────────────────────┘     └────────┬────────┘
+                                                              │ expiry
+                                                              ▼
+                                                   ┌─────────────────────┐
+                                                   │ PendingTeardown::   │
+                                                   │ fire(): Unsubscribe │
+                                                   │ + unregister watches│
+                                                   └─────────────────────┘
 ```
 
-**Step-by-step**:
+**Step-by-step** (`release_watch`, `src/manager.rs:584`):
 
-1. **Entry** (`src/manager.rs:118`): `release_service_subscription()` called
-2. **Counter Lookup** (`src/manager.rs:121`): Check if key exists in DashMap
-3. **Atomic Decrement** (`src/manager.rs:122-123`): `fetch_sub(1, SeqCst)`, compute new count
-4. **Conditional Cleanup** (`src/manager.rs:131-140`): If new count == 0, remove from DashMap
-5. **Broker Unregistration** (`src/manager.rs:135-140`): TODO marker indicates cleanup not fully implemented
+1. **Decrement** (`src/manager.rs:595`): `saturating_sub(1)` under the `service_refs` write
+   lock. At zero the entry is removed (`:606`) rather than left behind.
+2. **Mint a claim token** (`src/manager.rs:618`): a fresh `Arc<AtomicBool>`, inserted into
+   `pending_unsubscribes` under an explicitly named-and-dropped guard (`:628-630`) so the
+   `pending_unsubscribes -> timer.queue` lock order stays visible.
+3. **Schedule** (`src/manager.rs:644`): hand a `PendingTeardown` to the shared
+   `TeardownTimer`. On refusal, fire it **inline** (`:662`) rather than dropping it.
+4. **Expiry** (`src/manager.rs:117`): `PendingTeardown::fire()` claims the token under the
+   pending-map mutex, sends `Command::Unsubscribe` (`:148`), then calls
+   `unregister_watches_for_service` (`:153`) — both still holding that mutex, which is the
+   ordering `acquire_watch` depends on.
+
+`release_service_subscription()` (`src/manager.rs:797`) is deliberately **asymmetric**: it
+unsubscribes the instant the count reaches zero, with no grace period and no watched-set
+unregister. Both differences are explained at `src/manager.rs:764-796` — this path is not the
+churning one, and a service-wide unregister here would wipe watched pairs belonging to live
+`WatchGuard`s.
 
 ### 3.4 Error Flow
 
@@ -315,7 +354,7 @@ sonos_stream::BrokerError ──▶ EventManagerError::DeviceRegistration ──
 
 #### What
 
-Atomic reference counting tracks how many consumers need each (device_ip, service) subscription. The count automatically manages subscription creation and cleanup.
+A `usize` count per `(device_ip, service)`, held in `service_refs: Arc<RwLock<HashMap<(IpAddr, Service), usize>>>` (`src/manager.rs:399`), tracks how many consumers need each subscription. The count drives subscription creation and cleanup.
 
 #### Why
 
@@ -328,31 +367,35 @@ Reference counting provides automatic, correct lifecycle management.
 
 #### How
 
+Every method here is synchronous — the `EventBroker` and its runtime live on the worker
+thread, reached through a command channel.
+
 ```rust
-// First watcher - creates subscription
-manager.ensure_service_subscribed(device_ip, Service::RenderingControl).await?;
-// count: 0 -> 1, registers with EventBroker
+// First watcher - sends Command::Subscribe
+manager.ensure_service_subscribed(device_ip, Service::RenderingControl)?;
+// count: 0 -> 1
 
 // Second watcher - increments count only
-manager.ensure_service_subscribed(device_ip, Service::RenderingControl).await?;
-// count: 1 -> 2, no network call
+manager.ensure_service_subscribed(device_ip, Service::RenderingControl)?;
+// count: 1 -> 2, no command, no network call
 
 // Second watcher dropped
-manager.release_service_subscription(device_ip, Service::RenderingControl).await?;
+manager.release_service_subscription(device_ip, Service::RenderingControl)?;
 // count: 2 -> 1, subscription remains
 
 // First watcher dropped
-manager.release_service_subscription(device_ip, Service::RenderingControl).await?;
-// count: 1 -> 0, triggers cleanup
+manager.release_service_subscription(device_ip, Service::RenderingControl)?;
+// count: 1 -> 0, entry removed, Command::Unsubscribe sent
 ```
 
 #### Trade-offs
 
 | Decision | Alternative Considered | Why We Chose This |
 |----------|----------------------|-------------------|
-| `AtomicUsize` for counts | `RwLock<usize>` | Lock-free performance for the common case (increment/decrement) |
-| `DashMap` for key storage | `Mutex<HashMap>` | Fine-grained locking per entry instead of global lock |
-| `SeqCst` ordering | `Relaxed` | Correctness over performance; subscription lifecycle must be strictly ordered |
+| One `RwLock<HashMap<Key, usize>>` | Per-entry atomics in a concurrent map | The count is never read without also deciding what to do about it, so the critical section is a lock either way. One lock keeps the documented order (§4.2) checkable by reading one file |
+| `saturating_sub` on release | `panic!` / wrapping decrement | An unbalanced release is a caller bug, but wrapping to `usize::MAX` would pin the subscription open forever — strictly the worse failure |
+| Remove the entry at zero | Leave a zero-valued entry | "Present" and "held" then mean the same thing, so the invariant in §2.3 is checkable by lookup |
+| Commands over a channel | Call the broker directly under the lock | The broker is async and its subscribe path blocks; sending a command keeps every public method sync and keeps network latency out of the critical section |
 
 ### 4.2 Feature: RAII Watch Guards with Grace Period
 
@@ -447,8 +490,8 @@ defer it internally, where it can order its own mutations.
 | `AtomicBool` claim token, swapped under a mutex | Channel-based cancel; bare `AtomicBool` flag | The swap's return value *is* the claim, which is what makes "exactly one winner" hold. A bare flag cannot order the map mutation against the callback |
 | Registry callback under the pending mutex | `drop(pending)` first; offload to a queue | Ordering the watched-set mutation against `acquire_watch` — see "Callback contract" |
 | `catch_unwind` + in-thread restart loop | Supervisor thread; let it die | A supervisor costs a thread, a join handle, a liveness protocol and a shutdown race with `TeardownTimer::drop`, and buys nothing an in-thread restart does not |
-| Inline teardown on schedule refusal | Leak the teardown; panic in `Drop` | `main` panicked in `Drop`; the first draft leaked. Inline is the only option that neither aborts nor silently stops releasing subscriptions |
-| `shutdown()` drains the timer | `shutdown()` stops the timer | Stopping is one-way, so every later release silently skipped its teardown. Only `Drop` may latch |
+| Inline teardown on schedule refusal | Leak the teardown; panic in `Drop` | Panicking in `Drop` can abort the process and leaking silently stops releasing subscriptions. Inline is the only option that does neither |
+| `shutdown()` drains the timer | `shutdown()` stops the timer | `shutdown()` is public and leaves the manager usable, but stopping is one-way, so every later release would silently skip its teardown. Only `Drop` may latch |
 | `parking_lot` locks | `std::sync` locks | Non-poisoning, so a panicking callback leaves usable state; guards unlock on unwind |
 | `release_watch()` returns `()` | Returns `Result` | Must never panic in Drop; errors logged internally |
 | `GRACE_PERIOD` fixed at 50 ms | Configurable | Deliberately deferred; `delay` already rides on `PendingTeardown`, so it is later plumbing only |
@@ -468,21 +511,21 @@ Higher-level code works with device identifiers, but network operations need IP 
 ```rust
 // Add devices from discovery
 let devices = sonos_discovery::get();
-event_manager.add_devices(devices).await?;
+event_manager.add_devices(devices)?;          // src/manager.rs:675
 
 // Query devices
-let all_devices = event_manager.devices().await;
-let specific = event_manager.device_by_ip(ip).await;
+let all_devices = event_manager.devices();    // src/manager.rs:691
+let specific = event_manager.device_by_ip(ip); // src/manager.rs:696
 ```
 
 #### Trade-offs
 
 | Decision | Alternative Considered | Why We Chose This |
 |----------|----------------------|-------------------|
-| No device removal API | Full CRUD operations | Simpler model; device removal is rare and can be handled by restarting |
-| `Arc<RwLock<HashMap>>` | `DashMap` | Simpler; device registry is rarely modified after initial setup |
+| No device removal API | Full CRUD operations | Simpler model; device removal is rare and can be handled by rebuilding the manager |
+| `Arc<RwLock<HashMap>>` | A concurrent map | The registry is written once at startup and read thereafter, so per-entry locking buys nothing |
 
-### 4.3 Feature: Multiplexed Event Stream
+### 4.4 Feature: Multiplexed Event Stream
 
 #### What
 
@@ -496,9 +539,11 @@ A single `EventIterator` provides access to ALL events from ALL registered devic
 
 #### How
 
+`iter()` (`src/manager.rs:864`) hands out an `EventManagerIterator` (`src/iter.rs:15`) over a
+shared `std::sync::mpsc::Receiver`, so it blocks rather than awaiting:
+
 ```rust
-let mut events = event_manager.get_event_iterator()?;
-while let Some(enriched_event) = events.next_async().await {
+for enriched_event in event_manager.iter() {
     // enriched_event.speaker_ip and enriched_event.service for routing
     match enriched_event.service {
         Service::RenderingControl => handle_volume_mute(enriched_event),
@@ -507,6 +552,12 @@ while let Some(enriched_event) = events.next_async().await {
     }
 }
 ```
+
+`EventManagerIterator` is `Clone` (`src/iter.rs:73`) and every clone shares one receiver, so
+concurrent consumers **compete** for events rather than each seeing all of them. It also offers
+`recv()` (`:28`), `try_recv()` (`:35`), `recv_timeout()` (`:42`), `try_iter()` (`:49`) and
+`timeout_iter()` (`:56`). Per-subscriber fan-out is `sonos-state`'s job — see
+[sonos-state.md](sonos-state.md) §4.1b.
 
 ---
 
@@ -526,19 +577,20 @@ type SubscriptionKey = (IpAddr, Service);
 2. **Mutation**: Reference count changes via atomic operations
 3. **Destruction**: When reference count reaches zero
 
-**Memory considerations**: Each entry is ~24 bytes (16 bytes for IpAddr + 8 bytes for Service enum + AtomicUsize overhead in DashMap).
+**Memory considerations**: each entry is a `(IpAddr, Service)` key plus a `usize` count, on the
+order of tens of bytes, in one `HashMap` behind an `RwLock`.
 
 #### Device Entry
 
 ```rust
-// From sonos_discovery::Device
+// From sonos_discovery::Device (sonos-discovery/src/lib.rs:53)
 pub struct Device {
-    pub id: String,
+    pub id: String,          // UDN, e.g. "uuid:RINCON_000E58A0123456"
     pub name: String,
-    pub ip_address: String,
-    pub port: u16,
-    pub model_name: String,
     pub room_name: String,
+    pub ip_address: String,
+    pub port: u16,           // always 1400
+    pub model_name: String,
 }
 ```
 
@@ -567,7 +619,7 @@ pub struct Device {
 ```
 
 **Invariants per state**:
-- **Unsubscribed**: No entry in `service_refs` DashMap, no active EventBroker registration
+- **Unsubscribed**: no entry in `service_refs`, no active EventBroker registration, and no grace period pending for the key
 - **Subscribed (count=1)**: Entry exists, EventBroker has active subscription
 - **Subscribed (count>1)**: Entry exists with count > 1, still one EventBroker subscription
 
@@ -582,8 +634,8 @@ pub struct Device {
 | `sonos-stream` | EventBroker for UPnP events | Core event infrastructure; provides transparent event/polling switching |
 | `sonos-api` | Service enum, device types | Shared type definitions across SDK |
 | `sonos-discovery` | Device type | Device information from network discovery |
-| `tokio` | Async runtime | Required for async/await, RwLock, channels |
-| `dashmap` | Concurrent HashMap | Lock-free reference counting storage |
+| `tokio` | Async runtime, owned by the worker thread | The `EventBroker` is async; the runtime is confined to `worker.rs` so this crate's own API stays sync |
+| `parking_lot` | Non-poisoning `RwLock`/`Mutex`/`Condvar` | A panicking `WatchRegistry` callback must leave usable state, and guards must unlock on unwind (§4.2) |
 | `thiserror` | Error derive | Clean error type definitions |
 | `tracing` | Logging | Debug visibility into subscription lifecycle |
 
@@ -648,6 +700,15 @@ pub enum EventManagerError {
 
     #[error("Internal synchronization error: {0}")]
     Sync(String),
+
+    #[error("Internal lock was poisoned")]
+    LockPoisoned,
+
+    #[error("Invalid IP address: {0}")]
+    InvalidIpAddress(String),
+
+    #[error("Background worker has disconnected")]
+    WorkerDisconnected,
 }
 ```
 
@@ -669,6 +730,9 @@ pub enum EventManagerError {
 | `SubscriptionNotFound` | Yes | Warning only; may indicate double-release bug |
 | `ChannelClosed` | No | Fatal; event stream terminated |
 | `Sync` | Maybe | Internal error; may indicate lock poisoning |
+| `LockPoisoned` | No | A `std::sync` lock unwound through a panic |
+| `InvalidIpAddress` | Yes | Caller supplied an unparseable address |
+| `WorkerDisconnected` | No | The worker thread is gone; the manager can no longer subscribe or unsubscribe |
 
 ---
 
@@ -694,7 +758,9 @@ The crate is thin (bridges sonos-state and sonos-stream), so testing focuses on:
 
 ### 8.2 Unit Tests
 
-**Location**: `src/manager.rs` and `src/timer.rs` inline `#[cfg(test)]` modules
+**Location**: inline `#[cfg(test)]` modules — 30 tests in total: `src/manager.rs` (21),
+`src/timer.rs` (4), `src/iter.rs` (4), `src/worker.rs` (1). All are plain `#[test]`; none is a
+`#[tokio::test]`, since the crate's whole public API is sync.
 
 **What to test**:
 - [x] Initial subscription state (not subscribed)
@@ -753,8 +819,9 @@ use; new tests continue from 6100.
 
 | Dependency | Mock Strategy | Location |
 |------------|--------------|----------|
-| `EventBroker` | Real broker in tests (no mocking) | N/A - uses actual sonos-stream |
-| `Device` | Inline struct construction | `src/manager.rs:218-226` |
+| `EventBroker` | Real broker in tests (no mocking) | N/A — uses actual sonos-stream |
+| `Device` | Inline struct construction | `src/manager.rs:1228` |
+| `PendingTeardown` | `test_support::dummy_teardown()` | `src/manager.rs:207` |
 
 ---
 
@@ -767,20 +834,19 @@ use; new tests continue from 6100.
 | `release_watch` (ref count → 0, teardown scheduled) | < 8 us median | 0.92–1.00 us alone and 2.71–3.17 us under the full suite on a cold binary (Apple M-series); 1.71 us on Linux CI | The immediate-mode TUI path runs ~9 handles at 60 fps ≈ 540 releases/sec |
 | First subscription latency | < 500ms | not measured | Includes UPnP network round-trip |
 | Memory per subscription | < 100 bytes | not measured | Support many devices without excessive memory |
-| Teardown latency under a wedged worker | ≈ `GRACE_PERIOD` | 50.4 ms (dedicated thread) vs 5,002.7 ms (worker runtime) | Teardown timing must not depend on broker health |
+| Teardown latency under a wedged worker | ≈ `GRACE_PERIOD` | ~50 ms | Teardown timing must not depend on broker health, and the worker's runtime can be wedged for the full ~5s `ureq` connect timeout |
 
-Regression baseline: with one `std::thread::spawn` per release the same
-`release_watch` measured 14.6–17.7 us alone and 27.0–28.8 us under the full
-suite — an order of magnitude, and the reason for the shared timer.
-`test_immediate_mode_churn_costs_no_threads` enforces the median bound and
-reports the numbers through `eprintln!`.
+`test_immediate_mode_churn_costs_no_threads` (`src/manager.rs:2087`) enforces the median bound
+and reports the measured numbers through `eprintln!`. On Linux it additionally bounds the
+*growth* in process threads across 1,000 release cycles, which is what pins the shared-timer
+design in place.
 
 ### 9.2 Critical Paths
 
 1. **Reference Count Update** (`acquire_watch` / `release_watch`)
    - **Complexity**: O(1) amortized — `parking_lot::RwLock<HashMap<(IpAddr, Service), usize>>`
    - **Bottleneck**: the write lock, held for the increment only
-   - **Note**: the counts are plain `usize` under one `RwLock`, not `DashMap` + `AtomicUsize`. The decision to subscribe or tear down depends on the transition through zero, which has to be observed atomically with the update
+   - **Note**: the counts are plain `usize` under one `RwLock`. The decision to subscribe or tear down depends on the transition through zero, which has to be observed atomically with the update
 
 2. **Teardown Scheduling** (`release_watch` → `TeardownTimer::schedule`)
    - **Complexity**: O(log n) in the number of pending teardowns
@@ -813,7 +879,7 @@ reports the numbers through `eprintln!`.
 | Threat | Likelihood | Impact | Mitigation |
 |--------|------------|--------|------------|
 | Malicious device injection | Low | Medium | Devices only added via discovery (SSDP) |
-| Reference count manipulation | Very Low | Low | Atomic operations; internal API only |
+| Reference count manipulation | Very Low | Low | Counts mutate only under the `service_refs` write lock; internal API only |
 | DoS via subscription spam | Low | Medium | sonos-stream has max_registrations limit |
 
 ### 10.2 Sensitive Data
@@ -827,7 +893,7 @@ reports the numbers through `eprintln!`.
 
 | Input Source | Validation | Location |
 |--------------|------------|----------|
-| Device IP from discovery | IP address parsing | `src/manager.rs:51-54` |
+| Device IP from discovery | `str::parse::<IpAddr>()`, failure yields `EventManagerError::InvalidIpAddress` | `src/manager.rs:675` (`add_devices`) |
 | Service enum | Type-safe enum from sonos-api | Compile-time |
 
 ---
@@ -841,7 +907,10 @@ reports the numbers through `eprintln!`.
 | `debug` | Reference count transitions | "Service reference count for 192.168.1.100 RenderingControl: 0 -> 1" |
 | `debug` | Registration with EventBroker | "Registered RenderingControl for device 192.168.1.100" |
 | `debug` | Manager drop statistics | "SonosEventManager dropping, 3 active service subscriptions" |
-| `warn` | Release without reference | "Attempted to release subscription but no references found" |
+| `debug` | Grace-period cancellation | "Grace period for {ip}:{service} was cancelled by a re-acquire, keeping subscription" (`src/manager.rs:121`) |
+| `warn` | Release without reference | "Attempted to release subscription but no references found" (`src/manager.rs:820`) |
+| `warn` | Registry callback panicked | `call_unregister` (`src/manager.rs:190`) |
+| `debug` | Timer outlived its manager | "outlived the manager, skipping teardown" (`src/timer.rs:345`) |
 
 ### 11.2 Metrics
 
@@ -875,16 +944,19 @@ The manager accepts `BrokerConfig` from sonos-stream for underlying EventBroker 
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `callback_port_range` | `Range<u16>` | `8000..8100` | Port range for HTTP callback server |
-| `base_polling_interval` | `Duration` | 30s | Polling interval when events unavailable |
+| `callback_port_range` | `(u16, u16)` | `(3400, 3500)` | Port range for the HTTP callback server |
+| `base_polling_interval` | `Duration` | 5s | Polling interval when events are unavailable |
+| `max_polling_interval` | `Duration` | 30s | Ceiling for adaptive polling backoff |
 | `enable_proactive_firewall_detection` | `bool` | `true` | Whether to detect firewall blocking |
+
+The full set is documented in [sonos-stream.md](sonos-stream.md) §12.
 
 ```rust
 let config = BrokerConfig::default()
-    .with_callback_port_range(8000..8100)
-    .with_polling_interval(Duration::from_secs(30));
+    .with_callback_ports(3400, 3500)
+    .with_polling_interval(Duration::from_secs(5), Duration::from_secs(30));
 
-let manager = SonosEventManager::with_config(config).await?;
+let manager = SonosEventManager::with_config(config)?;   // src/manager.rs:425
 ```
 
 ---
@@ -895,12 +967,12 @@ let manager = SonosEventManager::with_config(config).await?;
 
 | API | Stability | Notes |
 |-----|-----------|-------|
-| `SonosEventManager::new()` | Unstable | Internal crate; may change |
-| `ensure_service_subscribed()` | Unstable | Core API but internal |
-| `release_service_subscription()` | Deprecated | Replaced by RAII `WatchGuard` in v0.2.0 |
-| `acquire_watch()` | Unstable | Returns `WatchGuard`; RAII subscription management |
-| `release_watch()` | Unstable | Called from `WatchGuard::Drop`; must never panic |
-| `get_event_iterator()` | Unstable | Single-use; may change to repeated access |
+| `SonosEventManager::new()` / `with_config()` | Unstable | Internal crate; may change |
+| `acquire_watch()` | Unstable | The primary API. Returns a `WatchGuard`; RAII subscription management |
+| `release_watch()` | `pub(crate)` | Called from `WatchGuard::Drop`; must never panic |
+| `ensure_service_subscribed()` / `release_service_subscription()` | Unstable | The manual, guard-free pair. Deliberately asymmetric (§3.3) |
+| `iter()` | Unstable | Repeatable; every `EventManagerIterator` shares one receiver |
+| `WatchRegistry` | Unstable | Implementor contract in §2.3 is load-bearing |
 
 ### 13.2 Breaking Changes
 
@@ -908,12 +980,10 @@ let manager = SonosEventManager::with_config(config).await?;
 
 **Current deprecations**: None
 
-### 13.3 Version History
+### 13.3 Version
 
-| Version | Changes | Migration Guide |
-|---------|---------|-----------------|
-| `0.2.1` | RAII WatchGuard, WatchRegistry trait, 50ms grace period, parking_lot::RwLock, tokio::sync::mpsc commands | Replace `ensure_service_subscribed()`/`release_service_subscription()` with `acquire_watch()`/`release_watch()` via WatchGuard |
-| `0.1.0` | Initial release | N/A |
+Published as `sonos-sdk-event-manager` (lib name `sonos_event_manager`), versioned from the
+workspace (`version.workspace = true`), so it moves in lockstep with `sonos-sdk`.
 
 ---
 
@@ -923,8 +993,8 @@ let manager = SonosEventManager::with_config(config).await?;
 
 | Limitation | Impact | Workaround | Planned Fix |
 |------------|--------|------------|-------------|
-| No EventBroker unregistration | Subscriptions may not be fully cleaned up | Manager drop clears everything | TODO in `release_service_subscription()` |
-| Single event iterator | Can only call `get_event_iterator()` once | Design intentional | None - architectural choice |
+| Concurrent `EventManagerIterator`s compete for events | Two consumers each see a subset, silently | Drain from one place, or fan out in `sonos-state` (see [sonos-state.md](sonos-state.md) §4.1b) | Fan out here too, if a second in-crate consumer ever appears |
+| `release_service_subscription()` leaves watched pairs registered | A pair interleaved with a `WatchGuard` on the same key can outlive its subscription | None needed — no events arrive for it, and the next real teardown clears it | Documented at `src/manager.rs:790-793` |
 | No device removal | Cannot remove devices once added | Recreate manager | Evaluate need based on usage |
 | Sibling-key register race | Thread B acquiring `"mute"` while A acquires `"volume"` takes the `should_subscribe == false` path and never touches the pending mutex, so its `register_watch` is unordered against a concurrent expiry | Unreachable on the single-threaded TUI path | Needs the `service_refs` increment under the pending mutex — changes the manager's whole locking shape, so its own PR |
 | Registry callbacks run under a manager lock | `drop`, `shutdown()` and `acquire_watch`'s claim can each block for one callback | The §2.3 contract bounds it | Shard `pending_unsubscribes`, or per-key token locks. Trigger: any callback measured above 100 us, or observed contention |
@@ -937,8 +1007,10 @@ let manager = SonosEventManager::with_config(config).await?;
 
 | Debt Item | Location | Severity | Remediation Plan |
 |-----------|----------|----------|------------------|
-| Missing broker unregister | `src/manager.rs:135-140` | Medium | Extend EventBroker API or track registration IDs |
-| Blocking IP lookup in Drop | `sonos-state/src/reactive.rs:134-141` | Low | Acceptable for Drop; consider caching |
+| `acquire_watch` leaks its ref count and registration when `send(Subscribe)` fails | `src/manager.rs:526-544` | Medium | Roll back the increment and the `register_watch` on send failure |
+| `service_refs` increment is outside the pending mutex, so a sibling-key acquire is unordered against a concurrent expiry | `src/manager.rs:478-503` | Medium | Requires reshaping the manager's locking; see §14.1 |
+| Field declaration order in `SonosEventManager` is load-bearing for drop order | `src/manager.rs:371-411` | Low | Make the dependency explicit rather than relying on declaration order |
+| Unwinding is assumed: `panic = "abort"` turns both containment layers into process aborts | `src/manager.rs:180-189` | Low | Document in the release profile, or detect at build time |
 
 ---
 
@@ -948,7 +1020,8 @@ let manager = SonosEventManager::with_config(config).await?;
 
 | Enhancement | Priority | Rationale | Dependencies |
 |-------------|----------|-----------|--------------|
-| Full subscription cleanup | P1 | Prevent resource leaks | EventBroker unregister API |
+| Roll back a failed `acquire_watch` | P1 | A watch that can never receive events should not hold a reference | — |
+| Configurable `GRACE_PERIOD` | P2 | `delay` already rides on `PendingTeardown`, so this is plumbing only | — |
 | Subscription health monitoring | P2 | Detect stale subscriptions | Metrics infrastructure |
 | Device removal API | P2 | Support dynamic device changes | Usage analysis |
 
@@ -956,7 +1029,9 @@ let manager = SonosEventManager::with_config(config).await?;
 
 - [ ] **Should reference counting be at the property level instead of service level?** Currently, watching Volume and Mute both increment the RenderingControl count. This is correct but coarse-grained. Property-level counting would be more precise but add complexity.
 
-- [ ] **Should we expose subscription state changes as events?** UI could show "Connected to Speaker A" status. Would require additional event type.
+- [ ] **Should we expose subscription state changes as events?** UI could show "Connected to Speaker A" status. Would require an additional event type.
+
+- [ ] **Should `iter()` fan out per subscriber, as `sonos-state` does?** Today `sonos-state` is the only consumer and does the fan-out itself; a second consumer would need it here.
 
 ---
 
@@ -976,11 +1051,5 @@ let manager = SonosEventManager::with_config(config).await?;
 
 - [RxJS refCount documentation](https://rxjs.dev/api/operators/refCount) - Inspiration for the reference counting pattern
 - [UPnP Device Architecture](http://upnp.org/specs/arch/UPnP-arch-DeviceArchitecture-v1.1.pdf) - UPnP subscription model
-- [sonos-stream crate](../sonos-stream) - Underlying event infrastructure
-- [sonos-state crate](../sonos-state) - Primary consumer of this crate
-
-### C. Changelog
-
-| Date | Author | Change |
-|------|--------|--------|
-| 2025-01-14 | Claude Code | Initial specification |
+- [sonos-stream specification](sonos-stream.md) — underlying event infrastructure
+- [sonos-state specification](sonos-state.md) — the sole consumer, and where `WatchRegistry` is implemented

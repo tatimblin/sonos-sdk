@@ -187,7 +187,8 @@ pub struct NotificationPayload {
 - `subscription_id` is never empty (validated by router before creation)
 - `event_xml` contains the raw HTTP body (may be malformed XML; validation is consumer responsibility)
 - `received_at` is the monotonic instant the notification arrived, taken before the router's own
-  lock. Consumers order state writes by it (see `sonos-state` spec §4.1a), so it is an `Instant`
+  lock. Consumers order state writes by it (see [sonos-state.md](./sonos-state.md) §4.1a),
+so it is an `Instant`
   and not a `SystemTime`: a wall-clock ordering would invert under NTP correction. A buffered
   event replayed on late SID registration carries its **original** arrival instant, not the
   replay instant
@@ -255,7 +256,7 @@ request.
    - HTTP method (must be NOTIFY)
    - Path (any path accepted, for logging only)
    - Headers: `SID`, `NT`, `NTS`, via `upnp_header()` — a present-but-not-UTF-8 value is a
-     400, not the 500 it used to fall through to
+     400
    - Body bytes (size-capped)
 
 4. **Header Validation** (`validate_upnp_headers`): SID must be present, since without it
@@ -267,11 +268,8 @@ request.
    if nts.is_some_and(|nts| nts != "upnp:propchange") { return false; }
    ```
 
-   **This fixed a real validation gap.** The previous form was
-   `if let (Some(nt), Some(nts)) = (nt, nts)`, which validated the pair only when *both*
-   were present — so a request carrying `NT: garbage` and no `NTS` at all skipped
-   validation entirely and was accepted. Independent checks preserve the "optional"
-   intent while closing that hole.
+   Checking each header on its own is what keeps "optional" from becoming "unchecked":
+   a request carrying `NT: garbage` and no `NTS` at all is still rejected.
 
    Header validation runs **before** the body is decoded to a `String`, so junk requests never pay for the full allocation. This ordering matters: decoding first would let an invalid request cost a full body copy on top of the buffered bytes.
 
@@ -321,7 +319,7 @@ request.
        │                          │                        │
        │                          │                        │
        ▼                          ▼                        ▼
-firewall_detection.rs:150   firewall_detection.rs:232   firewall_detection.rs:258
+firewall_detection.rs:148   firewall_detection.rs:233   firewall_detection.rs:263
 
                     ┌──────────────────┐
                     │ on_event_received│
@@ -329,26 +327,26 @@ firewall_detection.rs:150   firewall_detection.rs:232   firewall_detection.rs:25
                     └──────────────────┘
                             │
                             ▼
-                   firewall_detection.rs:183
+                   firewall_detection.rs:187
 ```
 
 **Step-by-step**:
 
-1. **First Subscription** (`src/firewall_detection.rs:150-178`): When `sonos-stream` creates first subscription for a device:
+1. **First Subscription** (`src/firewall_detection.rs:148-182`): When `sonos-stream` creates first subscription for a device:
    - Check cache for existing status
    - If cached and detection complete, return cached status
    - Otherwise, start new detection
 
-2. **Start Detection** (`src/firewall_detection.rs:232-255`): Creates `DeviceFirewallState` with:
+2. **Start Detection** (`src/firewall_detection.rs:233-260`): Creates `DeviceFirewallState` with:
    - Current timestamp as subscription time
    - Status = Unknown
    - Configured timeout duration
 
-3. **Background Monitoring** (`src/firewall_detection.rs:258-295`): Every 1 second, checks all incomplete detections:
+3. **Background Monitoring** (`src/firewall_detection.rs:263-304`): Every 1 second, checks all incomplete detections:
    - If elapsed time >= timeout and no event received, mark as Blocked
    - Send `DetectionResult` to notification channel
 
-4. **Event Reception** (`src/firewall_detection.rs:183-209`): When any event arrives:
+4. **Event Reception** (`src/firewall_detection.rs:187-218`): When any event arrives:
    - If detection in progress for this device IP, mark as Accessible
    - Record first event time
    - Send `DetectionResult` notification
@@ -488,7 +486,7 @@ Per-device detection allows:
 
 #### How
 
-The `FirewallDetectionCoordinator` tracks each device IP separately (`src/firewall_detection.rs:88-100`):
+The `FirewallDetectionCoordinator` tracks each device IP separately (`src/firewall_detection.rs:82-94`):
 
 1. On first subscription for a device, start a detection timer
 2. If any event arrives from that IP within timeout (default 15s), mark as Accessible
@@ -533,25 +531,21 @@ Validates UPnP-specific headers (SID, NT, NTS) according to the UPnP Device Arch
 
 #### How
 
-Validation in `validate_upnp_headers`:
+Validation in `validate_upnp_headers` (`src/server.rs:475-490`):
 
 ```rust
-fn validate_upnp_headers(
-    sid: &Option<String>,
-    nt: &Option<String>,
-    nts: &Option<String>,
-) -> bool {
+fn validate_upnp_headers(sid: Option<&str>, nt: Option<&str>, nts: Option<&str>) -> bool {
     // SID header is required for event notifications
     if sid.is_none() {
         return false;
     }
 
-    // For UPnP events, NT and NTS headers are typically present
-    // If present, validate they have expected values
-    if let (Some(nt_val), Some(nts_val)) = (nt, nts) {
-        if nt_val != "upnp:event" || nts_val != "upnp:propchange" {
-            return false;
-        }
+    if nt.is_some_and(|nt| nt != "upnp:event") {
+        return false;
+    }
+
+    if nts.is_some_and(|nts| nts != "upnp:propchange") {
+        return false;
     }
 
     true
@@ -560,8 +554,12 @@ fn validate_upnp_headers(
 
 **Key decisions**:
 - SID is strictly required (without it, routing is impossible)
-- NT/NTS are validated only if both are present (some devices omit them)
-- Invalid NT/NTS values result in 400 Bad Request
+- NT and NTS are each optional — some devices omit them — but each is checked
+  **independently** when present, so supplying one without the other does not skip validation
+- A present NT that is not `upnp:event`, or a present NTS that is not `upnp:propchange`,
+  results in 400 Bad Request
+- Parameters are `Option<&str>` because the caller (`upnp_header()`) has already rejected any
+  header value that is not UTF-8, so no owned `String` needs to exist to run these checks
 
 ### 4.5 Feature: Per-Interface Callback Address Selection
 
@@ -580,23 +578,21 @@ subnet **actually contains** that speaker — using the interface's real netmask
 
 #### Why
 
-`detect_local_ip` previously bound a UDP socket, "connected" it to `8.8.8.8:80`
-(sending nothing) and read back the local address. That reports whichever
-interface wins the **default route** — which is not the interface that reaches a
-LAN speaker. With a VPN up the default route is the tunnel, so the callback URL
-advertised a tunnel address no speaker could reach. Speakers accepted the
-SUBSCRIBE and then had nowhere to deliver to, so **every event was silently lost
-and the firewall detector attributed it to a firewall**, which is a plausible but
-wrong diagnosis that sends the device to polling forever.
+The callback URL has to name an address the *speaker* can reach. Deriving it from the
+default route — the usual "connect a UDP socket to a public address and read back the local
+end" trick — names whichever interface carries default traffic, which is not necessarily the
+interface that reaches a LAN speaker. With a VPN up, the default route is the tunnel, and a
+tunnel address is unreachable from a speaker. The failure is silent and badly misattributed:
+the speaker accepts the SUBSCRIBE, has nowhere to deliver to, and the firewall detector reads
+the resulting silence as a firewall and sends the device to polling forever.
 
-The same probe existed a second time in `sonos-stream::broker`, which rebuilt
-`http://{ip}:{port}` by hand rather than reading `base_url()`. Two independent
-copies of one derivation is what allowed them to disagree; the broker now consumes
-`base_url()` verbatim (see `docs/specs/sonos-stream.md` §3.1).
+Matching against each interface's real netmask instead removes the guess. `sonos-discovery`
+binds SSDP per-interface for the same reason, so discovery and event delivery agree about
+which interface reaches a given speaker.
 
-PR #80 fixed the same class of bug for *discovery* by binding SSDP per-interface
-instead of `0.0.0.0`. The callback URL was left on the old pattern, which made
-things strictly worse: discovery now finds speakers that events then cannot reach.
+`base_url()` is the single derivation of the advertised URL; `sonos-stream::broker` consumes
+it verbatim rather than rebuilding `http://{ip}:{port}` (see
+[sonos-stream.md](./sonos-stream.md) §3.1).
 
 #### How: the netmask is load-bearing
 
@@ -721,13 +717,12 @@ pub struct DeviceFirewallState {
 |-------|---------|---------------------|
 | `if-addrs` | IPv4 interface enumeration with netmasks | Callback address selection needs each interface's real netmask (§4.5); already used by `sonos-discovery` for per-interface SSDP |
 | `tokio` | Async runtime | Standard async runtime in Rust ecosystem; required for async HTTP server |
-| `axum` | HTTP server framework | This crate serves exactly **one** route, so a framework's composition story is nearly irrelevant; what matters is a small dependency tree, first-party `tower`/`hyper` alignment, and a `FromRequest` extractor that lets every gate run before the handler with its own status. Replaced `warp`, which was the sole reason `openssl-sys` (and its C toolchain requirement) was in the tree |
+| `axum` | HTTP server framework | This crate serves exactly **one** route, so a framework's composition story is nearly irrelevant; what matters is a small dependency tree, first-party `tower`/`hyper` alignment, and a `FromRequest` extractor that lets every gate run before the handler with its own status. It also keeps `openssl-sys`, and its C toolchain requirement, out of the tree |
 | `reqwest` | HTTP client (**dev-dependency only**) | Test client for driving the server end to end |
 
-**Deps that used to be listed here and are gone**: `bytes` (axum re-exports `Bytes`, so no
-direct dependency), `async-trait` (no async traits in this crate), `thiserror` (errors here
-are strings, see §7.1), `uuid`, `url` and `soap-client` (all unused — `soap-client` in
-particular was an inverted-layering hazard).
+**Deliberately absent**: `bytes` (axum re-exports `Bytes`), `async-trait` (this crate has no
+async traits), `thiserror` (errors here are strings, see §7.1), and `soap-client` — depending
+on the SOAP transport from the callback server would invert the layering.
 
 ### 6.2 Dependents (Downstream)
 
@@ -798,9 +793,8 @@ enum NotifyRejection {
 | `LengthRequired` | 411 | No parseable `Content-Length`, so the body cannot be bounded before reading |
 | `UnreadableBody` | 413 or 400 | The read hit `DefaultBodyLimit`, or the connection failed part-way. axum's own mapping is reused rather than second-guessed |
 
-**Why a non-UTF-8 header is 400**: it previously fell through to an unhandled rejection and
-became a 500. None of SID/NT/NTS can be valid without being text, so 400 is the honest
-answer and it no longer reports a client error as a server fault.
+**Why a non-UTF-8 header is 400**: none of SID/NT/NTS can be valid without being text, so a
+non-UTF-8 value is a malformed request from the client, not a server fault.
 
 ### 7.2 Error Philosophy
 
@@ -855,7 +849,7 @@ The callback server emphasizes integration tests because the core value is HTTP 
 - [x] CGNAT/VPN tunnel not chosen for a LAN target, in both `select_interface` and the target-less fallback (`test_tunnel_interface_not_chosen_for_lan_target`)
 - [x] Loopback / link-local / unspecified filtered out (`test_unusable_addresses_are_filtered`)
 - [x] UPnP header validation
-- [x] UTF-8-safe trace preview (`test_event_xml_preview_handles_multibyte_boundary`) — asserts the previously-panicking 198-ASCII + multibyte case
+- [x] UTF-8-safe trace preview (`test_event_xml_preview_handles_multibyte_boundary`) — 198 ASCII bytes followed by a multi-byte codepoint spanning the truncation point
 - [x] Event router registration and routing
 - [x] Pending buffer cap and drop-oldest eviction (`test_pending_buffer_is_bounded`, `test_pending_buffer_evicts_oldest_first`)
 - [x] TTL sweep on `route_event`, not just `register()` (`test_stale_entries_swept_on_route`)
@@ -1025,10 +1019,9 @@ every unbounded buffer is a memory-exhaustion primitive.
 | NTS header | If present, must be `upnp:propchange` — checked **independently** of NT | `validate_upnp_headers` |
 | Event body | Size-capped; contents not parsed (passed through) | Consumer responsibility |
 
-**Independent NT/NTS checks**: these were previously gated behind
-`if let (Some(nt), Some(nts))`, so a request supplying only one of the two was never
-validated — `NT: garbage` with no `NTS` was accepted. Each header is now checked on its own
-with `is_some_and`, which keeps both optional while closing that gap.
+**Independent NT/NTS checks**: each header is checked on its own with `is_some_and`, which
+keeps both optional — devices do omit them — without letting a request that supplies only one
+of the two escape validation.
 
 **Ordering requirement**: header validation must precede `String::from_utf8_lossy`
 on the body. The lossy decode allocates a second full copy of the body, so
@@ -1082,15 +1075,13 @@ typical events, while capping the cost of a hostile request at ~128 KiB
 `MAX_PENDING_EVENTS = 256`, with drop-oldest eviction.
 
 **Why a cap is required**: `route_event` buffers events for any SID it does not
-recognise, which is what bridges the SUBSCRIBE/NOTIFY race. But the TTL sweep
-originally ran only inside `register()`, which is called only on a genuine new
-subscription. A sender spraying events for random SIDs therefore grew `pending`
-without bound and never triggered cleanup — each entry retains a full event body.
-The "0-5 entries" expectation held only for well-behaved senders.
+recognise, which is what bridges the SUBSCRIBE/NOTIFY race. Each buffered entry retains a
+full event body, and a sender spraying events for SIDs that will never be registered would
+otherwise grow `pending` without bound.
 
-**Fix**: `route_event` now sweeps `BUFFER_TTL`-expired entries *and* enforces the
-cap on every buffering operation, so cleanup no longer depends on `register()`
-being called.
+`route_event` therefore sweeps `BUFFER_TTL`-expired entries *and* enforces the cap on every
+buffering operation, so cleanup does not depend on `register()` ever being called — a
+well-behaved sender is not a precondition for bounded memory.
 
 **Why 256**: legitimate occupancy is 0-5 entries (the race window is
 microseconds), so 256 is ~50x the real high-water mark and cannot be reached by
@@ -1105,12 +1096,11 @@ index order does not track insertion order.
 
 ### 10.6 UTF-8 Boundary Safety
 
-Slicing a `&str` at a byte index that is not a char boundary panics. The
-trace-logging path previously did `&event_xml[..200]` directly: 198 ASCII bytes
-followed by a 3-byte codepoint spanning bytes 198-200 panics with
-`byte index 200 is not a char boundary`. Event XML routinely carries non-ASCII
-track metadata, so this is reachable in normal use for a music SDK — a panic in
-the request handler, triggerable by any sender, at trace level.
+Slicing a `&str` at a byte index that is not a char boundary panics: 198 ASCII bytes
+followed by a 3-byte codepoint spanning bytes 198-200 makes `&event_xml[..200]` panic with
+`byte index 200 is not a char boundary`. Event XML routinely carries non-ASCII track
+metadata, so for a music SDK that is reachable in normal use — a panic in the request
+handler, triggerable by any sender, at trace level.
 
 The `preview(s, max)` helper walks the truncation point back to the nearest char
 boundary. It is a free function rather than inline code specifically so it can be
@@ -1138,10 +1128,9 @@ size and the char-boundary panic risk on that path.
 
 **Current state**: `tracing` events are emitted, but there are no spans.
 
-The blocker is gone, though. The handler used to be a closure inside a `warp` filter chain,
-with no named function to attach `#[tracing::instrument]` to. It is now a free async fn,
-`handle_notify(State<Arc<EventRouter>>, NotifyRequest) -> StatusCode`, so adding
-request-scoped spans is a one-attribute change rather than a refactor.
+Nothing structural stands in the way of adding them. The handler is a free async fn,
+`handle_notify(State<Arc<EventRouter>>, NotifyRequest) -> StatusCode`, so request-scoped
+spans are a one-attribute change.
 
 ---
 
@@ -1193,11 +1182,10 @@ For firewall detection (`FirewallDetectionConfig`):
 
 **Current deprecations**: None
 
-### 13.3 Version History
+### 13.3 Version
 
-| Version | Changes | Migration Guide |
-|---------|---------|-----------------|
-| `0.1.0` | Initial implementation | N/A |
+Published as `sonos-sdk-callback-server`, versioned from the workspace
+(`version.workspace = true`), so it moves in lockstep with the rest of the SDK.
 
 ---
 
@@ -1216,8 +1204,7 @@ For firewall detection (`FirewallDetectionConfig`):
 
 | Debt Item | Location | Severity | Remediation Plan |
 |-----------|----------|----------|------------------|
-| No request-scoped tracing spans | `src/server.rs` (`handle_notify`) | Low | The handler is now a named async fn, so this is just adding `#[tracing::instrument]` |
-| ~~Unused `soap-client` dependency~~ | ~~`Cargo.toml`~~ | — | **Resolved 2026-08-17.** Removed, along with unused `bytes`, `async-trait`, `thiserror`, `uuid` and `url` |
+| No request-scoped tracing spans | `src/server.rs` (`handle_notify`) | Low | Add `#[tracing::instrument]` to the handler |
 | String-based errors for server startup | `src/server.rs` | Low | Consider `thiserror` enum. The *HTTP* errors are already a typed enum (`NotifyRejection`, §7.1); only the three `CallbackServer::new` failures are strings |
 
 ---
@@ -1228,7 +1215,7 @@ For firewall detection (`FirewallDetectionConfig`):
 
 | Enhancement | Priority | Rationale | Dependencies |
 |-------------|----------|-----------|--------------|
-| Request-scoped tracing spans | P1 | Correlate log lines for a single NOTIFY. Now unblocked: `handle_notify` is a named async fn | None |
+| Request-scoped tracing spans | P1 | Correlate log lines for a single NOTIFY; `handle_notify` is a named async fn, so it is one attribute | None |
 | Configurable callback URL | P2 | Support for Docker/NAT environments where auto-detection fails | None |
 | Metrics export | P2 | Prometheus-compatible counters for events received, routing success rate, and rejected/evicted counts | `metrics` crate |
 | Per-source-IP rate limiting | P3 | The size and buffer caps bound memory per request, but not request *rate* from a hostile LAN host | None |
@@ -1256,13 +1243,3 @@ For firewall detection (`FirewallDetectionConfig`):
 - [UPnP Device Architecture 2.0](http://upnp.org/specs/arch/UPnP-arch-DeviceArchitecture-v2.0.pdf) - Section 4 (Eventing)
 - [axum documentation](https://docs.rs/axum/) - HTTP server framework
 - [tokio documentation](https://docs.rs/tokio/) - Async runtime
-
-### C. Changelog
-
-| Date | Author | Change |
-|------|--------|--------|
-| 2025-01-14 | Claude | Initial specification created |
-| 2026-08-15 | Claude | Replaced route-to-8.8.8.8 IP detection with per-interface selection using each interface's real netmask (§4.5), added `if-addrs` (§6.1), documented the single-`base_url` multi-subnet limitation as a named follow-up (§14.1), and required OS-assigned ports in tests (§8.4). |
-| 2026-08-17 | Claude Opus 5 | Ported the single route from `warp` to `axum`: gates now live in a `NotifyRequest` extractor and `NotifyRejection` replaces the rejection-mapping table (§3.1, §3.4, §7.1). Documented the **fixed NT/NTS validation gap** — they were only checked when both were present (§3.1, §10.3) — the two independent body-size checks and why chunked bodies stay 411 (§10.4), and the removal of six unused dependencies (§6.1, §14.2). |
-| 2026-08-15 | Claude | Hardened the unauthenticated NOTIFY endpoint: added the 64 KiB body limit (§10.4), the 256-entry pending buffer cap with per-route TTL sweep (§10.5), and UTF-8-safe trace previews (§10.6). Expanded the threat model to state that unbounded buffers are the primary risk given UPnP has no authentication. |
-| 2026-09-17 | Claude Opus 5 | Removed three stranded `FirewallDetectionCoordinator` items (§5.1, §5.2). `clear_device_cache()` and `get_stats()`/`CoordinatorStats` had no caller outside their own unit tests, and `DetectionReason::SubscriptionFailed` was never constructed, making its logging arm unreachable — `DetectionResult` is only ever sent with `EventReceived` or `Timeout`. The `DeviceFirewallState` destruction path and the `FirewallStatus` state machine now describe the one eviction that really exists: oldest-first, triggered by `max_cached_devices` in `start_detection_for_device()`. Detection itself (`on_first_subscription`, `on_event_received`, `get_device_status`, the timeout monitor) is unchanged and remains live. |

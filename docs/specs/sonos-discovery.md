@@ -175,8 +175,8 @@ pub struct DiscoveryIterator {
 ```
 ┌──────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
 │   get_iter() │────▶│  SSDP Search │────▶│  HTTP Fetch  │────▶│ Parse & Emit │
-│   lib.rs:141 │     │  ssdp.rs:40  │     │discovery.rs: │     │device.rs:47  │
-│              │     │              │     │     101      │     │              │
+│   lib.rs:147 │     │  ssdp.rs:70  │     │discovery.rs: │     │device.rs:48  │
+│              │     │              │     │     118      │     │              │
 └──────────────┘     └──────────────┘     └──────────────┘     └──────────────┘
        │                    │                    │                    │
        │                    ▼                    ▼                    ▼
@@ -187,37 +187,44 @@ pub struct DiscoveryIterator {
        │
        ▼
   DiscoveryIterator::new()
-  discovery.rs:47
+  discovery.rs:48
 ```
 
 **Step-by-step**:
 
-1. **Entry** (`src/lib.rs:141`): `get_iter()` calls `get_iter_with_timeout()` with 3-second default timeout.
+1. **Entry** (`src/lib.rs:147`): `get_iter()` calls `get_iter_with_timeout()` (`:175`) with a
+   3-second default timeout, falling back to `DiscoveryIterator::empty()` if construction
+   fails rather than panicking.
 
-2. **Iterator Creation** (`src/discovery.rs`, `DiscoveryIterator::new`): creates:
+2. **Iterator Creation** (`src/discovery.rs:48`, `DiscoveryIterator::new`): creates:
    - `SsdpClient` holding the list of usable IPv4 interfaces and the configured timeout
-   - a `ureq::Agent` for HTTP requests, configured with `timeout_global(Some(timeout))` — one
-     deadline covering connect, send and body read, matching the single overall deadline the
-     previous client applied — and `http_status_as_error(false)`, so
-     `fetch_device_description` owns the status check and can name the offending location
-     instead of a bare `StatusCode` error interleaving with genuine transport failures
+   - a `ureq::Agent` (`src/discovery.rs:70`) configured with `timeout_global(Some(timeout))` —
+     one deadline covering connect, send and body read — and `http_status_as_error(false)`, so
+     `fetch_device_description` (`:118`) owns the status check and can name the offending
+     location instead of surfacing a bare `StatusCode` error that would interleave with
+     genuine transport failures
    - Empty `HashSet` for deduplication
 
-3. **SSDP M-SEARCH** (`src/ssdp.rs`): On first `next()` call:
+3. **SSDP M-SEARCH** (`src/ssdp.rs:70`): on the first `next()` call, via `fill_buffer`
+   (`src/discovery.rs:143`):
    - Sends M-SEARCH multicast to `239.255.255.250:1900` from every usable interface, one socket per interface, concurrently
    - Target: `urn:schemas-upnp-org:device:ZonePlayer:1`
    - Collects all responses into buffer until timeout
-   - Interfaces that fail to send are skipped; an error is returned only if every interface fails
+   - One `std::thread` per interface, joined before returning, so wall-clock stays ~`timeout`
+     regardless of interface count (`src/ssdp.rs:81-101`)
+   - Interfaces that fail to send are skipped; an error is returned only if every interface
+     fails *and* no responses arrived (`src/ssdp.rs:104-110`)
 
-4. **Response Processing** (`src/discovery.rs:138-187`): For each SSDP response:
-   - Skip if location already seen (deduplication)
-   - Skip if not likely Sonos (early filtering by URN/USN/SERVER)
-   - Fetch device description via HTTP, **checking the status before touching the body**.
-     Without that check a 404 or 500 HTML error page reached the XML parser and surfaced as
-     a confusing parse error rather than the HTTP failure it actually was
-   - Parse XML with `DeviceDescription::from_xml()`
-   - Validate with `is_sonos_device()`
-   - Extract the host from the location URL with `extract_ip_from_url` (see 5.2a)
+4. **Response Processing** (`src/discovery.rs:163-212`): for each SSDP response:
+   - Skip if the location was already seen (deduplication, `:180`)
+   - Skip if not likely Sonos (early filtering by URN/USN/SERVER, `:186`)
+   - Fetch the device description via HTTP, **checking the status before touching the body**.
+     Without that check a 404 or 500 HTML error page reaches the XML parser and surfaces as a
+     confusing parse error rather than the HTTP failure it is
+   - Parse XML with `DeviceDescription::from_xml()` (`src/device.rs:48`)
+   - Validate with `is_sonos_device()` (`src/device.rs:77`)
+   - Extract the host from the location URL with `extract_ip_from_url` (`src/device.rs:98`;
+     see 5.2a)
    - Yield `DeviceEvent::Found(device)`
 
    A device that fails any of these steps is *skipped*, not fatal: one unreachable or
@@ -233,7 +240,7 @@ When a consumer breaks out of the iterator early:
 ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
 │  for event   │────▶│    break;    │────▶│  Drop impl   │
 │  in get_iter │     │              │     │ discovery.rs │
-│              │     │              │     │    191-200   │
+│              │     │              │     │    216-222   │
 └──────────────┘     └──────────────┘     └──────────────┘
                                                  │
                                                  ▼
@@ -246,7 +253,7 @@ When a consumer breaks out of the iterator early:
 **Step-by-step**:
 
 1. Consumer calls `break` or drops iterator
-2. `Drop::drop()` (`src/discovery.rs:191-200`) is invoked
+2. `Drop::drop()` (`src/discovery.rs:216-222`) is invoked
 3. `ssdp_client.take()` ensures UDP socket is closed
 4. HTTP client automatically cleaned up by Rust's drop semantics
 
@@ -283,7 +290,7 @@ SSDP (Simple Service Discovery Protocol) is the standard mechanism for UPnP devi
 #### How
 
 ```rust
-// M-SEARCH request format (ssdp.rs:41-50)
+// M-SEARCH request format (ssdp.rs:71-79)
 let request = format!(
     "M-SEARCH * HTTP/1.1\r\n\
      HOST: 239.255.255.250:1900\r\n\
@@ -327,7 +334,7 @@ SSDP discovery can return many non-Sonos devices (routers, smart TVs, NAS device
 #### How
 
 ```rust
-// Stage 1: Early filtering (discovery.rs:79-98)
+// Stage 1: Early filtering (discovery.rs:96-114)
 fn is_likely_sonos(response: &SsdpResponse) -> bool {
     response.urn.contains("ZonePlayer") ||
     response.usn.contains("RINCON") ||
@@ -337,7 +344,7 @@ fn is_likely_sonos(response: &SsdpResponse) -> bool {
 // Stage 2: HTTP fetch success (implicit)
 // Failed fetches are silently skipped
 
-// Stage 3: XML validation (device.rs:76-80)
+// Stage 3: XML validation (device.rs:77-81)
 fn is_sonos_device(&self) -> bool {
     self.manufacturer.to_lowercase().contains("sonos") ||
     self.device_type.contains("ZonePlayer") ||
@@ -366,7 +373,7 @@ Sonos devices often send multiple SSDP responses (for different services, or due
 #### How
 
 ```rust
-// Deduplication by location URL (discovery.rs:154-158)
+// Deduplication by location URL (discovery.rs:180-183)
 if self.seen_locations.contains(&ssdp_response.location) {
     continue;
 }
@@ -391,7 +398,7 @@ Consumers may find the device they need and break out of the iterator early. Wit
 #### How
 
 ```rust
-// discovery.rs:191-200
+// discovery.rs:216-222
 impl Drop for DiscoveryIterator {
     fn drop(&mut self) {
         if let Some(client) = self.ssdp_client.take() {
@@ -412,7 +419,7 @@ The `Option::take()` pattern ensures the socket is closed exactly once, even if 
 #### `SsdpResponse`
 
 ```rust
-// ssdp.rs:11-17
+// ssdp.rs:11
 pub(crate) struct SsdpResponse {
     pub location: String,      // URL to device description XML
     pub urn: String,           // ST header: device type URN
@@ -431,7 +438,7 @@ pub(crate) struct SsdpResponse {
 #### `DeviceDescription`
 
 ```rust
-// device.rs:17-35
+// device.rs:20-36
 #[derive(Debug, Deserialize)]
 pub struct DeviceDescription {
     pub device_type: String,
@@ -561,7 +568,7 @@ variant is zero.
 ### 7.1 Error Types
 
 ```rust
-// error.rs:9-19
+// error.rs:7-21
 #[derive(Debug, thiserror::Error)]
 pub enum DiscoveryError {
     /// Network-related errors (socket creation, HTTP requests)
@@ -579,9 +586,8 @@ pub enum DiscoveryError {
 }
 ```
 
-Derived with `thiserror`. The hand-written `Display`/`Error` impls this crate used to carry
-were replaced with derives producing **byte-identical messages**, so nothing matching on
-error text changed.
+Derived with `thiserror` (`src/error.rs:7`), four variants, **not** `#[non_exhaustive]`.
+`Result<T>` (`src/error.rs:26`) is the crate-wide alias.
 
 `Timeout` is declared but never constructed — see 5.2b for why it stays.
 
@@ -628,7 +634,9 @@ error text changed.
 
 ### 8.2 Unit Tests
 
-**Location**: `src/ssdp.rs`, `src/device.rs` (inline `#[cfg(test)]`)
+**Location**: inline `#[cfg(test)]` in `src/ssdp.rs` (18 tests) and `src/device.rs` (8).
+`src/discovery.rs`, `src/lib.rs` and `src/error.rs` carry none; their behaviour is covered by
+the integration tests in `tests/` (§8.4).
 
 **What to test**:
 - [x] SSDP response parsing (valid, invalid, case-insensitive headers)
@@ -654,7 +662,9 @@ fn test_parse_ssdp_response_valid() {
 
 ### 8.3 Component Tests
 
-**Location**: `tests/fixture_based_integration.rs`
+**Location**: `tests/fixture_based_integration.rs` — 8 plain `#[test]`s plus 5 `#[rstest]`s
+that expand to 21 generated cases. Offline: driven by `mockito` and the captured fixtures in
+`tests/fixtures/`.
 
 **What to test**:
 - [x] Device parsing with real captured XML fixtures
@@ -665,7 +675,9 @@ fn test_parse_ssdp_response_valid() {
 
 ### 8.4 Integration Tests
 
-**Location**: `tests/discovery_integration.rs`, `tests/resource_cleanup.rs`
+**Location**: `tests/discovery_integration.rs` (13 tests), `tests/resource_cleanup.rs` (4).
+`tests/capture_fixtures.rs` holds 3 more, all `#[ignore]`d — they exist to re-capture fixtures
+from real hardware, not to assert behaviour.
 
 **Prerequisites**:
 - [x] May require Sonos devices on network (tests pass with 0 devices)
@@ -710,12 +722,12 @@ fn test_parse_ssdp_response_valid() {
 
 ### 9.2 Critical Paths
 
-1. **SSDP Response Collection** (`src/ssdp.rs:79-111`)
+1. **SSDP Response Collection** (`src/ssdp.rs:81-114`)
    - **Complexity**: O(n) where n = number of responses
    - **Bottleneck**: Network timeout (blocks entire collection)
    - **Optimization**: Responses buffered to minimize timeout impact
 
-2. **HTTP Fetch Loop** (`src/discovery.rs:138-187`)
+2. **HTTP Fetch Loop** (`src/discovery.rs:163-212`)
    - **Complexity**: O(m) where m = unique locations
    - **Bottleneck**: Sequential HTTP requests
    - **Optimization**: Early filtering reduces HTTP requests to likely Sonos devices
@@ -813,15 +825,23 @@ let devices = get_with_timeout(Duration::from_secs(10));
 | `get_iter()` | Stable | Core API |
 | `get_iter_with_timeout()` | Stable | Core API |
 | `Device` struct | Stable | Fields may be added (non-breaking) |
-| `DeviceEvent` enum | Stable | Variants may be added (match with `_`) |
-| `DiscoveryError` | Stable | Variants may be added |
+| `DeviceEvent` enum | Stable | Single variant `Found`; **not** `#[non_exhaustive]`, so adding one is breaking |
+| `DiscoveryError` | Stable | **Not** `#[non_exhaustive]`, so adding a variant is breaking |
+| `device::DeviceDescription` | Evolving | Public only so fixture-based tests can deserialize a description directly |
 | `device::DeviceDescription` | Semi-stable | Public for testing, internal use discouraged |
 
 ### 13.2 Breaking Changes
 
 **Policy**: Semantic versioning. Breaking changes only in major versions.
 
-**Current deprecations**: None
+**Current deprecations**: none.
+
+### 13.3 Version
+
+Published as `sonos-sdk-discovery` (lib name `sonos_discovery`), versioned from the workspace
+(`version.workspace = true`), so it moves in lockstep with `sonos-sdk`. The manifest sets
+`exclude = ["tests/"]`, so the integration tests live in-repo but are not shipped in the
+published crate.
 
 ---
 
@@ -880,10 +900,3 @@ let devices = get_with_timeout(Duration::from_secs(10));
 - [UPnP Device Architecture 1.0](http://upnp.org/specs/arch/UPnP-arch-DeviceArchitecture-v1.0.pdf)
 - [SSDP Draft Specification](https://tools.ietf.org/html/draft-cai-ssdp-v1-03)
 - [Sonos UPnP Documentation](https://developer.sonos.com/) (requires account)
-
-### C. Changelog
-
-| Date | Author | Change |
-|------|--------|--------|
-| 2024-01-14 | Claude | Initial specification |
-| 2026-08-17 | Claude Opus 5 | `reqwest` → `ureq` for device descriptions, with a new HTTP status check before the body is read (§3.1, §6.1, §7.3, §10.3). Added 5.2a (why `url::Url` + `host_str()`, and why IPv6 brackets are load-bearing) and 5.2b (the two deliberate non-changes: hardcoded `port: 1400`, unconstructed `DiscoveryError::Timeout`). `DiscoveryError` is now `thiserror`-derived with byte-identical messages (§7.1). Corrected §11.1, which claimed the crate emits no logs. |
