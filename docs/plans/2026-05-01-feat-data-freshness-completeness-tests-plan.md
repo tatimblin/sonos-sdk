@@ -1,7 +1,7 @@
 ---
 title: Data Freshness & Completeness Integration Tests
 type: feat
-status: active
+status: completed
 date: 2026-05-01
 origin: docs/brainstorms/2026-03-28-integration-test-suite-brainstorm.md
 ---
@@ -808,8 +808,8 @@ fn test_topology_freshness() -> Result<(), Box<dyn std::error::Error>> {
 ## Sources & References
 
 ### Origin
-- **Brainstorm:** [docs/brainstorms/2026-03-28-integration-test-suite-brainstorm.md](docs/brainstorms/2026-03-28-integration-test-suite-brainstorm.md)
-- **Prior plan (completed):** [docs/plans/2026-03-28-feat-integration-test-suite-plan.md](docs/plans/2026-03-28-feat-integration-test-suite-plan.md)
+- **Brainstorm:** [docs/brainstorms/2026-03-28-integration-test-suite-brainstorm.md](../brainstorms/2026-03-28-integration-test-suite-brainstorm.md)
+- **Prior plan (completed):** [docs/plans/2026-03-28-feat-integration-test-suite-plan.md](2026-03-28-feat-integration-test-suite-plan.md)
 
 ### Internal References
 - **Existing property validation:** `sonos-sdk/tests/property_validation.rs` — established watch→set→verify pattern with RAII guards

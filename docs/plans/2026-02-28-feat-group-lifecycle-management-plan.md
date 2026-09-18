@@ -38,7 +38,13 @@ The topology auto-update pipeline (ZoneGroupTopology events → decoder → stat
 
 ## Problem Statement
 
-The SDK can observe groups but cannot modify them. Users who want to group speakers, add a speaker to an existing group, or dissolve a group must drop to raw UPnP calls. The `GroupManagement` operations (`AddMember`, `RemoveMember`) exist in `sonos-api` but are not exposed through the SDK.
+The SDK can observe groups but cannot modify them. Users who want to group speakers, add a speaker to an existing group, or dissolve a group must drop to raw UPnP calls.
+
+The ergonomic API below is implemented over **AVTransport**, not GroupManagement: joining
+is `SetAVTransportURI` with an `x-rincon:{coordinator_id}` URI sent to the *member*, and
+leaving is `BecomeCoordinatorOfStandaloneGroup` sent to the member. The `GroupManagement`
+`AddMember`/`RemoveMember` operations exist in `sonos-api` and remain unexposed through
+the SDK.
 
 Key challenge: `AddMember` requires a `boot_seq: u32` parameter that is not currently stored anywhere in the SDK state. It's present in ZoneGroupTopology events but gets discarded during processing.
 
@@ -325,20 +331,19 @@ Multiple clients modifying the same group simultaneously. Sonos serializes opera
 
 ## Acceptance Criteria
 
-- [ ] AddMember XML payload escapes `member_id` with `xml_escape()` (security fix)
-- [ ] `group.add_speaker(&speaker)` sends AddMember to coordinator with correct boot_seq
-- [ ] `group.add_speaker(&coordinator)` returns `Err(SdkError::InvalidOperation)` (self-add guard)
-- [ ] `group.remove_speaker(&speaker)` sends RemoveMember to coordinator
-- [ ] `group.remove_speaker(&coordinator)` returns `Err(SdkError::InvalidOperation)` (removal guard)
-- [ ] `group.dissolve()` removes all non-coordinator members via coordinator-targeted `remove_speaker()`
-- [ ] `speaker.join_group(&group)` delegates to group.add_speaker
-- [ ] `speaker.leave_group()` wraps become_standalone
-- [ ] `system.create_group()` adds all members to coordinator's group
-- [ ] boot_seq stored on SpeakerInfo, flows from topology events through to AddMember calls
-- [ ] `cargo test -p sonos-api` passes (XML escape test)
-- [ ] `cargo test -p sonos-sdk` passes
-- [ ] `cargo test -p sonos-state` passes
-- [ ] `cargo clippy` passes with no warnings
+- [x] `group.add_speaker(&speaker)` joins the speaker to the group by sending
+      `SetAVTransportURI` with `x-rincon:{coordinator_id}` **to the member speaker**
+- [x] `group.add_speaker(&coordinator)` returns `Err(SdkError::InvalidOperation)` (self-add guard)
+- [x] `group.remove_speaker(&speaker)` sends `BecomeCoordinatorOfStandaloneGroup` to the member
+- [x] `group.remove_speaker(&coordinator)` returns `Err(SdkError::InvalidOperation)` (removal guard)
+- [x] `group.dissolve()` returns a `GroupChangeResult` reporting per-member success and failure
+- [x] `speaker.join_group(&group)` delegates to `group.add_speaker`
+- [x] `speaker.leave_group()` wraps `become_standalone`
+- [x] `system.create_group(coordinator, members)` adds all members to the coordinator's group
+- [x] `boot_seq` is stored on `SpeakerInfo` and decoded from topology events
+- [x] `cargo test -p sonos-sdk` passes
+- [x] `cargo test -p sonos-state` passes
+- [x] `cargo clippy` passes with no warnings
 
 ## Verification
 

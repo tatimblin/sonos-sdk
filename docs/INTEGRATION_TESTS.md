@@ -52,6 +52,13 @@ cargo test --package sonos-sdk --test integration_real_speakers -- --ignored
 **Duration:** ~1 second (or immediate skip if insufficient speakers)
 **Note:** Requires 2+ standalone speakers; gracefully skips otherwise
 
+### ✅ SaveQueue Element Names (`test_save_queue_element_names`)
+**Validates:** The `SaveQueue` request element names the device actually accepts
+**Tests:** `speaker.save_queue("SDK Integration Test", "")` returns a non-empty
+`AssignedObjectID`; an empty value means the device rejected the element names
+**Duration:** ~1 second
+**Note:** Saves a playlist named `SDK Integration Test` on the device
+
 ### ⭐ Event Integration (`test_event_integration`)
 **Validates:** End-to-end event flow from property watching to system.iter()
 **Tests:** Property watching → API changes → events via system.iter()
@@ -67,9 +74,11 @@ This test specifically validates that:
 
 ### Successful Run
 ```
-running 5 tests
+running 6 tests
 ✅ API operations test completed successfully
 test test_api_operations ... ok
+✅ SaveQueue element names accepted by real device
+test test_save_queue_element_names ... ok
 ✅ Property access patterns validated
 test test_property_watching ... ok
 ✅ Event streaming test completed successfully
@@ -79,7 +88,7 @@ test test_group_lifecycle ... ok
 ✅ Event integration validated: property watching -> API changes -> events via system.iter()
 test test_event_integration ... ok
 
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.44s
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.44s
 ```
 
 ### Common Issues
@@ -106,7 +115,8 @@ Error: "No reachable speakers found"
 
 ### Pre-PR Checklist
 1. ✅ Code changes complete
-2. ✅ Unit tests passing: `cargo test --workspace`
+2. ✅ Unit tests passing: `cargo test --workspace --features sonos-sdk/test-support --locked`
+   (bare `cargo test` does not compile — see [CONTRIBUTING.md](CONTRIBUTING.md))
 3. ✅ Integration tests passing: `cargo test --package sonos-sdk --test integration_real_speakers -- --ignored`
 4. ✅ Linting clean: `cargo clippy`
 
@@ -154,13 +164,14 @@ Integration Tests
        ↓
     sonos-stream (Event Processing)
        ↓
-    callback-server (HTTP Events) + sonos-api (SOAP)
-       ↓
+    callback-server (HTTP Events)    sonos-api → soap-client (SOAP)
+       ↓                                ↓
     Real Sonos Hardware
 ```
 
 Each test validates different layers:
 - **API Operations:** sonos-sdk → sonos-api → Hardware
+- **SaveQueue Element Names:** SOAP payload shape against real firmware
 - **Property Watching:** Full reactive stack
 - **Event Streaming:** UPnP event processing with grace periods
 - **Group Management:** Multi-speaker coordination

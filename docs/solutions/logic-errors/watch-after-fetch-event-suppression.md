@@ -13,7 +13,7 @@ tags:
 severity: medium
 component: sonos-sdk/examples/property_observer.rs
 related_components:
-  - state-store/PropertyBag
+  - sonos-state/PropertyBag
   - sonos-state/event-pipeline
   - sonos-sdk/property/handles
 symptom: "Volume property showed count=0 events on all speakers while other RenderingControl properties (Mute, Bass, Treble, Loudness) showed count=1"
@@ -23,11 +23,11 @@ symptom: "Volume property showed count=0 events on all speakers while other Rend
 
 ## Problem
 
-The property observer dashboard (`cargo run --example property_observer`) showed Volume with count=0 events on ALL speakers, while Mute, Bass, Treble, Loudness all showed count=1. Volume was the only property that never received its initial subscription event.
+The property observer dashboard (`cargo run -p sonos-sdk --example property_observer`) showed Volume with count=0 events on ALL speakers, while Mute, Bass, Treble, Loudness all showed count=1. Volume was the only property that never received its initial subscription event.
 
 ## Investigation
 
-1. Ran `cargo run --example property_observer` against 6 real Sonos speakers for 3+ minutes
+1. Ran `cargo run -p sonos-sdk --example property_observer` against 6 real Sonos speakers for 3+ minutes
 2. Observed: Volume count=0 on ALL speakers, Mute/Bass/Treble/Loudness count=1
 3. Traced the entire 6-layer event pipeline: callback-server → sonos-stream → sonos-event-manager → sonos-state → sonos-sdk → user
 4. Found pipeline code is structurally identical for Volume and Mute — no filtering anywhere
@@ -91,14 +91,18 @@ After the fix, Volume showed count=1 from the initial NOTIFY on all reachable sp
 |---------|-------|----------|
 | `watch()` then `get()` | Yes | You want events AND current value |
 | `watch()` only | Yes | You only want events |
+| `watch_or_fetch()` | Yes | You want events and a populated value immediately |
 | `fetch()` only | Yes | You only want current value, no events |
 | `fetch()` then `watch()` | No* | Initial event will be suppressed |
 
 *Acceptable only if you don't care about the initial event (you already have the value from fetch).
 
+`watch_or_fetch()` is the supported way to get both: it registers the watch **first**, then
+fetches to prime the cache, so the ordering that causes this suppression cannot arise.
+
 ## Debugging Tip
 
-`cargo run --example property_observer` is a powerful end-to-end debugging tool for the SDK event pipeline. It watches all 13 properties across every discovered speaker and displays:
+`cargo run -p sonos-sdk --example property_observer` is a powerful end-to-end debugging tool for the SDK event pipeline. It watches all 13 properties across every discovered speaker and displays:
 
 - Live property values
 - Event counts per property
@@ -111,9 +115,8 @@ Use it to verify event delivery when investigating watch() issues. The update co
 
 - **Plan:** `docs/plans/2026-03-29-feat-harden-watch-property-reliability-plan.md`
 - **Brainstorm:** `docs/brainstorms/2026-03-29-harden-watch-reliability-brainstorm.md`
-- **PR #64:** fix(sdk): move EventInitFn to StateManager to fix watch() propagation
-- **PR #63:** fix(callback-server): buffer + replay events for unregistered SIDs
-- **PR #59:** feat: RAII WatchHandle with 50ms grace period
-- **Code:** `state-store/src/store.rs:79` — PropertyBag.set() change detection
-- **Code:** `sonos-state/src/event_worker.rs:83-94` — event decoding and PropertyChange application
-- **Code:** `sonos-sdk/src/property/handles.rs:466` — PropertyHandle.fetch() stores to PropertyBag
+- **Code:** `sonos-state/src/state.rs` — `PropertyBag::set()` change detection; it reports
+  whether the write actually changed the value
+- **Code:** `sonos-state/src/event_worker.rs` — event decoding and `PropertyChange` application
+- **Code:** `sonos-sdk/src/property/handles.rs` — `PropertyHandle::fetch()` stores to the
+  PropertyBag; `watch_or_fetch()` is the safe combined form

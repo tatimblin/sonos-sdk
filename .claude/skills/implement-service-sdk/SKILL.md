@@ -10,7 +10,7 @@ description: Expose service properties through the DOM-like sonos-sdk API. Imple
 This skill exposes service properties through the DOM-like sonos-sdk API. It handles:
 1. **Fetchable Trait** - Implement for properties that can be fetched via API calls
 2. **Type Aliases** - Create convenient handle type aliases
-3. **Speaker Fields** - Add property handles to the Speaker struct
+3. **Struct Fields** - Add property handles to the `Speaker` or `Group` struct
 
 ## Prerequisites
 
@@ -34,26 +34,32 @@ python .claude/skills/implement-service-sdk/scripts/test_sdk_property.py <speake
 
 ## Workflow
 
-### Step 1: Determine Fetchability
+### Step 1: Pick the Fetch Trait
 
-Not all properties can be fetched directly. Check if your property has a dedicated UPnP operation:
+A property can be fetched if the service exposes a Get operation for it. Three traits
+cover the cases:
 
-| Property Can Be Fetched | If It Has |
-|-------------------------|-----------|
-| Yes | Dedicated Get/GetXxx operation in sonos-api |
-| No | Only available via events (LastChange) |
+| Trait | Use when | Key method |
+|-------|----------|------------|
+| `Fetchable` | The response is this property, for this speaker | `from_response(response) -> Self` |
+| `FetchableWithContext` | The response covers several speakers and the right one must be picked out | `from_response_with_context(response, &speaker_id) -> Option<Self>` |
+| `GroupFetchable` | The property is group-scoped and its handle is a `GroupPropertyHandle` | `from_response(response) -> Self` |
 
-**Fetchable properties** (examples):
-- Volume - has `GetVolumeOperation`
-- PlaybackState - has `GetTransportInfoOperation`
-- Position - has `GetPositionInfoOperation`
+**Speaker-scoped, `Fetchable`:** Volume (`GetVolume`), Mute (`GetMute`), Bass (`GetBass`),
+Treble (`GetTreble`), Loudness (`GetLoudness`), PlaybackState (`GetTransportInfo`),
+Position and CurrentTrack (`GetPositionInfo`).
 
-**Non-fetchable properties** (event-only):
-- Mute, Bass, Treble, Loudness - from RenderingControl events
-- CurrentTrack - from AVTransport events
-- GroupMembership - from ZoneGroupTopology events
+**`FetchableWithContext`:** GroupMembership — `GetZoneGroupState` returns the whole
+topology, so the speaker's own group has to be located in it.
 
-### Step 2: Implement Fetchable Trait (if applicable)
+**`GroupFetchable`:** GroupVolume (`GetGroupVolume`), GroupMute (`GetGroupMute`).
+
+**Event-only:** GroupVolumeChangeable. GroupRenderingControl has no
+`GetGroupVolumeChangeable`, so it implements none of the three — `get()` and `watch()`
+work, `fetch()` does not exist. This is a legitimate outcome, not an omission; say so in a
+doc comment on the handle.
+
+### Step 2: Implement the Fetch Trait (if applicable)
 
 Add to `sonos-sdk/src/property/handles.rs`:
 
@@ -106,9 +112,11 @@ use sonos_state::{
 };
 ```
 
-### Step 5: Add to Speaker Struct
+### Step 5: Add to Speaker or Group Struct
 
-Update `sonos-sdk/src/speaker.rs`:
+Speaker-scoped properties go on `Speaker` in `sonos-sdk/src/speaker.rs`; group-scoped ones
+go on `Group` in `sonos-sdk/src/group.rs`, aliased to `GroupPropertyHandle`. System-scoped
+properties (`Topology`) have no handle at all — they are read off `SonosSystem`.
 
 ```rust
 use crate::property::{
@@ -205,7 +213,8 @@ python .claude/skills/implement-service-sdk/scripts/analyze_handles.py --coverag
 | File | Changes |
 |------|---------|
 | `sonos-sdk/src/property/handles.rs` | Add Fetchable impl (if applicable), type alias, imports |
-| `sonos-sdk/src/speaker.rs` | Add field to Speaker struct, initialize in new() |
+| `sonos-sdk/src/speaker.rs` | Add field to Speaker struct, initialize in new() (speaker-scoped) |
+| `sonos-sdk/src/group.rs` | Add field to Group struct, initialize in new() (group-scoped) |
 | `sonos-sdk/src/lib.rs` | Re-export new types (optional) |
 
 ## Fetchable Implementation Guidelines
@@ -257,7 +266,13 @@ fn from_response(response: GetTransportInfoResponse) -> Self {
 ## Common Issues
 
 ### Missing Fetchable Implementation
-If `fetch()` is not available, the property is event-only. Document this in the handles.rs comments.
+If `fetch()` is not available, the property is event-only — the service has no Get
+operation for it. Document that in a doc comment on the handle so the gap reads as
+deliberate.
+
+### watch() Never Fires
+The property's `to_change()` in `sonos-state/src/property.rs` was not overridden. It
+defaults to `None`, which writes to the store but emits no `ChangeEvent`.
 
 ### Type Mismatch in from_response
 Ensure the response field type matches what the property constructor expects. Use parsing if needed.

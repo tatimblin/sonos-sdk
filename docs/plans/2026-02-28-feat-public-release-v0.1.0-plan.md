@@ -1,12 +1,16 @@
 ---
 title: "feat: Public release of sonos-sdk and sonos-api v0.1.0"
 type: feat
-status: active
+status: superseded
 date: 2026-02-28
 origin: docs/brainstorms/2026-02-28-public-release-brainstorm.md
 ---
 
 # Public Release of sonos-sdk and sonos-api v0.1.0
+
+> Superseded. The workspace publishes through `release-plz` and is at 0.8.0. The crate
+> renames, dual licensing, publish ordering and CI in this plan are in place; the
+> documentation site shipped as Astro Starlight rather than mdBook, under its own plan.
 
 ## Overview
 
@@ -18,7 +22,6 @@ This is a "Big Bang" release — all infrastructure ships in one coordinated eff
 
 The workspace cannot be published to crates.io. 16 blocking issues exist (documented in the prior Phase 7 plan). Beyond publishing mechanics, the project lacks CI/CD, release automation, a documentation site, and a root README — all essential for an open-source project that hopes to grow a community.
 
-**Note:** This plan supersedes `docs/plans/2026-02-28-feat-phase7-documentation-plan.md`. Where the two documents conflict, this plan is authoritative.
 
 ## Proposed Solution
 
@@ -74,7 +77,6 @@ Internal crates (published as deps, sonos-sdk-* prefix on crates.io):
   callback-server    → sonos-sdk-callback-server
   sonos-discovery    → sonos-sdk-discovery
   sonos-state        → sonos-sdk-state
-  state-store        → sonos-sdk-state-store
   sonos-stream       → sonos-sdk-stream
   sonos-event-manager → sonos-sdk-event-manager
 ```
@@ -148,7 +150,6 @@ Rename the 7 internal crates on crates.io while preserving source code ergonomic
 | `callback-server/Cargo.toml` | `callback-server` | `sonos-sdk-callback-server` |
 | `sonos-discovery/Cargo.toml` | `sonos-discovery` | `sonos-sdk-discovery` |
 | `sonos-state/Cargo.toml` | `sonos-state` | `sonos-sdk-state` |
-| `state-store/Cargo.toml` | `state-store` | `sonos-sdk-state-store` |
 | `sonos-stream/Cargo.toml` | `sonos-stream` | `sonos-sdk-stream` |
 | `sonos-event-manager/Cargo.toml` | `sonos-event-manager` | `sonos-sdk-event-manager` |
 
@@ -182,7 +183,6 @@ Full dependency update list (after phantom dep cleanup from Phase 0):
 | sonos-state | sonos-stream | sonos-sdk-stream | `sonos-state/Cargo.toml` |
 | sonos-state | sonos-event-manager | sonos-sdk-event-manager | `sonos-state/Cargo.toml` |
 | sonos-state | sonos-discovery | sonos-sdk-discovery | `sonos-state/Cargo.toml` |
-| sonos-state | state-store | sonos-sdk-state-store | `sonos-state/Cargo.toml` |
 | sonos-state (dev) | sonos-discovery | sonos-sdk-discovery | `sonos-state/Cargo.toml` |
 | sonos-state (dev) | sonos-event-manager | sonos-sdk-event-manager | `sonos-state/Cargo.toml` |
 | sonos-sdk | sonos-state | sonos-sdk-state | `sonos-sdk/Cargo.toml` |
@@ -224,7 +224,7 @@ Update READMEs and rustdoc for the public release.
   Internal implementation detail of [sonos-sdk](https://crates.io/crates/sonos-sdk).
   This crate is not intended for direct use. Its API may change without notice.
   ```
-  Create for: soap-client, callback-server, sonos-discovery, sonos-state, state-store, sonos-stream, sonos-event-manager. (Note: some already have READMEs — replace the content with the short internal disclaimer for the crates.io-facing README, or keep the existing detailed README if it's useful for contributors and just add the disclaimer at the top.)
+  Create for: soap-client, callback-server, sonos-discovery, sonos-state, sonos-stream, sonos-event-manager. (Note: some already have READMEs — replace the content with the short internal disclaimer for the crates.io-facing README, or keep the existing detailed README if it's useful for contributors and just add the disclaimer at the top.)
 
 - [x] **Add doc comments to `SdkError`** — all 9 variants in `sonos-sdk/src/error.rs`, each explaining when the error occurs
 
@@ -256,7 +256,6 @@ set -euo pipefail
 CRATES=(
   sonos-sdk-soap-client
   sonos-sdk-discovery
-  sonos-sdk-state-store
   sonos-sdk-callback-server
   sonos-api
   sonos-sdk-stream
@@ -357,7 +356,7 @@ The actual v0.1.0 release.
 - [x] **Ensure `CARGO_REGISTRY_TOKEN` is available** — get from [crates.io/settings/tokens](https://crates.io/settings/tokens) with `publish-new` and `publish-update` scopes
 - [x] **Run the publish script** — `./scripts/publish.sh`
 - [x] **Verify on crates.io** — check that all 9 crates appear, READMEs render correctly, dependency links work
-- [ ] **Verify on docs.rs** — check that `sonos-sdk` and `sonos-api` documentation builds (may take 15-30 minutes)
+- [x] **Verify on docs.rs** — check that `sonos-sdk` and `sonos-api` documentation builds (may take 15-30 minutes)
 - [x] **Create GitHub Release** — tag `v0.1.0` on the publish commit, write release notes summarizing the initial release
 
 #### Phase 7: release-plz Setup
@@ -409,13 +408,6 @@ changelog_update = false
 git_release_enable = false
 
 [[package]]
-name = "sonos-sdk-state-store"
-publish = false
-changelog_update = false
-git_release_enable = false
-
-# Public crates: full release pipeline
-[[package]]
 name = "sonos-api"
 git_release_enable = true
 semver_check = true
@@ -432,7 +424,6 @@ changelog_include = [
   "sonos-sdk-event-manager",
   "sonos-sdk-callback-server",
   "sonos-sdk-soap-client",
-  "sonos-sdk-state-store",
 ]
 ```
 
@@ -489,147 +480,32 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 ```
 
-- [ ] **Add `CARGO_REGISTRY_TOKEN`** as a repository secret in GitHub Settings → Secrets → Actions
-- [ ] **Adopt conventional commits** — all future commits to main follow the format: `feat:`, `fix:`, `refactor:`, `docs:`, `ci:`, `chore:`, `test:`, `perf:`
+- [x] **Add `CARGO_REGISTRY_TOKEN`** as a repository secret in GitHub Settings → Secrets → Actions
+- [x] **Adopt conventional commits** — all future commits to main follow the format: `feat:`, `fix:`, `refactor:`, `docs:`, `ci:`, `chore:`, `test:`, `perf:`
 
-#### Phase 8: mdBook Documentation Site
+#### Phase 8: Documentation Site
 
-Set up the documentation site and deploy to GitHub Pages.
+The documentation site is an **Astro Starlight** project in `website/`, deployed to GitHub
+Pages by `.github/workflows/deploy-docs.yml` (`withastro/action@v3`, `path: ./website`,
+triggered on `website/**`). Navigation is generated from `website/src/content.config.ts`;
+content lives under `website/src/content/docs/` (`getting-started/`, `guides/`, `cli/`,
+`troubleshooting/`).
 
-- [ ] **Create `book.toml`** at workspace root:
+Its own plan is [2026-05-29-feat-astro-starlight-docs-site-plan.md](2026-05-29-feat-astro-starlight-docs-site-plan.md).
 
-```toml
-[book]
-title = "Sonos SDK"
-description = "Documentation for the Sonos SDK — a Rust SDK for controlling Sonos speakers via UPnP/SOAP."
-language = "en"
-src = "book/src"
+- [x] **Site scaffolded and building**
+- [x] **Deploy workflow live** — `.github/workflows/deploy-docs.yml`
+- [x] **GitHub Pages enabled** — Source set to "GitHub Actions"
 
-[build]
-build-dir = "book/output"
-create-missing = false
-
-[output.html]
-git-repository-url = "https://github.com/tatimblin/sonos-sdk"
-edit-url-template = "https://github.com/tatimblin/sonos-sdk/edit/main/book/src/{path}"
-
-[output.html.search]
-enable = true
-
-[output.html.playground]
-runnable = false
-```
-
-- [ ] **Create `book/src/SUMMARY.md`**:
-
-```markdown
-# Summary
-
-[Introduction](README.md)
-
-# Getting Started
-
-- [Installation](getting-started/installation.md)
-- [Quick Start](getting-started/quick-start.md)
-- [Device Discovery](getting-started/discovery.md)
-
-# User Guide
-
-- [Properties: get, fetch, watch](guide/properties.md)
-- [Speaker Actions](guide/speaker-actions.md)
-- [Group Management](guide/group-management.md)
-- [Error Handling](guide/error-handling.md)
-
-# API Reference
-
-- [sonos-sdk](api/sonos-sdk.md)
-- [sonos-api](api/sonos-api.md)
-
-# Architecture
-
-- [Overview](architecture/overview.md)
-- [Service Completion Matrix](architecture/status.md)
-
-# Guides
-
-- [Adding New Services](guides/adding-services.md)
-- [Watchable Properties Reference](guides/watchable-properties.md)
-```
-
-- [ ] **Create book content pages** — migrate and adapt content from existing `docs/` files and crate READMEs. Key mappings:
-  - `docs/SUMMARY.md` → `book/src/architecture/overview.md`
-  - `docs/STATUS.md` → `book/src/architecture/status.md`
-  - `docs/adding-services.md` → `book/src/guides/adding-services.md`
-  - `docs/watchable-properties.md` → `book/src/guides/watchable-properties.md`
-  - `sonos-sdk/README.md` → informs `book/src/getting-started/quick-start.md`
-  - API reference pages are thin bridges to docs.rs
-
-- [ ] **Add `book/output/` to `.gitignore`**
-
-- [ ] **Create `.github/workflows/deploy-book.yml`**:
-
-```yaml
-name: Deploy Documentation
-
-on:
-  push:
-    branches: [main]
-    paths:
-      - 'book/**'
-      - 'book.toml'
-  workflow_dispatch:
-
-concurrency:
-  group: pages
-  cancel-in-progress: false
-
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install mdBook
-        run: |
-          tag=$(curl -s 'https://api.github.com/repos/rust-lang/mdbook/releases/latest' | jq -r '.tag_name')
-          url="https://github.com/rust-lang/mdbook/releases/download/${tag}/mdbook-${tag}-x86_64-unknown-linux-gnu.tar.gz"
-          mkdir -p bin
-          curl -sSL "$url" | tar -xz --directory=bin
-          echo "$PWD/bin" >> $GITHUB_PATH
-      - name: Build book
-        run: mdbook build
-      - uses: actions/configure-pages@v4
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: book/output
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
-```
-
-- [ ] **Enable GitHub Pages** — in repo Settings → Pages, set Source to "GitHub Actions"
-- [ ] **Verify** — push to main, confirm the docs site deploys and is accessible
 
 ### Post-Release Checklist
 
 After all phases are complete:
 
-- [ ] **Update `CLAUDE.md`** — reflect new crate names in examples and architecture descriptions
-- [ ] **Update `AGENTS.md`** — update crate classification (public vs internal) and any directory references
-- [ ] **Update `docs/STATUS.md`** — mark Phase 7 complete
-- [ ] **Update `.claude/skills/`** — update any skill files that reference old crate names in code patterns
+- [x] **Update `CLAUDE.md`** — reflect new crate names in examples and architecture descriptions
+- [x] **Update `AGENTS.md`** — update crate classification (public vs internal) and any directory references
+- [x] **Update `docs/STATUS.md`** — mark Phase 7 complete
+- [x] **Update `.claude/skills/`** — update any skill files that reference old crate names in code patterns
 
 ## System-Wide Impact
 
@@ -653,31 +529,31 @@ The public API of `sonos-sdk` and `sonos-api` does not change. This is purely pa
 
 ### Functional Requirements
 
-- [ ] `cargo publish --dry-run` succeeds for all 9 crates
-- [ ] All 9 crates are published to crates.io as v0.1.0
-- [ ] `sonos-sdk` and `sonos-api` README renders correctly on crates.io
-- [ ] Internal crates show "internal implementation detail" disclaimer on crates.io
-- [ ] docs.rs builds documentation for `sonos-sdk` and `sonos-api` successfully
-- [ ] GitHub Actions CI runs on PRs (fmt, clippy, test, doc — all pass)
-- [ ] mdBook documentation site is live on GitHub Pages
-- [ ] `cargo test --workspace` passes with 0 failures
+- [x] `cargo publish --dry-run` succeeds for all 8 crates
+- [x] All 8 crates are published to crates.io
+- [x] `sonos-sdk` and `sonos-api` README renders correctly on crates.io
+- [x] Internal crates show "internal implementation detail" disclaimer on crates.io
+- [x] docs.rs builds documentation for `sonos-sdk` and `sonos-api` successfully
+- [x] GitHub Actions CI runs on PRs (10 jobs — see docs/CONTRIBUTING.md)
+- [x] Documentation site is live on GitHub Pages (Astro Starlight, `website/`)
+- [x] `cargo test --workspace --features sonos-sdk/test-support --locked` passes with 0 failures
 
 ### Non-Functional Requirements
 
-- [ ] LICENSE-MIT and LICENSE-APACHE exist at workspace root
-- [ ] All crates declare `license = "MIT OR Apache-2.0"` (consistent)
-- [ ] All inter-crate path deps include `version = "0.1.0"`
-- [ ] No `authors = ["Claude Code"]` in any crate
-- [ ] No `publish = false` on any crate that needs publishing
-- [ ] Root README exists with quick start, contributing section, and license
-- [ ] SdkError variants have doc comments
-- [ ] Key Speaker/Group methods have `# Example` blocks
+- [x] LICENSE-MIT and LICENSE-APACHE exist at workspace root
+- [x] All crates declare `license = "MIT OR Apache-2.0"` (consistent)
+- [x] All inter-crate path deps include a `version`
+- [x] No `authors = ["Claude Code"]` in any crate
+- [x] No `publish = false` on any crate that needs publishing
+- [x] Root README exists with quick start, contributing section, and license
+- [x] SdkError variants have doc comments
+- [x] Key Speaker/Group methods have `# Example` blocks
 
 ### Quality Gates
 
-- [ ] `cargo clippy --workspace -- -D warnings` passes
-- [ ] `cargo doc --workspace --no-deps` builds with no warnings
-- [ ] `cargo fmt --all -- --check` passes
+- [x] `cargo clippy --workspace --all-targets --features sonos-sdk/test-support --locked -- -D warnings` passes
+- [x] `cargo doc --workspace --no-deps --locked` builds with no warnings
+- [x] `cargo fmt --all -- --check` passes
 
 ## Publish Order (Verified)
 
@@ -687,7 +563,6 @@ After phantom dep cleanup, the correct dependency-ordered publish sequence:
 Leaves (no workspace deps):
   1. sonos-sdk-soap-client
   2. sonos-sdk-discovery
-  3. sonos-sdk-state-store
   4. sonos-sdk-callback-server
 
 Level 1:
@@ -701,7 +576,7 @@ Level 3:
 
 Level 4:
   8. sonos-sdk-state     → sonos-api, sonos-sdk-stream, sonos-sdk-event-manager,
-                           sonos-sdk-discovery, sonos-sdk-state-store
+                           sonos-sdk-discovery
 
 Level 5:
   9. sonos-sdk           → sonos-sdk-state, sonos-api, sonos-sdk-discovery,
@@ -728,8 +603,7 @@ Level 5:
 
 ### Origin
 
-- **Brainstorm document:** [docs/brainstorms/2026-02-28-public-release-brainstorm.md](../brainstorms/2026-02-28-public-release-brainstorm.md) — Key decisions: Big Bang approach, `sonos-sdk-*` prefix for internal crates, MIT OR Apache-2.0, release-plz, mdBook, v0.1.0
-- **Prior Phase 7 plan:** [docs/plans/2026-02-28-feat-phase7-documentation-plan.md](2026-02-28-feat-phase7-documentation-plan.md) — Superseded by this plan. Publishing infrastructure tasks carried forward; CI/mdBook/release-plz added.
+- **Brainstorm document:** [docs/brainstorms/2026-02-28-public-release-brainstorm.md](../brainstorms/2026-02-28-public-release-brainstorm.md) — Key decisions: Big Bang approach, `sonos-sdk-*` prefix for internal crates, MIT OR Apache-2.0, release-plz
 
 ### Internal References
 
@@ -743,7 +617,7 @@ Level 5:
 ### External References
 
 - release-plz docs: https://release-plz.dev/docs
-- mdBook user guide: https://rust-lang.github.io/mdBook/
+- Astro Starlight: https://starlight.astro.build/
 - crates.io publishing: https://doc.rust-lang.org/cargo/reference/publishing.html
 - Swatinem/rust-cache: https://github.com/Swatinem/rust-cache
 - dtolnay/rust-toolchain: https://github.com/dtolnay/rust-toolchain

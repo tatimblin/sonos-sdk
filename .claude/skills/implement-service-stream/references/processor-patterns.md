@@ -2,15 +2,20 @@
 
 ## Overview
 
-The event processor in `sonos-stream/src/events/processor.rs` converts raw UPnP events from sonos-api into enriched sonos-stream events. This translation layer is necessary because:
+Two files share the work of turning a raw UPnP event into an `EventData`:
 
-1. sonos-api events use accessor methods (getters)
-2. sonos-stream events use public fields
-3. Some data transformations may be needed
+| File | Responsibility |
+|------|----------------|
+| `sonos-api/src/services/{service}/events.rs` | Parse the UPnP XML into `{Service}Event`, then map it to `{Service}State` in `into_state()` |
+| `sonos-stream/src/events/processor.rs` | Downcast the type-erased event and call `into_state()` |
+
+All field-level mapping lives in `into_state()`, in sonos-api. The processor arm does no
+field mapping at all — that is what lets the polling path, which never sees an event, reach
+the identical `{Service}State` through `state::poll()`.
 
 ## The convert_api_event_data() Method
 
-This method is the key integration point for new services:
+This method is the integration point in sonos-stream:
 
 ```rust
 fn convert_api_event_data(
@@ -30,130 +35,76 @@ fn convert_api_event_data(
 }
 ```
 
+The match is exhaustive over `Service`, so a new `Service` variant without an arm is a
+compile error, not a silently dropped event.
+
 ## Implementation Pattern
 
-### Step 1: Downcast the API Event
+### Step 1: Add the Processor Arm
+
+The whole arm is a downcast plus `into_state()`:
 
 ```rust
 sonos_api::Service::NewService => {
-    let api_event = api_event_data
+    let event = api_event_data
         .downcast::<sonos_api::services::new_service::NewServiceEvent>()
-        .map_err(|_| EventProcessingError::Parsing(
-            "Failed to downcast NewService event".to_string()
-        ))?;
-```
-
-The `Box<dyn Any>` must be downcast to the concrete event type from sonos-api.
-
-### Step 2: Map Fields to Stream Event
-
-```rust
-    let stream_event = crate::events::types::NewServiceEvent {
-        // String fields - use map() to clone
-        field1: api_event.field1().map(|s| s.to_string()),
-
-        // Already owned types - direct access
-        field2: api_event.field2(),
-
-        // Boolean as string
-        enabled: api_event.enabled().map(|b| b.to_string()),
-
-        // Nested Option - flatten or preserve
-        nested_field: api_event.nested().and_then(|n| n.inner()),
-    };
-```
-
-### Step 3: Return Wrapped Event
-
-```rust
-    Ok(EventData::NewServiceEvent(stream_event))
+        .map_err(|_| {
+            EventProcessingError::Parsing(
+                "Failed to downcast NewService event".to_string(),
+            )
+        })?;
+    Ok(EventData::NewService(event.into_state()))
 }
 ```
 
-## Field Mapping Patterns
+`Box<dyn Any>` must be downcast to the concrete event type from sonos-api. If a field
+needs converting, that belongs in `into_state()` below — not here.
 
-### String Fields (Most Common)
+### Step 2: Write the Accessors and into_state()
 
-```rust
-// API returns &str, stream needs String
-field: api_event.field().map(|s| s.to_string()),
-```
-
-### Numeric Fields
+In `sonos-api/src/services/new_service/events.rs`. `{Service}Event` deserializes the
+`<e:propertyset>` payload with serde; accessors normalize each field; `into_state()`
+assembles the canonical type:
 
 ```rust
-// Direct copy for Copy types
-count: api_event.count(),
+impl NewServiceEvent {
+    /// Get field1
+    pub fn field1(&self) -> Option<String> {
+        self.properties
+            .iter()
+            .find_map(|p| p.field1.as_ref())
+            .cloned()
+    }
 
-// Or if API returns reference
-volume: api_event.volume().copied(),
-```
+    /// Get whether the feature is enabled.
+    ///
+    /// UPnP spells booleans as "1"/"0" on some firmwares and "true"/"false" on
+    /// others, so both are accepted.
+    pub fn enabled(&self) -> Option<bool> {
+        self.properties
+            .iter()
+            .find_map(|p| p.enabled.as_ref())
+            .map(|s| s == "1" || s.to_lowercase() == "true")
+    }
 
-### Boolean Fields
+    /// Convert parsed UPnP event to canonical state representation.
+    pub fn into_state(&self) -> super::state::NewServiceState {
+        super::state::NewServiceState {
+            field1: self.field1(),
+            enabled: self.enabled(),
+        }
+    }
 
-```rust
-// If API returns bool, convert to String for consistency
-enabled: api_event.enabled().map(|b| if b { "1" } else { "0" }.to_string()),
-
-// Or if API returns string already
-mute: api_event.mute().map(|s| s.to_string()),
-```
-
-### Complex Nested Types
-
-```rust
-// For complex types, create nested stream structs
-members: api_event.members().map(|members| {
-    members.iter().map(|m| ZoneGroupMemberInfo {
-        uuid: m.uuid().to_string(),
-        location: m.location().to_string(),
-        zone_name: m.zone_name().to_string(),
-    }).collect()
-}).unwrap_or_default(),
-```
-
-### HashMap Fields
-
-```rust
-// Copy HashMap contents
-other_channels: api_event.other_channels()
-    .map(|h| h.iter()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect())
-    .unwrap_or_default(),
-```
-
-## Complete Example: RenderingControl
-
-```rust
-sonos_api::Service::RenderingControl => {
-    let api_event = api_event_data
-        .downcast::<sonos_api::services::rendering_control::RenderingControlEvent>()
-        .map_err(|_| EventProcessingError::Parsing(
-            "Failed to downcast RenderingControl event".to_string()
-        ))?;
-
-    let stream_event = RenderingControlEvent {
-        master_volume: api_event.master_volume().map(|s| s.to_string()),
-        lf_volume: api_event.lf_volume().map(|s| s.to_string()),
-        rf_volume: api_event.rf_volume().map(|s| s.to_string()),
-        master_mute: api_event.master_mute().map(|s| s.to_string()),
-        lf_mute: api_event.lf_mute().map(|s| s.to_string()),
-        rf_mute: api_event.rf_mute().map(|s| s.to_string()),
-        bass: api_event.bass().map(|s| s.to_string()),
-        treble: api_event.treble().map(|s| s.to_string()),
-        loudness: api_event.loudness().map(|s| s.to_string()),
-        balance: api_event.balance().map(|s| s.to_string()),
-        other_channels: api_event.other_channels()
-            .map(|h| h.iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect())
-            .unwrap_or_default(),
-    };
-
-    Ok(EventData::RenderingControlEvent(stream_event))
+    /// Parse from UPnP event XML using serde
+    pub fn from_xml(xml: &str) -> Result<Self> {
+        quick_xml::de::from_str(xml)
+            .map_err(|e| ApiError::ParseError(format!("Failed to parse NewService XML: {e}")))
+    }
 }
 ```
+
+A UPnP event carries only the properties that changed, so `find_map` over the property
+list — rather than indexing a fixed position — is what makes partial events work.
 
 ## Error Handling
 
@@ -188,26 +139,38 @@ For optional fields, just use `None`:
 optional_field: api_event.optional_field().map(|s| s.to_string()),
 ```
 
-## Testing the Processor
+## Testing
 
-Since the processor handles `Box<dyn Any>`, testing requires creating real event objects:
+The processor itself handles `Box<dyn Any>` and is awkward to unit test. Test
+`into_state()` instead — that is where every field decision lives — using XML captured
+from a real speaker:
 
 ```rust
 #[test]
-fn test_convert_new_service_event() {
-    // Create a mock API event (if possible)
-    // Or test through integration with real events
+fn test_parse_real_event_xml() {
+    // Captured from a real Sonos Amp (Living Room)
+    let xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><Field1>abc</Field1></e:property><e:property><Enabled>1</Enabled></e:property></e:propertyset>"#;
+
+    let event = NewServiceEvent::from_xml(xml).unwrap();
+    let state = event.into_state();
+
+    assert_eq!(state.field1.as_deref(), Some("abc"));
+    assert_eq!(state.enabled, Some(true));
 }
 ```
 
-More practical testing happens through:
-1. Integration tests with real speakers
-2. Testing the full event pipeline
+Add a second case with the payload pretty-printed across lines. Real firmwares send both,
+and whitespace handling is the most common parse regression.
+
+The end-to-end path is covered by integration tests against real speakers.
 
 ## Checklist
 
-- [ ] Match arm added for new Service variant
-- [ ] Downcast to correct sonos-api event type
-- [ ] All fields mapped with appropriate transformations
-- [ ] Error message includes service name
+- [ ] `{Service}State` defined in `sonos-api/src/services/{service}/state.rs`
+- [ ] `{Service}Event::from_xml()` parses the propertyset with serde
+- [ ] `{Service}Event::into_state()` maps every field, accepting both boolean spellings
+- [ ] Match arm added in `convert_api_event_data()` for the new `Service` variant
+- [ ] Arm downcasts to the correct sonos-api event type and calls `into_state()`
+- [ ] Error message includes the service name
+- [ ] `into_state()` tested against captured real-speaker XML, compact and pretty-printed
 - [ ] Integration tested with real UPnP events

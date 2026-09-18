@@ -122,43 +122,43 @@ None — all changes are internal refactoring with no new network surface.
 ## Acceptance Criteria
 
 ### Phase 1: Lazy Event Manager
-- [ ] `SonosSystem::new()` does NOT create `SonosEventManager` or spawn event threads — `sonos-sdk/src/system.rs`
-- [ ] `StateManager` supports `set_event_manager()` post-construction — `sonos-state/src/state.rs`
-- [ ] `PropertyHandle::watch()` triggers lazy event manager creation — `sonos-sdk/src/system.rs`, `sonos-sdk/src/property/handles.rs`
-- [ ] Device registration replayed during lazy init — `sonos-sdk/src/system.rs`
-- [ ] Event worker thread spawned during lazy init — `sonos-state/src/state.rs`
-- [ ] `fetch()` works without event manager — already true, verify with test
-- [ ] `get()` returns `None` before any `fetch()` or event — already true, verify with test
-- [ ] Concurrent `watch()` calls handled safely (only one init) — `sonos-sdk/src/system.rs`
-- [ ] Failed lazy init returns `Err(SdkError::EventManager(...))` — `sonos-sdk/src/system.rs`
-- [ ] Subsequent `watch()` after failed init retries initialization — `sonos-sdk/src/system.rs`
-- [ ] Event manager init auto-subscribes ZoneGroupTopology on all speakers — `sonos-sdk/src/system.rs`
+- [x] `SonosSystem::new()` does NOT create `SonosEventManager` or spawn event threads — `sonos-sdk/src/system.rs`
+- [x] `StateManager` supports `set_event_manager()` post-construction — `sonos-state/src/state.rs`
+- [x] `PropertyHandle::watch()` triggers lazy event manager creation — `sonos-sdk/src/system.rs`, `sonos-sdk/src/property/handles.rs`
+- [x] Device registration replayed during lazy init — `sonos-sdk/src/system.rs`
+- [x] Event worker thread spawned during lazy init — `sonos-state/src/state.rs`
+- [x] `fetch()` works without event manager — already true, verify with test
+- [x] `get()` returns `None` before any `fetch()` or event — already true, verify with test
+- [x] Concurrent `watch()` calls handled safely (only one init) — `sonos-sdk/src/system.rs`
+- [x] Failed lazy init returns `Err(SdkError::EventManager(...))` — `sonos-sdk/src/system.rs`
+- [x] Subsequent `watch()` after failed init retries initialization — `sonos-sdk/src/system.rs`
+- [x] Event manager init auto-subscribes ZoneGroupTopology on all speakers — `sonos-sdk/src/system.rs`
 
 ### Phase 2: Method Renames + Fluent Navigation
-- [ ] `speaker("name")` added to `SonosSystem` — `sonos-sdk/src/system.rs`
-- [ ] `speaker_by_id(&id)` added to `SonosSystem` — `sonos-sdk/src/system.rs`
-- [ ] `group("name")` added to `SonosSystem` — `sonos-sdk/src/system.rs`
-- [ ] `group_by_id(&id)` added to `SonosSystem` — `sonos-sdk/src/system.rs`
-- [ ] Old method names deprecated with `#[deprecated(since = "...", note = "...")]` — `sonos-sdk/src/system.rs`
-- [ ] `speaker.group()` returns `Option<Group>` from state store (no hidden network call) — `sonos-sdk/src/speaker.rs`
-- [ ] `group.speaker("name")` returns `Option<Speaker>` — `sonos-sdk/src/group.rs`
-- [ ] `system.get_group_for_speaker()` deprecated — `sonos-sdk/src/system.rs`
-- [ ] `system.groups()` triggers lazy event init + ZGT subscription + initial topology fetch — `sonos-sdk/src/system.rs`
-- [ ] ZoneGroupTopology auto-subscribed on event manager init (alongside any explicit watch) — `sonos-sdk/src/system.rs`
-- [ ] External topology changes (iPhone app regrouping) reflected in state store when events flowing
-- [ ] Existing tests updated for new method names
+- [x] `speaker("name")` added to `SonosSystem` — `sonos-sdk/src/system.rs`
+- [x] `speaker_by_id(&id)` added to `SonosSystem` — `sonos-sdk/src/system.rs`
+- [x] `group("name")` added to `SonosSystem` — `sonos-sdk/src/system.rs`
+- [x] `group_by_id(&id)` added to `SonosSystem` — `sonos-sdk/src/system.rs`
+- [x] Old method names deprecated with `#[deprecated(since = "...", note = "...")]` — `sonos-sdk/src/system.rs`
+- [x] `speaker.group()` returns `Option<Group>` from state store (no hidden network call) — `sonos-sdk/src/speaker.rs`
+- [x] `group.speaker("name")` returns `Option<Speaker>` — `sonos-sdk/src/group.rs`
+- [x] `system.get_group_for_speaker()` deprecated — `sonos-sdk/src/system.rs`
+- [x] `system.groups()` triggers lazy event init + ZGT subscription + initial topology fetch — `sonos-sdk/src/system.rs`
+- [x] ZoneGroupTopology auto-subscribed on event manager init (alongside any explicit watch) — `sonos-sdk/src/system.rs`
+- [x] External topology changes (iPhone app regrouping) reflected in state store when events flowing
+- [x] Existing tests updated for new method names
 
 ### Phase 3: Prelude + Error Polish
-- [ ] `sonos_sdk::prelude` module created — `sonos-sdk/src/prelude.rs`, `sonos-sdk/src/lib.rs`
-- [ ] Prelude includes: `SonosSystem`, `Speaker`, `Group`, `GroupChangeResult`, `SdkError`, `PlayMode`, `SeekTarget`, `Volume`, `PlaybackState`, `Mute`, `CurrentTrack`, `SpeakerId`, `GroupId`, `WatchStatus`, `WatchMode`
-- [ ] `#[non_exhaustive]` added to `SdkError` — `sonos-sdk/src/error.rs`
-- [ ] Existing tests with exhaustive `match` on `SdkError` updated with wildcard arm
+- [x] `sonos_sdk::prelude` module created — `sonos-sdk/src/prelude.rs`, `sonos-sdk/src/lib.rs`
+- [x] Prelude includes: `SonosSystem`, `Speaker`, `Group`, `SdkError`, `PlayMode`, `SeekTarget`, `Volume`, `PlaybackState`, `GroupVolume`, `GroupMute`, `SpeakerId`, `GroupId`, `PropertyChange`, `ChangeSource`
+- [x] `#[non_exhaustive]` added to `SdkError` — `sonos-sdk/src/error.rs`
+- [x] Existing tests with exhaustive `match` on `SdkError` updated with wildcard arm
 
 ### Phase 4: Documentation + Cleanup
-- [ ] `docs/specs/sonos-sdk.md` updated with new API surface
-- [ ] `docs/STATUS.md` updated
-- [ ] Crate-level doc examples in `lib.rs` updated to use new API
-- [ ] Speaker/Group/SonosSystem rustdoc updated
+- [x] `docs/specs/sonos-sdk.md` updated with new API surface
+- [x] `docs/STATUS.md` updated
+- [x] Crate-level doc examples in `lib.rs` updated to use new API
+- [x] Speaker/Group/SonosSystem rustdoc updated
 
 ## Implementation Phases
 
@@ -222,7 +222,7 @@ Change `_event_manager` field:
 event_manager: Mutex<Option<Arc<SonosEventManager>>>,
 ```
 
-`Mutex<Option<...>>` (not `OnceLock`) because: (a) `SonosEventManager::new()` is fallible, (b) retry on failure is desired, (c) MSRV 1.80 lacks `OnceLock::get_or_try_init`.
+`OnceLock<Arc<SonosEventManager>>` with an explicit fallible init path: `SonosEventManager::new()` can fail and a later `watch()` must be able to retry, so initialization is not folded into a `get_or_init` closure.
 
 **File: `sonos-sdk/src/property/handles.rs`**
 
@@ -286,7 +286,7 @@ Note: `build_speakers_with_init` is a renamed `build_speakers` that accepts an o
 
 In `PropertyHandle::watch()`:
 ```rust
-pub fn watch(&self) -> Result<WatchStatus<P>, SdkError> {
+pub fn watch(&self) -> Result<WatchHandle<P>, SdkError> {
     self.context.state_manager.register_watch(&self.context.speaker_id, P::KEY);
 
     // Trigger lazy event manager init if needed
@@ -302,7 +302,7 @@ pub fn watch(&self) -> Result<WatchStatus<P>, SdkError> {
         WatchMode::CacheOnly
     };
 
-    Ok(WatchStatus::new(self.get(), mode))
+    Ok(WatchHandle::new(read, mode, cleanup))
 }
 ```
 
@@ -428,7 +428,7 @@ pub fn speaker(&self, name: &str) -> Option<Speaker> {
 pub use crate::{
     Group, GroupChangeResult, PlayMode, SdkError, SeekTarget, SonosSystem, Speaker,
 };
-pub use crate::{WatchMode, WatchStatus};
+pub use crate::{WatchHandle, WatchMode};
 pub use sonos_state::{
     CurrentTrack, GroupId, GroupMute, GroupVolume, Mute, PlaybackState, SpeakerId, Volume,
 };

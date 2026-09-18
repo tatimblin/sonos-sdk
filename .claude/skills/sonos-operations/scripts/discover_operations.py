@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Discovers all SonosOperation implementations in the sonos-api codebase.
+Discovers all UPnPOperation implementations in the sonos-api codebase.
 Parses Rust source code to extract operation names, services, and required parameters.
 
 This script provides complete operation metadata for dynamic execution:

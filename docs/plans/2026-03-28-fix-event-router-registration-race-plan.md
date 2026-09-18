@@ -99,14 +99,14 @@ The `try_recv()` call will panic with "expected replayed event".
 async fn test_notify_before_register_is_replayed() {
     // Start server
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let server = CallbackServer::start(tx, 50200..50210).await.unwrap();
+    let server = CallbackServer::new((50200, 50210), tx).await.unwrap();
 
     let sub_id = "uuid:race-integration";
 
     // 1. Send NOTIFY *before* registering the SID
     let client = reqwest::Client::new();
     let resp = client
-        .request(reqwest::Method::from_bytes(b"NOTIFY").unwrap(), &format!("{}/notify", server.base_url()))
+        .request(reqwest::Method::from_bytes(b"NOTIFY").unwrap(), format!("{}/notify", server.base_url()))
         .header("SID", sub_id)
         .header("NT", "upnp:event")
         .header("NTS", "upnp:propchange")

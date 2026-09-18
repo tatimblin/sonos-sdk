@@ -11,23 +11,29 @@
 ## Layer 1: API (sonos-api)
 
 ### Files to Create/Modify
+- [ ] `sonos-api/src/service.rs` (add `Service` variant + `name()`/`info()` arms)
 - [ ] `sonos-api/src/services/{service}/mod.rs`
 - [ ] `sonos-api/src/services/{service}/operations.rs`
+- [ ] `sonos-api/src/services/{service}/events.rs`
+- [ ] `sonos-api/src/services/{service}/state.rs`
 - [ ] `sonos-api/src/services/mod.rs` (add module)
 - [ ] `sonos-api/src/lib.rs` (add re-export)
 
 ### Implementation Steps
 - [ ] Create service directory
 - [ ] Define operation structs with Request/Response
-- [ ] Implement `SonosOperation` trait for each operation
+- [ ] Declare each operation with `define_upnp_operation!` /
+      `define_operation_with_response!` (implements `UPnPOperation`)
+- [ ] Add a `Validate` impl for each generated `{Op}Request`
 - [ ] Use macros where applicable
-- [ ] Add to `Service` enum if new service
+- [ ] Add the variant to the `Service` enum in `sonos-api/src/service.rs`, plus its
+      `name()` and `info()` match arms
 - [ ] Write unit tests
 
 ### Verification
 ```bash
 cargo test -p sonos-api
-cargo run --example cli_example -- <speaker_ip> <Service> <Operation>
+cargo run -p sonos-api --example cli_example -- <speaker_ip> <Service> <Operation>
 ```
 - [ ] All tests pass
 - [ ] CLI example works with real speaker
@@ -37,16 +43,20 @@ cargo run --example cli_example -- <speaker_ip> <Service> <Operation>
 ## Layer 2: Stream (sonos-stream)
 
 ### Files to Modify
+- [ ] `sonos-api/src/services/{service}/state.rs`
+- [ ] `sonos-api/src/services/{service}/events.rs`
 - [ ] `sonos-stream/src/events/types.rs`
 - [ ] `sonos-stream/src/events/processor.rs`
 - [ ] `sonos-stream/src/polling/strategies.rs`
 
 ### Implementation Steps
-- [ ] Define `{Service}Event` struct with `Option<String>` fields
-- [ ] Add `EventData::{Service}Event` variant
-- [ ] Implement `service_type()` match arm
-- [ ] Add `convert_api_event_data()` case in processor
-- [ ] Implement `{Service}Poller` struct
+- [ ] Define `{Service}State` in sonos-api with `Option<T>` fields, deriving
+      `Debug, Clone, Serialize, Deserialize, PartialEq`
+- [ ] Write `state::poll()` producing `{Service}State`
+- [ ] Write `{Service}Event::into_state()` producing the same type
+- [ ] Add `EventData::{Service}({Service}State)` variant — no `Event` suffix on the variant
+- [ ] Add `convert_api_event_data()` case in processor: downcast, then `into_state()`
+- [ ] Implement `{Service}Poller` with `poll_state`, `state_to_event_data`, `service_type`
 - [ ] Register poller in `DeviceStatePoller::new()`
 
 ### Verification
@@ -167,13 +177,16 @@ cargo run -p sonos-sdk --example basic_usage_sdk
 
 ```
 Layer 1: API
+├── sonos-api/src/service.rs                        (Service enum)
 ├── sonos-api/src/services/{service}/mod.rs
 ├── sonos-api/src/services/{service}/operations.rs
+├── sonos-api/src/services/{service}/events.rs      ({Service}Event, into_state)
+├── sonos-api/src/services/{service}/state.rs       ({Service}State, poll)
 ├── sonos-api/src/services/mod.rs
 └── sonos-api/src/lib.rs
 
 Layer 2: Stream
-├── sonos-stream/src/events/types.rs
+├── sonos-stream/src/events/types.rs                (EventData variant)
 ├── sonos-stream/src/events/processor.rs
 └── sonos-stream/src/polling/strategies.rs
 

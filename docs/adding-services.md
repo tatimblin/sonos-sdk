@@ -8,10 +8,14 @@ Adding a service requires implementing across these layers:
 
 | Layer | Crate | Purpose | Key Files |
 |-------|-------|---------|-----------|
-| 1. API | `sonos-api` | UPnP SOAP operations | `services/{service}/operations.rs` |
-| 2. Stream | `sonos-stream` | Event streaming/polling | `events/types.rs`, `polling/strategies.rs` |
+| 1. API | `sonos-api` | UPnP SOAP operations, event parsing, canonical state | `service.rs`, `services/{service}/{operations,events,state}.rs` |
+| 2. Stream | `sonos-stream` | Event streaming/polling | `events/types.rs`, `events/processor.rs`, `polling/strategies.rs` |
 | 3. State | `sonos-state` | Reactive state store | `property.rs`, `decoder.rs` |
-| 4. SDK | `sonos-sdk` | DOM-like public API | `property/handles.rs`, `speaker.rs` |
+| 4. SDK | `sonos-sdk` | DOM-like public API | `property/handles.rs`, `speaker.rs`, `group.rs` |
+
+The canonical per-service state type lives in `sonos-api`, not `sonos-stream`. Both the
+UPnP event path (`{Service}Event::into_state()`) and the polling path (`poll()`) produce
+the same `{Service}State`, which is what keeps the two in parity.
 
 ## Prerequisites
 
@@ -98,7 +102,8 @@ impl Service {
 sonos-api/src/services/new_service/
 ├── mod.rs          # Module exports
 ├── operations.rs   # UPnP operations
-└── events.rs       # Event parsing (optional)
+├── events.rs       # UPnP event parsing + `into_state()`
+└── state.rs        # `NewServiceState` + `poll()`
 ```
 
 ### 1.3 Implement Operations
@@ -169,38 +174,67 @@ impl Validate for ActionOperationRequest {
 
 ## Layer 2: Stream Implementation
 
-### 2.1 Define Event Struct
+### 2.1 Define the Canonical State Type
 
-Add to `sonos-stream/src/events/types.rs`:
+Add to `sonos-api/src/services/new_service/state.rs`. Every field is `Option`, because a
+UPnP event carries only the properties that changed:
 
 ```rust
-#[derive(Debug, Clone, Default)]
-pub struct NewServiceEvent {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NewServiceState {
     pub field_one: Option<String>,
-    pub field_two: Option<String>,
+    pub field_two: Option<u16>,
 }
 
+/// Poll a speaker for complete NewService state.
+pub fn poll(client: &SonosClient, ip: &str) -> crate::Result<NewServiceState> {
+    let info = client.execute_enhanced(
+        ip,
+        super::get_info_operation()
+            .build()
+            .map_err(|e| crate::ApiError::ParseError(e.to_string()))?,
+    )?;
+
+    Ok(NewServiceState {
+        field_one: Some(info.field_one),
+        field_two: Some(info.field_two),
+    })
+}
+```
+
+`NewServiceEvent` in `events.rs` deserializes the UPnP event payload and converts
+to the same type through `into_state()`.
+
+### 2.2 Add the EventData Variant
+
+Add to `sonos-stream/src/events/types.rs`. The variant is named for the service with **no
+`Event` suffix**, and it wraps the `sonos-api` State type:
+
+```rust
 pub enum EventData {
     // ... existing ...
-    NewServiceEvent(NewServiceEvent),
+    NewService(NewServiceState),
 }
 ```
 
-### 2.2 Implement Event Conversion
+### 2.3 Implement Event Conversion
 
-Add to `sonos-stream/src/events/processor.rs`:
+Add an arm to `convert_api_event_data` in `sonos-stream/src/events/processor.rs`. The
+incoming event is type-erased, so the arm downcasts it and calls `into_state()`:
 
 ```rust
-fn convert_api_event_data(service: Service, api_event: ApiEventData) -> Option<EventData> {
-    match service {
-        Service::NewService => Some(EventData::NewServiceEvent(NewServiceEvent {
-            field_one: extract_field(&api_event, "FieldOne"),
-            field_two: extract_field(&api_event, "FieldTwo"),
-        })),
-        // ...
-    }
+sonos_api::Service::NewService => {
+    let event = api_event_data
+        .downcast::<sonos_api::services::new_service::NewServiceEvent>()
+        .map_err(|_| {
+            EventProcessingError::Parsing("Failed to downcast NewService event".to_string())
+        })?;
+    Ok(EventData::NewService(event.into_state()))
 }
 ```
+
+The match on `Service` is exhaustive, so adding a `Service` variant without this arm is a
+compile error rather than a silent drop.
 
 ## Layer 3: State Implementation
 
@@ -221,6 +255,14 @@ impl Property for NewProperty {
 impl SonosProperty for NewProperty {
     const SCOPE: Scope = Scope::Speaker;
     const SERVICE: Service = Service::NewService;
+
+    // Required for any watchable property. `to_change()` defaults to `None`,
+    // and a property that returns `None` still writes to the store but emits
+    // no `ChangeEvent` — so `watch()` on it never fires. Only `Topology`,
+    // which is written wholesale by `initialize()`, legitimately omits this.
+    fn to_change(&self) -> Option<crate::decoder::PropertyChange> {
+        Some(crate::decoder::PropertyChange::NewProperty(self.clone()))
+    }
 }
 ```
 
@@ -234,12 +276,26 @@ pub enum PropertyChange {
     NewProperty(NewProperty),
 }
 
-pub fn decode_new_service(event: &NewServiceEvent) -> Vec<PropertyChange> {
+fn decode_new_service(event: &NewServiceState) -> Vec<PropertyChange> {
     let mut changes = Vec::new();
     if let Some(ref value) = event.field_one {
         changes.push(PropertyChange::NewProperty(NewProperty::new(value.clone())));
     }
     changes
+}
+```
+
+Then wire it into `decode_event`, and add the arms `PropertyChange::key()` and
+`PropertyChange::service()` need:
+
+```rust
+pub fn decode_event(event: &EnrichedEvent, speaker_id: SpeakerId) -> DecodedChanges {
+    let changes = match &event.event_data {
+        // ... existing ...
+        EventData::NewService(ns) => decode_new_service(ns),
+    };
+
+    DecodedChanges { speaker_id, changes }
 }
 ```
 
@@ -249,44 +305,56 @@ pub fn decode_new_service(event: &NewServiceEvent) -> Vec<PropertyChange> {
 
 Add to `sonos-sdk/src/property/handles.rs`:
 
+`Fetchable` names the operation and converts its response. It does not execute anything —
+`PropertyHandle::fetch()` owns the call, so there is no `execute` to write:
+
 ```rust
 impl Fetchable for NewProperty {
-    type Request = GetInfoOperationRequest;
-    type Response = GetInfoResponse;
+    type Operation = GetInfoOperation;
 
-    fn build_request() -> Self::Request {
-        GetInfoOperationRequest { instance_id: 0 }
+    fn build_operation() -> Result<ComposableOperation<Self::Operation>, SdkError> {
+        new_service::get_info_operation()
+            .build()
+            .map_err(|e| SdkError::FetchFailed(e.to_string()))
     }
 
-    fn from_response(response: Self::Response) -> Self {
+    fn from_response(response: GetInfoResponse) -> Self {
         NewProperty::new(response.field_one)
-    }
-
-    fn execute(client: &SonosClient, ip: &str, request: Self::Request) -> Result<Self::Response, SdkError> {
-        let op = new_service::get_info().build()
-            .map_err(|e| SdkError::FetchFailed(e.to_string()))?;
-        client.execute(ip, op).map_err(SdkError::ApiError)
     }
 }
 
 pub type NewPropertyHandle = PropertyHandle<NewProperty>;
 ```
 
+Two variants exist for properties that do not fit:
+
+| Trait | Use when | Differences |
+|-------|----------|-------------|
+| `Fetchable` | The response is this property, for this speaker | — |
+| `FetchableWithContext` | The response covers several speakers and the right one must be picked out (e.g. `GroupMembership` from `GetZoneGroupState`) | `from_response_with_context(response, &speaker_id) -> Option<Self>` |
+| `GroupFetchable` | The property is group-scoped and aliases `GroupPropertyHandle` | Handle type is `GroupPropertyHandle<P>` |
+
+A property with no Get operation (like `GroupVolumeChangeable`) implements none of these.
+It is event-only: `get()` and `watch()` work, `fetch()` does not exist.
+
 ### 4.2 Add to Speaker/System
 
 Based on scope, add to the appropriate struct:
 
 ```rust
-// Speaker-scoped
+// Speaker-scoped — sonos-sdk/src/speaker.rs
 pub struct Speaker {
     pub new_property: NewPropertyHandle,
 }
 
-// System-scoped
-pub struct SonosSystem {
-    pub new_property: NewPropertyHandle,
+// Group-scoped — sonos-sdk/src/group.rs
+pub struct Group {
+    pub new_property: NewGroupPropertyHandle,
 }
 ```
+
+System-scoped properties (`Topology`) have no handle; they are read off `SonosSystem`
+directly.
 
 ## Verification
 
@@ -307,6 +375,9 @@ cargo clippy
 
 # Format
 cargo fmt
+
+# Confirm the tree agrees with docs/STATUS.md, then update STATUS.md
+python .claude/skills/add-service/scripts/service_status.py --all
 ```
 
 ## Troubleshooting
@@ -318,7 +389,8 @@ cargo fmt
 | Polling not working | ServicePoller impl, registration |
 | State not updating | PropertyChange variant, decoder |
 | Property None | Decoder not parsing field |
-| fetch() missing | Fetchable trait not implemented |
+| fetch() missing | `Fetchable`/`GroupFetchable`/`FetchableWithContext` not implemented |
+| watch() never fires | `to_change()` not overridden — it defaults to `None` |
 
 ## Related Documentation
 

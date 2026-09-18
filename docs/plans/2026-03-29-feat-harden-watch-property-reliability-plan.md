@@ -271,14 +271,14 @@ Phase 3 scope will be refined based on actual findings. Some suspects may turn o
 
 ### Potentially Modified Files (Phase 3, based on findings)
 - `sonos-state/src/event_worker.rs` — Silent event drop logging, group event buffering
-- `state-store/src/lib.rs` — Timestamp-based last-write-wins in `StateStore::set()`
+- `sonos-state/src/state.rs` — Timestamp-based last-write-wins in `StateStore::set()`
 - `sonos-stream/src/events/processor.rs` — Position supplemental fetch after AVTransport events
 
 ## Sources & References
 
 ### Origin
 
-- **Brainstorm document:** [docs/brainstorms/2026-03-29-harden-watch-reliability-brainstorm.md](docs/brainstorms/2026-03-29-harden-watch-reliability-brainstorm.md) — Key decisions carried forward: never-miss-events guarantee, all 13 properties, dashboard-first approach.
+- **Brainstorm document:** [docs/brainstorms/2026-03-29-harden-watch-reliability-brainstorm.md](../brainstorms/2026-03-29-harden-watch-reliability-brainstorm.md) — Key decisions carried forward: never-miss-events guarantee, all 13 properties, dashboard-first approach.
 
 ### Internal References
 

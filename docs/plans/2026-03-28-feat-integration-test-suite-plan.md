@@ -546,13 +546,13 @@ fn find_standalone_speakers(system: &SonosSystem, min_count: usize) -> Result<Ve
 ## Sources & References
 
 ### Origin
-- **Brainstorm document:** [docs/brainstorms/2026-03-28-integration-test-suite-brainstorm.md](docs/brainstorms/2026-03-28-integration-test-suite-brainstorm.md) — Key decisions carried forward: fail loudly on no speakers, modular test architecture with single responsibility. **Note:** Changed from binary approach to standard Rust integration tests for better multi-crate best practices.
+- **Brainstorm document:** [docs/brainstorms/2026-03-28-integration-test-suite-brainstorm.md](../brainstorms/2026-03-28-integration-test-suite-brainstorm.md) — Key decisions carried forward: fail loudly on no speakers, modular test architecture with single responsibility. **Note:** Changed from binary approach to standard Rust integration tests for better multi-crate best practices.
 
 ### Internal References
-- **Grace period demo patterns:** [sonos-sdk/examples/watch_grace_period_demo.rs:188](sonos-sdk/examples/watch_grace_period_demo.rs) (speaker discovery)
-- **Group management patterns:** [sonos-sdk/examples/group_lifecycle_test.rs:42](sonos-sdk/examples/group_lifecycle_test.rs) (device qualification)
-- **Test infrastructure:** [sonos-discovery/tests/helpers/mod.rs:15](sonos-discovery/tests/helpers/mod.rs) (fixture patterns)
-- **Development conventions:** [CLAUDE.md](CLAUDE.md) (testing strategy using examples)
+- **Grace period demo patterns:** [sonos-sdk/examples/watch_grace_period_demo.rs:188](../../sonos-sdk/examples/watch_grace_period_demo.rs) (speaker discovery)
+- **Group management patterns:** [sonos-sdk/examples/group_lifecycle_test.rs:42](../../sonos-sdk/examples/group_lifecycle_test.rs) (device qualification)
+- **Test infrastructure:** [sonos-discovery/tests/helpers/mod.rs:15](../../sonos-discovery/tests/helpers/mod.rs) (fixture patterns)
+- **Development conventions:** [CLAUDE.md](../../CLAUDE.md) (testing strategy using examples)
 
 ### External References
 - **Multi-crate testing best practices:** Rust workspace patterns for integration testing

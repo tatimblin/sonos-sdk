@@ -1,7 +1,7 @@
 # Project Visibility: Status Matrix & Impact Roadmap
 
 **Date:** 2026-02-24
-**Status:** Brainstorm complete
+**Status:** Landed as [docs/STATUS.md](../STATUS.md), which is now the live source
 
 ## What We're Building
 
@@ -53,13 +53,12 @@ The matrix tracks 6 completion checkpoints per service, matching the 4-layer arc
 
 ### Services to Track
 
-**Started (6):**
+**Started (5):**
 - AVTransport
 - RenderingControl
 - GroupRenderingControl
 - ZoneGroupTopology
 - GroupManagement
-- DeviceProperties
 
 **Unstarted (12+):**
 - AlarmClock
@@ -102,7 +101,7 @@ Polling fallbacks matter when UPnP events are blocked.
 ### Tier 4: New Service Expansion
 Adding entirely new services end-to-end.
 
-- DeviceProperties (phantom type exists in stream, nothing else)
+- DeviceProperties (no implementation at any layer)
 - Queue (high user value for playlist management)
 - ContentDirectory (browse media libraries)
 - AlarmClock, MusicServices, etc.

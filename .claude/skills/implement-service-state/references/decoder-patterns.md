@@ -85,11 +85,14 @@ impl PropertyChange {
 /// Decode an enriched event into typed property changes
 pub fn decode_event(event: &EnrichedEvent, speaker_id: SpeakerId) -> DecodedChanges {
     let changes = match &event.event_data {
-        EventData::RenderingControlEvent(rc) => decode_rendering_control(rc),
-        EventData::AVTransportEvent(avt) => decode_av_transport(avt),
-        EventData::ZoneGroupTopologyEvent(zgt) => decode_topology(zgt),
-        EventData::DevicePropertiesEvent(_) => vec![],
-        EventData::NewServiceEvent(ns) => decode_new_service(ns),  // Add new service
+        EventData::RenderingControl(rc) => decode_rendering_control(rc),
+        EventData::AVTransport(avt) => decode_av_transport(avt),
+        EventData::ZoneGroupTopology(zgt) => decode_topology(zgt),
+        // GroupManagement is action-only; group changes surface via
+        // ZoneGroupTopology events. No user-facing properties to decode.
+        EventData::GroupManagement(_) => vec![],
+        EventData::GroupRenderingControl(grc) => decode_group_rendering_control(grc),
+        EventData::NewService(ns) => decode_new_service(ns),  // Add new service
     };
 
     DecodedChanges { speaker_id, changes }
@@ -100,7 +103,7 @@ pub fn decode_event(event: &EnrichedEvent, speaker_id: SpeakerId) -> DecodedChan
 
 ```rust
 /// Decode NewService event data
-fn decode_new_service(event: &NewServiceEvent) -> Vec<PropertyChange> {
+fn decode_new_service(event: &NewServiceState) -> Vec<PropertyChange> {
     let mut changes = vec![];
 
     // Parse each field from the event
@@ -137,11 +140,16 @@ if let Some(value_str) = &event.field_name {
 UPnP events represent booleans inconsistently ("1", "0", "true", "false"):
 
 ```rust
-if let Some(bool_str) = &event.field_name {
-    let enabled = bool_str == "1" || bool_str.eq_ignore_ascii_case("true");
-    changes.push(PropertyChange::Enabled(Enabled(enabled)));
+if let Some(bool_str) = &event.master_mute {
+    let muted = bool_str == "1" || bool_str.eq_ignore_ascii_case("true");
+    changes.push(PropertyChange::Mute(Mute(muted)));
 }
 ```
+
+By the time a value reaches the decoder it is already an extracted string, so the parse is
+inline here. When parsing straight out of a SOAP body in `sonos-api`, use
+`sonos_api::operation::parse_sonos_bool(xml, "ElementName")` instead — it handles both
+spellings plus whitespace padding, and returns `false` for a missing element.
 
 ### Enum Parsing
 
@@ -439,7 +447,7 @@ if d.is_empty() || d == "NOT_IMPLEMENTED" {
 ```rust
 #[test]
 fn test_decode_new_service() {
-    let event = NewServiceEvent {
+    let event = NewServiceState {
         field1: Some("42".to_string()),
         field2: Some("true".to_string()),
     };

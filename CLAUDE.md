@@ -54,7 +54,7 @@ cargo test --workspace --features sonos-sdk/test-support -- --nocapture
 ### Running Examples
 ```bash
 # Interactive CLI for testing operations (sonos-api)
-cargo run --example cli_example
+cargo run -p sonos-api --example cli_example
 
 # Reactive state management examples (sonos-sdk)
 cargo run -p sonos-sdk --example smart_dashboard
@@ -95,9 +95,13 @@ cargo check
 - Sync-first, DOM-like interface for controlling Sonos speakers
 
 **sonos-api** - High-level type-safe API layer (largest crate)
-- Implements the `SonosOperation` trait for all UPnP operations
-- Provides `SonosClient` for simplified operation execution
-- Supports AVTransport (30 ops), RenderingControl (11 ops: Get/Set Volume, Mute, Bass, Treble, Loudness + SetRelativeVolume), GroupRenderingControl (6 ops), GroupManagement (4 ops), ZoneGroupTopology, DeviceProperties, Events services
+- Implements the `UPnPOperation` trait for all UPnP operations
+- Provides `SonosClient::execute_enhanced()` for operation execution, plus
+  `subscribe()`/`subscribe_with_timeout()` for UPnP event subscriptions
+- Covers the five services in the `Service` enum: AVTransport (30 ops),
+  RenderingControl (11 ops: Get/Set Volume, Mute, Bass, Treble, Loudness +
+  SetRelativeVolume), GroupRenderingControl (6 ops), GroupManagement (4 ops),
+  ZoneGroupTopology (1 op)
 - Stateless design - no connection or state management
 
 #### Internal Crates (Workspace-only)
@@ -147,19 +151,26 @@ cargo check
 
 ### Key Design Patterns
 
-**SonosOperation Trait** - Central abstraction for all operations:
+**UPnPOperation Trait** - Central abstraction for all operations:
 ```rust
-pub trait SonosOperation {
-    type Request: Serialize;
+pub trait UPnPOperation {
+    type Request: Serialize + Validate;
     type Response: for<'de> Deserialize<'de>;
 
     const SERVICE: Service;
     const ACTION: &'static str;
 
-    fn build_payload(request: &Self::Request) -> String;
+    fn build_payload(request: &Self::Request) -> Result<String, ValidationError>;
     fn parse_response(xml: &str) -> Result<Self::Response, ApiError>;
 }
 ```
+
+`build_payload` validates the request before serializing it, so an invalid request
+fails without a network round trip. Operations are declared through the
+`define_upnp_operation!`/`define_operation_with_response!` macros in
+`sonos-api/src/operation/macros.rs`, which generate the `{Op}Request` struct, the
+`UPnPOperation` impl, and a snake_case builder function (`PlayOperation` ->
+`play_operation`) returning an `OperationBuilder`.
 
 `parse_response` takes the raw response body as `&str`. `soap-client` hands back text
 rather than a DOM: it owns transport and fault detection, while response *shape* is
@@ -178,9 +189,13 @@ service-specific and belongs here.
 - Multiple watchers share same subscription without duplication
 - Last watcher dropping triggers cleanup (ref count 1→0)
 
-**Multi-Layer Architecture** - Clear separation of concerns across 7 layers:
+**Multi-Layer Architecture** - Clear separation of concerns. `soap-client`,
+`sonos-discovery` and `callback-server` are leaves with no workspace dependencies;
+everything else builds on them:
 ```
-End Users → sonos-state → sonos-event-manager → sonos-stream → callback-server → sonos-api → sonos-discovery → soap-client
+End Users → sonos-sdk → sonos-state → sonos-event-manager → sonos-stream → callback-server
+                                                          → sonos-api    → soap-client
+                                                          → sonos-discovery
 ```
 
 **Event Transparency with Fallback** - sonos-stream provides seamless switching:
@@ -194,7 +209,9 @@ End Users → sonos-state → sonos-event-manager → sonos-stream → callback-
 
 1. **Device Discovery**: Use `sonos-discovery::get()` to find devices
 2. **State Management**: Create `StateManager` from `sonos-state` crate
-3. **Property Watching**: Use `watch_property<P>(speaker_id)` for reactive updates with automatic subscriptions
+3. **Property Watching**: Use `register_watch(speaker_id, P::KEY)` to mark a pair as
+   watched, or `watch_property_with_subscription::<P>(speaker_id)` to also open the
+   UPnP subscription. Then block on `iter()`
 4. **Property Access**: Use `get_property<P>(speaker_id)` for non-reactive property access
 5. **Testing**: Use the reactive dashboard examples to test state management
 
@@ -202,7 +219,7 @@ End Users → sonos-state → sonos-event-manager → sonos-stream → callback-
 
 1. **Device Discovery**: Use `sonos-discovery::get()` to find devices
 2. **Operation Construction**: Create typed requests using structs from `sonos-api`
-3. **Execution**: Use `SonosClient::execute()` to send operations
+3. **Execution**: Build a `ComposableOperation` with the service's builder function, then send it with `SonosClient::execute_enhanced()`
 4. **Testing**: Use the CLI example to test operations interactively
 
 ## Common Patterns
@@ -252,12 +269,12 @@ UPnP subscription each watch needs. Most end users should reach for `sonos-sdk`'
 
 ### Basic Operation Execution (Resource Efficient)
 ```rust
-use sonos_api::{SonosClient, operations::av_transport::{PlayOperation, PlayRequest}};
+use sonos_api::{services::av_transport, SonosClient};
 
 // SonosClient::new() automatically uses shared SOAP client for efficiency
 let client = SonosClient::new();
-let request = PlayRequest { instance_id: 0, speed: "1".to_string() };
-client.execute::<PlayOperation>("192.168.1.100", &request)?;
+let play = av_transport::play_operation("1".to_string()).build()?;
+client.execute_enhanced("192.168.1.100", play)?;
 ```
 
 ### Multiple Client Usage (Shares HTTP Resources)
@@ -288,26 +305,36 @@ for device in devices {
 
 ### Event Subscriptions
 ```rust
-let subscribe_request = SubscribeRequest {
-    callback_url: "http://192.168.1.50:8080/callback".to_string(),
-    timeout_seconds: 1800,
-};
-let subscription = client.subscribe(device_ip, Service::AVTransport, &subscribe_request)?;
+use sonos_api::{Service, SonosClient};
+
+let client = SonosClient::new();
+// Returns a ManagedSubscription that renews and unsubscribes on drop.
+// `subscribe_with_timeout` takes an explicit lifetime instead of the 1800s default.
+let subscription = client.subscribe(
+    "192.168.1.100",
+    Service::AVTransport,
+    "http://192.168.1.50:8080/callback",
+)?;
 ```
 
 ## Adding New Operations
 
 ### Adding UPnP Operations (sonos-api)
 1. Create request/response structs with serde derives
-2. Implement `SonosOperation` trait with `SERVICE`, `ACTION`, `build_payload()`, and `parse_response()`
+2. Declare the operation with `define_upnp_operation!` (or implement `UPnPOperation`
+   directly) giving `SERVICE`, `ACTION`, `build_payload()` and `parse_response()`, plus a
+   `Validate` impl for the generated request struct
 3. Add to appropriate service module in `sonos-api/src/services/`
 4. Write comprehensive tests for payload construction and response parsing
 5. Update the CLI example if the operation should be exposed for testing
 
 ### Adding Reactive Properties (sonos-state)
 1. Define property struct implementing the `Property` trait
-2. Specify `KEY`, `SCOPE` (Speaker/Group/System), and `SERVICE`
-3. Implement property decoder in appropriate service module
+2. Implement `SonosProperty`: `KEY`, `SCOPE` (Speaker/Group/System), `SERVICE`, and
+   `to_change()`. `to_change()` defaults to `None`, and a property that returns `None`
+   updates the store but emits no `ChangeEvent` — override it or the property is
+   unwatchable
+3. Add a `PropertyChange` variant and decode into it in `sonos-state/src/decoder.rs`
 4. Add property type to `sonos-state/src/lib.rs` exports
 5. Test with reactive dashboard examples
 
@@ -321,7 +348,7 @@ let subscription = client.subscribe(device_ip, Service::AVTransport, &subscribe_
 - Unit tests for all operations covering payload construction and response parsing
 - Integration tests using the CLI example for end-to-end validation
 - Mock tests for network operations using fixtures
-- Property-based tests for edge cases (using rstest/proptest)
+- Property-based tests for edge cases with `proptest` (sonos-api, sonos-sdk, sonos-state); `rstest` fixtures in sonos-discovery
 
 ## Key Dependencies
 
@@ -340,14 +367,24 @@ let subscription = client.subscribe(device_ip, Service::AVTransport, &subscribe_
 
 ### Crate Dependencies Overview
 ```
-sonos-state ──┬── sonos-api ──── soap-client
-              ├── sonos-stream ──┬── callback-server
-              └── sonos-event-manager  └── sonos-discovery
+sonos-sdk ──┬── sonos-state ──┬── sonos-api ──── soap-client
+            │                 ├── sonos-stream ──┬── callback-server
+            │                 │                  └── sonos-api
+            │                 ├── sonos-event-manager
+            │                 └── sonos-discovery
+            ├── sonos-api
+            ├── sonos-discovery
+            └── sonos-event-manager
 ```
+`soap-client`, `sonos-discovery` and `callback-server` depend on no other workspace
+crate. `callback-server` in particular is device-agnostic: it speaks HTTP NOTIFY and
+knows nothing about SOAP or Sonos.
 
 ## Important Notes
 
-- Mix of async (sonos-state, sonos-stream, callback-server) and blocking (sonos-api, soap-client) APIs
+- Mix of async (sonos-stream, sonos-event-manager, callback-server) and blocking
+  (sonos-sdk, sonos-state, sonos-api, soap-client) APIs. The public `sonos-sdk` and
+  `sonos-state` surfaces are sync — no `.await`
 - Device communication happens on port 1400 typically
 - Event subscriptions require firewall configuration for callbacks - automatic fallback to polling provided
 - The project uses standard Rust 2021 edition features

@@ -1,7 +1,7 @@
 # SDK API Best Practices Brainstorm
 
 **Date**: 2026-03-10
-**Status**: Draft
+**Status**: Landed — see `docs/plans/2026-03-11-refactor-sdk-api-best-practices-plan.md`
 **Focus**: Developer experience - making sonos-sdk a best-practice Rust crate
 
 ## What We're Building
@@ -103,12 +103,16 @@ The Rust API Guidelines say: getters should not use `get_` prefix. The primary l
 
 ```rust
 // sonos-sdk/src/prelude.rs
-pub use crate::{
-    SonosSystem, Speaker, Group, SdkError,
-    PlayMode, SeekTarget,
-    Volume, PlaybackState, Mute, CurrentTrack,
-    SpeakerId, GroupId,
-};
+pub use crate::error::SdkError;
+pub use crate::group::Group;
+pub use crate::speaker::{PlayMode, SeekTarget, Speaker};
+pub use crate::system::SonosSystem;
+
+// Property value types
+pub use sonos_state::{GroupId, GroupMute, GroupVolume, PlaybackState, SpeakerId, Volume};
+
+// Change event payload — needed to match on `event.change` from `system.iter()`
+pub use sonos_state::{ChangeSource, PropertyChange};
 ```
 
 Follows bevy/tokio convention. Power users import specific items; newcomers use `use sonos_sdk::prelude::*`.

@@ -32,7 +32,7 @@ def camel_to_snake(name: str) -> str:
 FILES = {
     "api": {
         "services_mod": WORKSPACE_ROOT / "sonos-api" / "src" / "services" / "mod.rs",
-        "service_enum": WORKSPACE_ROOT / "sonos-api" / "src" / "lib.rs",
+        "service_enum": WORKSPACE_ROOT / "sonos-api" / "src" / "service.rs",
     },
     "stream": {
         "types": WORKSPACE_ROOT / "sonos-stream" / "src" / "events" / "types.rs",
@@ -45,9 +45,23 @@ FILES = {
     },
     "sdk": {
         "handles": WORKSPACE_ROOT / "sonos-sdk" / "src" / "property" / "handles.rs",
+        # Speaker-scoped handles hang off `Speaker`, group-scoped ones off
+        # `Group`. Both are read so group services are not reported as unwired.
         "speaker": WORKSPACE_ROOT / "sonos-sdk" / "src" / "speaker.rs",
+        "group": WORKSPACE_ROOT / "sonos-sdk" / "src" / "group.rs",
     },
 }
+
+
+def service_enum_variants(content: str) -> list:
+    """Extract the variant names from `pub enum Service { ... }`"""
+    match = re.search(r'pub enum Service\s*\{(.*?)\n\}', content, re.DOTALL)
+    if not match:
+        return []
+    body = match.group(1)
+    # Strip doc comments and line comments before reading variant names.
+    body = re.sub(r'^\s*(///|//).*$', '', body, flags=re.MULTILINE)
+    return re.findall(r'^\s*(\w+)\s*,', body, re.MULTILINE)
 
 
 def check_api_layer(service_name: str) -> dict:
@@ -79,11 +93,12 @@ def check_api_layer(service_name: str) -> dict:
             seen = set()
             status["operations"] = [x for x in ops if not (x in seen or seen.add(x))]
 
-    # Check Service enum
+    # Check Service enum. The variants are declared bare inside `pub enum
+    # Service { ... }`, so parse that block rather than searching the whole file
+    # -- the doc comments above the enum name every service and would match.
     if FILES["api"]["service_enum"].exists():
         content = FILES["api"]["service_enum"].read_text()
-        # Look for service in Service enum
-        if f"Service::{service_name}" in content or service_name in content:
+        if service_name in service_enum_variants(content):
             status["service_enum"] = True
 
     return status
@@ -92,24 +107,31 @@ def check_api_layer(service_name: str) -> dict:
 def check_stream_layer(service_name: str) -> dict:
     """Check stream layer implementation status"""
     status = {
-        "event_struct": False,
+        "state_type": False,
         "event_data_variant": False,
         "processor_case": False,
         "poller": False,
     }
 
-    # Check event types
+    # The canonical per-service State type lives in sonos-api, not sonos-stream.
+    # `EventData` variants reference it; both UPnP events and polling produce it.
+    state_file = (
+        WORKSPACE_ROOT / "sonos-api" / "src" / "services"
+        / camel_to_snake(service_name) / "state.rs"
+    )
+    if state_file.exists():
+        if f"pub struct {service_name}State" in state_file.read_text():
+            status["state_type"] = True
+
+    # Check EventData variant. Variants are named for the service with no
+    # suffix, e.g. `RenderingControl(RenderingControlState)`.
     if FILES["stream"]["types"].exists():
         content = FILES["stream"]["types"].read_text()
-
-        # Check for event struct
-        event_struct_name = f"{service_name}Event"
-        if f"pub struct {event_struct_name}" in content:
-            status["event_struct"] = True
-
-        # Check for EventData variant
-        if f"EventData::{event_struct_name}" in content or f"{event_struct_name}(" in content:
-            status["event_data_variant"] = True
+        enum_match = re.search(r'pub enum EventData\s*\{(.*?)\n\}', content, re.DOTALL)
+        if enum_match:
+            variants = re.findall(r'^\s*(\w+)\s*\(', enum_match.group(1), re.MULTILINE)
+            if service_name in variants:
+                status["event_data_variant"] = True
 
     # Check processor
     if FILES["stream"]["processor"].exists():
@@ -152,9 +174,11 @@ def check_state_layer(service_name: str) -> dict:
             if f"PropertyChange::{prop}" in content:
                 status["property_changes"].append(prop)
 
-        # Check for decoder function (convert CamelCase to snake_case)
-        decoder_name = f"decode_{camel_to_snake(service_name)}"
-        if f"fn {decoder_name}" in content:
+        # Check for a decoder function. Match on the State type the function
+        # takes rather than on its name -- decoder names are abbreviated
+        # (ZoneGroupTopology is decoded by `decode_topology`), so a
+        # name-derived lookup misses real decoders.
+        if re.search(rf'fn decode_\w+\([^)]*&{service_name}State\b', content):
             status["decoder"] = True
 
     return status
@@ -172,22 +196,27 @@ def check_sdk_layer(service_name: str) -> dict:
     if FILES["sdk"]["handles"].exists():
         content = FILES["sdk"]["handles"].read_text()
 
-        # Find type aliases
-        pattern = r'pub type (\w+Handle)\s*=\s*PropertyHandle<(\w+)>'
+        # Find type aliases. Group properties alias `GroupPropertyHandle`, so
+        # the handle type is matched with an optional `Group` prefix.
+        pattern = r'pub type (\w+Handle)\s*=\s*(?:Group)?PropertyHandle<(\w+)>'
         for alias, prop in re.findall(pattern, content):
             status["handles"].append((alias, prop))
 
-        # Find Fetchable implementations
-        pattern = r'impl Fetchable for (\w+)'
-        status["fetchable"] = re.findall(pattern, content)
+        # Find fetch implementations. Three traits carry fetch: `Fetchable`,
+        # `GroupFetchable` for group-scoped properties, and
+        # `FetchableWithContext` for responses that cover several speakers.
+        # Only `impl` lines count -- the trait's own doc comment shows an
+        # `impl Fetchable for Volume` example that is not code.
+        pattern = r'^impl (?:Group)?Fetchable(?:WithContext)? for (\w+)'
+        status["fetchable"] = re.findall(pattern, content, re.MULTILINE)
 
-    # Check speaker fields
-    if FILES["sdk"]["speaker"].exists():
-        content = FILES["sdk"]["speaker"].read_text()
-
-        pattern = r'pub (\w+):\s*(\w+Handle)'
-        for field, handle in re.findall(pattern, content):
-            status["speaker_fields"].append((field, handle))
+    # Check the struct fields that expose each handle
+    for key in ("speaker", "group"):
+        if FILES["sdk"][key].exists():
+            content = FILES["sdk"][key].read_text()
+            pattern = r'pub (\w+):\s*(\w+Handle)'
+            for field, handle in re.findall(pattern, content):
+                status["speaker_fields"].append((field, handle))
 
     return status
 
@@ -214,7 +243,7 @@ def print_status(service_name: str):
     print("\n[Layer 2] sonos-stream")
     print("-" * 40)
     stream = check_stream_layer(service_name)
-    print(f"  Event struct:      {'✓' if stream['event_struct'] else '✗'}")
+    print(f"  State type:        {'✓' if stream['state_type'] else '✗'}")
     print(f"  EventData variant: {'✓' if stream['event_data_variant'] else '✗'}")
     print(f"  Processor case:    {'✓' if stream['processor_case'] else '✗'}")
     print(f"  Poller impl:       {'✓' if stream['poller'] else '✗'}")
@@ -259,7 +288,7 @@ def print_status(service_name: str):
 
     all_good = (
         api["service_module"] and
-        stream["event_struct"] and
+        stream["state_type"] and
         stream["event_data_variant"] and
         len(state["properties"]) > 0 and
         state["decoder"] and
@@ -272,8 +301,8 @@ def print_status(service_name: str):
         print("  ✗ Service implementation is incomplete")
         if not api["service_module"]:
             print("    → Missing: API service module")
-        if not stream["event_struct"]:
-            print("    → Missing: Stream event struct")
+        if not stream["state_type"]:
+            print("    → Missing: service State type")
         if not stream["event_data_variant"]:
             print("    → Missing: EventData variant")
         if not state["properties"]:
@@ -289,16 +318,24 @@ def list_all_services():
     print("All Services Implementation Status")
     print("=" * 70)
 
-    # Known services from Sonos API
+    # The service set tracked in docs/STATUS.md, so the two can be compared row
+    # for row. Anything found on disk but absent here is appended below.
     known_services = [
         "AVTransport",
         "RenderingControl",
-        "DeviceProperties",
-        "ZoneGroupTopology",
         "GroupRenderingControl",
-        "ContentDirectory",
-        "Queue",
+        "ZoneGroupTopology",
+        "GroupManagement",
         "AlarmClock",
+        "AudioIn",
+        "ConnectionManager",
+        "ContentDirectory",
+        "DeviceProperties",
+        "HTControl",
+        "MusicServices",
+        "Queue",
+        "SystemProperties",
+        "VirtualLineIn",
     ]
 
     # Also check for any service directories that exist
@@ -325,7 +362,7 @@ def list_all_services():
         sdk = check_sdk_layer(service)
 
         api_status = "✓" if api["service_module"] else "✗"
-        stream_status = "✓" if stream["event_struct"] else "✗"
+        stream_status = "✓" if stream["event_data_variant"] else "✗"
         state_status = "✓" if state["properties"] else "✗"
 
         # Check SDK has handles for this service's properties

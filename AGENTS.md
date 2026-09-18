@@ -24,13 +24,18 @@ A multi-crate rust project to provide a sonos SDK capable of live updates and fu
 - **`/soap-client/`** - Internal rust crate for SOAP API utilities used by sonos-api providing an http client tailored to SOAP requests.
 - **`/sonos-discovery/`** - Internal crate for discovering Sonos devices on a network (re-exported through sonos-sdk).
 - **`/sonos-stream/`** - Internal rust crate for creating and receiving streamed Sonos events.
-- **`/sonos-event-manager/`** - Internal rust crate that wraps sonos-event and manages subscription lifecycle.
+- **`/sonos-event-manager/`** - Internal rust crate that wraps sonos-stream and manages subscription lifecycle, including the shared teardown timer behind the watch grace period.
 - **`/sonos-api/`** - Public rust crate that provides an Http client for interacting with the local Sonos api.
 - **`/sonos-state/`** - Internal rust crate that registers and holds live Sonos properties.
 - **`/sonos-sdk/`** - Public crate for interacting with a Sonos system at a high level.
+- **`/website/`** - Astro Starlight site published to GitHub Pages. The user-facing docs.
+- **`/scripts/`** - Release helpers.
+- **`/.claude/skills/`** - Code-generator skills an agent follows to add a service across all four layers. Treat their code blocks as templates that must compile.
 
 ## Documentation
 
 - **`/docs/SPEC_TEMPLATE.md`** - A template for writing specs. Specs live in each service and answer the "WHY"" for each technical detail in the system. Knowing the "WHY" is important for staying true to the intent of a system.
 - **`/docs/SUMMARY.md`** - Index of each crate in the system and how they fit together.
-- **`/docs/specs/[CRATE_NAME].md`** - A living spec for a crate. It's accuracy is as important as the accuracy of the code.
+- **`/docs/specs/[CRATE_NAME].md`** - A living spec for a crate. Its accuracy is as important as the accuracy of the code. There is one per workspace crate.
+- **`/docs/STATUS.md`** - Service completion matrix. `.claude/skills/add-service/scripts/service_status.py --all` reads the tree and must agree with it.
+- **`/docs/plans/`**, **`/docs/brainstorms/`** - Dated records of work. A plan's `status` marker states whether its work is in the tree.

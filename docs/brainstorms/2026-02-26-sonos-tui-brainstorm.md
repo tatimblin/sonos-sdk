@@ -1,7 +1,8 @@
 # Sonos TUI Brainstorm
 
 **Date:** 2026-02-26
-**Status:** Draft
+**Status:** Landed in a separate repository — the TUI shipped as `sonos-cli`, linked from
+`website/src/content/docs/cli/`. Nothing TUI-related lives in this workspace
 **Author:** Tristan Timblin + Claude
 
 ## What We're Building
@@ -496,7 +497,7 @@ The sonos-sdk provides everything needed:
 | Playback control | `Play/Pause/Stop/Next/Prev` operations | Direct API call |
 | Volume control | `SetVolume/SetRelativeVolume` operations | Direct API call |
 | EQ control | `SetBass/SetTreble/SetLoudness` operations | Direct API call |
-| Group management | `AddMember/RemoveMember` operations | Direct API call |
+| Group management | `group.add_speaker()` / `remove_speaker()` / `dissolve()` | Direct SDK call |
 | Device discovery | `sonos_discovery::get()` | One-time scan |
 
 ## Resolved Questions
