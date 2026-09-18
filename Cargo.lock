@@ -1444,7 +1444,7 @@ dependencies = [
 
 [[package]]
 name = "sonos-api"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "paste",
  "proptest",
@@ -1459,7 +1459,7 @@ dependencies = [
 
 [[package]]
 name = "sonos-sdk"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "ctrlc",
@@ -1478,7 +1478,7 @@ dependencies = [
 
 [[package]]
 name = "sonos-sdk-callback-server"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "axum",
  "if-addrs",
@@ -1489,7 +1489,7 @@ dependencies = [
 
 [[package]]
 name = "sonos-sdk-discovery"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "if-addrs",
  "mockito",
@@ -1506,7 +1506,7 @@ dependencies = [
 
 [[package]]
 name = "sonos-sdk-event-manager"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "parking_lot",
  "sonos-api",
@@ -1519,7 +1519,7 @@ dependencies = [
 
 [[package]]
 name = "sonos-sdk-soap-client"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "quick-xml",
  "thiserror",
@@ -1528,7 +1528,7 @@ dependencies = [
 
 [[package]]
 name = "sonos-sdk-state"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "parking_lot",
  "proptest",
@@ -1545,7 +1545,7 @@ dependencies = [
 
 [[package]]
 name = "sonos-sdk-stream"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "futures",
