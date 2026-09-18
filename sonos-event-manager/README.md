@@ -1,68 +1,84 @@
 # sonos-event-manager
 
 > ⚠️ **INTERNAL CRATE - NOT FOR DIRECT USE**
-> This crate is an **internal implementation detail** of the sonos-sdk workspace, specifically designed to bridge [`sonos-state`](../sonos-state) and [`sonos-stream`](../sonos-stream). It is not intended for direct use by end-users and may change at any time without notice.
+> This crate is an **internal implementation detail** of the sonos-sdk workspace, bridging [`sonos-state`](../sonos-state) and [`sonos-stream`](../sonos-stream). It is published to crates.io as `sonos-sdk-event-manager` so that [`sonos-sdk`](../sonos-sdk) resolves as a dependency, but it is not intended for direct use and may change at any time without notice.
 
 ## Overview
 
-`sonos-event-manager` provides intelligent, reference-counted subscription management for Sonos device events. It acts as a high-level facade over [`sonos-stream`](../sonos-stream), implementing demand-driven UPnP subscription lifecycle management for the reactive state system in [`sonos-state`](../sonos-state).
+`sonos-event-manager` provides reference-counted subscription management for Sonos device events. It is a **sync-first** facade over [`sonos-stream`](../sonos-stream): every async operation runs on a background worker thread with its own Tokio runtime, so nothing above this layer needs `async`/`await`.
 
 ## Architecture Role
 
 ```text
-┌─────────────────┐     ┌──────────────────┐     ┌────────────────────┐     ┌─────────────────┐
-│   End Users     │────▶│   sonos-state    │────▶│ sonos-event-manager │────▶│  sonos-stream   │
-│                 │     │  (Public API)    │     │   (Internal)       │     │   (Internal)    │
-└─────────────────┘     └──────────────────┘     └────────────────────┘     └─────────────────┘
-                               ▲                           ▲                          ▲
-                               │                           │                          │
-                       Property Watchers            Reference Counting         Raw Event Processing
-                       State Management             Subscription Lifecycle     UPnP/Polling Fallback
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────────┐     ┌─────────────────┐
+│   End Users     │────▶│    sonos-sdk     │────▶│ sonos-event-manager │────▶│  sonos-stream   │
+│                 │     │  (Public API)    │     │     (Internal)      │     │   (Internal)    │
+└─────────────────┘     └──────────────────┘     └─────────────────────┘     └─────────────────┘
+                                 ▲                          ▲                          ▲
+                                 │                          │                          │
+                         Property Watchers          Reference Counting         Raw Event Processing
+                         State Management           Subscription Lifecycle     UPnP/Polling Fallback
 ```
 
-## Why This Crate Exists
+`sonos-state` sits alongside, owning the property store; this crate owns subscription lifetime.
 
-This crate was created to provide a clean abstraction layer between the high-level reactive state management and low-level event streaming:
+## Responsibilities
 
-- **🔢 Reference Counting**: Automatically creates UPnP subscriptions only when needed and cleans them up when no longer used
-- **📡 Subscription Lifecycle**: Manages the complete lifecycle of UPnP event subscriptions
+- **🔢 Reference Counting**: Creates UPnP subscriptions only when needed and tears them down when the last consumer lets go
+- **📡 Subscription Lifecycle**: Manages the full lifecycle of UPnP event subscriptions
 - **🎯 Demand-Driven**: Only subscribes to services that are actively being watched
 - **🛡️ Resource Efficiency**: Prevents subscription leaks and unnecessary network traffic
-- **🔗 Clean Integration**: Provides a simpler API for `sonos-state` to consume events
-
-## Key Features
-
-- **Automatic Lifecycle Management**: UPnP subscriptions created on first consumer, destroyed on last drop
-- **Thread-Safe Reference Counting**: Atomic tracking of active consumers per device/service pair
-- **Resource Efficient**: Only subscribe to events that are actually being consumed
-- **Discovery Integration**: Easy integration with `sonos-discovery` for adding devices
-- **Event Multiplexing**: Single event stream from `sonos-stream` with intelligent routing
+- **🔗 Clean Integration**: Presents a sync API to `sonos-state`
+- **🧵 Background Processing**: All async work lives on one dedicated worker thread
 
 ## Internal API Overview
 
-**For `sonos-state` integration only**:
+**For `sonos-state` integration only.** Every method below is synchronous:
 
-```rust
-// Create event manager (used internally by StateManager)
-let mut event_manager = SonosEventManager::new().await?;
+```rust,ignore
+use sonos_api::Service;
+use sonos_event_manager::SonosEventManager;
+
+// Create event manager (no .await)
+let manager = SonosEventManager::new()?;
 
 // Add devices from discovery
-event_manager.add_devices(devices).await?;
+manager.add_devices(sonos_discovery::get())?;
 
 // Reference-counted subscription management
-event_manager.ensure_service_subscribed(device_ip, Service::RenderingControl).await?;
-event_manager.ensure_service_subscribed(device_ip, Service::RenderingControl).await?; // Ref count: 2
+manager.ensure_service_subscribed(device_ip, Service::RenderingControl)?;
+manager.ensure_service_subscribed(device_ip, Service::RenderingControl)?; // Ref count: 2
 
-// Get multiplexed event stream
-let mut events = event_manager.get_event_iterator()?;
-while let Some(enriched_event) = events.next_async().await {
-    // sonos-state processes these events
+// Multiplexed event stream
+let events = manager.iter();
+while let Some(enriched_event) = events.recv() {
+    // sonos-state decodes these into property changes
 }
 
-// Automatic cleanup when references drop
-event_manager.release_service_subscription(device_ip, Service::RenderingControl).await?; // Ref count: 1
-event_manager.release_service_subscription(device_ip, Service::RenderingControl).await?; // Ref count: 0 -> cleanup
+// Cleanup as references drop
+manager.release_service_subscription(device_ip, Service::RenderingControl)?; // Ref count: 1
+manager.release_service_subscription(device_ip, Service::RenderingControl)?; // 0 -> teardown
 ```
+
+### Event iteration
+
+`manager.iter()` returns an `EventManagerIterator`:
+
+- `recv() -> Option<EnrichedEvent>` — block until an event arrives
+- `try_recv() -> Option<EnrichedEvent>` — non-blocking
+- `recv_timeout(Duration) -> Option<EnrichedEvent>` — block with a deadline
+- `try_iter()` — drain whatever is queued
+- `timeout_iter(Duration)` — iterate with a per-item deadline
+
+It also implements `Iterator`, so `for event in manager.iter()` blocks on each item. The
+iterator is `Clone`; clones share one receiver.
+
+### Watch guards
+
+`acquire_watch(&speaker_id, property_key, ip, service)` returns a `WatchGuard`. This is the path
+`sonos-sdk`'s `watch()` takes: the guard registers the `(speaker_id, key)` pair in the
+`WatchRegistry` so changes are forwarded, and increments the `(ip, service)` reference count.
+Dropping it schedules a release.
 
 ## Reference-Counted Observable Pattern
 
@@ -70,19 +86,22 @@ The crate implements a **Reference-Counted Observable** pattern similar to RxJS'
 
 1. **Device Registration**: Discovered devices are registered with the manager
 2. **Demand-Driven Subscriptions**: UPnP subscriptions created only when first consumer requests them
-3. **Reference Counting**: Each consumer increments a reference count for the (device_ip, service) pair
-4. **Automatic Cleanup**: When reference count reaches zero, UPnP subscription is terminated
-5. **Event Distribution**: Events are multiplexed from the single `sonos-stream` EventBroker
+3. **Reference Counting**: Each consumer increments a reference count for the `(device_ip, service)` pair
+4. **Grace-Period Teardown**: When the count reaches zero, teardown is *scheduled*, not immediate
+5. **Event Distribution**: Events are multiplexed from the single `sonos-stream` `EventBroker`
 
-## Integration with sonos-state
+## Grace Period
 
-`sonos-state`'s `StateManager` uses this crate internally:
+Dropping the last reference does not unsubscribe straight away. The teardown is queued with a
+**50 ms** delay, and re-acquiring the same `(ip, service)` within that window cancels it. This
+exists because an immediate-mode TUI drops and re-acquires every handle each frame — nine
+handles at 60fps is roughly 540 releases per second, and unsubscribing then resubscribing on
+each one would be pure network churn.
 
-1. **Initialization**: Creates a `SonosEventManager` instance
-2. **Device Management**: Registers discovered devices
-3. **Property Subscription**: Calls `ensure_service_subscribed()` when properties are first watched
-4. **Event Processing**: Consumes the multiplexed event stream
-5. **Cleanup**: Calls `release_service_subscription()` when property watchers are dropped
+All pending teardowns are serviced by one deadline-ordered queue on a dedicated thread, not on
+the worker's Tokio runtime. That runtime is `new_current_thread` and the UPnP subscribe path
+makes blocking calls inside `async fn`s, so a single SUBSCRIBE to an unreachable speaker wedges
+it. Teardown timing has to stay independent of broker health.
 
 ## Subscription Reference Counting
 
@@ -90,70 +109,76 @@ The crate implements a **Reference-Counted Observable** pattern similar to RxJS'
 Timeline: Multiple Volume watchers for same device
 
 T1: First Volume watcher created
-    └─ ensure_service_subscribed(device, RenderingControl) [count: 0→1]
+    └─ acquire_watch(device, RenderingControl) [count: 0→1]
     └─ Creates UPnP subscription to device RenderingControl service
 
 T2: Second Volume watcher created
-    └─ ensure_service_subscribed(device, RenderingControl) [count: 1→2]
+    └─ acquire_watch(device, RenderingControl) [count: 1→2]
     └─ Reuses existing UPnP subscription (no network call)
 
 T3: First watcher dropped
-    └─ release_service_subscription(device, RenderingControl) [count: 2→1]
+    └─ release [count: 2→1]
     └─ UPnP subscription remains active
 
 T4: Second watcher dropped
-    └─ release_service_subscription(device, RenderingControl) [count: 1→0]
-    └─ UPnP subscription terminated (cleanup)
+    └─ release [count: 1→0]
+    └─ Teardown scheduled; fires 50ms later unless a re-acquire claims it first
 ```
 
 ## Internal Components
 
-- **SonosEventManager**: Main facade managing devices and subscriptions
-- **Reference Counting**: Thread-safe `DashMap<(IpAddr, Service), AtomicUsize>`
-- **Device Registry**: `HashMap<IpAddr, Device>` for device lookup
-- **Event Stream**: Multiplexed access to `sonos-stream`'s `EventIterator`
+- **`SonosEventManager`** (`manager.rs`): facade managing devices, subscriptions and watch guards
+- **Reference Counting**: `Arc<RwLock<HashMap<(IpAddr, Service), usize>>>` using `parking_lot` locks, which do not poison — important because releases run from `Drop`
+- **Device Registry**: `Arc<RwLock<HashMap<IpAddr, Device>>>`
+- **Worker** (`worker.rs`): owns the Tokio runtime and the `sonos-stream` `EventBroker`, driven by a command channel
+- **Teardown timer** (`timer.rs`): one thread servicing a `BinaryHeap` of pending teardowns
+- **Event Stream** (`iter.rs`): `EventManagerIterator` over the worker's event channel
 
 ## Error Handling
 
-Structured error types for different failure scenarios:
-- `BrokerInitialization` - EventBroker setup failures
-- `DeviceRegistration` - UPnP subscription failures
-- `DeviceNotFound` - Invalid device IP lookups
-- `SubscriptionNotFound` - Reference counting inconsistencies
-- `ChannelClosed` - Event stream interruption
+`EventManagerError` covers:
+- `BrokerInitialization` - `EventBroker` setup failures
+- `DeviceRegistration` / `DeviceUnregistration` - UPnP subscribe and unsubscribe failures
+- `ConsumerCreation` - event consumer setup failures
+- `DeviceNotFound` - unknown device IP
+- `SubscriptionNotFound` - reference counting inconsistencies
+- `ChannelClosed` / `WorkerDisconnected` - event stream or worker thread gone
+- `Discovery`, `InvalidIpAddress`, `Sync`, `LockPoisoned` - discovery and internal synchronization failures
 
 ## Performance Characteristics
 
 - **Memory Efficient**: Reference counting prevents duplicate subscriptions
-- **Network Efficient**: Only creates necessary UPnP subscriptions
+- **Network Efficient**: Only creates necessary UPnP subscriptions, and the grace period absorbs drop/re-acquire churn
 - **CPU Efficient**: Single event stream with routing vs. multiple streams
-- **Thread Safe**: Lock-free reference counting with `DashMap` and `AtomicUsize`
+- **Thread Safe**: `parking_lot` read-write locks around the ref-count and device maps
 
 ## Configuration
 
-Supports custom `BrokerConfig` for underlying `sonos-stream` configuration:
+`BrokerConfig` from `sonos-stream` is passed straight through:
 
-```rust
+```rust,ignore
+use sonos_event_manager::SonosEventManager;
+use sonos_stream::BrokerConfig;
+use std::time::Duration;
+
 let config = BrokerConfig::default()
-    .with_callback_port_range(8000..8100)
-    .with_polling_interval(Duration::from_secs(30));
+    .with_callback_ports(3400, 3500)
+    .with_polling_interval(Duration::from_secs(5), Duration::from_secs(30));
 
-let manager = SonosEventManager::with_config(config).await?;
+let manager = SonosEventManager::with_config(config)?;
 ```
 
 ## Monitoring and Debugging
 
-Internal APIs for subscription monitoring:
-
-```rust
-// Get current reference counts
-let stats = manager.service_subscription_stats();
-for ((device_ip, service), ref_count) in stats {
-    println!("{} {:?}: {} references", device_ip, service, ref_count);
+```rust,ignore
+// Current reference counts
+for ((device_ip, service), ref_count) in manager.service_subscription_stats() {
+    println!("{device_ip} {service:?}: {ref_count} references");
 }
 
-// Check if service is subscribed
+// Single pair
 let is_subscribed = manager.is_service_subscribed(device_ip, Service::AVTransport);
+let count = manager.service_ref_count(device_ip, Service::AVTransport);
 ```
 
 ## Dependencies
@@ -161,44 +186,41 @@ let is_subscribed = manager.is_service_subscribed(device_ip, Service::AVTranspor
 This internal crate wraps:
 - **[`sonos-stream`](../sonos-stream)** - Low-level event streaming and UPnP management
 - **[`sonos-api`](../sonos-api)** - Service definitions and types
-- **[`sonos-discovery`](../sonos-discovery)** - Device discovery integration
+- **[`sonos-discovery`](../sonos-discovery)** - `Device` from discovery
 
 ## Limitations
 
 - **Internal API**: Not designed for direct external use
 - **Single Event Stream**: All events flow through one multiplexed iterator
 - **No Consumer Isolation**: Events are not filtered per consumer (handled by `sonos-state`)
-- **Reference Counting Only**: No time-based subscription expiration
 
 ## Development Notes
 
 **For sonos-sdk workspace maintainers**:
 
-- Reference counting logic in `manager.rs:ensure_service_subscribed()`
-- Subscription cleanup in `manager.rs:release_service_subscription()`
+- Watch acquisition and the grace-period claim in `manager.rs:acquire_watch()`
+- Reference counting in `manager.rs:ensure_service_subscribed()`
+- Subscription release in `manager.rs:release_service_subscription()`
 - Device management in `manager.rs:add_devices()` and `manager.rs:device_by_ip()`
-- Event stream access via `manager.rs:get_event_iterator()`
+- Event stream access via `manager.rs:iter()`
+- Teardown scheduling and cancellation in `timer.rs`
 
-## Example (Development/Testing Only)
-
-The crate includes a smart dashboard example that demonstrates the integrated `sonos-state` API:
+This crate has no examples of its own. The integrated behavior is demonstrated from the public
+API:
 
 ```bash
 cargo run -p sonos-sdk --example smart_dashboard
+cargo run -p sonos-sdk --example watch_grace_period_demo
 ```
-
-Note: This example actually uses `sonos-state`, showing the intended usage pattern.
-
-## Migration Guidance
-
-**If you're currently using this crate directly**: Please migrate to [`sonos-state`](../sonos-state) which provides the intended user-facing reactive state management API with automatic subscription management.
 
 ## License
 
-MIT OR Apache-2.0
+Licensed under either of [Apache License, Version 2.0](../LICENSE-APACHE) or
+[MIT license](../LICENSE-MIT), at your option.
 
 ## See Also
 
-- **[`sonos-state`](../sonos-state)** - **Recommended user-facing API** for reactive state management
+- **[`sonos-sdk`](../sonos-sdk)** - the public API
+- [`sonos-state`](../sonos-state) - reactive state management
 - [`sonos-stream`](../sonos-stream) - Low-level event streaming and UPnP subscriptions
 - [`sonos-api`](../sonos-api) - Core Sonos UPnP API definitions

@@ -1,6 +1,6 @@
 # Sonos API Services
 
-This directory contains service implementations for the Sonos UPnP API. Each service corresponds to a UPnP service that Sonos devices expose, providing both **control operations** (commands) and **event handling** (real-time state changes).
+This directory contains service implementations for the Sonos UPnP API. Each service corresponds to a UPnP service that Sonos devices expose, providing **control operations** (commands), **event handling** (real-time state changes), and a **state snapshot type** that polling and eventing both produce.
 
 ## Table of Contents
 
@@ -27,22 +27,30 @@ Sonos devices expose multiple UPnP services, each handling a specific domain:
 
 | Service | Purpose | Operations | Events |
 |---------|---------|------------|---------|
-| [`av_transport`](av_transport/) | Playback control | Play, Pause, Stop, Seek, etc. | Transport state, track changes |
-| [`rendering_control`](rendering_control/) | Audio control | Volume, Mute, Bass, Treble | Volume changes, audio settings |
-| [`zone_group_topology`](zone_group_topology/) | Speaker grouping | Get topology state | Group membership changes |
+| [`av_transport`](av_transport/) | Playback control | Play, Pause, Stop, Seek, queue, sleep timer, alarms | Transport state, track changes |
+| [`rendering_control`](rendering_control/) | Audio control | Volume, Mute, Bass, Treble, Loudness | Volume changes, audio settings |
+| [`group_rendering_control`](group_rendering_control/) | Group audio control | GroupVolume, GroupMute, SnapshotGroupVolume | Group volume and mute changes |
+| [`zone_group_topology`](zone_group_topology/) | Speaker grouping | GetZoneGroupState | Group membership changes |
+| [`group_management`](group_management/) | Group membership | AddMember, RemoveMember, ReportTrackBufferingResult | Group coordinator and member state |
 
 ### Service Mapping
 
-Each service maps to a specific UPnP service:
+Each module maps to one variant of the `Service` enum in [`src/service.rs`](../service.rs):
 
-```rust
+```rust,ignore
 pub enum Service {
     AVTransport,           // urn:schemas-upnp-org:service:AVTransport:1
     RenderingControl,      // urn:schemas-upnp-org:service:RenderingControl:1
     GroupRenderingControl, // urn:schemas-upnp-org:service:GroupRenderingControl:1
-    ZoneGroupTopology,     // urn:schemas-rinconnetworks-com:service:ZoneGroupTopology:1
+    ZoneGroupTopology,     // urn:schemas-upnp-org:service:ZoneGroupTopology:1
+    GroupManagement,       // urn:schemas-upnp-org:service:GroupManagement:1
 }
 ```
+
+`Service::info()` returns the control endpoint, service URI and event endpoint.
+`Service::scope()` returns a `ServiceScope` — `PerSpeaker`, `PerNetwork` or `PerCoordinator` —
+which tells subscribers how many subscriptions the service warrants. `RenderingControl` is
+per-speaker, `ZoneGroupTopology` is per-network, and the remaining three are per-coordinator.
 
 ## Directory Structure
 
@@ -51,24 +59,25 @@ Each service follows a consistent structure:
 ```
 services/
 ├── README.md                    # This file
-├── mod.rs                      # Main services module
-├── events.rs                   # Common event subscription types
+├── mod.rs                       # Main services module
 │
-├── av_transport/               # AVTransport service
-│   ├── mod.rs                 # Service module and re-exports
-│   ├── operations.rs          # UPnP operations (Play, Pause, etc.)
-│   └── events.rs             # Event parsing and types
+├── av_transport/                # AVTransport service
+│   ├── mod.rs                   # Service module, subscribe helpers and re-exports
+│   ├── operations.rs            # UPnP operations (Play, Pause, etc.)
+│   ├── events.rs                # Event parsing and types
+│   └── state.rs                 # AVTransportState snapshot type
 │
-├── rendering_control/          # RenderingControl service
-│   ├── mod.rs
-│   ├── operations.rs          # Volume, Mute operations
-│   └── events.rs             # Volume/audio event handling
+├── rendering_control/           # Same four files, per service
+├── group_rendering_control/
+├── zone_group_topology/
+├── group_management/
 │
-└── zone_group_topology/        # ZoneGroupTopology service
-    ├── mod.rs
-    ├── operations.rs          # Topology queries
-    └── events.rs             # Group membership events
+└── events.rs                    # Shared event helpers across services
 ```
+
+`state.rs` holds the service's snapshot type (`AVTransportState`, `RenderingControlState`, …).
+Both a parsed UPnP event and a polling round produce one of these, which is what lets
+`sonos-stream` fall back to polling without the consumer noticing.
 
 ## Using Services
 
@@ -79,32 +88,44 @@ Import services individually to avoid naming conflicts:
 ```rust
 use sonos_api::services::av_transport;
 use sonos_api::services::rendering_control;
-use sonos_api::{SonosClient, OperationBuilder};
+use sonos_api::{OperationBuilder, SonosClient};
 ```
 
 ### Control Operations
 
-Execute operations using the enhanced operation framework:
+Every operation has a generated snake_case constructor returning an `OperationBuilder`:
 
 ```rust
+use sonos_api::services::{av_transport, rendering_control};
+use sonos_api::SonosClient;
+
 let client = SonosClient::new();
 
 // Simple operation
-let play_request = av_transport::PlayOperationRequest {
-    instance_id: 0,
-    speed: "1".to_string(),
-};
-let play_op = OperationBuilder::<av_transport::PlayOperation>::new(play_request).build()?;
+let play_op = av_transport::play_operation("1".to_string()).build()?;
 client.execute_enhanced("192.168.1.100", play_op)?;
 
 // Operation with response
-let get_volume_request = rendering_control::GetVolumeOperationRequest {
-    instance_id: 0,
-    channel: "Master".to_string(),
-};
-let volume_op = OperationBuilder::<rendering_control::GetVolumeOperation>::new(get_volume_request).build()?;
+let volume_op = rendering_control::get_volume_operation("Master".to_string()).build()?;
 let response = client.execute_enhanced("192.168.1.100", volume_op)?;
 println!("Current volume: {}", response.current_volume);
+```
+
+To set `instance_id` or otherwise build the request by hand, construct the generated
+`…OperationRequest` struct and pass it to `OperationBuilder`:
+
+```rust
+use sonos_api::services::av_transport::{PlayOperation, PlayOperationRequest};
+use sonos_api::{OperationBuilder, SonosClient};
+
+let client = SonosClient::new();
+
+let request = PlayOperationRequest {
+    instance_id: 0,
+    speed: "1".to_string(),
+};
+let play_op = OperationBuilder::<PlayOperation>::new(request).build()?;
+client.execute_enhanced("192.168.1.100", play_op)?;
 ```
 
 ### Event Handling
@@ -112,12 +133,20 @@ println!("Current volume: {}", response.current_volume);
 Handle real-time state change events:
 
 ```rust
-use sonos_api::services::av_transport::events::{AVTransportEventParser, create_enriched_event};
-use sonos_api::events::EventSource;
+use sonos_api::events::{EventParser, EventSource};
+use sonos_api::services::av_transport::{create_enriched_event, AVTransportEventParser};
+
+let speaker_ip: std::net::IpAddr = "192.168.1.100".parse()?;
+let xml_content = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0">
+    <e:property>
+        <LastChange>&lt;Event&gt;&lt;InstanceID val="0"&gt;
+            &lt;TransportState val="PLAYING"/&gt;
+        &lt;/InstanceID&gt;&lt;/Event&gt;</LastChange>
+    </e:property>
+</e:propertyset>"#;
 
 // Parse event XML
-let parser = AVTransportEventParser;
-let event_data = parser.parse_upnp_event(xml_content)?;
+let event_data = AVTransportEventParser.parse_upnp_event(xml_content)?;
 
 // Create enriched event with metadata
 let source = EventSource::UPnPNotification {
@@ -127,13 +156,32 @@ let enriched = create_enriched_event(speaker_ip, source, event_data);
 
 // Access event data
 if let Some(state) = enriched.event_data.transport_state() {
-    println!("Transport state: {}", state);
+    println!("Transport state: {state}");
 }
+```
+
+### Subscriptions
+
+Each service module exposes `subscribe` and `subscribe_with_timeout`, which delegate to the
+client with the module's own `Service` value:
+
+```rust
+use sonos_api::services::rendering_control;
+use sonos_api::SonosClient;
+
+let client = SonosClient::new();
+
+let subscription = rendering_control::subscribe(
+    &client,
+    "192.168.1.100",
+    "http://192.168.1.50:8080/callback",
+)?;
+subscription.unsubscribe()?;
 ```
 
 ## Implementing New Services
 
-To implement a new UPnP service, follow this pattern:
+To implement a new UPnP service, follow this pattern.
 
 ### 1. Create Service Directory
 
@@ -143,42 +191,57 @@ mkdir src/services/my_service
 
 ### 2. Service Module (`mod.rs`)
 
-```rust
+```rust,ignore
 //! MyService service for [description]
 //!
 //! This service handles [operations] and related events.
 
-pub mod operations;
 pub mod events;
+pub mod operations;
+pub mod state;
 
 // Re-export operations for convenience
 pub use operations::*;
 
 // Re-export event types and parsers
-pub use events::{MyServiceEvent, MyServiceEventParser, create_enriched_event};
+pub use events::{create_enriched_event, MyServiceEvent, MyServiceEventParser};
+pub use state::MyServiceState;
+
+pub const SERVICE: crate::Service = crate::Service::MyService;
+
+pub fn subscribe(
+    client: &crate::SonosClient,
+    ip: &str,
+    callback_url: &str,
+) -> crate::Result<crate::ManagedSubscription> {
+    client.subscribe(ip, SERVICE, callback_url)
+}
 ```
 
 ### 3. Operations (`operations.rs`)
 
 Define UPnP operations using the declarative macros:
 
-```rust
-use crate::{define_upnp_operation, define_operation_with_response, Validate};
+```rust,ignore
+use crate::{define_operation_with_response, define_upnp_operation, Validate};
 
-// Simple operation with no response
+// Simple operation with no out-arguments
 define_upnp_operation! {
     operation: MyActionOperation,
     action: "MyAction",
-    service: MyService,  // Must match Service enum variant
+    service: MyService,  // Must match a Service enum variant
     request: {
         parameter: String,
     },
     response: (),
-    payload: |req| format!("<Parameter>{}</Parameter>", req.parameter),
+    payload: |req| format!(
+        "<InstanceID>{}</InstanceID><Parameter>{}</Parameter>",
+        req.instance_id, req.parameter
+    ),
     parse: |_xml| Ok(()),
 }
 
-// Operation with complex response
+// Operation with a structured response
 define_operation_with_response! {
     operation: GetMyInfoOperation,
     action: "GetMyInfo",
@@ -194,18 +257,47 @@ define_operation_with_response! {
     },
 }
 
-// Validation implementation
 impl Validate for MyActionOperationRequest {
     fn validate_basic(&self) -> Result<(), crate::operation::ValidationError> {
         if self.parameter.is_empty() {
-            return Err(crate::operation::ValidationError::invalid_value("parameter", &self.parameter));
+            return Err(crate::operation::ValidationError::invalid_value(
+                "parameter",
+                &self.parameter,
+            ));
         }
         Ok(())
     }
 }
+```
 
-impl Validate for GetMyInfoOperationRequest {
-    // No validation needed for parameterless operation
+Both macros generate, for `MyActionOperation`: the request struct `MyActionOperationRequest`
+(your fields plus `instance_id: u32`), the `UPnPOperation` implementation, and the constructor
+`my_action_operation(parameter: String) -> OperationBuilder<MyActionOperation>`.
+
+Request element names are derived by capitalizing the first character of each field, which only
+works for single-word fields. A multi-word field requires an explicit `request_xml_mapping:`
+block, because UPnP casing (`ObjectID`, `EnqueuedURI`, `NumberOfTracks`) cannot be recovered
+from snake_case. Omitting a field from that block is a compile error:
+
+```rust,ignore
+define_operation_with_response! {
+    operation: SaveQueueOperation,
+    action: "SaveQueue",
+    service: AVTransport,
+    request: {
+        title: String,
+        object_id: String,
+    },
+    response: SaveQueueResponse {
+        assigned_object_id: String,
+    },
+    request_xml_mapping: {
+        title: "Title",
+        object_id: "ObjectID",
+    },
+    xml_mapping: {
+        assigned_object_id: "AssignedObjectID",
+    },
 }
 ```
 
@@ -213,12 +305,12 @@ impl Validate for GetMyInfoOperationRequest {
 
 Implement event parsing using serde-based XML deserialization:
 
-```rust
+```rust,ignore
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 
-use crate::{Result, Service, ApiError};
-use crate::events::{EnrichedEvent, EventSource, EventParser, xml_utils};
+use crate::events::{xml_utils, EnrichedEvent, EventParser, EventSource};
+use crate::{ApiError, Result, Service};
 
 /// MyService event - direct serde mapping from UPnP event XML
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -245,14 +337,17 @@ pub struct MyServiceEventData {
 struct MyServiceInstance {
     #[serde(rename = "MyField", default)]
     pub my_field: Option<xml_utils::ValueAttribute>,
-
-    // Add more fields as needed
 }
 
 impl MyServiceEvent {
     /// Get my_field value
     pub fn my_field(&self) -> Option<String> {
-        self.property.last_change.instance.my_field.as_ref().map(|v| v.val.clone())
+        self.property
+            .last_change
+            .instance
+            .my_field
+            .as_ref()
+            .map(|v| v.val.clone())
     }
 
     /// Parse from UPnP event XML using serde.
@@ -277,7 +372,7 @@ impl EventParser for MyServiceEventParser {
     }
 
     fn service_type(&self) -> Service {
-        Service::MyService  // Must match Service enum variant
+        Service::MyService
     }
 }
 
@@ -289,37 +384,23 @@ pub fn create_enriched_event(
 ) -> EnrichedEvent<MyServiceEvent> {
     EnrichedEvent::new(speaker_ip, Service::MyService, event_source, event_data)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_event_parsing() {
-        let xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0">
-            <e:property>
-                <LastChange>&lt;Event&gt;
-                    &lt;InstanceID val="0"&gt;
-                        &lt;MyField val="test_value"/&gt;
-                    &lt;/InstanceID&gt;
-                &lt;/Event&gt;</LastChange>
-            </e:property>
-        </e:propertyset>"#;
-
-        let event = MyServiceEvent::from_xml(xml).unwrap();
-        assert_eq!(event.my_field(), Some("test_value".to_string()));
-    }
-}
 ```
 
-### 5. Update Service Enum
+### 5. State (`state.rs`)
 
-Add your new service to the main Service enum in `src/service.rs`:
+Define the snapshot type the service reports, and a conversion from the event type. Polling
+strategies in `sonos-stream` build the same type from GET operations, so downstream consumers
+handle one shape regardless of where the data came from.
 
-```rust
+### 6. Update Service Enum
+
+Add the variant to `Service` in [`src/service.rs`](../service.rs) and cover it in `name()`,
+`info()` and `scope()`:
+
+```rust,ignore
 pub enum Service {
     // ... existing services
-    MyService,  // Add your service here
+    MyService,
 }
 
 impl Service {
@@ -327,21 +408,21 @@ impl Service {
         match self {
             // ... existing mappings
             Service::MyService => ServiceInfo {
-                endpoint: "/MediaRenderer/MyService/Control",
+                endpoint: "MediaRenderer/MyService/Control",
                 service_uri: "urn:schemas-upnp-org:service:MyService:1",
-                event_sub_url: "/MediaRenderer/MyService/Event",
+                event_endpoint: "MediaRenderer/MyService/Event",
             },
         }
     }
 }
 ```
 
-### 6. Register in Services Module
+### 7. Register in Services Module
 
 Add your service to `src/services/mod.rs`:
 
-```rust
-pub mod my_service;  // Add this line
+```rust,ignore
+pub mod my_service;
 ```
 
 ## Operations
@@ -354,16 +435,16 @@ pub mod my_service;  // Add this line
 
 ### Macro Usage
 
-Use the declarative macros to define operations:
-
-- `define_upnp_operation!` - Simple operations with basic responses
-- `define_operation_with_response!` - Operations with structured XML responses
+- `define_upnp_operation!` - actions whose response carries no out-arguments
+- `define_operation_with_response!` - actions with a structured XML response
 
 ### Validation
 
-Implement the `Validate` trait for request validation:
+Implement the `Validate` trait for request validation. `build_payload` calls
+`validate(ValidationLevel::Basic)` before producing any XML, so an invalid request never
+reaches the network:
 
-```rust
+```rust,ignore
 impl Validate for MyOperationRequest {
     fn validate_basic(&self) -> Result<(), ValidationError> {
         // Add validation logic
@@ -398,15 +479,20 @@ Use serde for type-safe XML deserialization:
 
 ### Channel-Based Fields
 
-For fields with channel attributes (like Volume), use collections:
+Bass, Treble, Loudness, Balance, Volume and Mute are per-channel state variables in UPnP RCS.
+Stereo pairs and home theater setups emit one element per channel, so each must be a collection
+— modelling one as a single value makes the whole event fail to deserialize with "duplicate
+field". `rendering_control::events::ChannelValueAttribute` carries the `val` and `channel`
+attribute pair:
 
-```rust
+```rust,ignore
 #[serde(rename = "Volume", default)]
 pub volumes: Vec<ChannelValueAttribute>,
 
 /// Helper to get specific channel value
 fn get_volume_for_channel(&self, channel: &str) -> Option<String> {
-    self.volumes.iter()
+    self.volumes
+        .iter()
         .find(|v| v.channel == channel)
         .map(|v| v.val.clone())
 }
@@ -416,9 +502,10 @@ fn get_volume_for_channel(&self, channel: &str) -> Option<String> {
 
 ### Unit Tests
 
-Each service should have comprehensive tests:
+Each service should have tests covering payload construction, response parsing and event
+parsing:
 
-```rust
+```rust,ignore
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -449,15 +536,22 @@ mod tests {
 Use the CLI example for end-to-end testing:
 
 ```bash
-cargo run --example cli_example
+cargo run -p sonos-api --example cli_example
 ```
 
 ### Real Device Testing
 
-Test with actual Sonos devices using examples:
+`validate_rendering_control` round-trips every RenderingControl operation against the first
+discovered speaker, restoring the original value after each write:
 
 ```bash
-cargo run --example basic_usage
+cargo run -p sonos-api --example validate_rendering_control
+```
+
+To probe a single action — including ones with no operation defined yet — send a raw SOAP body:
+
+```bash
+cargo run -p sonos-api --example test_operation -- 192.168.1.100 AVTransport GetTransportInfo
 ```
 
 ## Best Practices
@@ -473,40 +567,48 @@ cargo run --example basic_usage
 
 ### Service Constants
 
-```rust
+```rust,ignore
 pub const SERVICE: Service = Service::MyService;
 ```
 
-### Operation Builders
+### Operation Constructors
 
-The macros automatically generate builder functions:
+The macros generate a constructor named after the operation in snake_case, taking the request
+fields in declaration order and defaulting `instance_id` to `0`:
 
-```rust
-// Generated automatically by define_upnp_operation!
-pub fn my_action_operation() -> OperationBuilder<MyActionOperation> {
-    OperationBuilder::new(MyActionOperationRequest { /* defaults */ })
+```rust,ignore
+// Generated by define_upnp_operation! for MyActionOperation
+pub fn my_action_operation(parameter: String) -> OperationBuilder<MyActionOperation> {
+    OperationBuilder::new(MyActionOperationRequest {
+        parameter,
+        instance_id: 0,
+    })
 }
 ```
 
 ### Event Integration
 
-Events integrate with `sonos-stream` for real-time processing:
+`sonos-stream` converts each parsed event into the service's state snapshot and wraps it in
+`EventData`:
 
-```rust
+```rust,ignore
 // In sonos-stream
 match event.event_data {
-    EventData::MyServiceEvent(my_event) => {
-        println!("My field changed: {:?}", my_event.my_field());
+    EventData::AVTransport(state) => {
+        println!("Transport state: {:?}", state.transport_state);
     }
+    _ => {}
 }
 ```
 
 ### Resource Efficiency
 
-All services automatically share HTTP resources:
+All services share one HTTP connection pool:
 
 ```rust
-let client = SonosClient::new();  // Efficient shared SOAP client
+use sonos_api::SonosClient;
+
+let client = SonosClient::new(); // Handle to the shared SOAP client
 ```
 
 ## Troubleshooting
@@ -520,12 +622,10 @@ let client = SonosClient::new();  // Efficient shared SOAP client
 
 ### Debug Tools
 
-Use the debug examples to test your implementation:
-
 ```bash
-# Test operations
-cargo run --example cli_example
+# Interactive operation execution
+cargo run -p sonos-api --example cli_example
 
-# Test event parsing
+# Test event parsing for one service
 cargo test -p sonos-api my_service::events -- --nocapture
 ```

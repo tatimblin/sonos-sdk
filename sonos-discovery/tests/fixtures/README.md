@@ -58,7 +58,7 @@ These fixtures can be used to:
 
 The `fixture_based_integration.rs` test file provides comprehensive parameterized tests using these fixtures:
 
-```rust
+```rust,ignore
 // Test helper for loading fixtures
 use helpers::{DeviceFixture, FixtureSet};
 
@@ -72,7 +72,7 @@ let fixtures = FixtureSet::mixed_devices();      // Mix of Sonos and non-Sonos
 
 Run the fixture-based tests:
 ```bash
-cargo test --test fixture_based_integration
+cargo test -p sonos-sdk-discovery --test fixture_based_integration
 ```
 
 These tests cover 33 test cases including device parsing, identification, filtering, HTTP mocking, and error handling.
@@ -82,7 +82,7 @@ These tests cover 33 test cases including device parsing, identification, filter
 To capture additional device data from your network:
 
 ```bash
-cargo test --test capture_fixtures -- --nocapture --ignored
+cargo test -p sonos-sdk-discovery --test capture_fixtures -- --nocapture --ignored
 ```
 
 This will:
