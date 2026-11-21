@@ -155,7 +155,15 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 /// Display dashboard showing current state of all speakers
 fn display_dashboard(manager: &StateManager, speaker_ids: &[(SpeakerId, String)]) {
     println!("\n--- Dashboard Update ---");
-    println!("Time: {}", chrono::Utc::now().format("%H:%M:%S"));
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    println!(
+        "Time: {:02}:{:02}:{:02} UTC",
+        secs / 3600 % 24,
+        secs / 60 % 60,
+        secs % 60
+    );
 
     for (speaker_id, name) in speaker_ids {
         println!("\n{name}");
