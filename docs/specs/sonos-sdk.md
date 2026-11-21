@@ -948,7 +948,7 @@ With `is_success()` (`:44`) and `is_partial()` (`:49`). Returned by `Group::diss
 | Type | Purpose |
 |------|---------|
 | `Volume`, `GroupVolume`, `GroupMute`, `GroupVolumeChangeable` | Volume and mute values |
-| `PlaybackState`, `CurrentTrack` | Transport state and track metadata |
+| `PlaybackState`, `CurrentTrack`, `PlaybackSource` | Transport state, track metadata, and where the audio comes from |
 | `SpeakerId`, `GroupId` | Identity newtypes (defined in `sonos-api`, re-exported through `sonos-state`) |
 | `ChangeEvent`, `ChangeIterator`, `ChangeSource`, `PropertyChange` | The `system.iter()` stream and its payload |
 | `WriteOutcome`, `WriteStamp` | The write-ordering vocabulary |

@@ -163,6 +163,18 @@ if let Some(url) = track.album_art_url(speaker.ip) {
 }
 ```
 
+`track.source()` classifies the track URI into a `PlaybackSource`. A speaker
+grouped under a coordinator reports `PlaybackSource::GroupFollower` and carries
+no track of its own, so read the coordinator instead:
+
+```rust
+use sonos_sdk::PlaybackSource;
+
+if track.source() == Some(PlaybackSource::GroupFollower) {
+    // ask speaker.group() for its coordinator's current_track
+}
+```
+
 Watch for track changes:
 
 ```rust

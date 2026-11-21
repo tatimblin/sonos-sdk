@@ -474,6 +474,13 @@ impl CurrentTrack {
         self.title.is_none() && self.artist.is_none() && self.uri.is_none()
     }
 
+    /// Classify where this track is coming from, based on its URI.
+    ///
+    /// Returns `None` when the track has no URI. See [`PlaybackSource`].
+    pub fn source(&self) -> Option<PlaybackSource> {
+        PlaybackSource::from_uri(self.uri.as_deref()?)
+    }
+
     /// Get a display string for the track
     pub fn display(&self) -> String {
         match (&self.artist, &self.title) {
@@ -520,6 +527,77 @@ impl CurrentTrack {
 impl Default for CurrentTrack {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Where a speaker's audio is coming from, classified from a transport URI
+///
+/// Sonos encodes the source in the URI scheme: a grouped follower reports
+/// `x-rincon:{coordinator}`, a TV input `x-sonos-htastream:`, and so on.
+/// [`CurrentTrack::source`] classifies the current track's URI; pass the
+/// transport URI (`GetMediaInfo`'s `CurrentURI`) to [`PlaybackSource::from_uri`]
+/// to distinguish queue playback, which the track URI does not show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum PlaybackSource {
+    /// Following a group coordinator (`x-rincon:`). The coordinator holds the
+    /// real track, so read playback state from it instead.
+    GroupFollower,
+    /// Playing the queue (`x-rincon-queue:`). Only appears in transport URIs.
+    Queue,
+    /// Home theater input: TV, HDMI ARC or optical (`x-sonos-htastream:`).
+    Tv,
+    /// Analog line-in, local or from another speaker (`x-rincon-stream:`).
+    LineIn,
+    /// Pushed by an external app, such as AirPlay or Spotify Connect
+    /// (`x-sonos-vli:`).
+    VirtualLineIn,
+    /// Live radio or a continuous stream (`x-sonosapi-stream:`,
+    /// `x-sonosapi-radio:`, `x-sonosapi-hls:`, `x-rincon-mp3radio:`,
+    /// `hls-radio:`, `aac:`).
+    Stream,
+    /// A single track from a music service or library (`x-sonos-spotify:`,
+    /// `x-sonos-http:`, `x-sonosapi-hls-static:`, `x-file-cifs:`).
+    Track,
+    /// A scheme not listed above, including plain `http(s)://` URLs, which
+    /// can be either a file or a stream.
+    Other,
+}
+
+impl PlaybackSource {
+    /// Classify a transport or track URI by its scheme.
+    ///
+    /// Returns `None` for an empty URI, which is what a speaker with nothing
+    /// loaded reports.
+    ///
+    /// ```
+    /// # use sonos_state::PlaybackSource;
+    /// assert_eq!(
+    ///     PlaybackSource::from_uri("x-rincon:RINCON_000E58A0123401400"),
+    ///     Some(PlaybackSource::GroupFollower),
+    /// );
+    /// assert_eq!(PlaybackSource::from_uri(""), None);
+    /// ```
+    pub fn from_uri(uri: &str) -> Option<Self> {
+        let uri = uri.trim();
+        if uri.is_empty() {
+            return None;
+        }
+        let scheme = uri.split_once(':').map_or("", |(scheme, _)| scheme);
+        let source = match scheme.to_ascii_lowercase().as_str() {
+            "x-rincon" => Self::GroupFollower,
+            "x-rincon-queue" => Self::Queue,
+            "x-sonos-htastream" => Self::Tv,
+            "x-rincon-stream" => Self::LineIn,
+            "x-sonos-vli" => Self::VirtualLineIn,
+            "x-sonosapi-stream" | "x-sonosapi-radio" | "x-sonosapi-hls" | "x-rincon-mp3radio"
+            | "hls-radio" | "aac" => Self::Stream,
+            "x-sonos-spotify" | "x-sonos-http" | "x-sonosapi-hls-static" | "x-file-cifs" => {
+                Self::Track
+            }
+            _ => Self::Other,
+        };
+        Some(source)
     }
 }
 
@@ -745,6 +823,50 @@ mod tests {
         );
         assert_eq!(track(None).album_art_url(v4), None);
         assert_eq!(track(Some("  ")).album_art_url(v4), None);
+    }
+
+    #[test]
+    fn test_playback_source_from_uri() {
+        use PlaybackSource::*;
+        let cases = [
+            ("x-rincon:RINCON_000E58A0123401400", GroupFollower),
+            ("x-rincon-queue:RINCON_000E58A0123401400#0", Queue),
+            ("x-sonos-htastream:RINCON_000E58A0123401400:spdif", Tv),
+            ("x-rincon-stream:RINCON_000E58A0123401400", LineIn),
+            (
+                "x-sonos-vli:RINCON_000E58A0123401400:1,airplay:abc",
+                VirtualLineIn,
+            ),
+            ("x-sonosapi-stream:s1?sid=254&flags=32", Stream),
+            ("x-sonosapi-radio:ST%3aabc?sid=236", Stream),
+            ("x-sonosapi-hls:Api%3atune?sid=204", Stream),
+            ("x-rincon-mp3radio://stream.example.com/live", Stream),
+            ("aac://http://stream.example.com/live.aac", Stream),
+            ("x-sonos-spotify:spotify%3atrack%3aabc?sid=12", Track),
+            (
+                "x-sonosapi-hls-static:catalog%2ftracks%2fabc?sid=201",
+                Track,
+            ),
+            ("x-file-cifs://nas/music/song.mp3", Track),
+            ("X-RINCON:RINCON_000E58A0123401400", GroupFollower),
+            ("https://stream.example.com/radio.mp3", Other),
+            ("no-scheme", Other),
+        ];
+        for (uri, expected) in cases {
+            assert_eq!(PlaybackSource::from_uri(uri), Some(expected), "{uri}");
+        }
+        assert_eq!(PlaybackSource::from_uri(""), None);
+        assert_eq!(PlaybackSource::from_uri("  "), None);
+    }
+
+    #[test]
+    fn test_current_track_source() {
+        let follower = CurrentTrack {
+            uri: Some("x-rincon:RINCON_000E58A0123401400".to_string()),
+            ..CurrentTrack::new()
+        };
+        assert_eq!(follower.source(), Some(PlaybackSource::GroupFollower));
+        assert_eq!(CurrentTrack::new().source(), None);
     }
 
     #[test]

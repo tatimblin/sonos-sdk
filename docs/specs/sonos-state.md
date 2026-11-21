@@ -371,7 +371,9 @@ be announced — `maybe_emit_change()` (`src/state.rs:1098`) warns and drops the
 `GroupVolumeChangeable` (:296), `PlaybackState` (:329), `Position` (:376), `CurrentTrack`
 (:440), `GroupMembership` (:499), and `Topology` (:537). `Topology` is the one that does not
 override `to_change()`. `GroupInfo` (:580) is a plain data type carried inside `Topology`, not
-a property. Constructors clamp: `Volume::new` caps at 100 (:119), `Bass`/`Treble::new` clamp to
+a property. `PlaybackSource` is likewise a plain enum: `PlaybackSource::from_uri` classifies a
+URI by scheme (group follower, queue, TV, line-in, AirPlay/Connect, stream, track) and
+`CurrentTrack::source()` applies it to the track URI. Constructors clamp: `Volume::new` caps at 100 (:119), `Bass`/`Treble::new` clamp to
 ±10 (:173, :200), `GroupVolume::new` caps at 100 (:258).
 
 ---
