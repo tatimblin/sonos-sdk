@@ -377,6 +377,11 @@ pub enum SdkError {
 Eleven variants, and the enum **is** `#[non_exhaustive]` (`src/error.rs:4`). A downstream
 `match` must carry a wildcard arm; in exchange, adding a variant is not a breaking change.
 
+`SdkError::is_network_error()` reports an unreachable speaker. It exists because the
+underlying `ApiError::NetworkError` can sit at two depths (`ApiError(..)` or
+`StateError(Api(..))`) and `sonos-api` is not re-exported, so without it a consumer either
+adds a `sonos-api` dependency or matches on the display text.
+
 ---
 
 ## 3. Code Flow
