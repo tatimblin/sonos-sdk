@@ -16,6 +16,7 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 paste = "1.0"
 quick-xml = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 # Used only by examples (cli_example, validate_rendering_control), which CI

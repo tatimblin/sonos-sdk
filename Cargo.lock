@@ -1454,6 +1454,7 @@ dependencies = [
  "sonos-sdk-soap-client",
  "thiserror",
  "tokio",
+ "tracing",
  "ureq 2.12.1",
 ]
 

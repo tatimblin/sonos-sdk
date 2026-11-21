@@ -1900,6 +1900,7 @@ mod tests {
     /// every interleaving. The assertion is deterministic even though the
     /// scheduling is not — "exactly one winner" is never allowed to be 0 or 2.
     #[test]
+    #[allow(clippy::print_stderr)] // reports measurements under --nocapture
     fn test_cancel_and_expiry_have_exactly_one_winner() {
         let config = BrokerConfig::default().with_callback_ports(5200, 5300);
         let manager = Arc::new(SonosEventManager::with_config(config).unwrap());
@@ -2084,6 +2085,7 @@ mod tests {
     /// this ever flakes, retune it against a fresh pair of measurements from
     /// both sides; do not simply widen it until it stops failing.
     #[test]
+    #[allow(clippy::print_stderr)] // reports measurements under --nocapture
     fn test_immediate_mode_churn_costs_no_threads() {
         let config = BrokerConfig::default().with_callback_ports(5300, 5400);
         let manager = Arc::new(SonosEventManager::with_config(config).unwrap());

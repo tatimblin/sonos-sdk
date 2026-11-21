@@ -37,6 +37,9 @@
 // This workspace contains no `unsafe` code. Asserted here so a future
 // addition is a hard compile error, not a silent change in guarantees.
 #![forbid(unsafe_code)]
+// Library code logs through `tracing`; stdout and stderr belong to the host app
+// (a TUI draws on them).
+#![warn(clippy::print_stdout, clippy::print_stderr, clippy::dbg_macro)]
 
 pub mod device;
 mod discovery;
