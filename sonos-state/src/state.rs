@@ -415,6 +415,29 @@ impl StateStore {
         self.groups.get(group_id)
     }
 
+    /// Remove and return the property bags of groups that reappear in `next`
+    /// with the same ID and the same members, so a topology refresh can carry
+    /// them over instead of losing them to [`Self::clear_groups`].
+    pub(crate) fn take_unchanged_group_props(
+        &mut self,
+        next: &[GroupInfo],
+    ) -> Vec<(GroupId, PropertyBag)> {
+        next.iter()
+            .filter(|group| {
+                self.groups.get(&group.id).is_some_and(|old| {
+                    let old_members: HashSet<_> = old.member_ids.iter().collect();
+                    let new_members: HashSet<_> = group.member_ids.iter().collect();
+                    old_members == new_members
+                })
+            })
+            .filter_map(|group| {
+                self.group_props
+                    .remove(&group.id)
+                    .map(|bag| (group.id.clone(), bag))
+            })
+            .collect()
+    }
+
     /// Clear all groups and speaker_to_group mappings
     ///
     /// Used when processing topology updates to replace all group data
