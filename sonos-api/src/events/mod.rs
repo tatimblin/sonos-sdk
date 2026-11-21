@@ -33,16 +33,16 @@
 //!
 //! ## Generic event processing
 //! ```rust,ignore
-//! use sonos_api::events::{EventParserRegistry, EventProcessor};
+//! use sonos_api::{events::EventProcessor, Service};
 //!
-//! // Register parsers for all services
-//! let mut registry = EventParserRegistry::new();
-//! registry.register(av_transport::events::AVTransportEventParser);
-//! registry.register(rendering_control::events::RenderingControlEventParser);
-//!
-//! // Process events generically
-//! let processor = EventProcessor::new(registry);
-//! processor.process_event(service, xml_content, event_source)?;
+//! // Dispatches on the service; no parser registration needed
+//! let processor = EventProcessor::new();
+//! let enriched = processor.process_upnp_event(
+//!     speaker_ip,
+//!     Service::AVTransport,
+//!     "uuid:123".to_string(),
+//!     xml_content,
+//! )?;
 //! ```
 
 pub mod processor;

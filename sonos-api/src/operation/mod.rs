@@ -1,7 +1,7 @@
-//! Enhanced operation framework with composability and validation support
+//! Enhanced operation framework with validation support
 //!
 //! This module provides the core framework for UPnP operations with advanced features:
-//! - Composable operations that can be chained, batched, or made conditional
+//! - Operations built once and executed with `SonosClient::execute_enhanced`
 //! - Dual validation strategy (boundary vs comprehensive)
 //! - Fluent builder pattern for operation construction
 //! - Strong type safety with minimal boilerplate
@@ -143,13 +143,12 @@ pub trait Validate {
     }
 }
 
-/// Enhanced UPnP operation trait with composability support
+/// Enhanced UPnP operation trait
 ///
 /// This trait extends the original SonosOperation concept with:
-/// - Composability: operations can be chained, batched, or made conditional
 /// - Validation: flexible validation strategy with boundary and comprehensive levels
-/// - Dependencies: operations can declare dependencies on other operations
-/// - Batching: operations can indicate whether they can be batched with others
+/// - Metadata: operations can declare dependencies (recorded in `OperationMetadata`)
+///   and batch compatibility; nothing in this crate schedules on either yet
 pub trait UPnPOperation {
     /// The request type for this operation, must be serializable and validatable
     type Request: Serialize + Validate;
@@ -189,8 +188,8 @@ pub trait UPnPOperation {
 
     /// Get the list of operations this operation depends on
     ///
-    /// This is used for operation ordering and dependency resolution
-    /// in batch and sequence operations.
+    /// Recorded in `OperationMetadata`. No executor in this crate orders
+    /// operations by it.
     ///
     /// # Returns
     /// A slice of action names that must be executed before this operation

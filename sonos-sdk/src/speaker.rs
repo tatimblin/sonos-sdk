@@ -106,7 +106,8 @@ use crate::property::{
 /// Speaker handle with property access
 ///
 /// Provides direct access to speaker properties through property handles.
-/// Each property handle provides `get()`, `fetch()`, `watch()`, and `unwatch()` methods.
+/// Each property handle provides `get()`, `fetch()`, and `watch()` methods; dropping
+/// the handle `watch()` returns ends the watch.
 ///
 /// # Example
 ///

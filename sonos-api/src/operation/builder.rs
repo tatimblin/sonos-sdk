@@ -1,7 +1,7 @@
 //! Operation builder pattern for fluent operation construction
 //!
 //! This module provides the builder pattern for constructing UPnP operations
-//! with validation, timeout, and retry configuration.
+//! with validation and timeout configuration.
 
 use super::{OperationMetadata, UPnPOperation, Validate, ValidationError, ValidationLevel};
 use std::marker::PhantomData;
@@ -112,8 +112,8 @@ impl<Op: UPnPOperation> OperationBuilder<Op> {
 
 /// A composable operation ready for execution
 ///
-/// This represents a fully configured UPnP operation that can be executed
-/// directly or composed with other operations through chaining, batching, etc.
+/// This represents a fully configured UPnP operation, ready to pass to
+/// `SonosClient::execute_enhanced`.
 ///
 /// # Type Parameters
 /// * `Op` - The UPnP operation type
