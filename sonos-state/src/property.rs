@@ -483,6 +483,38 @@ impl CurrentTrack {
             (None, None) => "Unknown".to_string(),
         }
     }
+
+    /// Album art as an absolute URL, resolved against the speaker that
+    /// reported the track.
+    ///
+    /// Speakers report `album_art_uri` either as an absolute URL (typically
+    /// from a streaming service) or as a path on the speaker itself, such as
+    /// `/getaa?s=1&u=...`. A path is joined to `http://{speaker_ip}:1400`;
+    /// an absolute URL is returned unchanged. IPv6 addresses are bracketed.
+    ///
+    /// ```
+    /// # use sonos_state::CurrentTrack;
+    /// let track = CurrentTrack {
+    ///     album_art_uri: Some("/getaa?s=1&u=x-sonos-spotify".to_string()),
+    ///     ..CurrentTrack::new()
+    /// };
+    /// assert_eq!(
+    ///     track.album_art_url("192.168.1.20".parse().unwrap()).as_deref(),
+    ///     Some("http://192.168.1.20:1400/getaa?s=1&u=x-sonos-spotify"),
+    /// );
+    /// ```
+    pub fn album_art_url(&self, speaker_ip: std::net::IpAddr) -> Option<String> {
+        let uri = self.album_art_uri.as_deref()?.trim();
+        if uri.is_empty() {
+            return None;
+        }
+        if uri.contains("://") {
+            return Some(uri.to_string());
+        }
+        let origin = std::net::SocketAddr::new(speaker_ip, 1400);
+        let separator = if uri.starts_with('/') { "" } else { "/" };
+        Some(format!("http://{origin}{separator}{uri}"))
+    }
 }
 
 impl Default for CurrentTrack {
@@ -681,6 +713,38 @@ mod tests {
             uri: None,
         };
         assert_eq!(title_only.display(), "Song");
+    }
+
+    #[test]
+    fn test_current_track_album_art_url() {
+        let track = |art: Option<&str>| CurrentTrack {
+            album_art_uri: art.map(str::to_string),
+            ..CurrentTrack::new()
+        };
+        let v4 = "192.168.1.20".parse().unwrap();
+
+        assert_eq!(
+            track(Some("/getaa?s=1&u=x")).album_art_url(v4).as_deref(),
+            Some("http://192.168.1.20:1400/getaa?s=1&u=x")
+        );
+        assert_eq!(
+            track(Some("getaa?s=1")).album_art_url(v4).as_deref(),
+            Some("http://192.168.1.20:1400/getaa?s=1")
+        );
+        assert_eq!(
+            track(Some("https://i.scdn.co/image/abc"))
+                .album_art_url(v4)
+                .as_deref(),
+            Some("https://i.scdn.co/image/abc")
+        );
+        assert_eq!(
+            track(Some("/getaa?s=1"))
+                .album_art_url("fe80::1".parse().unwrap())
+                .as_deref(),
+            Some("http://[fe80::1]:1400/getaa?s=1")
+        );
+        assert_eq!(track(None).album_art_url(v4), None);
+        assert_eq!(track(Some("  ")).album_art_url(v4), None);
     }
 
     #[test]

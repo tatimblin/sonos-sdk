@@ -152,6 +152,17 @@ println!("{}", track.display());
 println!("album: {:?}, art: {:?}", track.album, track.album_art_uri);
 ```
 
+`album_art_uri` is whatever the speaker reported, which is often a path on the
+speaker (`/getaa?s=1&u=...`) rather than a full URL. `album_art_url(ip)` returns
+an absolute URL either way, resolving a path against the speaker that reported
+the track:
+
+```rust
+if let Some(url) = track.album_art_url(speaker.ip) {
+    println!("art: {url}");
+}
+```
+
 Watch for track changes:
 
 ```rust
