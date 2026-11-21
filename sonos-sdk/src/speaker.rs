@@ -15,7 +15,9 @@ use std::sync::Arc;
 
 use sonos_api::SonosClient;
 use sonos_discovery::Device;
-use sonos_state::{Bass, Loudness, Mute, PlaybackState, SpeakerId, StateManager, Treble, Volume};
+use sonos_state::{
+    Bass, Loudness, Mute, PlaybackState, SleepTimer, SpeakerId, StateManager, Treble, Volume,
+};
 
 use crate::Group;
 
@@ -67,40 +69,17 @@ impl SeekTarget {
     }
 }
 
-/// Play mode for the `set_play_mode()` method
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlayMode {
-    /// Normal sequential playback
-    Normal,
-    /// Repeat all tracks
-    RepeatAll,
-    /// Repeat current track
-    RepeatOne,
-    /// Shuffle without repeat
-    ShuffleNoRepeat,
-    /// Shuffle with repeat
-    Shuffle,
-    /// Shuffle and repeat current track
-    ShuffleRepeatOne,
-}
-
-impl std::fmt::Display for PlayMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PlayMode::Normal => write!(f, "NORMAL"),
-            PlayMode::RepeatAll => write!(f, "REPEAT_ALL"),
-            PlayMode::RepeatOne => write!(f, "REPEAT_ONE"),
-            PlayMode::ShuffleNoRepeat => write!(f, "SHUFFLE_NOREPEAT"),
-            PlayMode::Shuffle => write!(f, "SHUFFLE"),
-            PlayMode::ShuffleRepeatOne => write!(f, "SHUFFLE_REPEAT_ONE"),
-        }
-    }
-}
+/// Play mode for the `set_play_mode()` method, and the value of
+/// [`Speaker::play_mode`]
+///
+/// Defined in `sonos-state` so it can be a watchable property; re-exported
+/// here so `sonos_sdk::PlayMode` is unchanged.
+pub use sonos_state::PlayMode;
 
 use crate::property::{
     BassHandle, CurrentTrackHandle, GroupMembershipHandle, LoudnessHandle, MuteHandle,
-    PlaybackStateHandle, PositionHandle, PropertyHandle, SpeakerContext, TrebleHandle,
-    VolumeHandle,
+    PlayModeHandle, PlaybackStateHandle, PositionHandle, PropertyHandle, SleepTimerHandle,
+    SpeakerContext, TrebleHandle, VolumeHandle,
 };
 
 /// Speaker handle with property access
@@ -155,6 +134,11 @@ pub struct Speaker {
     pub position: PositionHandle,
     /// Current track information (title, artist, album, etc.)
     pub current_track: CurrentTrackHandle,
+    /// Play mode (repeat / shuffle)
+    pub play_mode: PlayModeHandle,
+    /// Sleep timer state. Fetch-only: the device does not event the remaining
+    /// time, so `watch()` reports only fetches and `configure_sleep_timer()`
+    pub sleep_timer: SleepTimerHandle,
 
     // ========================================================================
     // ZoneGroupTopology properties
@@ -237,6 +221,8 @@ impl Speaker {
             playback_state: PropertyHandle::new(Arc::clone(&context)),
             position: PropertyHandle::new(Arc::clone(&context)),
             current_track: PropertyHandle::new(Arc::clone(&context)),
+            play_mode: PropertyHandle::new(Arc::clone(&context)),
+            sleep_timer: PropertyHandle::new(Arc::clone(&context)),
             // ZoneGroupTopology properties
             group_membership: PropertyHandle::new(Arc::clone(&context)),
             // Internal
@@ -403,6 +389,8 @@ impl Speaker {
 
     /// Set play mode
     ///
+    /// Updates the state cache to the new `PlayMode` on success.
+    ///
     /// # Example
     ///
     /// ```rust,ignore
@@ -411,6 +399,9 @@ impl Speaker {
     /// ```
     pub fn set_play_mode(&self, mode: PlayMode) -> Result<(), SdkError> {
         self.exec(av_transport::set_play_mode(mode.to_string()).build())?;
+        self.context
+            .state_manager
+            .set_property(&self.context.speaker_id, mode);
         Ok(())
     }
 
@@ -430,8 +421,14 @@ impl Speaker {
     // ========================================================================
 
     /// Configure sleep timer (e.g., `"01:00:00"` for 1 hour, `""` to cancel)
+    ///
+    /// Updates the state cache to the new `SleepTimer` on success.
     pub fn configure_sleep_timer(&self, duration: &str) -> Result<(), SdkError> {
         self.exec(av_transport::configure_sleep_timer(duration.to_string()).build())?;
+        self.context.state_manager.set_property(
+            &self.context.speaker_id,
+            SleepTimer::from_duration_str(duration),
+        );
         Ok(())
     }
 

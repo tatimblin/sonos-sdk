@@ -17,6 +17,6 @@ pub use handles::{WatchHandle, WatchMode};
 // Re-export type aliases for all property handles
 pub use handles::{
     BassHandle, CurrentTrackHandle, GroupMembershipHandle, GroupMuteHandle,
-    GroupVolumeChangeableHandle, GroupVolumeHandle, LoudnessHandle, MuteHandle,
-    PlaybackStateHandle, PositionHandle, TrebleHandle, VolumeHandle,
+    GroupVolumeChangeableHandle, GroupVolumeHandle, LoudnessHandle, MuteHandle, PlayModeHandle,
+    PlaybackStateHandle, PositionHandle, SleepTimerHandle, TrebleHandle, VolumeHandle,
 };

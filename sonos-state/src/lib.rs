@@ -97,8 +97,8 @@ pub use iter::ChangeIterator;
 // Properties
 pub use property::{
     Bass, CurrentTrack, GroupInfo, GroupMembership, GroupMute, GroupVolume, GroupVolumeChangeable,
-    Loudness, Mute, PlaybackSource, PlaybackState, Position, Property, Scope, SonosProperty,
-    Topology, Treble, Volume,
+    Loudness, Mute, PlayMode, PlaybackSource, PlaybackState, Position, Property, Scope, SleepTimer,
+    SonosProperty, Topology, Treble, Volume,
 };
 
 // Model types
@@ -122,7 +122,8 @@ pub mod prelude {
     // Properties
     pub use crate::property::{
         Bass, CurrentTrack, GroupMembership, GroupMute, GroupVolume, GroupVolumeChangeable,
-        Loudness, Mute, PlaybackState, Position, Property, Scope, Topology, Treble, Volume,
+        Loudness, Mute, PlayMode, PlaybackState, Position, Property, Scope, SleepTimer, Topology,
+        Treble, Volume,
     };
 
     // Model types

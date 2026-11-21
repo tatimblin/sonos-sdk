@@ -17,11 +17,19 @@ Every speaker property in the SDK supports three access patterns. This page expl
 | `playback_state` | `PlaybackState` | `Playing`, `Paused`, `Stopped`, `Transitioning`; plus `.is_playing()`, `.is_paused()`, `.is_stopped()` |
 | `position` | `Position` | `.position_ms`, `.duration_ms`, `.progress() -> f64` |
 | `current_track` | `CurrentTrack` | `.title`, `.artist`, `.album`, `.album_art_uri`, `.uri` — each `Option<String>`; plus `.display() -> String` and `.album_art_url(ip) -> Option<String>` |
+| `play_mode` | `PlayMode` | `Normal`, `RepeatAll`, `RepeatOne`, `ShuffleNoRepeat`, `Shuffle`, `ShuffleRepeatOne`; plus `.is_shuffle()`, `.is_repeat()` |
+| `sleep_timer` | `SleepTimer` | `.remaining_ms: Option<u64>`, `.is_active()` — fetch-only, see below |
 | `group_membership` | `GroupMembership` | `.group_id`, `.is_coordinator` |
 
 Property values are typed newtypes and enums, not bare integers and strings.
 They derive `Debug`, `Clone`, `PartialEq`, `Serialize`, and `Deserialize` — no
-`Display`, so format them with `{:?}` or unwrap them with the accessor above.
+`Display` (except `PlayMode`, which displays as its UPnP string), so format them
+with `{:?}` or unwrap them with the accessor above.
+
+`sleep_timer` is the one speaker property the device never events: it reports
+only that a timer changed, not how long is left. Its value comes from `fetch()`
+or from `speaker.configure_sleep_timer()`, and `remaining_ms` is a snapshot
+from that moment.
 
 ## Group properties
 

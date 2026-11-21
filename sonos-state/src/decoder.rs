@@ -16,7 +16,7 @@ use std::net::IpAddr;
 use crate::model::{GroupId, SpeakerId};
 use crate::property::{
     Bass, CurrentTrack, GroupInfo, GroupMembership, GroupMute, GroupVolume, GroupVolumeChangeable,
-    Loudness, Mute, PlaybackState, Position, Treble, Volume,
+    Loudness, Mute, PlayMode, PlaybackState, Position, SleepTimer, Treble, Volume,
 };
 use crate::state::{StateStore, WriteOutcome, WriteStamp};
 
@@ -65,6 +65,8 @@ pub enum PropertyChange {
     PlaybackState(PlaybackState),
     Position(Position),
     CurrentTrack(CurrentTrack),
+    PlayMode(PlayMode),
+    SleepTimer(SleepTimer),
     GroupMembership(GroupMembership),
     GroupVolume(GroupVolume),
     GroupMute(GroupMute),
@@ -95,6 +97,8 @@ impl PropertyChange {
             PropertyChange::PlaybackState(v) => store.set(speaker_id, v.clone(), stamp),
             PropertyChange::Position(v) => store.set(speaker_id, v.clone(), stamp),
             PropertyChange::CurrentTrack(v) => store.set(speaker_id, v.clone(), stamp),
+            PropertyChange::PlayMode(v) => store.set(speaker_id, *v, stamp),
+            PropertyChange::SleepTimer(v) => store.set(speaker_id, v.clone(), stamp),
             PropertyChange::GroupMembership(v) => store.set(speaker_id, v.clone(), stamp),
             // Group-scoped properties: resolve speaker→group, store in group_props
             PropertyChange::GroupVolume(v) => {
@@ -147,6 +151,8 @@ impl PropertyChange {
             PropertyChange::PlaybackState(_) => PlaybackState::KEY,
             PropertyChange::Position(_) => Position::KEY,
             PropertyChange::CurrentTrack(_) => CurrentTrack::KEY,
+            PropertyChange::PlayMode(_) => PlayMode::KEY,
+            PropertyChange::SleepTimer(_) => SleepTimer::KEY,
             PropertyChange::GroupMembership(_) => GroupMembership::KEY,
             PropertyChange::GroupVolume(_) => GroupVolume::KEY,
             PropertyChange::GroupMute(_) => GroupMute::KEY,
@@ -166,6 +172,8 @@ impl PropertyChange {
             PropertyChange::PlaybackState(_) => PlaybackState::SCOPE,
             PropertyChange::Position(_) => Position::SCOPE,
             PropertyChange::CurrentTrack(_) => CurrentTrack::SCOPE,
+            PropertyChange::PlayMode(_) => PlayMode::SCOPE,
+            PropertyChange::SleepTimer(_) => SleepTimer::SCOPE,
             PropertyChange::GroupMembership(_) => GroupMembership::SCOPE,
             PropertyChange::GroupVolume(_) => GroupVolume::SCOPE,
             PropertyChange::GroupMute(_) => GroupMute::SCOPE,
@@ -185,6 +193,8 @@ impl PropertyChange {
             PropertyChange::PlaybackState(_) => PlaybackState::SERVICE,
             PropertyChange::Position(_) => Position::SERVICE,
             PropertyChange::CurrentTrack(_) => CurrentTrack::SERVICE,
+            PropertyChange::PlayMode(_) => PlayMode::SERVICE,
+            PropertyChange::SleepTimer(_) => SleepTimer::SERVICE,
             PropertyChange::GroupMembership(_) => GroupMembership::SERVICE,
             PropertyChange::GroupVolume(_) => GroupVolume::SERVICE,
             PropertyChange::GroupMute(_) => GroupMute::SERVICE,
@@ -306,6 +316,17 @@ fn decode_av_transport(event: &AVTransportState) -> Vec<PropertyChange> {
             uri: event.current_track_uri.clone(),
         };
         changes.push(PropertyChange::CurrentTrack(track));
+    }
+
+    // PlayMode
+    //
+    // An unrecognised mode is skipped rather than mapped to `Normal`: reporting
+    // "not shuffled" for a mode we cannot read would be a confident wrong answer.
+    if let Some(mode) = &event.play_mode {
+        match PlayMode::from_upnp(mode) {
+            Some(play_mode) => changes.push(PropertyChange::PlayMode(play_mode)),
+            None => tracing::debug!("Skipping PlayMode update: unrecognised mode {mode:?}"),
+        }
     }
 
     changes
@@ -847,6 +868,38 @@ mod tests {
         } else {
             panic!("Expected PlaybackState change");
         }
+    }
+
+    #[test]
+    fn test_decode_av_transport_play_mode() {
+        let event = |mode: &str| AVTransportState {
+            transport_state: None,
+            transport_status: None,
+            speed: None,
+            current_track_uri: None,
+            track_duration: None,
+            rel_time: None,
+            abs_time: None,
+            rel_count: None,
+            abs_count: None,
+            play_mode: Some(mode.to_string()),
+            track_metadata: None,
+            next_track_uri: None,
+            next_track_metadata: None,
+            queue_length: None,
+        };
+
+        let changes = decode_av_transport(&event("SHUFFLE_NOREPEAT"));
+        assert!(
+            matches!(
+                changes.as_slice(),
+                [PropertyChange::PlayMode(PlayMode::ShuffleNoRepeat)]
+            ),
+            "got {changes:?}"
+        );
+
+        // An unknown mode is dropped, not reported as Normal.
+        assert!(decode_av_transport(&event("PARTY_MODE")).is_empty());
     }
 
     #[test]
