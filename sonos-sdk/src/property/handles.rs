@@ -652,10 +652,10 @@ impl PropertyHandle<GroupMembership> {
 
 use sonos_api::services::{
     av_transport::{
-        self, GetPositionInfoOperation, GetPositionInfoResponse,
-        GetRemainingSleepTimerDurationOperation, GetRemainingSleepTimerDurationResponse,
-        GetTransportInfoOperation, GetTransportInfoResponse, GetTransportSettingsOperation,
-        GetTransportSettingsResponse,
+        self, GetCrossfadeModeOperation, GetCrossfadeModeResponse, GetPositionInfoOperation,
+        GetPositionInfoResponse, GetRemainingSleepTimerDurationOperation,
+        GetRemainingSleepTimerDurationResponse, GetTransportInfoOperation,
+        GetTransportInfoResponse, GetTransportSettingsOperation, GetTransportSettingsResponse,
     },
     group_rendering_control::{
         self, GetGroupMuteOperation, GetGroupMuteResponse, GetGroupVolumeOperation,
@@ -669,8 +669,9 @@ use sonos_api::services::{
     zone_group_topology::{self, GetZoneGroupStateOperation, GetZoneGroupStateResponse},
 };
 use sonos_state::{
-    Bass, CurrentTrack, GroupId, GroupMembership, GroupMute, GroupVolume, GroupVolumeChangeable,
-    Loudness, Mute, PlayMode, PlaybackState, Position, SleepTimer, Treble, Volume,
+    Bass, CrossfadeMode, CurrentTrack, GroupId, GroupMembership, GroupMute, GroupVolume,
+    GroupVolumeChangeable, Loudness, Mute, PlayMode, PlaybackState, Position, SleepTimer, Treble,
+    Volume,
 };
 
 // ============================================================================
@@ -842,6 +843,21 @@ impl Fetchable for PlayMode {
     }
 }
 
+impl Fetchable for CrossfadeMode {
+    type Operation = GetCrossfadeModeOperation;
+
+    fn build_operation() -> Result<ComposableOperation<Self::Operation>, SdkError> {
+        av_transport::get_crossfade_mode_operation()
+            .build()
+            .map_err(|e| build_error("GetCrossfadeMode", e))
+    }
+
+    fn from_response(response: GetCrossfadeModeResponse) -> Self {
+        // Infallible by trait; off is the device default.
+        CrossfadeMode::from_upnp(&response.crossfade_mode).unwrap_or(CrossfadeMode(false))
+    }
+}
+
 impl Fetchable for SleepTimer {
     type Operation = GetRemainingSleepTimerDurationOperation;
 
@@ -935,6 +951,9 @@ pub type GroupMembershipHandle = PropertyHandle<GroupMembership>;
 
 /// Handle for play mode (repeat / shuffle)
 pub type PlayModeHandle = PropertyHandle<PlayMode>;
+
+/// Handle for crossfade mode
+pub type CrossfadeModeHandle = PropertyHandle<CrossfadeMode>;
 
 /// Handle for sleep timer state (fetch-only — not evented by the device)
 pub type SleepTimerHandle = PropertyHandle<SleepTimer>;
@@ -1768,6 +1787,7 @@ mod tests {
         assert_fetchable::<Loudness>();
         assert_fetchable::<CurrentTrack>();
         assert_fetchable::<PlayMode>();
+        assert_fetchable::<CrossfadeMode>();
         assert_fetchable::<SleepTimer>();
     }
 
@@ -1782,6 +1802,18 @@ mod tests {
             PlayMode::RepeatOne
         );
         assert_eq!(PlayMode::from_response(settings("???")), PlayMode::Normal);
+
+        let crossfade = |value: &str| GetCrossfadeModeResponse {
+            crossfade_mode: value.to_string(),
+        };
+        assert_eq!(
+            CrossfadeMode::from_response(crossfade("1")),
+            CrossfadeMode(true)
+        );
+        assert_eq!(
+            CrossfadeMode::from_response(crossfade("0")),
+            CrossfadeMode(false)
+        );
 
         let timer = |remaining: &str| GetRemainingSleepTimerDurationResponse {
             remaining_sleep_timer_duration: remaining.to_string(),

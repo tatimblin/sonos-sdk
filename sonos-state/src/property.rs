@@ -679,6 +679,49 @@ impl std::fmt::Display for PlayMode {
     }
 }
 
+/// Whether crossfade between tracks is enabled
+///
+/// Carried as `CurrentCrossfadeMode` (`"0"` / `"1"`) in AVTransport `LastChange`
+/// events and read by `GetCrossfadeMode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CrossfadeMode(pub bool);
+
+impl Property for CrossfadeMode {
+    const KEY: &'static str = "crossfade_mode";
+}
+
+impl SonosProperty for CrossfadeMode {
+    const SCOPE: Scope = Scope::Speaker;
+    const SERVICE: Service = Service::AVTransport;
+
+    fn to_change(&self) -> Option<crate::decoder::PropertyChange> {
+        Some(crate::decoder::PropertyChange::CrossfadeMode(*self))
+    }
+}
+
+impl CrossfadeMode {
+    pub fn new(enabled: bool) -> Self {
+        Self(enabled)
+    }
+
+    /// Parse the UPnP boolean Sonos uses (`"1"` / `"0"`, or `"true"` / `"false"`)
+    ///
+    /// Returns `None` for anything else.
+    pub fn from_upnp(value: &str) -> Option<Self> {
+        match value.trim() {
+            "1" => Some(Self(true)),
+            "0" => Some(Self(false)),
+            v if v.eq_ignore_ascii_case("true") => Some(Self(true)),
+            v if v.eq_ignore_ascii_case("false") => Some(Self(false)),
+            _ => None,
+        }
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.0
+    }
+}
+
 /// Sleep timer state, as of the last time it was read or set
 ///
 /// Not evented: AVTransport events carry only `SleepTimerGeneration`, a counter
@@ -1024,6 +1067,14 @@ mod tests {
         assert!(PlayMode::ShuffleNoRepeat.is_shuffle() && !PlayMode::ShuffleNoRepeat.is_repeat());
         assert!(PlayMode::Shuffle.is_shuffle() && PlayMode::Shuffle.is_repeat());
         assert!(!PlayMode::RepeatOne.is_shuffle() && PlayMode::RepeatOne.is_repeat());
+    }
+
+    #[test]
+    fn test_crossfade_mode_from_upnp() {
+        assert_eq!(CrossfadeMode::from_upnp("1"), Some(CrossfadeMode(true)));
+        assert_eq!(CrossfadeMode::from_upnp("0"), Some(CrossfadeMode(false)));
+        assert_eq!(CrossfadeMode::from_upnp("TRUE"), Some(CrossfadeMode(true)));
+        assert_eq!(CrossfadeMode::from_upnp(""), None);
     }
 
     #[test]

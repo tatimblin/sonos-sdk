@@ -11,7 +11,7 @@ python .claude/skills/implement-service-sdk/scripts/analyze_handles.py --coverag
 
 ## Property Reference
 
-Fifteen properties are defined in `sonos-state/src/property.rs`. Fourteen are reachable
+Sixteen properties are defined in `sonos-state/src/property.rs`. Fifteen are reachable
 through a handle on `Speaker` or `Group`; `Topology` is system-scoped and read off
 `SonosSystem`.
 
@@ -26,6 +26,7 @@ through a handle on `Speaker` or `Group`; `Topology` is system-scoped and read o
 | `Position` | `position` | AVTransport | `speaker.position` | yes (`GetPositionInfo`) | yes |
 | `CurrentTrack` | `current_track` | AVTransport | `speaker.current_track` | yes (`GetPositionInfo`) | yes |
 | `PlayMode` | `play_mode` | AVTransport | `speaker.play_mode` | yes (`GetTransportSettings`) | yes |
+| `CrossfadeMode` | `crossfade_mode` | AVTransport | `speaker.crossfade_mode` | yes (`GetCrossfadeMode`) | yes |
 | `SleepTimer` | `sleep_timer` | AVTransport | `speaker.sleep_timer` | yes (`GetRemainingSleepTimerDuration`) | **no** (fetch and local writes only) |
 | `GroupMembership` | `group_membership` | ZoneGroupTopology | `speaker.group_membership` | yes (`GetZoneGroupState`) | yes |
 | `GroupVolume` | `group_volume` | GroupRenderingControl | `group.volume` | yes (`GetGroupVolume`) | yes |

@@ -62,6 +62,9 @@ struct AVTransportInstance {
     #[serde(rename = "CurrentPlayMode", default)]
     pub play_mode: Option<xml_utils::ValueAttribute>,
 
+    #[serde(rename = "CurrentCrossfadeMode", default)]
+    pub crossfade_mode: Option<xml_utils::ValueAttribute>,
+
     #[serde(rename = "CurrentTrackMetaData", default)]
     pub track_metadata: Option<xml_utils::ValueAttribute>,
 
@@ -171,6 +174,16 @@ impl AVTransportEvent {
             .map(|v| v.val.clone())
     }
 
+    /// Get crossfade mode (`"0"` or `"1"`)
+    pub fn crossfade_mode(&self) -> Option<String> {
+        self.property
+            .last_change
+            .instance
+            .crossfade_mode
+            .as_ref()
+            .map(|v| v.val.clone())
+    }
+
     /// Get track metadata
     pub fn track_metadata(&self) -> Option<String> {
         self.property
@@ -225,6 +238,7 @@ impl AVTransportEvent {
             rel_count: self.rel_count(),
             abs_count: self.abs_count(),
             play_mode: self.play_mode(),
+            crossfade_mode: self.crossfade_mode(),
             next_track_uri: self.next_track_uri(),
             next_track_metadata: self.next_track_metadata(),
             queue_length: self.queue_length(),
@@ -307,6 +321,7 @@ mod tests {
                 abs_time: None,
                 rel_count: None,
                 play_mode: None,
+                crossfade_mode: None,
                 track_metadata: None,
                 next_track_uri: None,
                 next_track_metadata: None,
@@ -345,6 +360,7 @@ mod tests {
                         abs_time: None,
                         rel_count: None,
                         play_mode: None,
+                        crossfade_mode: None,
                         track_metadata: None,
                         next_track_uri: None,
                         next_track_metadata: None,
@@ -382,6 +398,7 @@ mod tests {
                         abs_time: None,
                         rel_count: None,
                         play_mode: None,
+                        crossfade_mode: None,
                         track_metadata: None,
                         next_track_uri: None,
                         next_track_metadata: None,
@@ -449,6 +466,9 @@ mod tests {
                         play_mode: Some(xml_utils::ValueAttribute {
                             val: "NORMAL".to_string(),
                         }),
+                        crossfade_mode: Some(xml_utils::ValueAttribute {
+                            val: "1".to_string(),
+                        }),
                         track_metadata: None,
                         next_track_uri: None,
                         next_track_metadata: None,
@@ -474,6 +494,7 @@ mod tests {
         assert_eq!(state.abs_time, None);
         assert_eq!(state.rel_count, Some(1));
         assert_eq!(state.play_mode, Some("NORMAL".to_string()));
+        assert_eq!(state.crossfade_mode, Some("1".to_string()));
         assert_eq!(state.queue_length, Some(5));
     }
 
@@ -487,12 +508,16 @@ mod tests {
                         &lt;TransportStatus val="OK"/&gt;
                         &lt;CurrentTrack val="1"/&gt;
                         &lt;NumberOfTracks val="5"/&gt;
+                        &lt;CurrentPlayMode val="SHUFFLE"/&gt;
+                        &lt;CurrentCrossfadeMode val="1"/&gt;
                     &lt;/InstanceID&gt;
                 &lt;/Event&gt;</LastChange>
             </e:property>
         </e:propertyset>"#;
 
         let state = AVTransportEvent::from_xml(xml).unwrap().into_state();
+        assert_eq!(state.play_mode, Some("SHUFFLE".to_string()));
+        assert_eq!(state.crossfade_mode, Some("1".to_string()));
 
         assert_eq!(state.transport_state, Some("PLAYING".to_string()));
         assert_eq!(state.transport_status, Some("OK".to_string()));

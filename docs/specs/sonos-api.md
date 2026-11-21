@@ -640,7 +640,7 @@ pub struct AVTransportEvent {
 // Provides accessors for:
 // - transport_state(), transport_status(), speed()
 // - current_track_uri(), track_duration(), rel_time(), abs_time()
-// - play_mode(), track_metadata(), next_track_uri(), queue_length()
+// - play_mode(), crossfade_mode(), track_metadata(), next_track_uri(), queue_length()
 ```
 
 **Memory considerations**: Events contain String fields for flexibility. For high-frequency event processing, consider reusing allocations.

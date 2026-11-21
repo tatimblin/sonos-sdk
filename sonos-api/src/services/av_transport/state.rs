@@ -47,6 +47,9 @@ pub struct AVTransportState {
     /// Current play mode (NORMAL, REPEAT_ALL, REPEAT_ONE, SHUFFLE, etc.)
     pub play_mode: Option<String>,
 
+    /// Current crossfade mode (`"0"` off, `"1"` on)
+    pub crossfade_mode: Option<String>,
+
     /// Next track URI
     pub next_track_uri: Option<String>,
 
@@ -60,7 +63,7 @@ pub struct AVTransportState {
 /// Poll a speaker for complete AVTransport state.
 ///
 /// Calls GetTransportInfo (required), GetPositionInfo, GetTransportSettings,
-/// and GetMediaInfo (optional — fall back to None on failure).
+/// GetCrossfadeMode and GetMediaInfo (optional — fall back to None on failure).
 pub fn poll(client: &SonosClient, ip: &str) -> crate::Result<AVTransportState> {
     let transport = client.execute_enhanced(
         ip,
@@ -74,6 +77,10 @@ pub fn poll(client: &SonosClient, ip: &str) -> crate::Result<AVTransportState> {
         .ok()
         .and_then(|op| client.execute_enhanced(ip, op).ok());
     let settings = super::get_transport_settings_operation()
+        .build()
+        .ok()
+        .and_then(|op| client.execute_enhanced(ip, op).ok());
+    let crossfade = super::get_crossfade_mode_operation()
         .build()
         .ok()
         .and_then(|op| client.execute_enhanced(ip, op).ok());
@@ -98,6 +105,7 @@ pub fn poll(client: &SonosClient, ip: &str) -> crate::Result<AVTransportState> {
             .as_ref()
             .and_then(|p| u32::try_from(p.abs_count).ok()),
         play_mode: settings.map(|s| s.play_mode),
+        crossfade_mode: crossfade.map(|c| c.crossfade_mode),
         next_track_uri: media.as_ref().map(|m| m.next_uri.clone()),
         next_track_metadata: media.as_ref().map(|m| m.next_uri_meta_data.clone()),
         queue_length: media.map(|m| m.nr_tracks),
