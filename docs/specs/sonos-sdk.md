@@ -1372,9 +1372,11 @@ assertion holds whether or not lazy init ever fired.
    - **Bottleneck**: the miss path, rate-limited to once per 30 s per system
    - **Note**: `offline` systems skip it entirely (§8.5)
 
-4. **`SonosSystem::groups()`** (`src/system.rs:866`)
+4. **`SonosSystem::groups()`** (`src/system.rs:870`)
    - **Complexity**: O(groups x members), plus `ensure_topology()` if no topology is known
    - **Bottleneck**: the first call on a system with no topology, which SOAP-polls
+   - **Order**: largest group first, then coordinator name, then group ID. The store is a
+     hash map, so without the sort two calls could disagree on which group is "first"
 
 ### 9.3 Resource Management
 
