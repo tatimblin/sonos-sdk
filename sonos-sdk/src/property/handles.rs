@@ -280,6 +280,36 @@ pub trait FetchableWithContext: SonosProperty {
     ) -> Option<Self>;
 }
 
+/// Trait for speaker properties that can be written to the device
+///
+/// The write-side counterpart of [`Fetchable`]: it names the UPnP operation
+/// that sets the property and builds it from the value to write. Implementing
+/// it gives [`PropertyHandle::set`], so every writable property is written the
+/// same way — `speaker.bass.set(Bass::new(3))?` — instead of through a
+/// bespoke method per property.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// impl Settable for Bass {
+///     type Operation = SetBassOperation;
+///
+///     fn build_set_operation(&self) -> Result<ComposableOperation<Self::Operation>, SdkError> {
+///         Ok(rendering_control::set_bass(self.0).build()?)
+///     }
+/// }
+/// ```
+pub trait Settable: SonosProperty {
+    /// The UPnP operation type used to write this property
+    type Operation: UPnPOperation;
+
+    /// Build the operation that writes `self` to the device
+    ///
+    /// Fails with [`SdkError::ValidationFailed`] when the value is outside
+    /// what the operation accepts (e.g. `Volume(150)`).
+    fn build_set_operation(&self) -> Result<ComposableOperation<Self::Operation>, SdkError>;
+}
+
 /// Generic property handle providing the get/fetch/watch pattern
 ///
 /// This is the core abstraction for the DOM-like API. Each property on a Speaker
@@ -602,6 +632,40 @@ impl<P: Fetchable> PropertyHandle<P> {
 }
 
 // ============================================================================
+// Set implementation for Settable properties
+// ============================================================================
+
+impl<P: Settable> PropertyHandle<P> {
+    /// Write a new value to the device + update cache (sync)
+    ///
+    /// Makes a synchronous UPnP call to the speaker. On success the cache is
+    /// updated optimistically, so `get()` and any held `WatchHandle` report
+    /// `value` immediately and watchers see a `ChangeEvent` with
+    /// [`ChangeSource::LocalAction`]. If the device later reports something
+    /// else, its event wins.
+    ///
+    /// The cache is left untouched when validation or the call fails.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// speaker.bass.set(Bass::new(3))?;
+    /// assert_eq!(speaker.bass.get(), Some(Bass::new(3)));
+    /// ```
+    pub fn set(&self, value: P) -> Result<(), SdkError> {
+        let operation = value.build_set_operation()?;
+        self.context
+            .api_client
+            .execute_enhanced(&self.context.speaker_ip.to_string(), operation)
+            .map_err(SdkError::ApiError)?;
+        self.context
+            .state_manager
+            .set_property(&self.context.speaker_id, value);
+        Ok(())
+    }
+}
+
+// ============================================================================
 // Concrete fetch for FetchableWithContext properties
 // ============================================================================
 //
@@ -659,12 +723,13 @@ use sonos_api::services::{
     },
     group_rendering_control::{
         self, GetGroupMuteOperation, GetGroupMuteResponse, GetGroupVolumeOperation,
-        GetGroupVolumeResponse,
+        GetGroupVolumeResponse, SetGroupMuteOperation, SetGroupVolumeOperation,
     },
     rendering_control::{
         self, GetBassOperation, GetBassResponse, GetLoudnessOperation, GetLoudnessResponse,
         GetMuteOperation, GetMuteResponse, GetTrebleOperation, GetTrebleResponse,
-        GetVolumeOperation, GetVolumeResponse,
+        GetVolumeOperation, GetVolumeResponse, SetBassOperation, SetLoudnessOperation,
+        SetMuteOperation, SetTrebleOperation, SetVolumeOperation,
     },
     zone_group_topology::{self, GetZoneGroupStateOperation, GetZoneGroupStateResponse},
 };
@@ -869,6 +934,54 @@ impl Fetchable for SleepTimer {
 
     fn from_response(response: GetRemainingSleepTimerDurationResponse) -> Self {
         SleepTimer::from_duration_str(&response.remaining_sleep_timer_duration)
+    }
+}
+
+// ============================================================================
+// Settable implementations
+// ============================================================================
+//
+// Each builds from the raw inner value rather than re-clamping, so an
+// out-of-range value constructed directly (`Volume(150)`) is rejected by the
+// operation's validation exactly as `set_volume(150)` is.
+
+impl Settable for Volume {
+    type Operation = SetVolumeOperation;
+
+    fn build_set_operation(&self) -> Result<ComposableOperation<Self::Operation>, SdkError> {
+        Ok(rendering_control::set_volume("Master".to_string(), self.0).build()?)
+    }
+}
+
+impl Settable for Mute {
+    type Operation = SetMuteOperation;
+
+    fn build_set_operation(&self) -> Result<ComposableOperation<Self::Operation>, SdkError> {
+        Ok(rendering_control::set_mute("Master".to_string(), self.0).build()?)
+    }
+}
+
+impl Settable for Bass {
+    type Operation = SetBassOperation;
+
+    fn build_set_operation(&self) -> Result<ComposableOperation<Self::Operation>, SdkError> {
+        Ok(rendering_control::set_bass(self.0).build()?)
+    }
+}
+
+impl Settable for Treble {
+    type Operation = SetTrebleOperation;
+
+    fn build_set_operation(&self) -> Result<ComposableOperation<Self::Operation>, SdkError> {
+        Ok(rendering_control::set_treble(self.0).build()?)
+    }
+}
+
+impl Settable for Loudness {
+    type Operation = SetLoudnessOperation;
+
+    fn build_set_operation(&self) -> Result<ComposableOperation<Self::Operation>, SdkError> {
+        Ok(rendering_control::set_loudness("Master".to_string(), self.0).build()?)
     }
 }
 
@@ -1125,6 +1238,43 @@ pub trait GroupFetchable: SonosProperty {
     fn from_response(response: <Self::Operation as UPnPOperation>::Response) -> Self;
 }
 
+/// Trait for group properties that can be written through the coordinator
+///
+/// The group counterpart of [`Settable`], as [`GroupFetchable`] is of
+/// [`Fetchable`]. Implementing it gives [`GroupPropertyHandle::set`].
+pub trait GroupSettable: SonosProperty {
+    /// The UPnP operation type used to write this property
+    type Operation: UPnPOperation;
+
+    /// Build the operation that writes `self` to the group coordinator
+    fn build_set_operation(&self) -> Result<ComposableOperation<Self::Operation>, SdkError>;
+}
+
+impl<P: GroupSettable> GroupPropertyHandle<P> {
+    /// Write a new value through the group coordinator + update group cache (sync)
+    ///
+    /// Same contract as [`PropertyHandle::set`]: the cache is updated only on
+    /// success, and watchers see a [`ChangeSource::LocalAction`] event.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// group.volume.set(GroupVolume::new(40))?;
+    /// group.mute.set(GroupMute::new(false))?;
+    /// ```
+    pub fn set(&self, value: P) -> Result<(), SdkError> {
+        let operation = value.build_set_operation()?;
+        self.context
+            .api_client
+            .execute_enhanced(&self.context.coordinator_ip.to_string(), operation)
+            .map_err(SdkError::ApiError)?;
+        self.context
+            .state_manager
+            .set_group_property(&self.context.group_id, value);
+        Ok(())
+    }
+}
+
 impl<P: GroupFetchable> GroupPropertyHandle<P> {
     /// Watch with lazy fetch: subscribes to events, and if the cache is empty,
     /// performs a one-time fetch from the coordinator to seed the value.
@@ -1199,6 +1349,26 @@ impl GroupFetchable for GroupMute {
 
     fn from_response(response: GetGroupMuteResponse) -> Self {
         GroupMute::new(response.current_mute)
+    }
+}
+
+// ============================================================================
+// GroupSettable implementations
+// ============================================================================
+
+impl GroupSettable for GroupVolume {
+    type Operation = SetGroupVolumeOperation;
+
+    fn build_set_operation(&self) -> Result<ComposableOperation<Self::Operation>, SdkError> {
+        Ok(group_rendering_control::set_group_volume(self.0).build()?)
+    }
+}
+
+impl GroupSettable for GroupMute {
+    type Operation = SetGroupMuteOperation;
+
+    fn build_set_operation(&self) -> Result<ComposableOperation<Self::Operation>, SdkError> {
+        Ok(group_rendering_control::set_group_mute(self.0).build()?)
     }
 }
 
@@ -1853,6 +2023,72 @@ mod tests {
     fn test_fetchable_with_context_impls_exist() {
         fn assert_fetchable_with_context<T: FetchableWithContext>() {}
         assert_fetchable_with_context::<GroupMembership>();
+    }
+
+    #[test]
+    fn test_settable_impls_exist() {
+        fn assert_settable<T: Settable>() {}
+        assert_settable::<Volume>();
+        assert_settable::<Mute>();
+        assert_settable::<Bass>();
+        assert_settable::<Treble>();
+        assert_settable::<Loudness>();
+
+        fn assert_group_settable<T: GroupSettable>() {}
+        assert_group_settable::<GroupVolume>();
+        assert_group_settable::<GroupMute>();
+    }
+
+    /// An out-of-range value is rejected before any network call, and the
+    /// cache is left alone — `set()` must not record a write that never
+    /// happened. Offline: validation fails inside `build_set_operation()`.
+    #[test]
+    fn test_set_rejects_invalid_value_without_touching_cache() {
+        let state_manager = create_test_state_manager();
+        let speaker_id = SpeakerId::new("RINCON_TEST123");
+        state_manager.set_property(&speaker_id, Bass::new(2));
+
+        let context = create_test_context(Arc::clone(&state_manager));
+        let bass: BassHandle = PropertyHandle::new(Arc::clone(&context));
+        let volume: VolumeHandle = PropertyHandle::new(context);
+
+        assert!(matches!(
+            bass.set(Bass(15)),
+            Err(SdkError::ValidationFailed(_))
+        ));
+        assert!(matches!(
+            volume.set(Volume(150)),
+            Err(SdkError::ValidationFailed(_))
+        ));
+        assert_eq!(bass.get(), Some(Bass::new(2)));
+        assert_eq!(volume.get(), None);
+
+        let group: GroupVolumeHandle =
+            GroupPropertyHandle::new(create_test_group_context(state_manager));
+        assert!(matches!(
+            group.set(GroupVolume(101)),
+            Err(SdkError::ValidationFailed(_))
+        ));
+        assert_eq!(group.get(), None);
+    }
+
+    #[test]
+    fn test_settable_builds_the_value_it_was_given() {
+        // The payload is the one thing each impl can get wrong (wrong field,
+        // re-clamped value, wrong channel), so check it end to end.
+        let bass = Bass::new(-3).build_set_operation().unwrap();
+        assert!(bass
+            .build_payload()
+            .unwrap()
+            .contains("<DesiredBass>-3</DesiredBass>"));
+
+        let mute = Mute::new(true)
+            .build_set_operation()
+            .unwrap()
+            .build_payload()
+            .unwrap();
+        assert!(mute.contains("<Channel>Master</Channel>"));
+        assert!(mute.contains("<DesiredMute>1</DesiredMute>"));
     }
 
     #[test]

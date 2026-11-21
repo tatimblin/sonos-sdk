@@ -6,10 +6,10 @@
 mod handles;
 
 // Re-export the generic PropertyHandle, SpeakerContext, and Fetchable traits
-pub use handles::{Fetchable, FetchableWithContext, PropertyHandle, SpeakerContext};
+pub use handles::{Fetchable, FetchableWithContext, PropertyHandle, Settable, SpeakerContext};
 
 // Re-export group property handle types
-pub use handles::{GroupContext, GroupFetchable, GroupPropertyHandle};
+pub use handles::{GroupContext, GroupFetchable, GroupPropertyHandle, GroupSettable};
 
 // Re-export watch handle types
 pub use handles::{WatchHandle, WatchMode};

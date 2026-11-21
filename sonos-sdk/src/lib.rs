@@ -39,7 +39,8 @@
 //! - **Sync-First API**: All methods are synchronous - no async/await required
 //! - **Cheap constructor**: `SonosSystem::new()` does discovery only — event infrastructure is lazy
 //! - **DOM-like API**: Access properties directly on speaker objects
-//! - **Three access patterns**: `get()` for cached, `fetch()` for fresh, `watch()` for reactive
+//! - **Three access patterns**: `get()` for cached, `fetch()` for fresh, `watch()` for reactive,
+//!   plus `set()` on writable properties (`speaker.bass.set(Bass::new(3))?`)
 //! - **Fluent navigation**: `speaker.group()`, `group.speaker("name")`
 //! - **Type safety**: All properties are strongly typed
 //! - **Resource efficiency**: Shared state management and HTTP connections
@@ -81,11 +82,11 @@ pub use speaker::{PlayMode, SeekTarget, Speaker};
 pub use system::SonosSystem;
 
 // Re-export the generic PropertyHandle, SpeakerContext, and watch types
-pub use property::{PropertyHandle, SpeakerContext, WatchHandle, WatchMode};
+pub use property::{PropertyHandle, Settable, SpeakerContext, WatchHandle, WatchMode};
 
 // Re-export group property handle types
 pub use property::{
-    GroupContext, GroupFetchable, GroupMuteHandle, GroupPropertyHandle,
+    GroupContext, GroupFetchable, GroupMuteHandle, GroupPropertyHandle, GroupSettable,
     GroupVolumeChangeableHandle, GroupVolumeHandle,
 };
 
@@ -107,9 +108,9 @@ pub use sonos_discovery;
 
 // Re-export commonly used types from sonos-state
 pub use sonos_state::{
-    ChangeEvent, ChangeIterator, ChangeSource, CrossfadeMode, CurrentTrack, GroupId, GroupMute,
-    GroupVolume, GroupVolumeChangeable, PlaybackSource, PlaybackState, PropertyChange, SleepTimer,
-    SpeakerId, Volume, WriteOutcome, WriteStamp,
+    Bass, ChangeEvent, ChangeIterator, ChangeSource, CrossfadeMode, CurrentTrack, GroupId,
+    GroupMute, GroupVolume, GroupVolumeChangeable, Loudness, Mute, PlaybackSource, PlaybackState,
+    PropertyChange, SleepTimer, SpeakerId, Treble, Volume, WriteOutcome, WriteStamp,
 };
 
 /// The property trait, re-exported so downstream crates can write code that is

@@ -608,13 +608,10 @@ impl Speaker {
 
     /// Set speaker volume (0-100)
     ///
-    /// Updates the state cache to the new `Volume` on success.
+    /// Updates the state cache to the new `Volume` on success. Equivalent to
+    /// `speaker.volume.set(Volume(volume))`.
     pub fn set_volume(&self, volume: u8) -> Result<(), SdkError> {
-        self.exec(rendering_control::set_volume("Master".to_string(), volume).build())?;
-        self.context
-            .state_manager
-            .set_property(&self.context.speaker_id, Volume(volume));
-        Ok(())
+        self.volume.set(Volume(volume))
     }
 
     /// Adjust volume relative to current level
@@ -635,40 +632,31 @@ impl Speaker {
 
     /// Set mute state
     ///
-    /// Updates the state cache to the new `Mute` value on success.
+    /// Updates the state cache to the new `Mute` value on success. Equivalent
+    /// to `speaker.mute.set(Mute(muted))`.
     pub fn set_mute(&self, muted: bool) -> Result<(), SdkError> {
-        self.exec(rendering_control::set_mute("Master".to_string(), muted).build())?;
-        self.context
-            .state_manager
-            .set_property(&self.context.speaker_id, Mute(muted));
-        Ok(())
+        self.mute.set(Mute(muted))
     }
 
     /// Set bass EQ level (-10 to +10)
+    ///
+    /// Equivalent to `speaker.bass.set(Bass(level))`.
     pub fn set_bass(&self, level: i8) -> Result<(), SdkError> {
-        self.exec(rendering_control::set_bass(level).build())?;
-        self.context
-            .state_manager
-            .set_property(&self.context.speaker_id, Bass(level));
-        Ok(())
+        self.bass.set(Bass(level))
     }
 
     /// Set treble EQ level (-10 to +10)
+    ///
+    /// Equivalent to `speaker.treble.set(Treble(level))`.
     pub fn set_treble(&self, level: i8) -> Result<(), SdkError> {
-        self.exec(rendering_control::set_treble(level).build())?;
-        self.context
-            .state_manager
-            .set_property(&self.context.speaker_id, Treble(level));
-        Ok(())
+        self.treble.set(Treble(level))
     }
 
     /// Set loudness compensation
+    ///
+    /// Equivalent to `speaker.loudness.set(Loudness(enabled))`.
     pub fn set_loudness(&self, enabled: bool) -> Result<(), SdkError> {
-        self.exec(rendering_control::set_loudness("Master".to_string(), enabled).build())?;
-        self.context
-            .state_manager
-            .set_property(&self.context.speaker_id, Loudness(enabled));
-        Ok(())
+        self.loudness.set(Loudness(enabled))
     }
 }
 
