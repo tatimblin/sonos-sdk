@@ -601,6 +601,139 @@ impl PlaybackSource {
     }
 }
 
+/// Repeat and shuffle mode of the speaker's queue
+///
+/// Carried as `CurrentPlayMode` in AVTransport `LastChange` events and read by
+/// `GetTransportSettings`. `Display` produces the UPnP string that
+/// `SetPlayMode` expects, and [`PlayMode::from_upnp`] parses it back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PlayMode {
+    /// Normal sequential playback
+    Normal,
+    /// Repeat all tracks
+    RepeatAll,
+    /// Repeat current track
+    RepeatOne,
+    /// Shuffle without repeat
+    ShuffleNoRepeat,
+    /// Shuffle with repeat
+    Shuffle,
+    /// Shuffle and repeat current track
+    ShuffleRepeatOne,
+}
+
+impl Property for PlayMode {
+    const KEY: &'static str = "play_mode";
+}
+
+impl SonosProperty for PlayMode {
+    const SCOPE: Scope = Scope::Speaker;
+    const SERVICE: Service = Service::AVTransport;
+
+    fn to_change(&self) -> Option<crate::decoder::PropertyChange> {
+        Some(crate::decoder::PropertyChange::PlayMode(*self))
+    }
+}
+
+impl PlayMode {
+    /// Parse a UPnP play mode string (`"SHUFFLE_NOREPEAT"`, ...)
+    ///
+    /// Returns `None` for a value outside the six modes Sonos documents, so a
+    /// caller can skip it rather than guess.
+    pub fn from_upnp(mode: &str) -> Option<Self> {
+        match mode.to_ascii_uppercase().as_str() {
+            "NORMAL" => Some(PlayMode::Normal),
+            "REPEAT_ALL" => Some(PlayMode::RepeatAll),
+            "REPEAT_ONE" => Some(PlayMode::RepeatOne),
+            "SHUFFLE_NOREPEAT" => Some(PlayMode::ShuffleNoRepeat),
+            "SHUFFLE" => Some(PlayMode::Shuffle),
+            "SHUFFLE_REPEAT_ONE" => Some(PlayMode::ShuffleRepeatOne),
+            _ => None,
+        }
+    }
+
+    /// Whether tracks play in shuffled order
+    pub fn is_shuffle(&self) -> bool {
+        matches!(
+            self,
+            PlayMode::ShuffleNoRepeat | PlayMode::Shuffle | PlayMode::ShuffleRepeatOne
+        )
+    }
+
+    /// Whether the queue or the current track repeats
+    pub fn is_repeat(&self) -> bool {
+        !matches!(self, PlayMode::Normal | PlayMode::ShuffleNoRepeat)
+    }
+}
+
+impl std::fmt::Display for PlayMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PlayMode::Normal => write!(f, "NORMAL"),
+            PlayMode::RepeatAll => write!(f, "REPEAT_ALL"),
+            PlayMode::RepeatOne => write!(f, "REPEAT_ONE"),
+            PlayMode::ShuffleNoRepeat => write!(f, "SHUFFLE_NOREPEAT"),
+            PlayMode::Shuffle => write!(f, "SHUFFLE"),
+            PlayMode::ShuffleRepeatOne => write!(f, "SHUFFLE_REPEAT_ONE"),
+        }
+    }
+}
+
+/// Sleep timer state, as of the last time it was read or set
+///
+/// Not evented: AVTransport events carry only `SleepTimerGeneration`, a counter
+/// that changes when a timer is set or cleared, never the remaining time. The
+/// value therefore comes from `GetRemainingSleepTimerDuration` (a fetch) or from
+/// the SDK's own `configure_sleep_timer()`, and `remaining_ms` is a snapshot —
+/// it does not count down in the cache.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SleepTimer {
+    /// Remaining time in milliseconds when read, or `None` if no timer is set
+    pub remaining_ms: Option<u64>,
+}
+
+impl Property for SleepTimer {
+    const KEY: &'static str = "sleep_timer";
+}
+
+impl SonosProperty for SleepTimer {
+    const SCOPE: Scope = Scope::Speaker;
+    const SERVICE: Service = Service::AVTransport;
+
+    fn to_change(&self) -> Option<crate::decoder::PropertyChange> {
+        Some(crate::decoder::PropertyChange::SleepTimer(self.clone()))
+    }
+}
+
+impl SleepTimer {
+    /// No sleep timer set
+    pub fn off() -> Self {
+        Self { remaining_ms: None }
+    }
+
+    /// A timer with `remaining_ms` left
+    pub fn remaining(remaining_ms: u64) -> Self {
+        Self {
+            remaining_ms: Some(remaining_ms),
+        }
+    }
+
+    /// Parse the `HH:MM:SS` duration Sonos uses for sleep timers
+    ///
+    /// An empty or unparseable string means no timer, which is how
+    /// `GetRemainingSleepTimerDuration` reports one that is not set.
+    pub fn from_duration_str(duration: &str) -> Self {
+        Self {
+            remaining_ms: Position::parse_time_to_ms(duration),
+        }
+    }
+
+    /// Whether a sleep timer is set
+    pub fn is_active(&self) -> bool {
+        self.remaining_ms.is_some()
+    }
+}
+
 /// Speaker's group membership
 ///
 /// Every speaker is always in a group - a single speaker forms a group of one.
@@ -867,6 +1000,41 @@ mod tests {
         };
         assert_eq!(follower.source(), Some(PlaybackSource::GroupFollower));
         assert_eq!(CurrentTrack::new().source(), None);
+    }
+
+    #[test]
+    fn test_play_mode_round_trips_through_upnp_string() {
+        for mode in [
+            PlayMode::Normal,
+            PlayMode::RepeatAll,
+            PlayMode::RepeatOne,
+            PlayMode::ShuffleNoRepeat,
+            PlayMode::Shuffle,
+            PlayMode::ShuffleRepeatOne,
+        ] {
+            assert_eq!(PlayMode::from_upnp(&mode.to_string()), Some(mode));
+        }
+        assert_eq!(PlayMode::from_upnp("shuffle"), Some(PlayMode::Shuffle));
+        assert_eq!(PlayMode::from_upnp("PARTY"), None);
+    }
+
+    #[test]
+    fn test_play_mode_shuffle_and_repeat_flags() {
+        assert!(!PlayMode::Normal.is_shuffle() && !PlayMode::Normal.is_repeat());
+        assert!(PlayMode::ShuffleNoRepeat.is_shuffle() && !PlayMode::ShuffleNoRepeat.is_repeat());
+        assert!(PlayMode::Shuffle.is_shuffle() && PlayMode::Shuffle.is_repeat());
+        assert!(!PlayMode::RepeatOne.is_shuffle() && PlayMode::RepeatOne.is_repeat());
+    }
+
+    #[test]
+    fn test_sleep_timer_from_duration_str() {
+        assert_eq!(
+            SleepTimer::from_duration_str("01:30:00"),
+            SleepTimer::remaining(5_400_000)
+        );
+        assert_eq!(SleepTimer::from_duration_str(""), SleepTimer::off());
+        assert!(!SleepTimer::off().is_active());
+        assert!(SleepTimer::remaining(1).is_active());
     }
 
     #[test]

@@ -652,8 +652,10 @@ impl PropertyHandle<GroupMembership> {
 
 use sonos_api::services::{
     av_transport::{
-        self, GetPositionInfoOperation, GetPositionInfoResponse, GetTransportInfoOperation,
-        GetTransportInfoResponse,
+        self, GetPositionInfoOperation, GetPositionInfoResponse,
+        GetRemainingSleepTimerDurationOperation, GetRemainingSleepTimerDurationResponse,
+        GetTransportInfoOperation, GetTransportInfoResponse, GetTransportSettingsOperation,
+        GetTransportSettingsResponse,
     },
     group_rendering_control::{
         self, GetGroupMuteOperation, GetGroupMuteResponse, GetGroupVolumeOperation,
@@ -668,7 +670,7 @@ use sonos_api::services::{
 };
 use sonos_state::{
     Bass, CurrentTrack, GroupId, GroupMembership, GroupMute, GroupVolume, GroupVolumeChangeable,
-    Loudness, Mute, PlaybackState, Position, Treble, Volume,
+    Loudness, Mute, PlayMode, PlaybackState, Position, SleepTimer, Treble, Volume,
 };
 
 // ============================================================================
@@ -817,6 +819,43 @@ impl Fetchable for CurrentTrack {
     }
 }
 
+impl Fetchable for PlayMode {
+    type Operation = GetTransportSettingsOperation;
+
+    fn build_operation() -> Result<ComposableOperation<Self::Operation>, SdkError> {
+        av_transport::get_transport_settings_operation()
+            .build()
+            .map_err(|e| build_error("GetTransportSettings", e))
+    }
+
+    fn from_response(response: GetTransportSettingsResponse) -> Self {
+        // `from_response` is infallible, so an undocumented mode has to land
+        // somewhere. `Normal` is what the device does with a queue it is not
+        // shuffling or repeating; the event decoder, which can skip, does skip.
+        PlayMode::from_upnp(&response.play_mode).unwrap_or_else(|| {
+            tracing::warn!(
+                "Unrecognised play mode {:?}, reporting Normal",
+                response.play_mode
+            );
+            PlayMode::Normal
+        })
+    }
+}
+
+impl Fetchable for SleepTimer {
+    type Operation = GetRemainingSleepTimerDurationOperation;
+
+    fn build_operation() -> Result<ComposableOperation<Self::Operation>, SdkError> {
+        av_transport::get_remaining_sleep_timer_duration_operation()
+            .build()
+            .map_err(|e| build_error("GetRemainingSleepTimerDuration", e))
+    }
+
+    fn from_response(response: GetRemainingSleepTimerDurationResponse) -> Self {
+        SleepTimer::from_duration_str(&response.remaining_sleep_timer_duration)
+    }
+}
+
 // ============================================================================
 // FetchableWithContext implementations
 // ============================================================================
@@ -893,6 +932,12 @@ pub type CurrentTrackHandle = PropertyHandle<CurrentTrack>;
 
 /// Handle for group membership information
 pub type GroupMembershipHandle = PropertyHandle<GroupMembership>;
+
+/// Handle for play mode (repeat / shuffle)
+pub type PlayModeHandle = PropertyHandle<PlayMode>;
+
+/// Handle for sleep timer state (fetch-only — not evented by the device)
+pub type SleepTimerHandle = PropertyHandle<SleepTimer>;
 
 // ============================================================================
 // Group Property Handles
@@ -1722,6 +1767,54 @@ mod tests {
         assert_fetchable::<Treble>();
         assert_fetchable::<Loudness>();
         assert_fetchable::<CurrentTrack>();
+        assert_fetchable::<PlayMode>();
+        assert_fetchable::<SleepTimer>();
+    }
+
+    #[test]
+    fn test_play_mode_and_sleep_timer_from_response() {
+        let settings = |mode: &str| GetTransportSettingsResponse {
+            play_mode: mode.to_string(),
+            rec_quality_mode: "NOT_IMPLEMENTED".to_string(),
+        };
+        assert_eq!(
+            PlayMode::from_response(settings("REPEAT_ONE")),
+            PlayMode::RepeatOne
+        );
+        assert_eq!(PlayMode::from_response(settings("???")), PlayMode::Normal);
+
+        let timer = |remaining: &str| GetRemainingSleepTimerDurationResponse {
+            remaining_sleep_timer_duration: remaining.to_string(),
+            current_sleep_timer_generation: 1,
+        };
+        assert_eq!(
+            SleepTimer::from_response(timer("0:15:00")),
+            SleepTimer::remaining(900_000)
+        );
+        assert_eq!(SleepTimer::from_response(timer("")), SleepTimer::off());
+    }
+
+    /// A play mode reaches a held `watch()` handle and `system.iter()` like any
+    /// other evented property — the reason it became a property at all.
+    #[test]
+    fn test_play_mode_is_watchable() {
+        let state_manager = create_test_state_manager();
+        let speaker_id = SpeakerId::new("RINCON_TEST123");
+        let context = create_test_context(Arc::clone(&state_manager));
+        let handle: PlayModeHandle = PropertyHandle::new(context);
+
+        let wh = handle.watch().unwrap();
+        let iter = state_manager.iter();
+        state_manager.set_property(&speaker_id, PlayMode::Shuffle);
+
+        let event = iter
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .expect("a watched play mode write must emit");
+        assert!(matches!(
+            event.change,
+            sonos_state::PropertyChange::PlayMode(PlayMode::Shuffle)
+        ));
+        assert_eq!(wh.value(), Some(PlayMode::Shuffle));
     }
 
     #[test]

@@ -207,6 +207,8 @@ pub struct Speaker {
     pub playback_state: PlaybackStateHandle,  // :152
     pub position: PositionHandle,             // :154
     pub current_track: CurrentTrackHandle,    // :156
+    pub play_mode: PlayModeHandle,
+    pub sleep_timer: SleepTimerHandle,        // fetch-only, not evented
 
     // ZoneGroupTopology
     pub group_membership: GroupMembershipHandle,  // :162
@@ -948,7 +950,7 @@ With `is_success()` (`:44`) and `is_partial()` (`:49`). Returned by `Group::diss
 | Type | Purpose |
 |------|---------|
 | `Volume`, `GroupVolume`, `GroupMute`, `GroupVolumeChangeable` | Volume and mute values |
-| `PlaybackState`, `CurrentTrack`, `PlaybackSource` | Transport state, track metadata, and where the audio comes from |
+| `PlaybackState`, `CurrentTrack`, `PlaybackSource`, `PlayMode`, `SleepTimer` | Transport state, track metadata, where the audio comes from, play mode, sleep timer |
 | `SpeakerId`, `GroupId` | Identity newtypes (defined in `sonos-api`, re-exported through `sonos-state`) |
 | `ChangeEvent`, `ChangeIterator`, `ChangeSource`, `PropertyChange` | The `system.iter()` stream and its payload |
 | `WriteOutcome`, `WriteStamp` | The write-ordering vocabulary |

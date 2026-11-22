@@ -11,7 +11,7 @@ python .claude/skills/implement-service-sdk/scripts/analyze_handles.py --coverag
 
 ## Property Reference
 
-Thirteen properties are defined in `sonos-state/src/property.rs`. Twelve are reachable
+Fifteen properties are defined in `sonos-state/src/property.rs`. Fourteen are reachable
 through a handle on `Speaker` or `Group`; `Topology` is system-scoped and read off
 `SonosSystem`.
 
@@ -25,17 +25,24 @@ through a handle on `Speaker` or `Group`; `Topology` is system-scoped and read o
 | `PlaybackState` | `playback_state` | AVTransport | `speaker.playback_state` | yes (`GetTransportInfo`) | yes |
 | `Position` | `position` | AVTransport | `speaker.position` | yes (`GetPositionInfo`) | yes |
 | `CurrentTrack` | `current_track` | AVTransport | `speaker.current_track` | yes (`GetPositionInfo`) | yes |
+| `PlayMode` | `play_mode` | AVTransport | `speaker.play_mode` | yes (`GetTransportSettings`) | yes |
+| `SleepTimer` | `sleep_timer` | AVTransport | `speaker.sleep_timer` | yes (`GetRemainingSleepTimerDuration`) | **no** (fetch and local writes only) |
 | `GroupMembership` | `group_membership` | ZoneGroupTopology | `speaker.group_membership` | yes (`GetZoneGroupState`) | yes |
 | `GroupVolume` | `group_volume` | GroupRenderingControl | `group.volume` | yes (`GetGroupVolume`) | yes |
 | `GroupMute` | `group_mute` | GroupRenderingControl | `group.mute` | yes (`GetGroupMute`) | yes |
 | `GroupVolumeChangeable` | `group_volume_changeable` | GroupRenderingControl | `group.volume_changeable` | **no** | yes |
 | `Topology` | `topology` | ZoneGroupTopology | `SonosSystem` | — | **no** |
 
-Two rows are the exceptions worth knowing:
+Three rows are the exceptions worth knowing:
 
 - **`GroupVolumeChangeable` has no `fetch()`.** GroupRenderingControl exposes no
   `GetGroupVolumeChangeable`, so the property implements none of the fetch traits. `get()`
   and `watch()` work; its value arrives only from an event. Polling leaves it `None`.
+- **`SleepTimer` is fetch-only.** AVTransport events carry `SleepTimerGeneration`, a
+  counter bumped when a timer is set or cleared, never the remaining time. The value comes
+  from `fetch()` or from `speaker.configure_sleep_timer()`, and a `watch()` reports only
+  those writes. `remaining_ms` is a snapshot from the moment it was read; it does not count
+  down in the cache.
 - **`Topology` emits no change events.** It is the one property whose `to_change()` is not
   overridden, because it is written wholesale by `initialize()` rather than per property.
   It updates the store but cannot ride in a `ChangeEvent`, so it is not watchable.
