@@ -16,7 +16,8 @@ use std::sync::Arc;
 use sonos_api::SonosClient;
 use sonos_discovery::Device;
 use sonos_state::{
-    Bass, Loudness, Mute, PlaybackState, SleepTimer, SpeakerId, StateManager, Treble, Volume,
+    Bass, CrossfadeMode, Loudness, Mute, PlaybackState, SleepTimer, SpeakerId, StateManager,
+    Treble, Volume,
 };
 
 use crate::Group;
@@ -77,9 +78,9 @@ impl SeekTarget {
 pub use sonos_state::PlayMode;
 
 use crate::property::{
-    BassHandle, CurrentTrackHandle, GroupMembershipHandle, LoudnessHandle, MuteHandle,
-    PlayModeHandle, PlaybackStateHandle, PositionHandle, PropertyHandle, SleepTimerHandle,
-    SpeakerContext, TrebleHandle, VolumeHandle,
+    BassHandle, CrossfadeModeHandle, CurrentTrackHandle, GroupMembershipHandle, LoudnessHandle,
+    MuteHandle, PlayModeHandle, PlaybackStateHandle, PositionHandle, PropertyHandle,
+    SleepTimerHandle, SpeakerContext, TrebleHandle, VolumeHandle,
 };
 
 /// Speaker handle with property access
@@ -136,6 +137,8 @@ pub struct Speaker {
     pub current_track: CurrentTrackHandle,
     /// Play mode (repeat / shuffle)
     pub play_mode: PlayModeHandle,
+    /// Crossfade between tracks (true = enabled)
+    pub crossfade_mode: CrossfadeModeHandle,
     /// Sleep timer state. Fetch-only: the device does not event the remaining
     /// time, so `watch()` reports only fetches and `configure_sleep_timer()`
     pub sleep_timer: SleepTimerHandle,
@@ -222,6 +225,7 @@ impl Speaker {
             position: PropertyHandle::new(Arc::clone(&context)),
             current_track: PropertyHandle::new(Arc::clone(&context)),
             play_mode: PropertyHandle::new(Arc::clone(&context)),
+            crossfade_mode: PropertyHandle::new(Arc::clone(&context)),
             sleep_timer: PropertyHandle::new(Arc::clone(&context)),
             // ZoneGroupTopology properties
             group_membership: PropertyHandle::new(Arc::clone(&context)),
@@ -411,8 +415,13 @@ impl Speaker {
     }
 
     /// Set crossfade mode
+    ///
+    /// Updates the state cache to the new `CrossfadeMode` on success.
     pub fn set_crossfade_mode(&self, enabled: bool) -> Result<(), SdkError> {
         self.exec(av_transport::set_crossfade_mode(enabled).build())?;
+        self.context
+            .state_manager
+            .set_property(&self.context.speaker_id, CrossfadeMode(enabled));
         Ok(())
     }
 

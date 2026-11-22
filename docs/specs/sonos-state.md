@@ -366,9 +366,9 @@ table to keep in sync. `to_change()` converts a value back into the `PropertyCha
 `ChangeEvent` carries; it defaults to `None`, and a property that does not override it cannot
 be announced — `maybe_emit_change()` (`src/state.rs:1098`) warns and drops the notification.
 
-15 types implement `SonosProperty` (`src/property.rs`): `Volume`, `Mute`, `Bass`, `Treble`,
+16 types implement `SonosProperty` (`src/property.rs`): `Volume`, `Mute`, `Bass`, `Treble`,
 `Loudness`, `GroupVolume`, `GroupMute`, `GroupVolumeChangeable`, `PlaybackState`, `Position`,
-`CurrentTrack`, `PlayMode`, `SleepTimer`, `GroupMembership`, and `Topology`. `SleepTimer` has
+`CurrentTrack`, `PlayMode`, `CrossfadeMode`, `SleepTimer`, `GroupMembership`, and `Topology`. `SleepTimer` has
 no decoder arm: AVTransport events carry only `SleepTimerGeneration`, never the remaining
 time, so its value arrives by fetch or local write alone. `Topology` is the one that does not
 override `to_change()`. `GroupInfo` (:580) is a plain data type carried inside `Topology`, not

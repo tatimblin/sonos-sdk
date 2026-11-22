@@ -400,6 +400,7 @@ mod tests {
                 rel_count: None,
                 abs_count: None,
                 play_mode: None,
+                crossfade_mode: None,
                 next_track_uri: None,
                 next_track_metadata: None,
                 queue_length: None,

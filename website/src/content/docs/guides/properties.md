@@ -18,6 +18,7 @@ Every speaker property in the SDK supports three access patterns. This page expl
 | `position` | `Position` | `.position_ms`, `.duration_ms`, `.progress() -> f64` |
 | `current_track` | `CurrentTrack` | `.title`, `.artist`, `.album`, `.album_art_uri`, `.uri` — each `Option<String>`; plus `.display() -> String` and `.album_art_url(ip) -> Option<String>` |
 | `play_mode` | `PlayMode` | `Normal`, `RepeatAll`, `RepeatOne`, `ShuffleNoRepeat`, `Shuffle`, `ShuffleRepeatOne`; plus `.is_shuffle()`, `.is_repeat()` |
+| `crossfade_mode` | `CrossfadeMode(bool)` | `.is_enabled() -> bool` |
 | `sleep_timer` | `SleepTimer` | `.remaining_ms: Option<u64>`, `.is_active()` — fetch-only, see below |
 | `group_membership` | `GroupMembership` | `.group_id`, `.is_coordinator` |
 
