@@ -308,7 +308,12 @@ fn apply_topology_changes(
     let (membership_changes, ip_updates) = {
         let mut store = store.write();
 
-        // 1. Clear existing groups
+        // 1. Clear existing groups, keeping the cached properties (volume, mute)
+        //    of groups that come back unchanged. A full snapshot re-lists every
+        //    group, not just the ones that changed, and GroupRenderingControl
+        //    only sends an event when a value changes, so a dropped value would
+        //    stay empty until the user next touched that group's volume.
+        let kept_props = store.take_unchanged_group_props(&changes.groups);
         store.clear_groups();
 
         // 2. Add new groups
@@ -319,6 +324,9 @@ fn apply_topology_changes(
                 group.member_ids.len()
             );
             store.add_group(group);
+        }
+        for (group_id, props) in kept_props {
+            store.group_props.insert(group_id, props);
         }
 
         // 3. Update GroupMembership for each speaker and track which ones
@@ -1070,6 +1078,76 @@ mod tests {
 
         // And no spurious notification was emitted
         assert!(iter.try_recv().is_none());
+    }
+
+    /// Seed one group with a cached GroupVolume, then apply a full topology
+    /// snapshot listing `next_members` under the same group ID.
+    fn group_volume_after_snapshot(next_members: &[&str]) -> Option<crate::property::GroupVolume> {
+        let store = Arc::new(RwLock::new(StateStore::new()));
+        let watched = Arc::new(RwLock::new(WatchCounts::new()));
+        let fanout = Arc::new(EventFanout::new());
+
+        let speaker1 = SpeakerId::new("RINCON_111");
+        let group_id = GroupId::new("RINCON_111:1");
+        {
+            let mut s = store.write();
+            s.add_speaker(make_speaker_info(
+                "RINCON_111",
+                "Living Room",
+                "192.168.1.101",
+            ));
+            s.add_speaker(make_speaker_info("RINCON_222", "Kitchen", "192.168.1.102"));
+            s.add_group(GroupInfo::new(
+                group_id.clone(),
+                speaker1.clone(),
+                vec![speaker1.clone()],
+            ));
+            s.set_group(&group_id, crate::property::GroupVolume(42), test_stamp());
+        }
+
+        let snapshot = TopologyChanges {
+            groups: vec![GroupInfo::new(
+                group_id.clone(),
+                speaker1,
+                next_members.iter().map(|id| SpeakerId::new(*id)).collect(),
+            )],
+            memberships: vec![],
+            boot_seqs: vec![],
+            speaker_ips: vec![],
+            satellite_ids: vec![],
+        };
+        let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::new()));
+        apply_topology_changes(
+            &store,
+            &watched,
+            &fanout,
+            &ip_to_speaker,
+            snapshot,
+            test_stamp(),
+        );
+
+        let s = store.read();
+        s.get_group::<crate::property::GroupVolume>(&group_id)
+    }
+
+    #[test]
+    fn test_full_topology_snapshot_keeps_props_of_unchanged_groups() {
+        // Sonos re-sends the whole topology for unrelated updates. A group that
+        // comes back with the same ID and members keeps its cached volume.
+        assert_eq!(
+            group_volume_after_snapshot(&["RINCON_111"]),
+            Some(crate::property::GroupVolume(42))
+        );
+    }
+
+    #[test]
+    fn test_full_topology_snapshot_drops_props_when_members_change() {
+        // A speaker joined: the group volume is now a different average, so the
+        // cached value must not be reused.
+        assert_eq!(
+            group_volume_after_snapshot(&["RINCON_111", "RINCON_222"]),
+            None
+        );
     }
 
     // ========================================================================
