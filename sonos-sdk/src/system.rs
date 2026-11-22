@@ -853,6 +853,10 @@ impl SonosSystem {
     /// Returns all groups in the system. Every speaker is always in a group,
     /// so a single speaker forms a group of one.
     ///
+    /// The order is deterministic: largest group first (by member count), then
+    /// by coordinator name, then by group ID. Groups are stored in a hash map,
+    /// so without this the order would change between calls and processes.
+    ///
     /// # Example
     ///
     /// ```rust,ignore
@@ -865,7 +869,8 @@ impl SonosSystem {
     /// ```
     pub fn groups(&self) -> Vec<Group> {
         self.ensure_topology();
-        self.state_manager
+        let mut groups: Vec<Group> = self
+            .state_manager
             .groups()
             .into_iter()
             .filter_map(|info| {
@@ -875,7 +880,19 @@ impl SonosSystem {
                     self.api_client.clone(),
                 )
             })
-            .collect()
+            .collect();
+        groups.sort_by_cached_key(|group| {
+            let coordinator_name = self
+                .state_manager
+                .speaker_info(&group.coordinator_id)
+                .map(|info| info.name);
+            (
+                std::cmp::Reverse(group.member_ids.len()),
+                coordinator_name,
+                group.id.as_str().to_owned(),
+            )
+        });
+        groups
     }
 
     /// Get a specific group by ID (sync)
@@ -1657,6 +1674,48 @@ mod tests {
             groups.iter().any(|g| g.member_ids.len() == 1),
             "the standalone group must survive alongside the multi-member one"
         );
+    }
+
+    /// `groups()` must not inherit the hash map's iteration order: largest
+    /// first, then coordinator name, then group ID.
+    #[test]
+    fn test_groups_returned_in_stable_order() {
+        let names = ["Office", "Kitchen", "Bedroom", "Den"];
+        let devices: Vec<Device> = names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| Device {
+                id: format!("RINCON_{i:03}"),
+                name: name.to_string(),
+                room_name: name.to_string(),
+                ip_address: format!("192.0.2.{}", 10 + i),
+                port: 1400,
+                model_name: "Sonos One".to_string(),
+            })
+            .collect();
+        let group = |coordinator: usize, members: &[usize]| {
+            (
+                GroupId::new(format!("RINCON_{coordinator:03}:1")),
+                SpeakerId::new(format!("RINCON_{coordinator:03}")),
+                members
+                    .iter()
+                    .map(|m| SpeakerId::new(format!("RINCON_{m:03}")))
+                    .collect(),
+            )
+        };
+
+        let system = SonosSystem::from_devices_offline_with_groups(
+            devices,
+            vec![group(0, &[0]), group(1, &[1]), group(3, &[3, 2])],
+        )
+        .unwrap();
+
+        let order: Vec<String> = system
+            .groups()
+            .iter()
+            .filter_map(|g| g.coordinator().map(|c| c.name))
+            .collect();
+        assert_eq!(order, ["Den", "Kitchen", "Office"]);
     }
 
     /// A bonded home theater must appear as exactly one controllable speaker.
