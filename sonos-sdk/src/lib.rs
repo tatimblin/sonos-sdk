@@ -105,8 +105,8 @@ pub use sonos_discovery;
 // Re-export commonly used types from sonos-state
 pub use sonos_state::{
     ChangeEvent, ChangeIterator, ChangeSource, CurrentTrack, GroupId, GroupMute, GroupVolume,
-    GroupVolumeChangeable, PlaybackState, PropertyChange, SpeakerId, Volume, WriteOutcome,
-    WriteStamp,
+    GroupVolumeChangeable, PlaybackSource, PlaybackState, PropertyChange, SpeakerId, Volume,
+    WriteOutcome, WriteStamp,
 };
 
 /// The property trait, re-exported so downstream crates can write code that is
