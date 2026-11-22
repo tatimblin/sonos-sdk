@@ -73,7 +73,8 @@ pub enum WatchMode {
     /// No event manager configured - cache-only mode
     ///
     /// Properties will only update when explicitly fetched via `fetch()`.
-    /// Call `system.configure_events()` to enable automatic updates.
+    /// A `SonosSystem` starts its event manager on the first `watch()`, so this
+    /// only occurs for a state manager built without one, such as in tests.
     CacheOnly,
 }
 
@@ -279,7 +280,7 @@ pub trait FetchableWithContext: SonosProperty {
     ) -> Option<Self>;
 }
 
-/// Generic property handle providing get/fetch/watch/unwatch pattern
+/// Generic property handle providing the get/fetch/watch pattern
 ///
 /// This is the core abstraction for the DOM-like API. Each property on a Speaker
 /// is accessed through a PropertyHandle that provides consistent methods for
@@ -931,7 +932,7 @@ impl GroupContext {
 
 /// Generic property handle for group-scoped properties
 ///
-/// Provides the same get/fetch/watch/unwatch pattern as `PropertyHandle`,
+/// Provides the same get/fetch/watch pattern as `PropertyHandle`,
 /// but reads from the group property store and executes API calls against
 /// the group's coordinator.
 #[derive(Clone)]

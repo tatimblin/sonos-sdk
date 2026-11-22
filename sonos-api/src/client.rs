@@ -99,7 +99,7 @@ impl SonosClient {
     /// Execute an enhanced UPnP operation with composability features
     ///
     /// This method executes a ComposableOperation that was built using the new
-    /// enhanced operation framework with validation, retry policies, and timeouts.
+    /// enhanced operation framework with validation and timeouts.
     ///
     /// # Arguments
     /// * `ip` - The IP address of the Sonos device

@@ -15,8 +15,8 @@
 //!
 //! # Enhanced Operation Framework
 //!
-//! The operation framework provides composable, declarative UPnP operations with validation,
-//! retry policies, and timeouts:
+//! The operation framework provides declarative UPnP operations with validation and
+//! timeouts:
 //!
 //! ```rust,ignore
 //! use sonos_api::{SonosClient, services::av_transport, services::rendering_control};
@@ -31,12 +31,9 @@
 //!
 //! client.execute_enhanced("192.168.1.100", play_op)?;
 //!
-//! // Composed operations
-//! let sequence = av_transport::play("1".to_string())
-//!     .build()?
-//!     .and_then(rendering_control::set_volume("Master".to_string(), 75).build()?);
-//!
-//! client.execute_sequence("192.168.1.100", sequence)?;
+//! // Operations run one at a time
+//! let volume_op = rendering_control::set_volume("Master".to_string(), 75).build()?;
+//! client.execute_enhanced("192.168.1.100", volume_op)?;
 //! ```
 //!
 //! # Event Subscription Management
