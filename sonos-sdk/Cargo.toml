@@ -26,7 +26,6 @@ test-support = []
 
 [dev-dependencies]
 proptest = { workspace = true }
-chrono = "0.4"
 ctrlc = "3.4"
 tracing-subscriber = { workspace = true }
 
