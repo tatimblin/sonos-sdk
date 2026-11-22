@@ -164,16 +164,31 @@ println!("Starts populated: {:?}", volume.value());
 
 ## Writing properties
 
-Writes are methods on `Speaker` and `Group`, not on the property handle:
+Writable properties have a `set()` on the handle that takes the property's own
+value type:
+
+```rust
+speaker.volume.set(Volume::new(50))?;
+speaker.mute.set(Mute::new(true))?;
+speaker.bass.set(Bass::new(5))?;
+
+group.volume.set(GroupVolume::new(40))?;
+group.mute.set(GroupMute::new(false))?;
+```
+
+`set()` exists on `volume`, `mute`, `bass`, `treble` and `loudness` on a
+speaker, and on `volume` and `mute` on a group. Other handles have no `set()`,
+so calling it on one is a compile error, not a runtime failure. Code that is
+generic over properties can bound on `P: Settable` (or `GroupSettable`).
+
+The older methods on `Speaker` and `Group` still work and do the same thing:
 
 ```rust
 speaker.set_volume(50)?;
-speaker.set_mute(true)?;
-speaker.set_bass(5)?;
-
-group.set_volume(40)?;
 group.set_mute(false)?;
 ```
 
-Each is a synchronous SOAP call that updates the cache on success, recorded with
-`ChangeSource::LocalAction`.
+Either way it is a synchronous SOAP call that updates the cache on success,
+recorded with `ChangeSource::LocalAction`. A value the operation rejects
+(`Volume(150)`) returns `SdkError::ValidationFailed` and leaves the cache
+alone.

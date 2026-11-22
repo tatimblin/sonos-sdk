@@ -621,6 +621,15 @@ The commands that write the cache are `play`/`pause`/`stop` (`src/speaker.rs:298
 `set_treble` (`:650`), `set_loudness` (`:659`), and the group equivalents
 `Group::set_volume` (`src/group.rs:337`), `set_relative_volume` (`:347`) and `set_mute` (`:361`).
 
+`set_volume`, `set_mute`, `set_bass`, `set_treble`, `set_loudness` and the group
+`set_volume`/`set_mute` are thin wrappers over the generic handle write,
+`PropertyHandle::<P: Settable>::set()` / `GroupPropertyHandle::<P: GroupSettable>::set()`
+(`src/property/handles.rs`). `Settable` is the write-side twin of `Fetchable`: it names the
+UPnP set operation and builds it from the value (`build_set_operation(&self)`), and `set()`
+executes it and writes the cache. Keeping the operation on a trait and the
+execute-then-cache sequence in one generic method means a new writable property needs only an
+impl, and the bespoke methods cannot drift from `set()` because they are `set()`.
+
 Commands with no corresponding cached property — `next`, `previous`, `seek`, the queue
 operations, the alarm operations — write nothing and rely on the resulting device event.
 
@@ -959,7 +968,8 @@ With `is_success()` (`:44`) and `is_partial()` (`:49`). Returned by `Group::diss
 `Property` and `SonosProperty` are re-exported separately (`src/lib.rs:117`) so a downstream
 crate can write code generic over a property without depending on `sonos-state` directly.
 
-Not re-exported here but reachable through `sonos_state`: `Mute`, `Bass`, `Treble`, `Loudness`,
+`Mute`, `Bass`, `Treble` and `Loudness` are re-exported too, so a `set()` value can be named
+without reaching into `sonos_state`. Not re-exported here but reachable through `sonos_state`:
 `Position`, `GroupMembership`, `Topology`.
 
 **Operation response types**, from `sonos-api` (`src/lib.rs:87-95`) — the return types of the
@@ -1545,7 +1555,7 @@ manifest.
 
 | Enhancement | Priority | Rationale | Dependencies |
 |-------------|----------|-----------|--------------|
-| `Mute`, `Bass`, `Treble`, `Loudness`, `Position` in the prelude | P2 | They are already handles on `Speaker`; the prelude lags the surface | — |
+| `Position` in the prelude | P2 | It is already a handle on `Speaker`; the prelude lags the surface | — |
 | Explicit `refresh()` on `SonosSystem` | P1 | Adding a speaker mid-session currently depends on a lookup miss | — |
 | Concurrent topology prefetch | P2 | Bounds the worst case in §14.2 | — |
 | Async variant | P2 | Lets the SDK be used from an async application without `spawn_blocking` | An async `soap-client` |

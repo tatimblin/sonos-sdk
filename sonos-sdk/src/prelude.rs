@@ -10,7 +10,9 @@ pub use crate::speaker::{PlayMode, SeekTarget, Speaker};
 pub use crate::system::SonosSystem;
 
 // Property value types
-pub use sonos_state::{GroupId, GroupMute, GroupVolume, PlaybackState, SpeakerId, Volume};
+pub use sonos_state::{
+    Bass, GroupId, GroupMute, GroupVolume, Loudness, Mute, PlaybackState, SpeakerId, Treble, Volume,
+};
 
 // Change event payload — needed to match on `event.change` from `system.iter()`
 pub use sonos_state::{ChangeSource, PropertyChange};

@@ -335,10 +335,7 @@ impl Group {
     ///
     /// Updates the state cache to the new `GroupVolume` on success.
     pub fn set_volume(&self, volume: u16) -> Result<(), SdkError> {
-        self.exec(group_rendering_control::set_group_volume(volume).build())?;
-        self.state_manager
-            .set_group_property(&self.id, GroupVolume(volume));
-        Ok(())
+        self.volume.set(GroupVolume(volume))
     }
 
     /// Adjust group volume relative to current level
@@ -359,10 +356,7 @@ impl Group {
     ///
     /// Updates the state cache to the new `GroupMute` value on success.
     pub fn set_mute(&self, muted: bool) -> Result<(), SdkError> {
-        self.exec(group_rendering_control::set_group_mute(muted).build())?;
-        self.state_manager
-            .set_group_property(&self.id, GroupMute(muted));
-        Ok(())
+        self.mute.set(GroupMute(muted))
     }
 
     /// Snapshot the current group volume (for later restore)
