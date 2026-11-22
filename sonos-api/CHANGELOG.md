@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0](https://github.com/tatimblin/sonos-sdk/compare/sonos-api-v0.9.0...sonos-api-v0.10.0) - 2026-11-22
+
+### Added
+
+- [**breaking**] make crossfade mode a watchable property ([#123](https://github.com/tatimblin/sonos-sdk/pull/123))
+
+### Fixed
+
+- log subscription renewals through tracing instead of stderr ([#130](https://github.com/tatimblin/sonos-sdk/pull/130))
+
+### Other
+
+- fix doc comments that reference nonexistent APIs ([#127](https://github.com/tatimblin/sonos-sdk/pull/127))
+
 ## [0.9.0](https://github.com/tatimblin/sonos-sdk/compare/sonos-api-v0.8.0...sonos-api-v0.9.0) - 2026-09-18
 
 ### Other
