@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1](https://github.com/tatimblin/sonos-sdk/compare/sonos-sdk-v0.10.0...sonos-sdk-v0.10.1) - 2026-11-22
+
+### Added
+
+- keep watched playback positions current ([#132](https://github.com/tatimblin/sonos-sdk/pull/132))
+
 ## [0.10.0](https://github.com/tatimblin/sonos-sdk/compare/sonos-sdk-v0.9.0...sonos-sdk-v0.10.0) - 2026-11-22
 
 ### Added
