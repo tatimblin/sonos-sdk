@@ -42,7 +42,7 @@ use tracing::info;
 use crate::decoder::PropertyChange;
 use crate::event_worker::spawn_state_event_worker;
 use crate::iter::{ChangeIterator, EventFanout};
-use crate::model::{GroupId, SpeakerId, SpeakerInfo};
+use crate::model::{GroupId, SatelliteMember, SpeakerId, SpeakerInfo};
 use crate::property::{GroupInfo, Property, Scope, SonosProperty, Topology};
 use crate::{Result, StateError};
 
@@ -371,6 +371,8 @@ pub struct StateStore {
     pub(crate) speaker_to_group: HashMap<SpeakerId, GroupId>,
     /// Satellite speaker IDs (Invisible="1") from topology
     pub(crate) satellite_ids: HashSet<SpeakerId>,
+    /// Main speaker -> its bonded satellites, in display order
+    pub(crate) home_theaters: HashMap<SpeakerId, Vec<SatelliteMember>>,
 }
 
 impl StateStore {
@@ -384,6 +386,7 @@ impl StateStore {
             system_props: PropertyBag::new(),
             speaker_to_group: HashMap::new(),
             satellite_ids: HashSet::new(),
+            home_theaters: HashMap::new(),
         }
     }
 
@@ -901,6 +904,39 @@ impl StateManager {
     /// Store satellite speaker IDs from topology data.
     pub fn set_satellite_ids(&self, ids: Vec<SpeakerId>) {
         self.store.write().satellite_ids = ids.into_iter().collect();
+    }
+
+    /// The satellites bonded to `speaker_id`, in display order (left surround,
+    /// right surround, sub). Empty for a speaker with none, and for a
+    /// satellite itself.
+    pub fn satellites(&self, speaker_id: &SpeakerId) -> Vec<SatelliteMember> {
+        self.store
+            .read()
+            .home_theaters
+            .get(speaker_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// The main speaker `satellite_id` is bonded to, if it is a satellite.
+    pub fn satellite_main(&self, satellite_id: &SpeakerId) -> Option<SpeakerId> {
+        self.store
+            .read()
+            .home_theaters
+            .iter()
+            .find(|(_, sats)| sats.iter().any(|s| &s.id == satellite_id))
+            .map(|(main, _)| main.clone())
+    }
+
+    /// Store each main speaker's satellites from topology data, replacing any
+    /// previously stored, and the satellite ID set derived from them.
+    pub fn set_home_theaters(&self, home_theaters: Vec<(SpeakerId, Vec<SatelliteMember>)>) {
+        let mut store = self.store.write();
+        store.satellite_ids = home_theaters
+            .iter()
+            .flat_map(|(_, sats)| sats.iter().map(|s| s.id.clone()))
+            .collect();
+        store.home_theaters = home_theaters.into_iter().collect();
     }
 
     /// Create a blocking iterator over change events
@@ -2510,6 +2546,32 @@ mod tests {
         assert_eq!(stored.len(), 2);
         assert!(stored.contains(&SpeakerId::new("RINCON_SAT1")));
         assert!(stored.contains(&SpeakerId::new("RINCON_SAT2")));
+    }
+
+    #[test]
+    fn test_home_theaters() {
+        use crate::model::SatelliteRole;
+
+        let manager = StateManager::new().unwrap();
+        let main = SpeakerId::new("RINCON_MAIN");
+        let left = SatelliteMember::new(SpeakerId::new("RINCON_L"), SatelliteRole::LeftSurround);
+        let sub = SatelliteMember::new(SpeakerId::new("RINCON_SUB"), SatelliteRole::Sub);
+
+        manager.set_home_theaters(vec![(main.clone(), vec![left.clone(), sub.clone()])]);
+
+        assert_eq!(manager.satellites(&main), vec![left.clone(), sub.clone()]);
+        assert!(manager.satellites(&left.id).is_empty());
+        assert_eq!(manager.satellite_main(&sub.id), Some(main.clone()));
+        assert_eq!(manager.satellite_main(&main), None);
+        let mut ids = manager.get_satellite_ids();
+        ids.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        assert_eq!(ids, vec![left.id.clone(), sub.id.clone()]);
+
+        // A later topology without the sub replaces the old set.
+        manager.set_home_theaters(vec![(main.clone(), vec![left.clone()])]);
+        assert_eq!(manager.satellites(&main), vec![left]);
+        assert_eq!(manager.satellite_main(&sub.id), None);
+        assert_eq!(manager.get_satellite_ids().len(), 1);
     }
 
     // ========================================================================

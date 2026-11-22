@@ -13,7 +13,7 @@ use url::{Host, Url};
 
 use std::net::IpAddr;
 
-use crate::model::{GroupId, SpeakerId};
+use crate::model::{channels_for, GroupId, SatelliteMember, SatelliteRole, SpeakerId};
 use crate::property::{
     Bass, CrossfadeMode, CurrentTrack, GroupInfo, GroupMembership, GroupMute, GroupVolume,
     GroupVolumeChangeable, Loudness, Mute, PlayMode, PlaybackState, Position, SleepTimer, Treble,
@@ -47,6 +47,9 @@ pub struct TopologyChanges {
     pub speaker_ips: Vec<(SpeakerId, IpAddr)>,
     /// Speakers marked Invisible="1" (satellites: surrounds, subs)
     pub satellite_ids: Vec<SpeakerId>,
+    /// Each main speaker with bonded satellites, and those satellites with their
+    /// roles in display order. Speakers without satellites are absent.
+    pub home_theaters: Vec<(SpeakerId, Vec<SatelliteMember>)>,
 }
 
 /// A single property change
@@ -393,6 +396,7 @@ pub fn decode_topology_event(event: &ZoneGroupTopologyState) -> TopologyChanges 
     let mut boot_seqs = Vec::new();
     let mut speaker_ips = Vec::new();
     let mut satellite_ids = Vec::new();
+    let mut home_theaters = Vec::new();
 
     for zone_group in &event.zone_groups {
         let group_id = GroupId::new(&zone_group.id);
@@ -422,14 +426,26 @@ pub fn decode_topology_event(event: &ZoneGroupTopologyState) -> TopologyChanges 
                 speaker_ips.push((speaker_id, ip));
             }
 
+            let mut bonded = Vec::new();
             for sat in &member.satellites {
                 if sat.invisible == "1" {
                     let sat_id = SpeakerId::new(&sat.uuid);
                     satellite_ids.push(sat_id.clone());
                     if let Some(ip) = extract_ip_from_location(&sat.location) {
-                        speaker_ips.push((sat_id, ip));
+                        speaker_ips.push((sat_id.clone(), ip));
                     }
+                    // Each satellite's map lists the main and itself, so its
+                    // own entry gives its role.
+                    let channels = channels_for(&sat.ht_sat_chan_map_set, &sat.uuid).unwrap_or("");
+                    bonded.push(SatelliteMember::new(
+                        sat_id,
+                        SatelliteRole::from_channels(channels),
+                    ));
                 }
+            }
+            if !bonded.is_empty() {
+                bonded.sort_by(|a, b| a.role.cmp(&b.role));
+                home_theaters.push((SpeakerId::new(&member.uuid), bonded));
             }
         }
     }
@@ -440,6 +456,7 @@ pub fn decode_topology_event(event: &ZoneGroupTopologyState) -> TopologyChanges 
         boot_seqs,
         speaker_ips,
         satellite_ids,
+        home_theaters,
     }
 }
 
@@ -817,6 +834,121 @@ mod tests {
 
         assert_eq!(changes.satellite_ids.len(), 1);
         assert_eq!(changes.satellite_ids[0], SpeakerId::new("RINCON_SAT"));
+
+        // No channel map: the satellite is still recorded, with an unknown role.
+        assert_eq!(
+            changes.home_theaters,
+            vec![(
+                SpeakerId::new("RINCON_MAIN"),
+                vec![SatelliteMember::new(
+                    SpeakerId::new("RINCON_SAT"),
+                    SatelliteRole::Other(String::new())
+                )]
+            )]
+        );
+    }
+
+    /// A one-group topology whose main speaker has `satellites` as
+    /// `(uuid, HTSatChanMapSet)` pairs.
+    fn home_theater_topology(main: &str, satellites: &[(&str, &str)]) -> ZoneGroupTopologyState {
+        use sonos_stream::events::{
+            NetworkInfo, SatelliteInfo, ZoneGroupInfo, ZoneGroupMemberInfo,
+        };
+
+        ZoneGroupTopologyState {
+            zone_groups: vec![ZoneGroupInfo {
+                coordinator: main.to_string(),
+                id: format!("{main}:1"),
+                members: vec![ZoneGroupMemberInfo {
+                    uuid: main.to_string(),
+                    location: "http://192.168.5.62:1400/xml/device_description.xml".to_string(),
+                    zone_name: "Basement".to_string(),
+                    software_version: "86.2-70230".to_string(),
+                    boot_seq: 1,
+                    network_info: NetworkInfo::default(),
+                    satellites: satellites
+                        .iter()
+                        .map(|(uuid, map)| SatelliteInfo {
+                            uuid: uuid.to_string(),
+                            location: String::new(),
+                            zone_name: "Basement".to_string(),
+                            ht_sat_chan_map_set: map.to_string(),
+                            invisible: "1".to_string(),
+                        })
+                        .collect(),
+                }],
+            }],
+            vanished_devices: vec![],
+        }
+    }
+
+    /// Basement's live topology: a Playbar with two Sonos One surrounds. Each
+    /// satellite's map lists only the main and itself.
+    #[test]
+    fn test_decode_topology_reads_satellite_roles() {
+        let event = home_theater_topology(
+            "RINCON_5CAAFDAE58BD01400",
+            &[
+                (
+                    "RINCON_7828CAFB9D9C01400",
+                    "RINCON_5CAAFDAE58BD01400:LF,RF;RINCON_7828CAFB9D9C01400:RR",
+                ),
+                (
+                    "RINCON_7828CA128F0001400",
+                    "RINCON_5CAAFDAE58BD01400:LF,RF;RINCON_7828CA128F0001400:LR",
+                ),
+            ],
+        );
+
+        let changes = decode_topology_event(&event);
+
+        // Listed right surround first; sorted to left, right.
+        assert_eq!(
+            changes.home_theaters,
+            vec![(
+                SpeakerId::new("RINCON_5CAAFDAE58BD01400"),
+                vec![
+                    SatelliteMember::new(
+                        SpeakerId::new("RINCON_7828CA128F0001400"),
+                        SatelliteRole::LeftSurround
+                    ),
+                    SatelliteMember::new(
+                        SpeakerId::new("RINCON_7828CAFB9D9C01400"),
+                        SatelliteRole::RightSurround
+                    ),
+                ]
+            )]
+        );
+    }
+
+    #[test]
+    fn test_decode_topology_orders_surrounds_before_sub() {
+        let full = "RINCON_M:LF,RF;RINCON_SUB:SW;RINCON_L:LR;RINCON_R:RR";
+        let event = home_theater_topology(
+            "RINCON_M",
+            &[("RINCON_SUB", full), ("RINCON_R", full), ("RINCON_L", full)],
+        );
+
+        let changes = decode_topology_event(&event);
+        let roles: Vec<SatelliteRole> = changes.home_theaters[0]
+            .1
+            .iter()
+            .map(|s| s.role.clone())
+            .collect();
+        assert_eq!(
+            roles,
+            vec![
+                SatelliteRole::LeftSurround,
+                SatelliteRole::RightSurround,
+                SatelliteRole::Sub
+            ]
+        );
+    }
+
+    #[test]
+    fn test_decode_topology_without_satellites_has_no_home_theaters() {
+        let event = home_theater_topology("RINCON_M", &[]);
+        assert!(decode_topology_event(&event).home_theaters.is_empty());
     }
 
     #[test]

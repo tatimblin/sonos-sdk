@@ -16,8 +16,8 @@ use std::sync::Arc;
 use sonos_api::SonosClient;
 use sonos_discovery::Device;
 use sonos_state::{
-    Bass, CrossfadeMode, Loudness, Mute, PlaybackState, SleepTimer, SpeakerId, StateManager,
-    Treble, Volume,
+    Bass, CrossfadeMode, Loudness, Mute, PlaybackState, SatelliteRole, SleepTimer, SpeakerId,
+    StateManager, Treble, Volume,
 };
 
 use crate::Group;
@@ -101,6 +101,24 @@ use crate::property::{
 /// // Watch for volume changes — hold the handle to keep the subscription alive
 /// let _vol = speaker.volume.watch()?;
 /// ```
+/// A surround or sub bonded to a speaker, from [`Speaker::satellites()`].
+///
+/// Satellites play as part of their main speaker and take no commands of their
+/// own, which is why they are not in [`crate::SonosSystem::speakers()`]. Their
+/// levels (surround level, sub level) are settings on the main speaker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Satellite {
+    /// The satellite's own speaker ID.
+    pub id: SpeakerId,
+    /// The channel it plays, such as the left surround.
+    pub role: SatelliteRole,
+    /// Model name, such as "Sonos One". `None` when discovery didn't find the
+    /// device itself, only its entry in the topology.
+    pub model_name: Option<String>,
+    /// Current IP address, `None` for the same reason as `model_name`.
+    pub ip: Option<IpAddr>,
+}
+
 #[derive(Clone)]
 pub struct Speaker {
     /// Unique speaker identifier
@@ -261,6 +279,38 @@ impl Speaker {
             Arc::clone(&self.context.state_manager),
             self.context.api_client.clone(),
         )
+    }
+
+    /// The surrounds and subs bonded to this speaker, in display order: left
+    /// surround, right surround, then sub (sync, no network call).
+    ///
+    /// Reads the latest topology, so it reflects satellites added or removed in
+    /// the Sonos app. Empty for a speaker with no satellites, and before
+    /// topology has loaded.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let basement = sonos.speaker("Basement").unwrap();
+    /// for sat in basement.satellites() {
+    ///     println!("{} • {}", sat.role.label(), sat.model_name.unwrap_or_default());
+    /// }
+    /// ```
+    pub fn satellites(&self) -> Vec<Satellite> {
+        let state_manager = &self.context.state_manager;
+        state_manager
+            .satellites(&self.context.speaker_id)
+            .into_iter()
+            .map(|member| {
+                let info = state_manager.speaker_info(&member.id);
+                Satellite {
+                    id: member.id,
+                    role: member.role,
+                    model_name: info.as_ref().map(|i| i.model_name.clone()),
+                    ip: info.map(|i| i.ip_address),
+                }
+            })
+            .collect()
     }
 
     // ========================================================================

@@ -60,6 +60,12 @@
 //! - Cache updates match API changes
 //! - Multiple event validation (change + restore)
 //!
+//! ### test_home_theater_satellites
+//! **Purpose:** Validates satellites are read from the live topology
+//! - Satellites are excluded from `speakers()` but listed by `speaker.satellites()`
+//! - Every satellite has a known role, a model name and an IP
+//! - Requires a home theater (soundbar with surrounds or a sub)
+//!
 //! ## Error Handling
 //!
 //! Tests fail loudly when requirements aren't met:
@@ -487,5 +493,55 @@ fn test_event_integration() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     eprintln!("✅ Event integration validated: property watching -> API changes -> events via system.iter()");
+    Ok(())
+}
+
+#[test]
+#[ignore] // Requires real hardware - run manually with --ignored
+fn test_home_theater_satellites() -> Result<(), Box<dyn std::error::Error>> {
+    let system = require_real_speakers()?;
+
+    let home_theaters: Vec<(Speaker, Vec<sonos_sdk::Satellite>)> = system
+        .speakers()
+        .into_iter()
+        .map(|s| {
+            let sats = s.satellites();
+            (s, sats)
+        })
+        .filter(|(_, sats)| !sats.is_empty())
+        .collect();
+    if home_theaters.is_empty() {
+        return Err(
+            "No home theater found. This test needs a soundbar with surrounds or a sub.".into(),
+        );
+    }
+
+    let speaker_ids: Vec<SpeakerId> = system.speakers().into_iter().map(|s| s.id).collect();
+    for (main, sats) in &home_theaters {
+        println!("{} • {}", main.name, main.model_name);
+        for sat in sats {
+            println!(
+                "  {} • {} ({})",
+                sat.role.label(),
+                sat.model_name.as_deref().unwrap_or("?"),
+                sat.ip
+                    .map(|ip| ip.to_string())
+                    .unwrap_or_else(|| "?".to_string())
+            );
+            assert!(
+                !matches!(sat.role, sonos_sdk::SatelliteRole::Other(_)),
+                "unrecognised role {:?} for {}",
+                sat.role,
+                sat.id
+            );
+            assert!(sat.model_name.is_some(), "no model name for {}", sat.id);
+            assert!(sat.ip.is_some(), "no IP for {}", sat.id);
+            assert!(
+                !speaker_ids.contains(&sat.id),
+                "satellite {} is listed as a speaker",
+                sat.id
+            );
+        }
+    }
     Ok(())
 }
