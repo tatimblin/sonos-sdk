@@ -130,6 +130,7 @@ pub mod prelude;
 mod cache;
 mod error;
 mod group;
+mod position_refresh;
 pub mod property;
 mod speaker;
 mod system;

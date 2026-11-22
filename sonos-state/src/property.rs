@@ -371,7 +371,14 @@ impl PlaybackState {
     }
 }
 
-/// Current playback position and duration
+/// Playback position and duration, as of the last time it was read
+///
+/// Not evented in practice: Sonos AVTransport events do not carry `RelTime`,
+/// so the value comes from `GetPositionInfo` (a fetch). While a position is
+/// watched, the SDK fetches it again when the watch starts and whenever the
+/// coordinator's track or transport state changes — the moments it jumps.
+/// Between those, `position_ms` is a snapshot and does not advance in the
+/// cache; a UI that shows progress should interpolate from it while playing.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Position {
     /// Current position in milliseconds

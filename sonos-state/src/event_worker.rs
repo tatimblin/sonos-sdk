@@ -4,7 +4,7 @@
 //! SonosEventManager and applies them to the StateStore.
 
 use std::net::IpAddr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::thread::{self, JoinHandle};
 
 use parking_lot::RwLock;
@@ -17,9 +17,10 @@ use sonos_api::ServiceScope;
 use crate::decoder::{decode_event, decode_topology_event, PropertyChange, TopologyChanges};
 use crate::iter::EventFanout;
 use crate::model::SpeakerId;
-use crate::property::{GroupMembership, Property, Scope};
+use crate::property::{GroupMembership, Position, Property, Scope};
 use crate::state::{
-    is_pair_watched, ChangeEvent, ChangeSource, StateStore, WatchCounts, WriteStamp,
+    is_pair_watched, ChangeEvent, ChangeSource, PositionRefreshFn, StateStore, WatchCounts,
+    WriteStamp,
 };
 
 /// Spawns the state event worker thread
@@ -29,12 +30,15 @@ use crate::state::{
 /// - Decodes them into typed property changes
 /// - Applies changes to the StateStore
 /// - Emits ChangeEvents for watched properties
+/// - Asks for a fresh `Position` when a watched one has jumped (see
+///   [`position_refresh_target`])
 pub(crate) fn spawn_state_event_worker(
     event_manager: Arc<SonosEventManager>,
     store: Arc<RwLock<StateStore>>,
     watched: Arc<RwLock<WatchCounts>>,
     fanout: Arc<EventFanout>,
     ip_to_speaker: Arc<RwLock<std::collections::HashMap<IpAddr, SpeakerId>>>,
+    position_refresh: Arc<OnceLock<PositionRefreshFn>>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
         tracing::info!("State event worker started, waiting for events...");
@@ -46,6 +50,7 @@ pub(crate) fn spawn_state_event_worker(
             &watched,
             &fanout,
             &ip_to_speaker,
+            &position_refresh,
         );
 
         tracing::info!("State event worker stopped");
@@ -73,6 +78,7 @@ fn run_event_loop<I>(
     watched: &Arc<RwLock<WatchCounts>>,
     fanout: &EventFanout,
     ip_to_speaker: &Arc<RwLock<std::collections::HashMap<IpAddr, SpeakerId>>>,
+    position_refresh: &OnceLock<PositionRefreshFn>,
 ) where
     I: Iterator<Item = EnrichedEvent>,
 {
@@ -90,7 +96,11 @@ fn run_event_loop<I>(
         //    `PropertyChange` is applied under its own lock acquisition), and
         //    the next topology or service event overwrites it wholesale.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            handle_event(&event, store, watched, fanout, ip_to_speaker);
+            if let Some(coordinator) = handle_event(&event, store, watched, fanout, ip_to_speaker) {
+                if let Some(refresh) = position_refresh.get() {
+                    refresh(&coordinator);
+                }
+            }
         }));
 
         if result.is_err() {
@@ -115,13 +125,16 @@ fn run_event_loop<I>(
 }
 
 /// Process a single event: resolve identity, gate on coordinator, decode, apply.
+///
+/// Returns the coordinator whose `Position` should be fetched again, if any —
+/// see [`position_refresh_target`].
 fn handle_event(
     event: &EnrichedEvent,
     store: &Arc<RwLock<StateStore>>,
     watched: &Arc<RwLock<WatchCounts>>,
     fanout: &EventFanout,
     ip_to_speaker: &Arc<RwLock<std::collections::HashMap<IpAddr, SpeakerId>>>,
-) {
+) -> Option<SpeakerId> {
     tracing::debug!(
         "Received event from {} for service {:?}",
         event.speaker_ip,
@@ -154,7 +167,7 @@ fn handle_event(
             topology_changes,
             stamp,
         );
-        return;
+        return None;
     }
 
     // Look up speaker_id from IP for non-topology events
@@ -174,7 +187,7 @@ fn handle_event(
                     "Received event from unknown speaker IP: {} (not in ip_to_speaker map)",
                     event.speaker_ip
                 );
-                return;
+                return None;
             }
         }
     };
@@ -219,7 +232,7 @@ fn handle_event(
                 event.service,
                 speaker_id.as_str()
             );
-            return;
+            return None;
         }
     }
 
@@ -252,6 +265,40 @@ fn handle_event(
             notify_group_members(watched, fanout, &members, &decoded.changes, stamp);
         }
     }
+
+    let s = store.read();
+    let watched = watched.read();
+    position_refresh_target(&s, &watched, &speaker_id, &decoded.changes)
+}
+
+/// The coordinator whose `Position` to fetch again after `changes`, if any.
+///
+/// Sonos events never carry `RelTime`, so a cached `Position` only changes when
+/// someone fetches it. It jumps when the track or the transport state changes
+/// (a new track starts at 0:00; play, pause and stop move the anchor), so those
+/// are the moments to re-read it. Only a watched position is worth the round
+/// trip: on the coordinator itself or on any member, since members read the
+/// coordinator's value.
+fn position_refresh_target(
+    store: &StateStore,
+    watched: &WatchCounts,
+    speaker_id: &SpeakerId,
+    changes: &[PropertyChange],
+) -> Option<SpeakerId> {
+    let jumped = changes.iter().any(|c| {
+        matches!(
+            c,
+            PropertyChange::CurrentTrack(_) | PropertyChange::PlaybackState(_)
+        )
+    });
+    if !jumped {
+        return None;
+    }
+    let watched_here = is_pair_watched(watched, speaker_id, Position::KEY)
+        || resolve_group_members(store, speaker_id)
+            .iter()
+            .any(|m| is_pair_watched(watched, m, Position::KEY));
+    watched_here.then(|| speaker_id.clone())
 }
 
 /// Apply topology changes from a ZoneGroupTopology event
@@ -1425,6 +1472,7 @@ mod tests {
             &watched,
             &fanout,
             &ip_to_speaker,
+            &OnceLock::new(),
         );
 
         // The valid event was still processed and its notification delivered
@@ -1763,5 +1811,74 @@ mod tests {
 
         // No event for the unwatched member
         assert!(iter.try_recv().is_none());
+    }
+
+    /// A two-speaker group with nothing watched, for `position_refresh_target`.
+    fn refresh_fixture() -> (StateStore, Arc<RwLock<WatchCounts>>, SpeakerId, SpeakerId) {
+        let coordinator = SpeakerId::new("RINCON_COORD");
+        let member = SpeakerId::new("RINCON_MEMBER");
+        let mut store = StateStore::new();
+        store.add_speaker(make_speaker_info("RINCON_COORD", "Bedroom", "192.0.2.21"));
+        store.add_speaker(make_speaker_info("RINCON_MEMBER", "Kitchen", "192.0.2.22"));
+        store.add_group(GroupInfo::new(
+            GroupId::new("RINCON_COORD:1"),
+            coordinator.clone(),
+            vec![coordinator.clone(), member.clone()],
+        ));
+        let watched = Arc::new(RwLock::new(WatchCounts::new()));
+        (store, watched, coordinator, member)
+    }
+
+    #[test]
+    fn test_position_refreshed_when_track_or_state_changes_while_watched() {
+        use crate::property::{CurrentTrack, PlaybackState};
+
+        let (store, watched, coordinator, _) = refresh_fixture();
+        retain_direct_watch(&watched, &coordinator, Position::KEY);
+
+        for change in [
+            PropertyChange::CurrentTrack(CurrentTrack::new()),
+            PropertyChange::PlaybackState(PlaybackState::Paused),
+        ] {
+            assert_eq!(
+                position_refresh_target(&store, &watched.read(), &coordinator, &[change]),
+                Some(coordinator.clone())
+            );
+        }
+    }
+
+    #[test]
+    fn test_position_refreshed_for_coordinator_when_a_member_watches() {
+        use crate::property::PlaybackState;
+
+        let (store, watched, coordinator, member) = refresh_fixture();
+        retain_direct_watch(&watched, &member, Position::KEY);
+
+        let changes = [PropertyChange::PlaybackState(PlaybackState::Playing)];
+        assert_eq!(
+            position_refresh_target(&store, &watched.read(), &coordinator, &changes),
+            Some(coordinator)
+        );
+    }
+
+    #[test]
+    fn test_position_not_refreshed_when_unwatched_or_unaffected() {
+        use crate::property::{PlaybackState, Volume};
+
+        let (store, watched, coordinator, _) = refresh_fixture();
+        let state_change = [PropertyChange::PlaybackState(PlaybackState::Playing)];
+        assert_eq!(
+            position_refresh_target(&store, &watched.read(), &coordinator, &state_change),
+            None,
+            "nobody watches the position"
+        );
+
+        retain_direct_watch(&watched, &coordinator, Position::KEY);
+        let volume_change = [PropertyChange::Volume(Volume::new(30))];
+        assert_eq!(
+            position_refresh_target(&store, &watched.read(), &coordinator, &volume_change),
+            None,
+            "a volume change does not move the position"
+        );
     }
 }

@@ -87,8 +87,8 @@ pub mod error;
 
 // State manager
 pub use state::{
-    ChangeEvent, ChangeSource, EventInitFn, StateManager, StateManagerBuilder, WriteOutcome,
-    WriteStamp,
+    ChangeEvent, ChangeSource, EventInitFn, PositionRefreshFn, StateManager, StateManagerBuilder,
+    WriteOutcome, WriteStamp,
 };
 
 // Change iterator
