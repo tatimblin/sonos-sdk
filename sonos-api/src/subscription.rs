@@ -252,7 +252,7 @@ impl Drop for ManagedSubscription {
                     self.service,
                     &request,
                 ) {
-                    eprintln!("⚠️  Failed to unsubscribe {} during drop: {}", self.sid, e);
+                    tracing::warn!(sid = %self.sid, "failed to unsubscribe during drop: {e}");
                 }
             }
         }

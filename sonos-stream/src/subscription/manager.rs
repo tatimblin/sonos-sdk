@@ -242,18 +242,17 @@ impl SubscriptionManager {
                 match wrapper.renew().await {
                     Ok(()) => {
                         renewed_count += 1;
-                        eprintln!(
-                            "✅ Renewed subscription for {} {:?}",
-                            wrapper.speaker_service_pair.speaker_ip,
-                            wrapper.speaker_service_pair.service
+                        tracing::debug!(
+                            speaker_ip = %wrapper.speaker_service_pair.speaker_ip,
+                            service = ?wrapper.speaker_service_pair.service,
+                            "renewed subscription"
                         );
                     }
                     Err(e) => {
-                        eprintln!(
-                            "❌ Failed to renew subscription for {} {:?}: {}",
-                            wrapper.speaker_service_pair.speaker_ip,
-                            wrapper.speaker_service_pair.service,
-                            e
+                        tracing::warn!(
+                            speaker_ip = %wrapper.speaker_service_pair.speaker_ip,
+                            service = ?wrapper.speaker_service_pair.service,
+                            "failed to renew subscription: {e}"
                         );
                         // Note: We continue processing other subscriptions even if one fails
                     }
@@ -307,10 +306,10 @@ impl SubscriptionManager {
         for (registration_id, wrapper) in subscriptions.drain() {
             match wrapper.unsubscribe().await {
                 Ok(()) => {
-                    eprintln!("✅ Unsubscribed {registration_id}");
+                    tracing::debug!(%registration_id, "unsubscribed");
                 }
                 Err(e) => {
-                    eprintln!("❌ Failed to unsubscribe {registration_id}: {e}");
+                    tracing::warn!(%registration_id, "failed to unsubscribe: {e}");
                 }
             }
         }
