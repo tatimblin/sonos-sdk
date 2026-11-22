@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0](https://github.com/tatimblin/sonos-sdk/compare/sonos-sdk-v0.9.0...sonos-sdk-v0.10.0) - 2026-11-22
+
+### Added
+
+- add a generic set() to property handles ([#125](https://github.com/tatimblin/sonos-sdk/pull/125))
+- [**breaking**] make crossfade mode a watchable property ([#123](https://github.com/tatimblin/sonos-sdk/pull/123))
+- make play mode and sleep timer watchable properties ([#121](https://github.com/tatimblin/sonos-sdk/pull/121))
+- *(state)* classify the playback source of a speaker ([#124](https://github.com/tatimblin/sonos-sdk/pull/124))
+- *(sdk)* expose a network-error predicate on SdkError ([#128](https://github.com/tatimblin/sonos-sdk/pull/128))
+- *(state)* resolve album art URIs to absolute URLs ([#122](https://github.com/tatimblin/sonos-sdk/pull/122))
+
+### Fixed
+
+- log subscription renewals through tracing instead of stderr ([#130](https://github.com/tatimblin/sonos-sdk/pull/130))
+- *(sdk)* return groups from SonosSystem::groups() in a stable order ([#120](https://github.com/tatimblin/sonos-sdk/pull/120))
+- *(deps)* clear RUSTSEC advisories failing cargo-deny ([#126](https://github.com/tatimblin/sonos-sdk/pull/126))
+- keep group properties across topology snapshots ([#129](https://github.com/tatimblin/sonos-sdk/pull/129))
+
+### Other
+
+- fix doc comments that reference nonexistent APIs ([#127](https://github.com/tatimblin/sonos-sdk/pull/127))
+
 ## [0.9.0](https://github.com/tatimblin/sonos-sdk/compare/sonos-sdk-v0.8.0...sonos-sdk-v0.9.0) - 2026-09-18
 
 ### Fixed
