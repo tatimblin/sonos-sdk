@@ -196,3 +196,14 @@ fraction for a progress bar:
 let pos = speaker.position.fetch()?;
 println!("{}ms of {}ms ({:.0}%)", pos.position_ms, pos.duration_ms, pos.progress() * 100.0);
 ```
+
+Speakers don't include the position in their events, so a watched `Position`
+doesn't tick on its own. The SDK fetches it when the watch starts and again
+whenever the track or play state changes. In between, the value is a snapshot:
+to show a moving progress bar, add the time elapsed since the last update
+while the speaker is playing.
+
+```rust
+let position = speaker.position.watch()?;
+// position.value() updates on track changes, play, pause and stop.
+```

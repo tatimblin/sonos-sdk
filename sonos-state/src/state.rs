@@ -55,6 +55,13 @@ pub type EventInitFn = Arc<
     dyn Fn() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> + Send + Sync,
 >;
 
+/// Asks for a speaker's `Position` to be fetched from the device again.
+///
+/// Installed by `sonos-sdk`, which owns the SOAP client; this crate only knows
+/// *when* a position has gone stale. Must not block: it is called from the
+/// event worker thread and from `watch()`.
+pub type PositionRefreshFn = Arc<dyn Fn(&SpeakerId) + Send + Sync>;
+
 // ============================================================================
 // Write provenance - ChangeSource / WriteStamp / WriteOutcome
 // ============================================================================
@@ -681,6 +688,9 @@ pub struct StateManager {
     /// Shared with StateWatchRegistry via Arc.
     key_to_service: Arc<RwLock<HashMap<&'static str, Service>>>,
 
+    /// Position refresh hook (set-once), shared with the event worker.
+    position_refresh: Arc<OnceLock<PositionRefreshFn>>,
+
     /// Lazy event manager initialization closure (set-once).
     /// Called by watch() to trigger event manager creation on first use.
     event_init: OnceLock<EventInitFn>,
@@ -1283,6 +1293,7 @@ impl StateManager {
             Arc::clone(&self.watched),
             Arc::clone(&self.fanout),
             Arc::clone(&self.ip_to_speaker),
+            Arc::clone(&self.position_refresh),
         );
         info!("StateManager event worker started (lazy init)");
 
@@ -1291,6 +1302,21 @@ impl StateManager {
         }
 
         Ok(())
+    }
+
+    /// Install the hook that fetches a speaker's `Position` again.
+    ///
+    /// Called once by `sonos-sdk` at construction; later calls are no-ops.
+    pub fn set_position_refresh(&self, f: PositionRefreshFn) {
+        let _ = self.position_refresh.set(f);
+    }
+
+    /// Ask for `speaker_id`'s `Position` to be fetched again, if a refresh hook
+    /// is installed. Returns immediately; the fetch happens elsewhere.
+    pub fn request_position_refresh(&self, speaker_id: &SpeakerId) {
+        if let Some(refresh) = self.position_refresh.get() {
+            refresh(speaker_id);
+        }
     }
 
     /// Set the lazy event manager initialization closure.
@@ -1329,6 +1355,7 @@ impl Clone for StateManager {
             _worker: Mutex::new(None),
             cleanup_timeout: self.cleanup_timeout,
             key_to_service: Arc::clone(&self.key_to_service),
+            position_refresh: Arc::clone(&self.position_refresh),
             event_init,
         }
     }
@@ -1374,6 +1401,7 @@ impl StateManagerBuilder {
     /// Build the StateManager
     pub fn build(self) -> Result<StateManager> {
         let fanout = Arc::new(EventFanout::new());
+        let position_refresh: Arc<OnceLock<PositionRefreshFn>> = Arc::new(OnceLock::new());
 
         let store = Arc::new(RwLock::new(StateStore::new()));
         let watched = Arc::new(RwLock::new(WatchCounts::new()));
@@ -1400,6 +1428,7 @@ impl StateManagerBuilder {
                 Arc::clone(&watched),
                 Arc::clone(&fanout),
                 Arc::clone(&ip_to_speaker),
+                Arc::clone(&position_refresh),
             );
             info!("StateManager event worker started");
             worker = Some(worker_handle);
@@ -1414,6 +1443,7 @@ impl StateManagerBuilder {
             _worker: Mutex::new(worker),
             cleanup_timeout: self.cleanup_timeout,
             key_to_service,
+            position_refresh,
             event_init: OnceLock::new(),
         };
 

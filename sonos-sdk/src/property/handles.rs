@@ -14,7 +14,10 @@ use std::time::Instant;
 use sonos_api::operation::{ComposableOperation, UPnPOperation};
 use sonos_api::{ServiceScope, SonosClient};
 use sonos_event_manager::WatchGuard;
-use sonos_state::{property::SonosProperty, ChangeSource, SpeakerId, StateManager, WriteStamp};
+use sonos_state::{
+    property::{Property, SonosProperty},
+    ChangeSource, SpeakerId, StateManager, WriteStamp,
+};
 
 use crate::SdkError;
 
@@ -495,6 +498,15 @@ impl<P: SonosProperty> PropertyHandle<P> {
             P::KEY,
             self.context.speaker_id.as_str()
         );
+
+        // Position is never sent in events, so a cached value is as old as its
+        // last fetch. Start a new watcher from a fresh one; after that, the
+        // state layer asks again whenever the track or transport state changes.
+        if P::KEY == <Position as Property>::KEY {
+            self.context
+                .state_manager
+                .request_position_refresh(&self.context.speaker_id);
+        }
 
         // The handle reads through a clone of the context rather than capturing a
         // value, so `value()` returns what the store holds *now*. It reads by the

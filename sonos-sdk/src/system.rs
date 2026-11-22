@@ -385,6 +385,7 @@ impl SonosSystem {
             )
         };
         state_manager.set_event_init(init_fn);
+        crate::position_refresh::install(&state_manager, &api_client);
 
         // 3. Build speakers (init fn is on StateManager — no per-speaker threading needed).
         //
@@ -1463,6 +1464,41 @@ mod tests {
             weak.upgrade().is_none(),
             "StateManager outlived its SonosSystem after watch() ran the lazy \
              event-init closure"
+        );
+    }
+
+    /// Watching a position starts the refresh thread, which must not keep the
+    /// manager alive once the system is gone.
+    ///
+    /// The thread holds a `Weak` and upgrades it only for the length of a
+    /// fetch, so after the (refused, loopback) fetch finishes nothing is left.
+    #[test]
+    fn test_dropping_system_after_position_watch_releases_state_manager() {
+        let devices = vec![Device {
+            id: "RINCON_111".to_string(),
+            name: "Living Room".to_string(),
+            room_name: "Living Room".to_string(),
+            ip_address: "127.0.0.1".to_string(),
+            port: 1400,
+            model_name: "Sonos One".to_string(),
+        }];
+
+        let system = SonosSystem::from_devices_offline(devices).unwrap();
+        let weak = system.state_manager_weak();
+        {
+            let speaker = system.speaker("Living Room").unwrap();
+            let _watch = speaker.position.watch().unwrap();
+        }
+        drop(system);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while weak.upgrade().is_some() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            weak.upgrade().is_none(),
+            "StateManager outlived its SonosSystem after a position watch \
+             started the refresh thread"
         );
     }
 
