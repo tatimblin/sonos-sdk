@@ -16,7 +16,7 @@ Every speaker property in the SDK supports three access patterns. This page expl
 | `loudness` | `Loudness(bool)` | `.is_enabled() -> bool` |
 | `playback_state` | `PlaybackState` | `Playing`, `Paused`, `Stopped`, `Transitioning`; plus `.is_playing()`, `.is_paused()`, `.is_stopped()` |
 | `position` | `Position` | `.position_ms`, `.duration_ms`, `.progress() -> f64` |
-| `current_track` | `CurrentTrack` | `.title`, `.artist`, `.album`, `.album_art_uri`, `.uri` — each `Option<String>`; plus `.display() -> String` |
+| `current_track` | `CurrentTrack` | `.title`, `.artist`, `.album`, `.album_art_uri`, `.uri` — each `Option<String>`; plus `.display() -> String` and `.album_art_url(ip) -> Option<String>` |
 | `group_membership` | `GroupMembership` | `.group_id`, `.is_coordinator` |
 
 Property values are typed newtypes and enums, not bare integers and strings.
