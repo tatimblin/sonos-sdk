@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1](https://github.com/tatimblin/sonos-sdk/compare/sonos-api-v0.11.0...sonos-api-v0.11.1) - 2026-11-23
+
+### Other
+
+- make SDK logging quiet in normal operation and useful when debugging ([#140](https://github.com/tatimblin/sonos-sdk/pull/140))
+
 ## [0.11.0](https://github.com/tatimblin/sonos-sdk/compare/sonos-api-v0.10.1...sonos-api-v0.11.0) - 2026-11-23
 
 ### Added

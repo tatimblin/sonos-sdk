@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1](https://github.com/tatimblin/sonos-sdk/compare/sonos-sdk-v0.11.0...sonos-sdk-v0.11.1) - 2026-11-23
+
+### Fixed
+
+- *(sdk)* stop warning about a home theater's shared room name on every start ([#139](https://github.com/tatimblin/sonos-sdk/pull/139))
+- *(state)* keep satellites in display order whatever order they are stored in ([#138](https://github.com/tatimblin/sonos-sdk/pull/138))
+
+### Other
+
+- make SDK logging quiet in normal operation and useful when debugging ([#140](https://github.com/tatimblin/sonos-sdk/pull/140))
+
 ## [0.11.0](https://github.com/tatimblin/sonos-sdk/compare/sonos-sdk-v0.10.1...sonos-sdk-v0.11.0) - 2026-11-23
 
 ### Added
