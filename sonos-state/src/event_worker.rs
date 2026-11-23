@@ -41,7 +41,7 @@ pub(crate) fn spawn_state_event_worker(
     position_refresh: Arc<OnceLock<PositionRefreshFn>>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
-        tracing::info!("State event worker started, waiting for events...");
+        tracing::debug!("state event worker started, waiting for events");
 
         // Consume events from event manager (blocking)
         run_event_loop(
@@ -53,7 +53,7 @@ pub(crate) fn spawn_state_event_worker(
             &position_refresh,
         );
 
-        tracing::info!("State event worker stopped");
+        tracing::info!("state event worker stopped");
     })
 }
 
@@ -106,18 +106,17 @@ fn run_event_loop<I>(
         if result.is_err() {
             panic_count += 1;
             tracing::error!(
-                "Panic while processing event from {} for service {:?}; \
-                 skipping this event and continuing (panic #{} for this worker)",
-                event.speaker_ip,
-                event.service,
-                panic_count
+                speaker_ip = %event.speaker_ip,
+                service = ?event.service,
+                panic_count,
+                "panic while processing event; skipping this event and continuing"
             );
 
             if panic_count.is_multiple_of(PANIC_ESCALATION_INTERVAL) {
                 tracing::error!(
-                    "State event worker has now panicked {} times — state updates \
-                     are being dropped and this is a bug that needs fixing",
-                    panic_count
+                    panic_count,
+                    "state event worker keeps panicking: state updates are being \
+                     dropped and this is a bug that needs fixing"
                 );
             }
         }
@@ -135,10 +134,10 @@ fn handle_event(
     fanout: &EventFanout,
     ip_to_speaker: &Arc<RwLock<std::collections::HashMap<IpAddr, SpeakerId>>>,
 ) -> Option<SpeakerId> {
-    tracing::debug!(
-        "Received event from {} for service {:?}",
-        event.speaker_ip,
-        event.service
+    tracing::trace!(
+        speaker_ip = %event.speaker_ip,
+        service = ?event.service,
+        "received event"
     );
 
     // Test-only injection point for `test_worker_survives_decoder_panic`. Kept
@@ -157,7 +156,7 @@ fn handle_event(
 
     // Handle ZoneGroupTopology events specially - they affect all speakers
     if let EventData::ZoneGroupTopology(ref zgt_event) = event.event_data {
-        tracing::debug!("Processing ZoneGroupTopology event");
+        tracing::trace!(speaker_ip = %event.speaker_ip, "processing ZoneGroupTopology event");
         let topology_changes = decode_topology_event(zgt_event);
         apply_topology_changes(
             store,
@@ -174,7 +173,7 @@ fn handle_event(
     let speaker_id = {
         let ip_map = ip_to_speaker.read();
 
-        tracing::debug!(
+        tracing::trace!(
             "ip_to_speaker map has {} entries: {:?}",
             ip_map.len(),
             ip_map.keys().collect::<Vec<_>>()
@@ -183,17 +182,21 @@ fn handle_event(
         match ip_map.get(&event.speaker_ip) {
             Some(id) => id.clone(),
             None => {
-                tracing::warn!(
-                    "Received event from unknown speaker IP: {} (not in ip_to_speaker map)",
-                    event.speaker_ip
+                // Routine around an IP change (until the next topology event
+                // remaps it) and for devices the SDK does not track, so not a
+                // warning.
+                tracing::debug!(
+                    speaker_ip = %event.speaker_ip,
+                    service = ?event.service,
+                    "dropping event from a speaker IP not in the ip_to_speaker map"
                 );
                 return None;
             }
         }
     };
 
-    tracing::debug!(
-        "Mapped IP {} to speaker_id {}",
+    tracing::trace!(
+        "mapped IP {} to speaker_id {}",
         event.speaker_ip,
         speaker_id.as_str()
     );
@@ -218,7 +221,7 @@ fn handle_event(
         // every group member act as a coordinator — so say so out loud.
         let is_coordinator = coordinator_lookup.unwrap_or_else(|| {
             tracing::debug!(
-                "No group data for {} while handling PerCoordinator {:?} event; \
+                "no group data for {} while handling PerCoordinator {:?} event; \
                  treating it as its own coordinator",
                 speaker_id.as_str(),
                 event.service
@@ -228,7 +231,7 @@ fn handle_event(
 
         if !is_coordinator {
             tracing::debug!(
-                "Skipping PerCoordinator {:?} event from non-coordinator {}",
+                "skipping PerCoordinator {:?} event from non-coordinator {}",
                 event.service,
                 speaker_id.as_str()
             );
@@ -238,14 +241,16 @@ fn handle_event(
 
     // Decode event
     let decoded = decode_event(event, speaker_id.clone());
-    tracing::debug!(
-        "Decoded {} property changes from event",
+    tracing::trace!(
+        speaker = %speaker_id.as_str(),
+        service = ?event.service,
+        "decoded {} property changes from event",
         decoded.changes.len()
     );
 
     // Apply changes to the originating speaker (coordinator)
     for change in &decoded.changes {
-        tracing::debug!("Applying change: {:?}", change);
+        tracing::trace!(speaker = %speaker_id.as_str(), "applying change: {:?}", change);
         apply_property_change(store, watched, fanout, &speaker_id, change, stamp);
     }
 
@@ -325,7 +330,7 @@ fn apply_topology_changes(
     stamp: WriteStamp,
 ) {
     tracing::debug!(
-        "Applying topology changes: {} groups, {} memberships",
+        "applying topology changes: {} groups, {} memberships",
         changes.groups.len(),
         changes.memberships.len()
     );
@@ -339,8 +344,9 @@ fn apply_topology_changes(
     // mapping in response to an unrelated update, leaving `groups()` empty and
     // coordinator resolution wrong until the next full snapshot arrived.
     if changes.groups.is_empty() {
-        tracing::warn!(
-            "Ignoring ZoneGroupTopology event with no zone groups \
+        // Routine (see above), so debug rather than warn.
+        tracing::debug!(
+            "ignoring ZoneGroupTopology event with no zone groups \
              ({} memberships, {} boot_seqs, {} IPs, {} satellites): treating it as a \
              partial event rather than clearing cached group state",
             changes.memberships.len(),
@@ -365,8 +371,8 @@ fn apply_topology_changes(
 
         // 2. Add new groups
         for group in changes.groups {
-            tracing::debug!(
-                "Adding group {} with {} members",
+            tracing::trace!(
+                "adding group {} with {} members",
                 group.id.as_str(),
                 group.member_ids.len()
             );
@@ -398,10 +404,10 @@ fn apply_topology_changes(
         for (speaker_id, new_ip) in &changes.speaker_ips {
             if let Some(old_ip) = store.update_speaker_ip_address(speaker_id, *new_ip) {
                 tracing::info!(
-                    "Speaker {} IP changed: {} -> {}",
-                    speaker_id.as_str(),
-                    old_ip,
-                    new_ip
+                    speaker = %speaker_id.as_str(),
+                    old_ip = %old_ip,
+                    new_ip = %new_ip,
+                    "speaker IP changed"
                 );
                 changed_ips.push((old_ip, *new_ip, speaker_id.clone()));
             }
@@ -486,7 +492,7 @@ fn notify_group_members(
                 let key = change.key();
                 if is_pair_watched(&watched_set, member_id, key) {
                     tracing::debug!(
-                        "Notifying member {} of coordinator change for {}",
+                        "notifying member {} of coordinator change for {}",
                         member_id.as_str(),
                         key
                     );
@@ -523,7 +529,7 @@ fn apply_property_change(
 
         if is_watched {
             tracing::debug!(
-                "Property {} changed for {}, emitting event",
+                "property {} changed for {}, emitting event",
                 key,
                 speaker_id.as_str()
             );

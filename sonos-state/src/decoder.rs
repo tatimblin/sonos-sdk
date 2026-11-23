@@ -152,15 +152,16 @@ impl PropertyChange {
     /// This used to be a bare `else { false }`. It is a legitimate state — a
     /// GroupRenderingControl event can arrive before the first topology snapshot
     /// — but it is also what a wiped `speaker_to_group` map looks like, so it
-    /// must be observable rather than silent. Always reports `Unchanged`
+    /// must be observable rather than silent. It is logged at debug, not warn,
+    /// because the pre-topology window is routine. Always reports `Unchanged`
     /// (nothing was stored, so nothing changed) rather than `Stale` — the write
     /// was not rejected for being out of order, it had nowhere to go.
     fn log_unmapped_group_change(&self, speaker_id: &SpeakerId) -> WriteOutcome {
-        tracing::warn!(
-            "Dropping group-scoped {} change for {}: speaker has no group mapping \
-             (no topology snapshot applied yet, or group state was cleared)",
-            self.key(),
-            speaker_id.as_str()
+        tracing::debug!(
+            speaker = %speaker_id.as_str(),
+            property = self.key(),
+            "dropping group-scoped change: speaker has no group mapping \
+             (no topology snapshot applied yet, or group state was cleared)"
         );
         WriteOutcome::Unchanged
     }
@@ -283,8 +284,9 @@ fn decode_rendering_control(event: &RenderingControlState) -> Vec<PropertyChange
 
     // Volume
     if let Some(vol_str) = &event.master_volume {
-        if let Ok(vol) = vol_str.parse::<u8>() {
-            changes.push(PropertyChange::Volume(Volume(vol.min(100))));
+        match vol_str.parse::<u8>() {
+            Ok(vol) => changes.push(PropertyChange::Volume(Volume(vol.min(100)))),
+            Err(_) => tracing::debug!("skipping Volume update: unparseable value {vol_str:?}"),
         }
     }
 
@@ -296,15 +298,17 @@ fn decode_rendering_control(event: &RenderingControlState) -> Vec<PropertyChange
 
     // Bass
     if let Some(bass_str) = &event.bass {
-        if let Ok(bass) = bass_str.parse::<i8>() {
-            changes.push(PropertyChange::Bass(Bass(bass.clamp(-10, 10))));
+        match bass_str.parse::<i8>() {
+            Ok(bass) => changes.push(PropertyChange::Bass(Bass(bass.clamp(-10, 10)))),
+            Err(_) => tracing::debug!("skipping Bass update: unparseable value {bass_str:?}"),
         }
     }
 
     // Treble
     if let Some(treble_str) = &event.treble {
-        if let Ok(treble) = treble_str.parse::<i8>() {
-            changes.push(PropertyChange::Treble(Treble(treble.clamp(-10, 10))));
+        match treble_str.parse::<i8>() {
+            Ok(treble) => changes.push(PropertyChange::Treble(Treble(treble.clamp(-10, 10)))),
+            Err(_) => tracing::debug!("skipping Treble update: unparseable value {treble_str:?}"),
         }
     }
 
@@ -402,7 +406,7 @@ fn decode_av_transport(event: &AVTransportState) -> Vec<PropertyChange> {
             }
             None => {
                 tracing::debug!(
-                    "Skipping Position update: RelTime {:?} is missing or unparseable",
+                    "skipping Position update: RelTime {:?} is missing or unparseable",
                     event.rel_time
                 );
             }
@@ -432,7 +436,7 @@ fn decode_av_transport(event: &AVTransportState) -> Vec<PropertyChange> {
     if let Some(mode) = &event.play_mode {
         match PlayMode::from_upnp(mode) {
             Some(play_mode) => changes.push(PropertyChange::PlayMode(play_mode)),
-            None => tracing::debug!("Skipping PlayMode update: unrecognised mode {mode:?}"),
+            None => tracing::debug!("skipping PlayMode update: unrecognised mode {mode:?}"),
         }
     }
 
@@ -440,7 +444,7 @@ fn decode_av_transport(event: &AVTransportState) -> Vec<PropertyChange> {
     if let Some(value) = &event.crossfade_mode {
         match CrossfadeMode::from_upnp(value) {
             Some(crossfade) => changes.push(PropertyChange::CrossfadeMode(crossfade)),
-            None => tracing::debug!("Skipping CrossfadeMode update: unrecognised value {value:?}"),
+            None => tracing::debug!("skipping CrossfadeMode update: unrecognised value {value:?}"),
         }
     }
 
@@ -683,7 +687,7 @@ pub fn parse_track_metadata(
                 Ok(didl) => didl,
                 Err(err) => {
                     tracing::debug!(
-                        "Failed to parse DIDL-Lite track metadata: {strict_err}; \
+                        "failed to parse DIDL-Lite track metadata: {strict_err}; \
                          retry with escaped ampersands also failed: {err}"
                     );
                     return (None, None, None, None);
