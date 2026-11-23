@@ -207,6 +207,31 @@ impl FirewallDetectionCoordinator {
         }
     }
 
+    /// Whether detection has started for a device (in progress or finished).
+    pub async fn is_tracking(&self, device_ip: IpAddr) -> bool {
+        self.device_states.read().await.contains_key(&device_ip)
+    }
+
+    /// Abandon an unfinished detection for a device.
+    ///
+    /// For when the subscription that started it failed: no event can arrive
+    /// without a subscription, so letting the timer run would report a firewall
+    /// that isn't there. A finished detection is kept.
+    pub async fn cancel_detection(&self, device_ip: IpAddr) {
+        let mut device_states = self.device_states.write().await;
+        let unfinished = match device_states.get(&device_ip) {
+            Some(state_arc) => !state_arc.read().await.detection_completed,
+            None => false,
+        };
+        if unfinished {
+            device_states.remove(&device_ip);
+            debug!(
+                device_ip = %device_ip,
+                "firewall detection: subscription failed, abandoning detection"
+            );
+        }
+    }
+
     /// Get the current cached status for a device.
     pub async fn get_device_status(&self, device_ip: IpAddr) -> FirewallStatus {
         let device_states = self.device_states.read().await;
@@ -320,6 +345,27 @@ mod tests {
         // Should have cached status
         let cached_status = coordinator.get_device_status(device_ip).await;
         assert_eq!(cached_status, FirewallStatus::Unknown);
+    }
+
+    #[tokio::test]
+    async fn test_cancel_detection_drops_only_unfinished_detections() {
+        let coordinator = FirewallDetectionCoordinator::new(FirewallDetectionConfig::default());
+        let pending = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
+        let done = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 101));
+
+        coordinator.on_first_subscription(pending).await;
+        coordinator.on_first_subscription(done).await;
+        coordinator.on_event_received(done).await;
+        assert!(coordinator.is_tracking(pending).await);
+
+        coordinator.cancel_detection(pending).await;
+        coordinator.cancel_detection(done).await;
+
+        assert!(!coordinator.is_tracking(pending).await);
+        assert_eq!(
+            coordinator.get_device_status(done).await,
+            FirewallStatus::Accessible
+        );
     }
 
     #[tokio::test]
