@@ -102,7 +102,7 @@ pub use property::{
 };
 
 // Model types
-pub use model::{GroupId, SpeakerId, SpeakerInfo};
+pub use model::{GroupId, SatelliteMember, SatelliteRole, SpeakerId, SpeakerInfo};
 
 // Event decoder
 pub use decoder::{

@@ -157,3 +157,25 @@ Membership changes do not mutate an existing `Group` handle — `Group` is a
 snapshot of `id`, `coordinator_id`, and `member_ids` as they stood when it was
 built. Re-read `sonos.groups()` or `speaker.group()` after a join or leave to
 see the new topology.
+
+## Home theater satellites
+
+Surrounds and subs bonded to a soundbar (or a sub bonded to any speaker) are
+*satellites*. They play as part of their main speaker and take no commands of
+their own, so they are not in `sonos.speakers()` and never form groups.
+`speaker.satellites()` lists them in display order (left surround, right
+surround, then sub):
+
+```rust
+let basement = sonos.speaker("Basement").unwrap();
+for sat in basement.satellites() {
+    // "Left surround • Sonos One"
+    println!("{} • {}", sat.role.label(), sat.model_name.unwrap_or_default());
+}
+```
+
+Each `Satellite` has its `id`, `role` (a `SatelliteRole`), and the
+`model_name` and `ip` that discovery reported. Those two are `None` if
+discovery never heard from the device itself. The list comes from the latest
+topology, so adding or removing a sub in the Sonos app shows up on the next
+call. It is empty for a speaker with no satellites.

@@ -407,8 +407,9 @@ fn apply_topology_changes(
             }
         }
 
-        // 6. Store satellite IDs
+        // 6. Store satellite IDs and each main speaker's satellites
         store.satellite_ids = changes.satellite_ids.into_iter().collect();
+        store.home_theaters = changes.home_theaters.into_iter().collect();
 
         (changed_memberships, changed_ips)
     };
@@ -771,6 +772,7 @@ mod tests {
             boot_seqs: vec![],
             speaker_ips: vec![],
             satellite_ids: vec![],
+            home_theaters: vec![],
         };
 
         let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::new()));
@@ -792,6 +794,58 @@ mod tests {
         assert_eq!(group.member_ids.len(), 2);
         assert!(group.member_ids.contains(&speaker1));
         assert!(group.member_ids.contains(&speaker2));
+    }
+
+    #[test]
+    fn test_apply_topology_changes_replaces_home_theaters() {
+        use crate::model::{SatelliteMember, SatelliteRole};
+
+        let store = Arc::new(RwLock::new(StateStore::new()));
+        let watched = Arc::new(RwLock::new(WatchCounts::new()));
+        let fanout = Arc::new(EventFanout::new());
+        let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::new()));
+        let main = SpeakerId::new("RINCON_MAIN");
+        let group_id = GroupId::new("RINCON_MAIN:1");
+        let sub = SatelliteMember::new(SpeakerId::new("RINCON_SUB"), SatelliteRole::Sub);
+
+        let snapshot = |home_theaters: Vec<(SpeakerId, Vec<SatelliteMember>)>| TopologyChanges {
+            groups: vec![GroupInfo::new(
+                group_id.clone(),
+                main.clone(),
+                vec![main.clone()],
+            )],
+            memberships: vec![(main.clone(), GroupMembership::new(group_id.clone(), true))],
+            boot_seqs: vec![],
+            speaker_ips: vec![],
+            satellite_ids: home_theaters
+                .iter()
+                .flat_map(|(_, sats)| sats.iter().map(|s| s.id.clone()))
+                .collect(),
+            home_theaters,
+        };
+
+        let apply = |changes| {
+            apply_topology_changes(
+                &store,
+                &watched,
+                &fanout,
+                &ip_to_speaker,
+                changes,
+                test_stamp(),
+            );
+        };
+
+        apply(snapshot(vec![(main.clone(), vec![sub.clone()])]));
+        assert_eq!(
+            store.read().home_theaters.get(&main),
+            Some(&vec![sub.clone()])
+        );
+        assert!(store.read().satellite_ids.contains(&sub.id));
+
+        // The sub is removed in the Sonos app: the next snapshot drops it.
+        apply(snapshot(vec![]));
+        assert!(store.read().home_theaters.is_empty());
+        assert!(store.read().satellite_ids.is_empty());
     }
 
     #[test]
@@ -834,6 +888,7 @@ mod tests {
             boot_seqs: vec![],
             speaker_ips: vec![],
             satellite_ids: vec![],
+            home_theaters: vec![],
         };
 
         let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::new()));
@@ -907,6 +962,7 @@ mod tests {
             boot_seqs: vec![],
             speaker_ips: vec![],
             satellite_ids: vec![],
+            home_theaters: vec![],
         };
 
         let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::new()));
@@ -985,6 +1041,7 @@ mod tests {
             boot_seqs: vec![],
             speaker_ips: vec![],
             satellite_ids: vec![],
+            home_theaters: vec![],
         };
 
         let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::new()));
@@ -1045,6 +1102,7 @@ mod tests {
             boot_seqs: vec![],
             speaker_ips: vec![],
             satellite_ids: vec![],
+            home_theaters: vec![],
         };
 
         let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::new()));
@@ -1101,6 +1159,7 @@ mod tests {
             boot_seqs: vec![],
             speaker_ips: vec![],
             satellite_ids: vec![],
+            home_theaters: vec![],
         };
 
         let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::new()));
@@ -1162,6 +1221,7 @@ mod tests {
             boot_seqs: vec![],
             speaker_ips: vec![],
             satellite_ids: vec![],
+            home_theaters: vec![],
         };
         let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::new()));
         apply_topology_changes(
@@ -1524,6 +1584,7 @@ mod tests {
             boot_seqs: vec![],
             speaker_ips: vec![],
             satellite_ids: vec![],
+            home_theaters: vec![],
         };
 
         let ip_to_speaker = Arc::new(RwLock::new(std::collections::HashMap::new()));

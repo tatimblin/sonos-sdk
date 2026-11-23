@@ -78,7 +78,7 @@
 // Main exports
 pub use error::SdkError;
 pub use group::{Group, GroupChangeResult};
-pub use speaker::{PlayMode, SeekTarget, Speaker};
+pub use speaker::{PlayMode, Satellite, SeekTarget, Speaker};
 pub use system::SonosSystem;
 
 // Re-export the generic PropertyHandle, SpeakerContext, and watch types
@@ -110,7 +110,7 @@ pub use sonos_discovery;
 pub use sonos_state::{
     Bass, ChangeEvent, ChangeIterator, ChangeSource, CrossfadeMode, CurrentTrack, GroupId,
     GroupMute, GroupVolume, GroupVolumeChangeable, Loudness, Mute, PlaybackSource, PlaybackState,
-    PropertyChange, SleepTimer, SpeakerId, Treble, Volume, WriteOutcome, WriteStamp,
+    PropertyChange, SatelliteRole, SleepTimer, SpeakerId, Treble, Volume, WriteOutcome, WriteStamp,
 };
 
 /// The property trait, re-exported so downstream crates can write code that is

@@ -250,7 +250,51 @@ impl SonosSystem {
         devices: Vec<Device>,
         groups: Vec<(sonos_state::GroupId, SpeakerId, Vec<SpeakerId>)>,
     ) -> Result<Self, SdkError> {
+        Self::from_devices_offline_with_home_theaters(devices, groups, Vec::new())
+    }
+
+    /// Construct offline with an explicit group topology and home theater
+    /// satellites, as [`Self::from_devices_offline_with_groups`] does for groups.
+    ///
+    /// `home_theaters` maps each main speaker to its satellites and their
+    /// roles. Satellite devices should be in `devices` too, as discovery
+    /// returns them; they are excluded from the speaker map exactly as in
+    /// production and reported by [`Speaker::satellites()`].
+    ///
+    /// ```no_run
+    /// # use sonos_sdk::{GroupId, SatelliteRole, SonosSystem, SpeakerId};
+    /// # use sonos_sdk::sonos_discovery::Device;
+    /// # fn f(devices: Vec<Device>) -> Result<(), sonos_sdk::SdkError> {
+    /// let main = SpeakerId::new("RINCON_PLAYBAR");
+    /// let system = SonosSystem::from_devices_offline_with_home_theaters(
+    ///     devices,
+    ///     vec![(GroupId::new("RINCON_PLAYBAR:1"), main.clone(), vec![main.clone()])],
+    ///     vec![(main, vec![(SpeakerId::new("RINCON_SUB"), SatelliteRole::Sub)])],
+    /// )?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// Only available with the `test-support` feature.
+    #[cfg(any(feature = "test-support", test))]
+    pub fn from_devices_offline_with_home_theaters(
+        devices: Vec<Device>,
+        groups: Vec<(sonos_state::GroupId, SpeakerId, Vec<SpeakerId>)>,
+        home_theaters: Vec<(SpeakerId, Vec<(SpeakerId, sonos_state::SatelliteRole)>)>,
+    ) -> Result<Self, SdkError> {
         Self::construct(devices, true, |system| {
+            system.state_manager.set_home_theaters(
+                home_theaters
+                    .into_iter()
+                    .map(|(main, sats)| {
+                        let members = sats
+                            .into_iter()
+                            .map(|(id, role)| sonos_state::SatelliteMember::new(id, role))
+                            .collect();
+                        (main, members)
+                    })
+                    .collect(),
+            );
             let infos: Vec<sonos_state::GroupInfo> = groups
                 .into_iter()
                 .map(|(id, coordinator, members)| {
@@ -831,9 +875,10 @@ impl SonosSystem {
                 Topology::new(self.state_manager.speaker_infos(), topology_changes.groups);
             self.state_manager.initialize(topology);
 
-            // Store satellite IDs for later filtering
+            // Store each main speaker's satellites; their IDs drive the
+            // speaker-map filtering below.
             self.state_manager
-                .set_satellite_ids(topology_changes.satellite_ids);
+                .set_home_theaters(topology_changes.home_theaters);
 
             tracing::debug!(
                 "Fetched zone group topology on-demand ({} groups)",
@@ -1649,6 +1694,92 @@ mod tests {
                 .set_satellite_ids(satellites.iter().map(|id| SpeakerId::new(*id)).collect());
         })
         .unwrap()
+    }
+
+    /// Basement as a home theater: the Playbar with its two surrounds bonded.
+    fn basement_system(devices: Vec<Device>) -> SonosSystem {
+        let main = SpeakerId::new("RINCON_PLAYBAR");
+        SonosSystem::from_devices_offline_with_home_theaters(
+            devices,
+            vec![(
+                sonos_state::GroupId::new("RINCON_PLAYBAR:1"),
+                main.clone(),
+                vec![main.clone()],
+            )],
+            vec![(
+                main,
+                vec![
+                    (
+                        SpeakerId::new("RINCON_SURROUND_L"),
+                        sonos_state::SatelliteRole::LeftSurround,
+                    ),
+                    (
+                        SpeakerId::new("RINCON_SURROUND_R"),
+                        sonos_state::SatelliteRole::RightSurround,
+                    ),
+                ],
+            )],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn test_satellites_reports_roles_models_and_ips() {
+        for order in all_orderings(&basement_home_theater()) {
+            let system = basement_system(order);
+
+            assert_eq!(system.speakers().len(), 1, "satellites are not speakers");
+            let basement = system.speaker("Basement").unwrap();
+            assert_eq!(basement.id, SpeakerId::new("RINCON_PLAYBAR"));
+            assert_eq!(
+                basement.satellites(),
+                vec![
+                    crate::Satellite {
+                        id: SpeakerId::new("RINCON_SURROUND_L"),
+                        role: sonos_state::SatelliteRole::LeftSurround,
+                        model_name: Some("Sonos One".to_string()),
+                        ip: Some("203.0.113.11".parse().unwrap()),
+                    },
+                    crate::Satellite {
+                        id: SpeakerId::new("RINCON_SURROUND_R"),
+                        role: sonos_state::SatelliteRole::RightSurround,
+                        model_name: Some("Sonos One".to_string()),
+                        ip: Some("203.0.113.12".parse().unwrap()),
+                    },
+                ]
+            );
+        }
+    }
+
+    /// A satellite in the topology that discovery never answered for still
+    /// shows up, without a model or IP.
+    #[test]
+    fn test_satellites_without_a_discovered_device() {
+        let devices = basement_home_theater()
+            .into_iter()
+            .filter(|d| d.id != "RINCON_SURROUND_R")
+            .collect();
+        let system = basement_system(devices);
+
+        let sats = system.speaker("Basement").unwrap().satellites();
+        assert_eq!(sats.len(), 2);
+        assert_eq!(sats[1].id, SpeakerId::new("RINCON_SURROUND_R"));
+        assert_eq!(sats[1].model_name, None);
+        assert_eq!(sats[1].ip, None);
+    }
+
+    #[test]
+    fn test_speaker_without_satellites_has_none() {
+        let system = SonosSystem::from_devices_offline(vec![Device {
+            id: "RINCON_KITCHEN".to_string(),
+            name: "Kitchen".to_string(),
+            room_name: "Kitchen".to_string(),
+            ip_address: "203.0.113.20".to_string(),
+            port: 1400,
+            model_name: "Sonos One".to_string(),
+        }])
+        .unwrap();
+        assert!(system.speaker("Kitchen").unwrap().satellites().is_empty());
     }
 
     /// `from_devices_offline_with_groups` must produce real multi-member groups.
