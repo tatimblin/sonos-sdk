@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.2](https://github.com/tatimblin/sonos-sdk/compare/sonos-api-v0.11.1...sonos-api-v0.11.2) - 2026-11-23
+
+### Other
+
+- release v0.11.2 ([#143](https://github.com/tatimblin/sonos-sdk/pull/143))
+
 ## [0.11.1](https://github.com/tatimblin/sonos-sdk/compare/sonos-api-v0.11.0...sonos-api-v0.11.1) - 2026-11-23
 
 ### Other
