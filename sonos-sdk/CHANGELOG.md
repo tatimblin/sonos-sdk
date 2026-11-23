@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.2](https://github.com/tatimblin/sonos-sdk/compare/sonos-sdk-v0.11.1...sonos-sdk-v0.11.2) - 2026-11-23
+
+### Fixed
+
+- *(stream)* back off failed polling starts and drop firewall checks for failed subscriptions ([#142](https://github.com/tatimblin/sonos-sdk/pull/142))
+
 ## [0.11.1](https://github.com/tatimblin/sonos-sdk/compare/sonos-sdk-v0.11.0...sonos-sdk-v0.11.1) - 2026-11-23
 
 ### Fixed
