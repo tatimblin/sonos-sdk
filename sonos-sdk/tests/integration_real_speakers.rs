@@ -607,6 +607,7 @@ fn await_event(
 #[test]
 #[ignore] // Requires real hardware - run manually with --ignored
 fn test_home_theater_settings() -> Result<(), Box<dyn std::error::Error>> {
+    use sonos_api::services::rendering_control::{self, EqType};
     use sonos_sdk::{MusicSurroundLevel, NightMode};
 
     // RUST_LOG=sonos_api=trace prints each raw RenderingControl NOTIFY.
@@ -635,10 +636,20 @@ fn test_home_theater_settings() -> Result<(), Box<dyn std::error::Error>> {
     // Let the subscription's initial event land before changing anything.
     thread::sleep(Duration::from_secs(2));
 
+    // Change each setting with a raw SetEQ, as another controller would.
+    // Going through `set()` would cache the value first, and the device's
+    // event, carrying the same value, would then rightly not be reported.
+    let client = sonos_api::SonosClient::new();
+    let ip = bar.ip.to_string();
+    let set_eq = |eq_type: EqType, value: i32| -> Result<(), Box<dyn std::error::Error>> {
+        client.execute_enhanced(&ip, rendering_control::set_eq(eq_type, value).build()?)?;
+        Ok(())
+    };
+
     let night = bar.night_mode.fetch()?;
     let flipped = NightMode(!night.0);
     println!("  setting night mode to {flipped:?}");
-    bar.night_mode.set(flipped)?;
+    set_eq(EqType::NightMode, i32::from(flipped.0))?;
     let night_evented = await_event(
         &iter,
         &bar.id,
@@ -654,7 +665,7 @@ fn test_home_theater_settings() -> Result<(), Box<dyn std::error::Error>> {
         level.0 - 1
     });
     println!("  setting music surround level to {nudged:?}");
-    bar.music_surround_level.set(nudged)?;
+    set_eq(EqType::MusicSurroundLevel, i32::from(nudged.0))?;
     let level_evented = await_event(
         &iter,
         &bar.id,
