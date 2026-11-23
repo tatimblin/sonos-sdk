@@ -34,7 +34,7 @@ pub struct RenderingControlEventData {
     instance: RenderingControlInstance,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct RenderingControlInstance {
     #[serde(rename = "Volume", default)]
     pub volumes: Vec<ChannelValueAttribute>,
@@ -57,6 +57,36 @@ struct RenderingControlInstance {
 
     #[serde(rename = "Balance", default)]
     pub balance: Vec<ChannelValueAttribute>,
+
+    // Home theater settings (see `EqType`). The event names for the two
+    // on/off switches are `SubEnabled`/`SurroundEnabled`, while their `EQType`
+    // drops the `d`; both spellings are accepted.
+    #[serde(rename = "SubEnabled", alias = "SubEnable", default)]
+    pub sub_enabled: Vec<ChannelValueAttribute>,
+
+    #[serde(rename = "SubGain", default)]
+    pub sub_gain: Vec<ChannelValueAttribute>,
+
+    #[serde(rename = "SurroundEnabled", alias = "SurroundEnable", default)]
+    pub surround_enabled: Vec<ChannelValueAttribute>,
+
+    #[serde(rename = "SurroundLevel", default)]
+    pub surround_level: Vec<ChannelValueAttribute>,
+
+    #[serde(rename = "MusicSurroundLevel", default)]
+    pub music_surround_level: Vec<ChannelValueAttribute>,
+
+    #[serde(rename = "SurroundMode", default)]
+    pub surround_mode: Vec<ChannelValueAttribute>,
+
+    #[serde(rename = "NightMode", default)]
+    pub night_mode: Vec<ChannelValueAttribute>,
+
+    #[serde(rename = "DialogLevel", default)]
+    pub dialog_level: Vec<ChannelValueAttribute>,
+
+    #[serde(rename = "AudioDelay", default)]
+    pub audio_delay: Vec<ChannelValueAttribute>,
 }
 
 /// Represents an XML element with both val and channel attributes
@@ -178,6 +208,22 @@ impl RenderingControlEvent {
             .map(|m| m.val.clone())
     }
 
+    /// Home theater settings carried by this event; absent ones are `None`.
+    pub fn home_theater(&self) -> super::state::HomeTheaterState {
+        let i = &self.property.last_change.instance;
+        super::state::HomeTheaterState {
+            sub_enabled: Self::master_value(&i.sub_enabled),
+            sub_gain: Self::master_value(&i.sub_gain),
+            surround_enabled: Self::master_value(&i.surround_enabled),
+            surround_level: Self::master_value(&i.surround_level),
+            music_surround_level: Self::master_value(&i.music_surround_level),
+            surround_mode: Self::master_value(&i.surround_mode),
+            night_mode: Self::master_value(&i.night_mode),
+            dialog_level: Self::master_value(&i.dialog_level),
+            audio_delay: Self::master_value(&i.audio_delay),
+        }
+    }
+
     /// Convert parsed UPnP event to canonical state representation.
     pub fn into_state(&self) -> super::state::RenderingControlState {
         super::state::RenderingControlState {
@@ -192,11 +238,15 @@ impl RenderingControlEvent {
             loudness: self.loudness(),
             balance: self.balance(),
             other_channels: self.other_channels(),
+            home_theater: self.home_theater(),
         }
     }
 
     /// Parse from UPnP event XML using serde
     pub fn from_xml(xml: &str) -> Result<Self> {
+        // The raw body, for checking which state variables a device sends
+        // (RUST_LOG=sonos_api=trace).
+        tracing::trace!(%xml, "RenderingControl NOTIFY");
         quick_xml::de::from_str(xml)
             .map_err(|e| ApiError::ParseError(format!("Failed to parse RenderingControl XML: {e}")))
     }
@@ -283,6 +333,7 @@ mod tests {
                         treble: vec![master("0")],
                         loudness: vec![master("true")],
                         balance: vec![master("0")],
+                        ..Default::default()
                     },
                 },
             },
@@ -313,6 +364,69 @@ mod tests {
         assert_eq!(event.master_mute(), Some("0".to_string()));
         assert_eq!(event.bass(), Some("2".to_string()));
         assert_eq!(event.treble(), Some("-1".to_string()));
+    }
+
+    #[test]
+    fn test_home_theater_settings_parse() {
+        let xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0">
+            <e:property>
+                <LastChange>&lt;Event xmlns="urn:schemas-upnp-org:metadata-1-0/RCS/"&gt;
+                    &lt;InstanceID val="0"&gt;
+                        &lt;Volume channel="Master" val="35"/&gt;
+                        &lt;SubEnabled val="1"/&gt;
+                        &lt;SubGain val="-2"/&gt;
+                        &lt;SurroundEnabled val="1"/&gt;
+                        &lt;SurroundLevel val="8"/&gt;
+                        &lt;MusicSurroundLevel val="0"/&gt;
+                        &lt;SurroundMode val="1"/&gt;
+                        &lt;NightMode val="0"/&gt;
+                        &lt;DialogLevel val="1"/&gt;
+                        &lt;AudioDelay val="0"/&gt;
+                    &lt;/InstanceID&gt;
+                &lt;/Event&gt;</LastChange>
+            </e:property>
+        </e:propertyset>"#;
+
+        let ht = RenderingControlEvent::from_xml(xml)
+            .unwrap()
+            .into_state()
+            .home_theater;
+        let some = |v: &str| Some(v.to_string());
+        assert_eq!(
+            ht,
+            super::super::state::HomeTheaterState {
+                sub_enabled: some("1"),
+                sub_gain: some("-2"),
+                surround_enabled: some("1"),
+                surround_level: some("8"),
+                music_surround_level: some("0"),
+                surround_mode: some("1"),
+                night_mode: some("0"),
+                dialog_level: some("1"),
+                audio_delay: some("0"),
+            }
+        );
+    }
+
+    #[test]
+    fn test_home_theater_settings_absent_and_alternate_spelling() {
+        let xml = r#"<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0">
+            <e:property>
+                <LastChange>&lt;Event xmlns="urn:schemas-upnp-org:metadata-1-0/RCS/"&gt;
+                    &lt;InstanceID val="0"&gt;
+                        &lt;SubEnable val="0"/&gt;
+                    &lt;/InstanceID&gt;
+                &lt;/Event&gt;</LastChange>
+            </e:property>
+        </e:propertyset>"#;
+
+        let ht = RenderingControlEvent::from_xml(xml)
+            .unwrap()
+            .into_state()
+            .home_theater;
+        assert_eq!(ht.sub_enabled, Some("0".to_string()));
+        assert_eq!(ht.night_mode, None);
+        assert_eq!(ht.surround_level, None);
     }
 
     #[test]
@@ -359,6 +473,7 @@ mod tests {
                         treble: vec![],
                         loudness: vec![],
                         balance: vec![],
+                        ..Default::default()
                     },
                 },
             },
@@ -393,6 +508,7 @@ mod tests {
                         treble: vec![],
                         loudness: vec![],
                         balance: vec![],
+                        ..Default::default()
                     },
                 },
             },
@@ -491,6 +607,7 @@ mod tests {
                         treble: vec![master("-3")],
                         loudness: vec![master("1")],
                         balance: vec![],
+                        ..Default::default()
                     },
                 },
             },

@@ -15,11 +15,13 @@ use std::net::IpAddr;
 
 use crate::model::{channels_for, GroupId, SatelliteMember, SatelliteRole, SpeakerId};
 use crate::property::{
-    Bass, CrossfadeMode, CurrentTrack, GroupInfo, GroupMembership, GroupMute, GroupVolume,
-    GroupVolumeChangeable, Loudness, Mute, PlayMode, PlaybackState, Position, SleepTimer, Treble,
-    Volume,
+    AudioDelay, Bass, CrossfadeMode, CurrentTrack, GroupInfo, GroupMembership, GroupMute,
+    GroupVolume, GroupVolumeChangeable, Loudness, MusicSurroundLevel, Mute, NightMode, PlayMode,
+    PlaybackState, Position, SleepTimer, SpeechEnhancement, SubEnabled, SubLevel, SurroundEnabled,
+    SurroundLevel, SurroundMode, Treble, Volume,
 };
 use crate::state::{StateStore, WriteOutcome, WriteStamp};
+use sonos_api::services::rendering_control::HomeTheaterState;
 
 /// Decoded changes from a single event
 #[derive(Debug)]
@@ -66,6 +68,15 @@ pub enum PropertyChange {
     Bass(Bass),
     Treble(Treble),
     Loudness(Loudness),
+    SubEnabled(SubEnabled),
+    SubLevel(SubLevel),
+    SurroundEnabled(SurroundEnabled),
+    SurroundLevel(SurroundLevel),
+    MusicSurroundLevel(MusicSurroundLevel),
+    SurroundMode(SurroundMode),
+    NightMode(NightMode),
+    SpeechEnhancement(SpeechEnhancement),
+    AudioDelay(AudioDelay),
     PlaybackState(PlaybackState),
     Position(Position),
     CurrentTrack(CurrentTrack),
@@ -99,6 +110,15 @@ impl PropertyChange {
             PropertyChange::Bass(v) => store.set(speaker_id, v.clone(), stamp),
             PropertyChange::Treble(v) => store.set(speaker_id, v.clone(), stamp),
             PropertyChange::Loudness(v) => store.set(speaker_id, v.clone(), stamp),
+            PropertyChange::SubEnabled(v) => store.set(speaker_id, *v, stamp),
+            PropertyChange::SubLevel(v) => store.set(speaker_id, *v, stamp),
+            PropertyChange::SurroundEnabled(v) => store.set(speaker_id, *v, stamp),
+            PropertyChange::SurroundLevel(v) => store.set(speaker_id, *v, stamp),
+            PropertyChange::MusicSurroundLevel(v) => store.set(speaker_id, *v, stamp),
+            PropertyChange::SurroundMode(v) => store.set(speaker_id, *v, stamp),
+            PropertyChange::NightMode(v) => store.set(speaker_id, *v, stamp),
+            PropertyChange::SpeechEnhancement(v) => store.set(speaker_id, *v, stamp),
+            PropertyChange::AudioDelay(v) => store.set(speaker_id, *v, stamp),
             PropertyChange::PlaybackState(v) => store.set(speaker_id, v.clone(), stamp),
             PropertyChange::Position(v) => store.set(speaker_id, v.clone(), stamp),
             PropertyChange::CurrentTrack(v) => store.set(speaker_id, v.clone(), stamp),
@@ -154,6 +174,15 @@ impl PropertyChange {
             PropertyChange::Bass(_) => Bass::KEY,
             PropertyChange::Treble(_) => Treble::KEY,
             PropertyChange::Loudness(_) => Loudness::KEY,
+            PropertyChange::SubEnabled(_) => SubEnabled::KEY,
+            PropertyChange::SubLevel(_) => SubLevel::KEY,
+            PropertyChange::SurroundEnabled(_) => SurroundEnabled::KEY,
+            PropertyChange::SurroundLevel(_) => SurroundLevel::KEY,
+            PropertyChange::MusicSurroundLevel(_) => MusicSurroundLevel::KEY,
+            PropertyChange::SurroundMode(_) => SurroundMode::KEY,
+            PropertyChange::NightMode(_) => NightMode::KEY,
+            PropertyChange::SpeechEnhancement(_) => SpeechEnhancement::KEY,
+            PropertyChange::AudioDelay(_) => AudioDelay::KEY,
             PropertyChange::PlaybackState(_) => PlaybackState::KEY,
             PropertyChange::Position(_) => Position::KEY,
             PropertyChange::CurrentTrack(_) => CurrentTrack::KEY,
@@ -176,6 +205,15 @@ impl PropertyChange {
             PropertyChange::Bass(_) => Bass::SCOPE,
             PropertyChange::Treble(_) => Treble::SCOPE,
             PropertyChange::Loudness(_) => Loudness::SCOPE,
+            PropertyChange::SubEnabled(_) => SubEnabled::SCOPE,
+            PropertyChange::SubLevel(_) => SubLevel::SCOPE,
+            PropertyChange::SurroundEnabled(_) => SurroundEnabled::SCOPE,
+            PropertyChange::SurroundLevel(_) => SurroundLevel::SCOPE,
+            PropertyChange::MusicSurroundLevel(_) => MusicSurroundLevel::SCOPE,
+            PropertyChange::SurroundMode(_) => SurroundMode::SCOPE,
+            PropertyChange::NightMode(_) => NightMode::SCOPE,
+            PropertyChange::SpeechEnhancement(_) => SpeechEnhancement::SCOPE,
+            PropertyChange::AudioDelay(_) => AudioDelay::SCOPE,
             PropertyChange::PlaybackState(_) => PlaybackState::SCOPE,
             PropertyChange::Position(_) => Position::SCOPE,
             PropertyChange::CurrentTrack(_) => CurrentTrack::SCOPE,
@@ -198,6 +236,15 @@ impl PropertyChange {
             PropertyChange::Bass(_) => Bass::SERVICE,
             PropertyChange::Treble(_) => Treble::SERVICE,
             PropertyChange::Loudness(_) => Loudness::SERVICE,
+            PropertyChange::SubEnabled(_) => SubEnabled::SERVICE,
+            PropertyChange::SubLevel(_) => SubLevel::SERVICE,
+            PropertyChange::SurroundEnabled(_) => SurroundEnabled::SERVICE,
+            PropertyChange::SurroundLevel(_) => SurroundLevel::SERVICE,
+            PropertyChange::MusicSurroundLevel(_) => MusicSurroundLevel::SERVICE,
+            PropertyChange::SurroundMode(_) => SurroundMode::SERVICE,
+            PropertyChange::NightMode(_) => NightMode::SERVICE,
+            PropertyChange::SpeechEnhancement(_) => SpeechEnhancement::SERVICE,
+            PropertyChange::AudioDelay(_) => AudioDelay::SERVICE,
             PropertyChange::PlaybackState(_) => PlaybackState::SERVICE,
             PropertyChange::Position(_) => Position::SERVICE,
             PropertyChange::CurrentTrack(_) => CurrentTrack::SERVICE,
@@ -267,7 +314,58 @@ fn decode_rendering_control(event: &RenderingControlState) -> Vec<PropertyChange
         changes.push(PropertyChange::Loudness(Loudness(loudness)));
     }
 
+    decode_home_theater(&event.home_theater, &mut changes);
+
     changes
+}
+
+/// Decode the home theater settings a RenderingControl event carries.
+///
+/// Values that don't parse are skipped, not defaulted: an unreadable level
+/// should leave the cached one alone rather than reset it to zero.
+fn decode_home_theater(ht: &HomeTheaterState, changes: &mut Vec<PropertyChange>) {
+    let switch = |v: &Option<String>| {
+        v.as_deref()
+            .map(|s| s.trim() == "1" || s.trim().eq_ignore_ascii_case("true"))
+    };
+    let level = |v: &Option<String>| v.as_deref().and_then(|s| s.trim().parse::<i32>().ok());
+    // Clamp in i32 before narrowing, so an out-of-range value can't wrap.
+    let i8_level = |v: &Option<String>, min: i8, max: i8| {
+        level(v).map(|n| n.clamp(i32::from(min), i32::from(max)) as i8)
+    };
+
+    if let Some(on) = switch(&ht.sub_enabled) {
+        changes.push(PropertyChange::SubEnabled(SubEnabled(on)));
+    }
+    if let Some(n) = i8_level(&ht.sub_gain, SubLevel::MIN, SubLevel::MAX) {
+        changes.push(PropertyChange::SubLevel(SubLevel(n)));
+    }
+    if let Some(on) = switch(&ht.surround_enabled) {
+        changes.push(PropertyChange::SurroundEnabled(SurroundEnabled(on)));
+    }
+    if let Some(n) = i8_level(&ht.surround_level, SurroundLevel::MIN, SurroundLevel::MAX) {
+        changes.push(PropertyChange::SurroundLevel(SurroundLevel(n)));
+    }
+    if let Some(n) = i8_level(
+        &ht.music_surround_level,
+        MusicSurroundLevel::MIN,
+        MusicSurroundLevel::MAX,
+    ) {
+        changes.push(PropertyChange::MusicSurroundLevel(MusicSurroundLevel(n)));
+    }
+    if let Some(mode) = level(&ht.surround_mode).and_then(SurroundMode::from_value) {
+        changes.push(PropertyChange::SurroundMode(mode));
+    }
+    if let Some(on) = switch(&ht.night_mode) {
+        changes.push(PropertyChange::NightMode(NightMode(on)));
+    }
+    if let Some(on) = switch(&ht.dialog_level) {
+        changes.push(PropertyChange::SpeechEnhancement(SpeechEnhancement(on)));
+    }
+    if let Some(n) = level(&ht.audio_delay) {
+        let n = n.clamp(i32::from(AudioDelay::MIN), i32::from(AudioDelay::MAX)) as u8;
+        changes.push(PropertyChange::AudioDelay(AudioDelay(n)));
+    }
 }
 
 /// Decode AVTransport event data
@@ -952,6 +1050,57 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_home_theater_settings() {
+        let some = |v: &str| Some(v.to_string());
+        let ht = HomeTheaterState {
+            sub_enabled: some("1"),
+            sub_gain: some("-2"),
+            surround_enabled: some("0"),
+            surround_level: some("8"),
+            music_surround_level: some("99"), // out of range: clamped
+            surround_mode: some("1"),
+            night_mode: some("0"),
+            dialog_level: some("1"),
+            audio_delay: some("3"),
+        };
+        let mut changes = vec![];
+        decode_home_theater(&ht, &mut changes);
+
+        let debug: Vec<String> = changes.iter().map(|c| format!("{c:?}")).collect();
+        assert_eq!(
+            debug,
+            vec![
+                "SubEnabled(SubEnabled(true))",
+                "SubLevel(SubLevel(-2))",
+                "SurroundEnabled(SurroundEnabled(false))",
+                "SurroundLevel(SurroundLevel(8))",
+                "MusicSurroundLevel(MusicSurroundLevel(15))",
+                "SurroundMode(Full)",
+                "NightMode(NightMode(false))",
+                "SpeechEnhancement(SpeechEnhancement(true))",
+                "AudioDelay(AudioDelay(3))",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_decode_home_theater_skips_absent_and_garbled_values() {
+        let ht = HomeTheaterState {
+            sub_gain: Some("loud".to_string()),
+            surround_mode: Some("7".to_string()),
+            night_mode: Some("1".to_string()),
+            ..Default::default()
+        };
+        let mut changes = vec![];
+        decode_home_theater(&ht, &mut changes);
+        assert_eq!(changes.len(), 1);
+        assert!(matches!(
+            changes[0],
+            PropertyChange::NightMode(NightMode(true))
+        ));
+    }
+
+    #[test]
     fn test_decode_rendering_control() {
         let event = RenderingControlState {
             master_volume: Some("50".to_string()),
@@ -965,6 +1114,7 @@ mod tests {
             rf_mute: None,
             balance: None,
             other_channels: std::collections::HashMap::new(),
+            home_theater: Default::default(),
         };
 
         let changes = decode_rendering_control(&event);

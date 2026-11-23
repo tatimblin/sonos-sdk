@@ -443,6 +443,7 @@ mod tests {
             lf_mute: None,
             rf_mute: None,
             other_channels: std::collections::HashMap::new(),
+            home_theater: Default::default(),
         };
         let json = serde_json::to_string(&rc_state).unwrap();
         let event_data = poller

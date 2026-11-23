@@ -96,9 +96,11 @@ pub use iter::ChangeIterator;
 
 // Properties
 pub use property::{
-    Bass, CrossfadeMode, CurrentTrack, GroupInfo, GroupMembership, GroupMute, GroupVolume,
-    GroupVolumeChangeable, Loudness, Mute, PlayMode, PlaybackSource, PlaybackState, Position,
-    Property, Scope, SleepTimer, SonosProperty, Topology, Treble, Volume,
+    AudioDelay, Bass, CrossfadeMode, CurrentTrack, GroupInfo, GroupMembership, GroupMute,
+    GroupVolume, GroupVolumeChangeable, Loudness, MusicSurroundLevel, Mute, NightMode, PlayMode,
+    PlaybackSource, PlaybackState, Position, Property, Scope, SleepTimer, SonosProperty,
+    SpeechEnhancement, SubEnabled, SubLevel, SurroundEnabled, SurroundLevel, SurroundMode,
+    Topology, Treble, Volume,
 };
 
 // Model types

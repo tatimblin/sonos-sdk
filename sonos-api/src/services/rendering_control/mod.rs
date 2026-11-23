@@ -59,4 +59,4 @@ pub use events::{
     create_enriched_event, create_enriched_event_with_registration_id, RenderingControlEvent,
     RenderingControlEventParser,
 };
-pub use state::RenderingControlState;
+pub use state::{HomeTheaterState, RenderingControlState};

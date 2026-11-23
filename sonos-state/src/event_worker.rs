@@ -1291,6 +1291,7 @@ mod tests {
                 rf_mute: None,
                 balance: None,
                 other_channels: std::collections::HashMap::new(),
+                home_theater: Default::default(),
             }),
             observed_at,
         )
@@ -1515,6 +1516,7 @@ mod tests {
                     rf_mute: None,
                     balance: None,
                     other_channels: std::collections::HashMap::new(),
+                    home_theater: Default::default(),
                 }),
             )
         };

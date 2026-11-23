@@ -16,7 +16,9 @@ pub use handles::{WatchHandle, WatchMode};
 
 // Re-export type aliases for all property handles
 pub use handles::{
-    BassHandle, CrossfadeModeHandle, CurrentTrackHandle, GroupMembershipHandle, GroupMuteHandle,
-    GroupVolumeChangeableHandle, GroupVolumeHandle, LoudnessHandle, MuteHandle, PlayModeHandle,
-    PlaybackStateHandle, PositionHandle, SleepTimerHandle, TrebleHandle, VolumeHandle,
+    AudioDelayHandle, BassHandle, CrossfadeModeHandle, CurrentTrackHandle, GroupMembershipHandle,
+    GroupMuteHandle, GroupVolumeChangeableHandle, GroupVolumeHandle, LoudnessHandle,
+    MusicSurroundLevelHandle, MuteHandle, NightModeHandle, PlayModeHandle, PlaybackStateHandle,
+    PositionHandle, SleepTimerHandle, SpeechEnhancementHandle, SubEnabledHandle, SubLevelHandle,
+    SurroundEnabledHandle, SurroundLevelHandle, SurroundModeHandle, TrebleHandle, VolumeHandle,
 };
