@@ -451,20 +451,37 @@ impl EventBroker {
                     )
                     .await
                 {
-                    error!(
-                        registration_id = %request.registration_id,
-                        speaker_ip = %request.speaker_service_pair.speaker_ip,
-                        service = ?request.speaker_service_pair.service,
-                        error = %e,
-                        "failed to start polling; events for this service are lost until it recovers"
-                    );
                     // The detector marked this registration as polling when it
                     // sent the request. Polling never started, so clear the
-                    // marker or timeout detection stays suppressed forever.
-                    event_detector
-                        .clear_polling_active(request.registration_id)
+                    // marker (or timeout detection stays suppressed forever) and
+                    // back off before the next attempt.
+                    let failures = event_detector
+                        .polling_start_failed(request.registration_id)
                         .await;
+                    // Report the first failure of a run; retries would otherwise
+                    // repeat it for as long as the cause (a full cap) lasts.
+                    if failures <= 1 {
+                        error!(
+                            registration_id = %request.registration_id,
+                            speaker_ip = %request.speaker_service_pair.speaker_ip,
+                            service = ?request.speaker_service_pair.service,
+                            error = %e,
+                            "failed to start polling; events for this service are lost until it recovers"
+                        );
+                    } else {
+                        debug!(
+                            registration_id = %request.registration_id,
+                            speaker_ip = %request.speaker_service_pair.speaker_ip,
+                            service = ?request.speaker_service_pair.service,
+                            error = %e,
+                            failures,
+                            "polling still failing to start; backing off"
+                        );
+                    }
                 } else {
+                    event_detector
+                        .polling_started(request.registration_id)
+                        .await;
                     // Mark polling as active in subscription
                     if let Some(subscription) = subscription_manager
                         .get_subscription(request.registration_id)
@@ -648,13 +665,20 @@ impl EventBroker {
                 warn_if_speaker_unreachable(&self._callback_server, speaker_ip);
             }
 
-            // Get or trigger firewall detection for this device
+            // Get or trigger firewall detection for this device. Detection must
+            // start before the SUBSCRIBE: the device sends its initial event as
+            // soon as the subscription exists, and detection that started later
+            // would miss it and time out. It also starts for a device that isn't
+            // new when no detection is running, because an earlier one was
+            // cancelled after its subscription failed.
+            let mut started_detection = false;
             firewall_status = if let Some(coordinator) = &self.firewall_coordinator {
-                if is_first_for_device {
+                if is_first_for_device || !coordinator.is_tracking(speaker_ip).await {
                     debug!(
                         speaker_ip = %speaker_ip,
-                        "First subscription for device, triggering firewall detection"
+                        "starting firewall detection for device"
                     );
+                    started_detection = true;
                     coordinator.on_first_subscription(speaker_ip).await
                 } else {
                     coordinator.get_device_status(speaker_ip).await
@@ -717,6 +741,13 @@ impl EventBroker {
                         error = %e,
                         "UPnP subscription failed; falling back to polling"
                     );
+                    // No event can arrive without the subscription, so detection
+                    // started for it would time out and blame a firewall.
+                    if started_detection {
+                        if let Some(coordinator) = &self.firewall_coordinator {
+                            coordinator.cancel_detection(speaker_ip).await;
+                        }
+                    }
                     polling_reason = Some(PollingReason::SubscriptionFailed);
 
                     // Start polling as fallback

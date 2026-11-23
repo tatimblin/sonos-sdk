@@ -37,6 +37,23 @@ struct MonitoredRegistration {
     /// This is both the "don't ask for polling twice" guard and the signal that
     /// a `PollingAction::Stop` is owed once events resume.
     polling_reason: Option<PollingReason>,
+    /// Polling starts that failed in a row (e.g. the concurrency cap was full).
+    polling_start_failures: u32,
+    /// After a failed start, timeout detection waits until this instant before
+    /// asking again, so a full cap isn't re-requested on every check.
+    retry_polling_after: Option<Instant>,
+}
+
+/// Longest wait between polling start attempts for one registration.
+const MAX_POLLING_RETRY_BACKOFF: Duration = Duration::from_secs(600);
+
+/// How long to wait before retrying after the `failures`-th failed start in a
+/// row: one `event_timeout`, doubling, capped at [`MAX_POLLING_RETRY_BACKOFF`].
+fn polling_retry_backoff(event_timeout: Duration, failures: u32) -> Duration {
+    let doublings = failures.saturating_sub(1).min(16);
+    event_timeout
+        .saturating_mul(1 << doublings)
+        .min(MAX_POLLING_RETRY_BACKOFF)
 }
 
 /// Monitors event activity and detects when polling fallback is needed
@@ -109,6 +126,9 @@ impl EventDetector {
                 return;
             };
             reg.last_event_time = Instant::now();
+            // Events are flowing, so any earlier polling start failures are moot.
+            reg.polling_start_failures = 0;
+            reg.retry_polling_after = None;
 
             // Clearing `polling_reason` here re-arms timeout detection: if UPnP goes
             // quiet again, `start_monitoring` is free to request polling once more.
@@ -181,6 +201,37 @@ impl EventDetector {
         }
     }
 
+    /// Record that a requested polling start failed, and back off before timeout
+    /// detection asks again.
+    ///
+    /// Clears the polling marker like [`Self::clear_polling_active`] (so a later
+    /// attempt is possible), but also delays that attempt: without the delay a
+    /// full concurrency cap was re-requested on every check, every
+    /// `event_timeout / 3`, for every registration over the cap. Returns how many
+    /// starts have now failed in a row, so the caller can report the first one
+    /// loudly and the retries quietly; 0 if the registration is gone.
+    pub async fn polling_start_failed(&self, registration_id: RegistrationId) -> u32 {
+        let mut registrations = self.registrations.write().await;
+        let Some(reg) = registrations.get_mut(&registration_id) else {
+            return 0;
+        };
+        reg.polling_reason = None;
+        reg.polling_start_failures = reg.polling_start_failures.saturating_add(1);
+        reg.retry_polling_after = Some(
+            Instant::now() + polling_retry_backoff(self.event_timeout, reg.polling_start_failures),
+        );
+        reg.polling_start_failures
+    }
+
+    /// Record that polling started, ending any run of failed starts.
+    pub async fn polling_started(&self, registration_id: RegistrationId) {
+        let mut registrations = self.registrations.write().await;
+        if let Some(reg) = registrations.get_mut(&registration_id) {
+            reg.polling_start_failures = 0;
+            reg.retry_polling_after = None;
+        }
+    }
+
     /// Evaluate firewall status and make immediate polling decision
     pub async fn evaluate_firewall_status(
         &self,
@@ -249,6 +300,7 @@ impl EventDetector {
                     regs.iter()
                         .filter(|(_, reg)| {
                             reg.polling_reason.is_none()
+                                && reg.retry_polling_after.is_none_or(|at| now >= at)
                                 && now.duration_since(reg.last_event_time) > event_timeout
                         })
                         .map(|(id, reg)| (*id, reg.pair.clone()))
@@ -296,6 +348,8 @@ impl EventDetector {
                 last_event_time: Instant::now(),
                 pair,
                 polling_reason: None,
+                polling_start_failures: 0,
+                retry_polling_after: None,
             },
         );
     }
@@ -481,6 +535,71 @@ mod tests {
         assert_eq!(request.speaker_service_pair.speaker_ip, pair.speaker_ip);
         assert!(matches!(request.action, PollingAction::Start));
         assert_eq!(request.reason, PollingReason::EventTimeout);
+    }
+
+    #[test]
+    fn test_polling_retry_backoff_doubles_up_to_the_cap() {
+        let timeout = Duration::from_secs(30);
+        let waits: Vec<u64> = (1..=7)
+            .map(|n| polling_retry_backoff(timeout, n).as_secs())
+            .collect();
+        assert_eq!(waits, vec![30, 60, 120, 240, 480, 600, 600]);
+        // No overflow however long the run gets.
+        assert_eq!(
+            polling_retry_backoff(timeout, u32::MAX),
+            MAX_POLLING_RETRY_BACKOFF
+        );
+    }
+
+    /// A failed start must not be re-requested on the next check. With the
+    /// concurrency cap full, that used to repeat every `event_timeout / 3` for
+    /// every registration over the cap, logging an error each time.
+    #[tokio::test]
+    async fn test_failed_polling_start_backs_off_before_asking_again() {
+        let mut detector = EventDetector::new(Duration::from_secs(30));
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        detector.set_polling_request_sender(sender);
+        let detector = Arc::new(detector);
+
+        let registration_id = RegistrationId::new(9);
+        let pair = SpeakerServicePair::new(
+            "192.168.1.100".parse().unwrap(),
+            sonos_api::Service::AVTransport,
+        );
+        detector.register_subscription(registration_id, pair).await;
+        detector.backdate_last_event_for_test(registration_id).await;
+
+        // As the broker does when `start_polling` fails.
+        detector
+            .mark_polling_active(registration_id, PollingReason::EventTimeout)
+            .await;
+        assert_eq!(detector.polling_start_failed(registration_id).await, 1);
+
+        // Timed out and not polling, but inside the backoff: the first tick
+        // (immediate) must not ask again.
+        detector.start_monitoring().await;
+        let request = tokio::time::timeout(Duration::from_millis(300), receiver.recv()).await;
+        assert!(request.is_err(), "re-requested polling inside the backoff");
+
+        // Consecutive failures count up; a successful start or an event resets.
+        assert_eq!(detector.polling_start_failed(registration_id).await, 2);
+        detector.polling_started(registration_id).await;
+        assert_eq!(detector.polling_start_failed(registration_id).await, 1);
+        detector.record_event(registration_id).await;
+        {
+            let regs = detector.registrations.read().await;
+            let reg = &regs[&registration_id];
+            assert_eq!(reg.polling_start_failures, 0);
+            assert!(reg.retry_polling_after.is_none());
+        }
+
+        // An unknown registration reports no failures.
+        assert_eq!(
+            detector
+                .polling_start_failed(RegistrationId::new(404))
+                .await,
+            0
+        );
     }
 
     /// Once a registration has fallen back to polling, a resumed UPnP event must
