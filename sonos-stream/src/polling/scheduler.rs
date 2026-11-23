@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::{mpsc, Notify, RwLock};
 use tokio::task::JoinHandle;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, trace, warn};
 
 use crate::error::{PollingError, PollingResult};
 use crate::events::types::{EnrichedEvent, EventSource};
@@ -164,11 +164,11 @@ impl PollingTask {
         error_count: Arc<RwLock<u32>>,
         poll_count: Arc<RwLock<u64>>,
     ) {
-        info!(
+        debug!(
             speaker_ip = %pair.speaker_ip,
             service = ?pair.service,
             ?current_interval,
-            "Starting polling task"
+            "starting polling task"
         );
 
         // Track last state locally within the loop
@@ -177,10 +177,10 @@ impl PollingTask {
         loop {
             // Check for shutdown signal
             if shutdown_signal.is_requested() {
-                info!(
+                debug!(
                     speaker_ip = %pair.speaker_ip,
                     service = ?pair.service,
-                    "Polling task shutting down"
+                    "polling task shutting down"
                 );
                 break;
             }
@@ -188,10 +188,10 @@ impl PollingTask {
             // Sleep for the current interval, but wake immediately on shutdown rather
             // than making a stop wait out the whole interval.
             if shutdown_signal.sleep_or_shutdown(current_interval).await {
-                info!(
+                debug!(
                     speaker_ip = %pair.speaker_ip,
                     service = ?pair.service,
-                    "Polling task shutting down during interval sleep"
+                    "polling task shutting down during interval sleep"
                 );
                 break;
             }
@@ -234,10 +234,10 @@ impl PollingTask {
                     }
 
                     if state_changed {
-                        debug!(
+                        trace!(
                             speaker_ip = %pair.speaker_ip,
                             service = ?pair.service,
-                            "State change detected"
+                            "state change detected by polling"
                         );
 
                         // Convert JSON snapshot to EventData and emit full-state event
@@ -255,10 +255,11 @@ impl PollingTask {
                                 );
 
                                 if event_sender.send(enriched_event).is_err() {
-                                    error!(
+                                    // The receiver is gone: the broker is shutting down.
+                                    debug!(
                                         speaker_ip = %pair.speaker_ip,
                                         service = ?pair.service,
-                                        "Failed to send polling event — channel closed"
+                                        "event channel closed, stopping polling task"
                                     );
                                     return;
                                 }
@@ -268,7 +269,7 @@ impl PollingTask {
                                     speaker_ip = %pair.speaker_ip,
                                     service = ?pair.service,
                                     error = %e,
-                                    "Failed to convert state to event data"
+                                    "failed to convert polled state to event data; change dropped"
                                 );
                             }
                         }
@@ -291,12 +292,13 @@ impl PollingTask {
                         *errors
                     };
 
-                    warn!(
+                    // Retried with backoff; only giving up below is worth more than debug.
+                    debug!(
                         speaker_ip = %pair.speaker_ip,
                         service = ?pair.service,
                         attempt = error_count_value,
                         error = %e,
-                        "Polling error"
+                        "polling error, will retry"
                     );
 
                     // Use exponential backoff for errors
@@ -304,7 +306,10 @@ impl PollingTask {
                         error!(
                             speaker_ip = %pair.speaker_ip,
                             service = ?pair.service,
-                            "Too many consecutive errors, stopping polling"
+                            attempts = error_count_value,
+                            error = %e,
+                            "too many consecutive polling errors, stopping polling; \
+                             no further updates for this service"
                         );
                         break;
                     }
@@ -316,10 +321,10 @@ impl PollingTask {
                     let backoff_interval = current_interval * (2_u32.pow(error_count_value.min(6)));
                     let capped_interval = backoff_interval.min(max_interval);
                     if shutdown_signal.sleep_or_shutdown(capped_interval).await {
-                        info!(
+                        debug!(
                             speaker_ip = %pair.speaker_ip,
                             service = ?pair.service,
-                            "Polling task shutting down during error backoff"
+                            "polling task shutting down during error backoff"
                         );
                         break;
                     }
@@ -327,10 +332,10 @@ impl PollingTask {
             }
         }
 
-        info!(
+        debug!(
             speaker_ip = %pair.speaker_ip,
             service = ?pair.service,
-            "Polling task ended"
+            "polling task ended"
         );
     }
 
@@ -496,10 +501,13 @@ impl PollingScheduler {
 
         tasks.insert(registration_id, task);
 
-        info!(
+        // Debug, not info: idle services start polling after `event_timeout`
+        // without events and stop on the next one, so this cycles in normal
+        // operation. Real fallbacks are reported at info by the broker.
+        debug!(
             speaker_ip = %pair.speaker_ip,
             service = ?pair.service,
-            "Started polling"
+            "started polling"
         );
 
         Ok(())
@@ -530,10 +538,10 @@ impl PollingScheduler {
             // Shutdown happens when task is dropped, but we can explicitly shut it down
             task.shutdown().await?;
 
-            info!(
+            debug!(
                 speaker_ip = %pair.speaker_ip,
                 service = ?pair.service,
-                "Stopped polling"
+                "stopped polling"
             );
         }
 
@@ -581,10 +589,10 @@ impl PollingScheduler {
         for (registration_id, task) in drained {
             match task.shutdown().await {
                 Ok(()) => {
-                    debug!(%registration_id, "Shutdown polling task");
+                    debug!(%registration_id, "shut down polling task");
                 }
                 Err(e) => {
-                    error!(%registration_id, error = %e, "Failed to shutdown polling task");
+                    debug!(%registration_id, error = %e, "failed to shut down polling task");
                 }
             }
         }

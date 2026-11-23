@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{mpsc, RwLock};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, trace, warn};
 
 use callback_server::{router::NotificationPayload, FirewallDetectionCoordinator};
 use sonos_api::events::EventProcessor as ApiEventProcessor;
@@ -167,11 +167,11 @@ impl EventProcessor {
         );
 
         // Send enriched event
-        debug!(
+        trace!(
             speaker_ip = %enriched_event.speaker_ip,
             service = ?enriched_event.service,
             event_source = ?enriched_event.event_source,
-            "Routing event to EventIterator channel"
+            "routing event to event iterator channel"
         );
         self.event_sender
             .send(enriched_event)
@@ -195,11 +195,11 @@ impl EventProcessor {
         }
 
         // Send the event (it's already enriched)
-        debug!(
+        trace!(
             speaker_ip = %event.speaker_ip,
             service = ?event.service,
             event_source = ?event.event_source,
-            "Routing polling event to EventIterator channel"
+            "routing polling event to event iterator channel"
         );
         self.event_sender
             .send(event)
@@ -278,7 +278,7 @@ impl EventProcessor {
         &self,
         mut upnp_receiver: mpsc::UnboundedReceiver<NotificationPayload>,
     ) {
-        info!("Starting UPnP event processing using sonos-api framework");
+        debug!("starting UPnP event processing");
 
         let mut event_count = 0;
         loop {
@@ -287,29 +287,42 @@ impl EventProcessor {
                     match maybe_payload {
                         Some(payload) => {
                             event_count += 1;
-                            debug!(
+                            trace!(
                                 event_count,
                                 subscription_id = %payload.subscription_id,
-                                "Processing UPnP event"
+                                "processing UPnP event"
                             );
 
+                            let subscription_id = payload.subscription_id.clone();
                             match self.process_upnp_notification(payload).await {
                                 Ok(()) => {
                                     trace!(event_count, "UPnP event processed successfully");
                                 }
                                 Err(e) => {
-                                    error!(
-                                        event_count,
-                                        error = %e,
-                                        "Failed to process UPnP event"
-                                    );
+                                    match &e {
+                                        // An event for a subscription that was just
+                                        // removed, or a receiver gone at shutdown.
+                                        EventProcessingError::Enrichment(_)
+                                        | EventProcessingError::ChannelClosed => debug!(
+                                            event_count,
+                                            subscription_id = %subscription_id,
+                                            error = %e,
+                                            "dropped UPnP event"
+                                        ),
+                                        _ => warn!(
+                                            event_count,
+                                            subscription_id = %subscription_id,
+                                            error = %e,
+                                            "failed to process UPnP event; update dropped"
+                                        ),
+                                    }
                                     let mut stats = self.stats.write().await;
                                     stats.processing_errors += 1;
                                 }
                             }
                         }
                         None => {
-                            warn!("UPnP receiver channel closed");
+                            debug!("UPnP receiver channel closed");
                             break;
                         }
                     }
@@ -323,7 +336,7 @@ impl EventProcessor {
             }
         }
 
-        info!("UPnP event processing stopped");
+        debug!("UPnP event processing stopped");
     }
 
     /// Start processing polling events
@@ -331,7 +344,7 @@ impl EventProcessor {
         &self,
         mut polling_receiver: mpsc::UnboundedReceiver<EnrichedEvent>,
     ) {
-        info!("Starting polling event processing");
+        debug!("starting polling event processing");
 
         while let Some(event) = polling_receiver.recv().await {
             match self.process_polling_event(event).await {
@@ -339,9 +352,10 @@ impl EventProcessor {
                     // Event processed successfully
                 }
                 Err(e) => {
-                    error!(
+                    // Only fails when the receiver is gone at shutdown.
+                    debug!(
                         error = %e,
-                        "Failed to process polling event"
+                        "failed to process polling event"
                     );
                     let mut stats = self.stats.write().await;
                     stats.processing_errors += 1;
@@ -349,7 +363,7 @@ impl EventProcessor {
             }
         }
 
-        info!("Polling event processing stopped");
+        debug!("polling event processing stopped");
     }
 
     /// Get event processor statistics

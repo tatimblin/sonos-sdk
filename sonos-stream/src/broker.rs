@@ -137,17 +137,35 @@ fn subscription_callback_url(callback_server: &CallbackServer) -> String {
 /// uses each interface's real netmask: on this project's own network — one flat
 /// `192.168.4.0/22` — a `192.168.5.x` speaker *is* reachable from `192.168.4.32`,
 /// and a /24 assumption would raise a false warning for half the household.
+///
+/// Warns at most once per speaker per process: a device's first subscription
+/// recurs every time all of its registrations are torn down and re-made (e.g. a
+/// UI navigating away and back), and the answer does not change in between.
 fn warn_if_speaker_unreachable(callback_server: &CallbackServer, speaker_ip: IpAddr) {
+    static WARNED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<IpAddr>>> =
+        std::sync::OnceLock::new();
+
     let IpAddr::V4(v4) = speaker_ip else {
         return;
     };
     if CallbackServer::local_ip_for_speaker(v4).is_none() {
-        warn!(
-            speaker_ip = %speaker_ip,
-            callback_url = %callback_server.base_url(),
-            "Speaker is not on any local subnet; UPnP events will not reach the \
-             callback server and this device will fall back to polling"
-        );
+        let first = WARNED
+            .get_or_init(Default::default)
+            .lock()
+            .map_or(true, |mut warned| warned.insert(speaker_ip));
+        if first {
+            warn!(
+                speaker_ip = %speaker_ip,
+                callback_url = %callback_server.base_url(),
+                "speaker is not on any local subnet; UPnP events will not reach the \
+                 callback server and this device will fall back to polling"
+            );
+        } else {
+            debug!(
+                speaker_ip = %speaker_ip,
+                "speaker is not on any local subnet; already warned"
+            );
+        }
     }
 }
 
@@ -179,7 +197,7 @@ impl EventBroker {
         // Validate configuration
         config.validate()?;
 
-        info!(config = ?config, "Initializing EventBroker");
+        debug!(config = ?config, "initializing event broker");
 
         // Create main event channel
         let (event_sender, event_receiver) = mpsc::unbounded_channel();
@@ -212,9 +230,9 @@ impl EventBroker {
 
             let coordinator = Arc::new(FirewallDetectionCoordinator::new(coordinator_config));
 
-            info!(
+            debug!(
                 timeout = ?config.firewall_event_wait_timeout,
-                "Firewall detection coordinator enabled"
+                "firewall detection coordinator enabled"
             );
 
             Some(coordinator)
@@ -278,7 +296,7 @@ impl EventBroker {
         // Start background processing
         broker.start_background_processing().await?;
 
-        info!("EventBroker initialized successfully");
+        debug!("event broker initialized");
 
         Ok(broker)
     }
@@ -365,7 +383,7 @@ impl EventBroker {
         // time they are handled, which is why `handle_polling_request` re-checks
         // liveness.
         let task = tokio::spawn(async move {
-            info!("Starting polling request processing");
+            debug!("starting polling request processing");
 
             while let Some(request) = receiver.recv().await {
                 Self::handle_polling_request(
@@ -378,7 +396,7 @@ impl EventBroker {
                 .await;
             }
 
-            info!("Polling request processing stopped");
+            debug!("polling request processing stopped");
         });
 
         self.background_tasks.push(task);
@@ -438,7 +456,7 @@ impl EventBroker {
                         speaker_ip = %request.speaker_service_pair.speaker_ip,
                         service = ?request.speaker_service_pair.service,
                         error = %e,
-                        "Failed to start polling"
+                        "failed to start polling; events for this service are lost until it recovers"
                     );
                     // The detector marked this registration as polling when it
                     // sent the request. Polling never started, so clear the
@@ -473,12 +491,13 @@ impl EventBroker {
                     .stop_polling(request.registration_id)
                     .await
                 {
-                    error!(
+                    // The task is already out of the scheduler either way.
+                    debug!(
                         registration_id = %request.registration_id,
                         speaker_ip = %request.speaker_service_pair.speaker_ip,
                         service = ?request.speaker_service_pair.service,
                         error = %e,
-                        "Error while stopping polling task"
+                        "error while stopping polling task"
                     );
                 }
 
@@ -489,11 +508,14 @@ impl EventBroker {
                     subscription.set_polling_active(false);
                 }
 
-                info!(
+                // Debug, not info: an idle service with no events for
+                // `event_timeout` starts polling and the next event stops it, so
+                // this cycles in normal operation.
+                debug!(
                     registration_id = %request.registration_id,
                     speaker_ip = %request.speaker_service_pair.speaker_ip,
                     service = ?request.speaker_service_pair.service,
-                    "Polling stopped; back to UPnP events"
+                    "polling stopped; back to UPnP events"
                 );
             }
         }
@@ -505,7 +527,7 @@ impl EventBroker {
         let renewal_threshold = self.config.renewal_threshold;
 
         let task = tokio::spawn(async move {
-            info!("Starting subscription renewal monitoring");
+            debug!("starting subscription renewal monitoring");
 
             let mut interval = tokio::time::interval(renewal_threshold / 2); // Check twice as often as threshold
 
@@ -606,10 +628,12 @@ impl EventBroker {
                 .start_polling(registration_id, pair.clone())
                 .await
             {
-                error!(
+                debug!(
                     registration_id = %registration_id,
+                    speaker_ip = %speaker_ip,
+                    service = ?service,
                     error = %e,
-                    "Failed to start forced polling"
+                    "failed to start forced polling"
                 );
                 let _ = self.registry.unregister(registration_id).await;
                 return Err(BrokerError::Polling(e));
@@ -649,7 +673,9 @@ impl EventBroker {
                 Ok(subscription) => {
                     debug!(
                         subscription_id = %subscription.subscription_id(),
-                        "Created UPnP subscription"
+                        speaker_ip = %speaker_ip,
+                        service = ?service,
+                        "created UPnP subscription"
                     );
 
                     // Register subscription ID with EventRouter for event routing
@@ -684,10 +710,12 @@ impl EventBroker {
                     }
                 }
                 Err(e) => {
-                    error!(
+                    info!(
                         registration_id = %registration_id,
+                        speaker_ip = %speaker_ip,
+                        service = ?service,
                         error = %e,
-                        "Failed to create subscription, falling back to polling"
+                        "UPnP subscription failed; falling back to polling"
                     );
                     polling_reason = Some(PollingReason::SubscriptionFailed);
 
@@ -697,10 +725,13 @@ impl EventBroker {
                         .start_polling(registration_id, pair.clone())
                         .await
                     {
-                        error!(
+                        // Returned as Err; the caller decides how loudly to report it.
+                        debug!(
                             registration_id = %registration_id,
+                            speaker_ip = %speaker_ip,
+                            service = ?service,
                             error = %e,
-                            "Failed to start fallback polling"
+                            "failed to start fallback polling"
                         );
                         // Remove registration since both subscription and polling failed
                         let _ = self.registry.unregister(registration_id).await;
@@ -804,8 +835,11 @@ impl EventBroker {
         {
             error!(
                 registration_id = %registration_id,
+                speaker_ip = %pair.speaker_ip,
+                service = ?pair.service,
+                reason = ?request.reason,
                 error = %e,
-                "Failed to start immediate polling"
+                "failed to start polling for a speaker whose events are blocked"
             );
             return Some((request.reason, false));
         }
@@ -815,10 +849,12 @@ impl EventBroker {
         event_detector
             .mark_polling_active(registration_id, request.reason.clone())
             .await;
-        debug!(
+        info!(
             registration_id = %registration_id,
+            speaker_ip = %pair.speaker_ip,
+            service = ?pair.service,
             reason = ?request.reason,
-            "Started immediate polling"
+            "UPnP events unavailable; polling instead"
         );
 
         Some((request.reason, true))
@@ -846,10 +882,10 @@ impl EventBroker {
     ) -> BrokerResult<SpeakerServicePair> {
         // Stop polling if active
         if let Err(e) = polling_scheduler.stop_polling(registration_id).await {
-            warn!(
+            debug!(
                 registration_id = %registration_id,
                 error = %e,
-                "Failed to stop polling during unregistration"
+                "failed to stop polling during unregistration"
             );
         }
 
@@ -858,10 +894,13 @@ impl EventBroker {
             .remove_subscription(registration_id)
             .await
         {
-            warn!(
+            // Normal when the speaker has gone away, or when the registration
+            // never had a subscription (it fell back to polling).
+            debug!(
                 registration_id = %registration_id,
+                subscription_id = subscription_id.unwrap_or("none"),
                 error = %e,
-                "Failed to remove subscription during unregistration"
+                "failed to remove subscription during unregistration"
             );
         }
 
@@ -918,19 +957,19 @@ impl EventBroker {
 
     /// Shutdown the broker and all background tasks
     pub async fn shutdown(self) -> BrokerResult<()> {
-        info!("Shutting down EventBroker");
+        debug!("shutting down event broker");
 
         // Signal shutdown
         self.shutdown_signal.store(true, Ordering::Relaxed);
 
         // Shutdown polling scheduler
         if let Err(e) = self.polling_scheduler.shutdown_all().await {
-            warn!(error = %e, "Error during polling shutdown");
+            debug!(error = %e, "error during polling shutdown");
         }
 
         // Shutdown subscription manager
         if let Err(e) = self.subscription_manager.shutdown().await {
-            warn!(error = %e, "Error during subscription shutdown");
+            debug!(error = %e, "error during subscription shutdown");
         }
 
         // Cancel background tasks
@@ -941,7 +980,7 @@ impl EventBroker {
         // Clear registry
         self.registry.clear().await;
 
-        info!("EventBroker shutdown complete");
+        debug!("event broker shutdown complete");
 
         Ok(())
     }
