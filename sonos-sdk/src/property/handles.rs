@@ -8,6 +8,7 @@
 use std::fmt;
 use std::marker::PhantomData;
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -48,6 +49,17 @@ impl SpeakerContext {
             api_client,
         })
     }
+}
+
+/// Whether this is the first failed event subscription in the process.
+///
+/// `acquire_watch` only fails once the event worker has stopped, after which
+/// every watch fails the same way — and an immediate-mode UI re-acquires every
+/// handle each frame. The first failure is reported at warn; the rest at debug,
+/// so a single fault does not flood the log.
+fn first_subscribe_failure() -> bool {
+    static REPORTED: AtomicBool = AtomicBool::new(false);
+    !REPORTED.swap(true, Ordering::Relaxed)
 }
 
 // ============================================================================
@@ -453,12 +465,23 @@ impl<P: SonosProperty> PropertyHandle<P> {
                     }
                 }
                 Err(e) => {
-                    tracing::warn!(
-                        "Failed to subscribe to {:?} for {}: {} - falling back to polling",
-                        P::SERVICE,
-                        self.context.speaker_id.as_str(),
-                        e
-                    );
+                    if first_subscribe_failure() {
+                        tracing::warn!(
+                            speaker = %self.context.speaker_id,
+                            service = ?P::SERVICE,
+                            property = P::KEY,
+                            error = %e,
+                            "could not subscribe to speaker events; watched values will not update live"
+                        );
+                    } else {
+                        tracing::debug!(
+                            speaker = %self.context.speaker_id,
+                            service = ?P::SERVICE,
+                            property = P::KEY,
+                            error = %e,
+                            "could not subscribe to speaker events, falling back to polling"
+                        );
+                    }
                     // Register directly for polling fallback
                     self.context
                         .state_manager
@@ -474,10 +497,13 @@ impl<P: SonosProperty> PropertyHandle<P> {
                 }
             }
         } else {
-            // No event manager — cache-only mode
-            tracing::warn!(
-                "No event manager available for {} — falling back to cache-only mode",
-                self.context.speaker_id.as_str()
+            // No event manager — cache-only mode. Production systems always
+            // have one by now (a failed init returned `Err` above), so this is
+            // the test constructors' path.
+            tracing::debug!(
+                speaker = %self.context.speaker_id,
+                property = P::KEY,
+                "no event manager, watching in cache-only mode"
             );
             self.context
                 .state_manager
@@ -573,8 +599,16 @@ impl<P: Fetchable> PropertyHandle<P> {
             // when the handle carried a frozen snapshot. A stale-rejected write
             // is fine here too: it means an event already delivered something
             // newer, which is exactly what `value()` will then return.
+            // An unreachable speaker is routine (the TUI watches every room),
+            // and the handle simply reports no value, so this stays at debug.
             if let Err(e) = self.fetch() {
-                tracing::warn!("watch_or_fetch: fetch failed for {}: {e}", P::KEY);
+                tracing::debug!(
+                    speaker = %self.context.speaker_id,
+                    ip = %self.context.speaker_ip,
+                    property = P::KEY,
+                    error = %e,
+                    "watch_or_fetch: initial fetch failed"
+                );
             }
         }
         Ok(wh)
@@ -913,9 +947,9 @@ impl Fetchable for PlayMode {
         // somewhere. `Normal` is what the device does with a queue it is not
         // shuffling or repeating; the event decoder, which can skip, does skip.
         PlayMode::from_upnp(&response.play_mode).unwrap_or_else(|| {
-            tracing::warn!(
-                "Unrecognised play mode {:?}, reporting Normal",
-                response.play_mode
+            tracing::debug!(
+                play_mode = %response.play_mode,
+                "unrecognised play mode, reporting Normal"
             );
             PlayMode::Normal
         })
@@ -1109,7 +1143,18 @@ impl FetchableWithContext for GroupMembership {
         speaker_id: &SpeakerId,
     ) -> Option<Self> {
         let zone_groups =
-            zone_group_topology::parse_zone_group_state_xml(&response.zone_group_state).ok()?;
+            match zone_group_topology::parse_zone_group_state_xml(&response.zone_group_state) {
+                Ok(groups) => groups,
+                Err(e) => {
+                    tracing::debug!(
+                        speaker = %speaker_id,
+                        error = %e,
+                        "could not parse zone group state for group membership"
+                    );
+                    tracing::trace!(xml = %response.zone_group_state, "unparsed zone group state");
+                    return None;
+                }
+            };
 
         for group in &zone_groups {
             let is_member = group.members.iter().any(|m| m.uuid == speaker_id.as_str());
@@ -1299,12 +1344,25 @@ impl<P: SonosProperty> GroupPropertyHandle<P> {
             ) {
                 Ok(guard) => (WatchMode::Events, WatchCleanup::Guard(guard)),
                 Err(e) => {
-                    tracing::warn!(
-                        "Failed to subscribe to {:?} for group {}: {} - falling back to polling",
-                        P::SERVICE,
-                        self.context.group_id.as_str(),
-                        e
-                    );
+                    if first_subscribe_failure() {
+                        tracing::warn!(
+                            group = %self.context.group_id,
+                            coordinator = %self.context.coordinator_id,
+                            service = ?P::SERVICE,
+                            property = P::KEY,
+                            error = %e,
+                            "could not subscribe to speaker events; watched values will not update live"
+                        );
+                    } else {
+                        tracing::debug!(
+                            group = %self.context.group_id,
+                            coordinator = %self.context.coordinator_id,
+                            service = ?P::SERVICE,
+                            property = P::KEY,
+                            error = %e,
+                            "could not subscribe to group events, falling back to polling"
+                        );
+                    }
                     self.context
                         .state_manager
                         .register_watch(&self.context.coordinator_id, P::KEY);
@@ -1417,10 +1475,12 @@ impl<P: GroupFetchable> GroupPropertyHandle<P> {
             // See `PropertyHandle::watch_or_fetch` — the fetch lands in the store
             // the handle reads from, so no patching is needed.
             if let Err(e) = self.fetch() {
-                tracing::warn!(
-                    "watch_or_fetch: fetch failed for group {} {}: {e}",
-                    self.context.group_id.as_str(),
-                    P::KEY
+                tracing::debug!(
+                    group = %self.context.group_id,
+                    coordinator = %self.context.coordinator_id,
+                    property = P::KEY,
+                    error = %e,
+                    "watch_or_fetch: initial group fetch failed"
                 );
             }
         }

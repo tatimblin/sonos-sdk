@@ -35,9 +35,27 @@ pub(crate) fn cache_dir() -> Option<PathBuf> {
 
 pub(crate) fn load() -> Option<CachedDevices> {
     let path = cache_dir()?.join("cache.json");
-    let contents = fs::read_to_string(&path).ok()?;
-    let cached: CachedDevices = serde_json::from_str(&contents).ok()?;
+    let contents = match fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return None,
+        Err(e) => {
+            tracing::debug!(path = %path.display(), error = %e, "could not read the discovery cache");
+            return None;
+        }
+    };
+    let cached: CachedDevices = match serde_json::from_str(&contents) {
+        Ok(cached) => cached,
+        Err(e) => {
+            tracing::debug!(path = %path.display(), error = %e, "ignoring an unreadable discovery cache");
+            return None;
+        }
+    };
     if cached.devices.len() > 256 {
+        tracing::debug!(
+            path = %path.display(),
+            devices = cached.devices.len(),
+            "ignoring a discovery cache with implausibly many devices"
+        );
         return None;
     }
     Some(cached)
