@@ -101,12 +101,32 @@ impl SoapClient {
         let url = format!("http://{ip}:1400/{endpoint}");
         let soap_action = format!("\"{service_uri}#{action}\"");
 
+        tracing::trace!(%ip, action, %body, "soap request");
+
+        let result = self.send(&url, &soap_action, &body, action);
+        match &result {
+            Ok(xml) => tracing::trace!(%ip, action, %xml, "soap response"),
+            // Returned to the caller, but the error itself names neither the
+            // speaker nor the action; this line is where that pairing is kept.
+            Err(e) => tracing::debug!(%ip, endpoint, action, error = %e, "soap call failed"),
+        }
+        result
+    }
+
+    /// Send one SOAP request and validate the envelope that comes back.
+    fn send(
+        &self,
+        url: &str,
+        soap_action: &str,
+        body: &str,
+        action: &str,
+    ) -> Result<String, SoapError> {
         let response = self
             .agent
-            .post(&url)
+            .post(url)
             .set("Content-Type", "text/xml; charset=\"utf-8\"")
-            .set("SOAPACTION", &soap_action)
-            .send_string(&body)
+            .set("SOAPACTION", soap_action)
+            .send_string(body)
             .map_err(|e| map_ureq_error(e, action))?;
 
         let xml_text = response
@@ -114,7 +134,10 @@ impl SoapClient {
             .map_err(|e| SoapError::Network(e.to_string()))?;
 
         // Reject faults and malformed envelopes before handing the body upstream.
-        check_response(&xml_text, action)?;
+        if let Err(e) = check_response(&xml_text, action) {
+            tracing::trace!(action, xml = %xml_text, "rejected soap response body");
+            return Err(e);
+        }
 
         Ok(xml_text)
     }
@@ -149,9 +172,11 @@ impl SoapClient {
             .set("NT", "upnp:event")
             .set("TIMEOUT", &format!("Second-{timeout_seconds}"))
             .call()
-            .map_err(|e| map_subscription_error("SUBSCRIBE", e))?;
-
-        require_success("SUBSCRIBE", &response)?;
+            .map_err(|e| map_subscription_error("SUBSCRIBE", e))
+            .and_then(|response| require_success("SUBSCRIBE", &response).map(|()| response))
+            .inspect_err(|e| {
+                tracing::debug!(%ip, event_endpoint, error = %e, "upnp subscribe failed");
+            })?;
 
         // Extract SID from response headers
         let sid = response
@@ -161,9 +186,12 @@ impl SoapClient {
             })?
             .to_string();
 
+        let timeout_seconds = granted_timeout(&response, timeout_seconds);
+        tracing::debug!(%ip, event_endpoint, %sid, timeout_seconds, "upnp subscription created");
+
         Ok(SubscriptionResponse {
             sid,
-            timeout_seconds: granted_timeout(&response, timeout_seconds),
+            timeout_seconds,
         })
     }
 
@@ -196,11 +224,16 @@ impl SoapClient {
             .set("SID", sid)
             .set("TIMEOUT", &format!("Second-{timeout_seconds}"))
             .call()
-            .map_err(|e| map_subscription_error("SUBSCRIBE renewal", e))?;
+            .map_err(|e| map_subscription_error("SUBSCRIBE renewal", e))
+            .and_then(|response| require_success("SUBSCRIBE renewal", &response).map(|()| response))
+            .inspect_err(|e| {
+                tracing::debug!(%ip, event_endpoint, sid, error = %e, "upnp renewal failed");
+            })?;
 
-        require_success("SUBSCRIBE renewal", &response)?;
+        let timeout_seconds = granted_timeout(&response, timeout_seconds);
+        tracing::debug!(%ip, event_endpoint, sid, timeout_seconds, "upnp subscription renewed");
 
-        Ok(granted_timeout(&response, timeout_seconds))
+        Ok(timeout_seconds)
     }
 
     /// Unsubscribe from UPnP events
@@ -220,15 +253,18 @@ impl SoapClient {
         let url = format!("http://{ip}:{port}/{event_endpoint}");
         let host = format!("{ip}:{port}");
 
-        let response = self
-            .agent
+        self.agent
             .request("UNSUBSCRIBE", &url)
             .set("HOST", &host)
             .set("SID", sid)
             .call()
-            .map_err(|e| map_subscription_error("UNSUBSCRIBE", e))?;
+            .map_err(|e| map_subscription_error("UNSUBSCRIBE", e))
+            .and_then(|response| require_success("UNSUBSCRIBE", &response))
+            .inspect_err(|e| {
+                tracing::debug!(%ip, event_endpoint, sid, error = %e, "upnp unsubscribe failed");
+            })?;
 
-        require_success("UNSUBSCRIBE", &response)?;
+        tracing::debug!(%ip, event_endpoint, sid, "upnp subscription cancelled");
 
         Ok(())
     }
@@ -289,17 +325,21 @@ fn map_ureq_error(error: ureq::Error, action: &str) -> SoapError {
     match error {
         ureq::Error::Status(status, response) => match response.into_string() {
             // A parseable envelope tells us why the device refused.
-            Ok(body) => match check_response(&body, action) {
-                // Not a fault after all - the device sent an error status with a
-                // non-fault body. Report it as a transport failure.
-                Ok(()) => SoapError::Network(format!("HTTP {status}")),
-                Err(SoapError::Fault { code, description }) => {
-                    SoapError::Fault { code, description }
+            Ok(body) => {
+                // The raw fault, for codes the parsed description does not explain.
+                tracing::trace!(action, status, %body, "soap error response body");
+                match check_response(&body, action) {
+                    // Not a fault after all - the device sent an error status with a
+                    // non-fault body. Report it as a transport failure.
+                    Ok(()) => SoapError::Network(format!("HTTP {status}")),
+                    Err(SoapError::Fault { code, description }) => {
+                        SoapError::Fault { code, description }
+                    }
+                    // The body was not a usable SOAP envelope at all. Keep it in the
+                    // message: for an error status it is the only diagnostic there is.
+                    Err(_) => SoapError::Network(format!("HTTP {status}: {body}")),
                 }
-                // The body was not a usable SOAP envelope at all. Keep it in the
-                // message: for an error status it is the only diagnostic there is.
-                Err(_) => SoapError::Network(format!("HTTP {status}: {body}")),
-            },
+            }
             Err(e) => SoapError::Network(format!("HTTP {status}: failed to read body: {e}")),
         },
         ureq::Error::Transport(transport) => SoapError::Network(transport.to_string()),

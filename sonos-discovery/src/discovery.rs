@@ -144,12 +144,13 @@ impl DiscoveryIterator {
         if let Some(client) = self.ssdp_client.take() {
             match client.search("urn:schemas-upnp-org:device:ZonePlayer:1") {
                 Ok(responses) => {
+                    tracing::debug!(responses = responses.len(), "ssdp search complete");
                     self.ssdp_buffer = responses;
                 }
                 Err(e) => {
                     // Every interface failed to send. Surface the reason: this
                     // is otherwise indistinguishable from "no speakers here".
-                    tracing::warn!("SSDP search failed: {}", e);
+                    tracing::warn!(error = %e, "ssdp search failed");
                 }
             }
             self.finished = true;
@@ -182,30 +183,59 @@ impl Iterator for DiscoveryIterator {
             }
             self.seen_locations.insert(ssdp_response.location.clone());
 
-            // Early filtering: skip non-Sonos devices
+            // Early filtering: skip non-Sonos devices. Other UPnP devices on
+            // the LAN answer too, so this is routine.
             if !Self::is_likely_sonos(ssdp_response) {
+                tracing::trace!(
+                    location = %ssdp_response.location,
+                    usn = %ssdp_response.usn,
+                    "skipping non-Sonos ssdp response"
+                );
                 continue;
             }
 
             // Fetch device description
             let device_desc = match self.fetch_device_description(&ssdp_response.location) {
                 Ok(desc) => desc,
-                Err(_) => continue, // Skip devices that fail to fetch
+                Err(e) => {
+                    // Skip devices that fail to fetch
+                    tracing::debug!(
+                        location = %ssdp_response.location,
+                        error = %e,
+                        "skipping device: description fetch failed"
+                    );
+                    continue;
+                }
             };
 
             // Validate it's a Sonos device
             if !device_desc.is_sonos_device() {
+                tracing::trace!(
+                    location = %ssdp_response.location,
+                    "skipping device: description is not a Sonos device"
+                );
                 continue;
             }
 
             // Extract IP address from location URL
             let ip_address = match extract_ip_from_url(&ssdp_response.location) {
                 Some(ip) => ip,
-                None => continue, // Skip if we can't extract IP
+                None => {
+                    tracing::debug!(
+                        location = %ssdp_response.location,
+                        "skipping device: no IP address in location URL"
+                    );
+                    continue;
+                }
             };
 
             // Convert to public Device type
             let device = device_desc.to_device(ip_address);
+            tracing::debug!(
+                ip = %device.ip_address,
+                name = %device.name,
+                "discovered device"
+            );
 
             // Yield the found device event
             return Some(DeviceEvent::Found(device));

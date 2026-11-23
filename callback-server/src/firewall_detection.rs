@@ -9,7 +9,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::sync::{mpsc, RwLock};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 /// Status of firewall detection for a device.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -109,27 +109,17 @@ impl FirewallDetectionCoordinator {
             })
         };
 
-        // Spawn task to handle detection results (logging for now)
+        // Drain detection results. The user-facing line for each outcome is
+        // logged where the outcome is decided (`on_event_received`,
+        // `monitor_timeouts`), so this only records delivery.
         tokio::spawn(async move {
             while let Some(result) = detection_complete_rx.recv().await {
-                match result.reason {
-                    DetectionReason::EventReceived => {
-                        info!(
-                            device_ip = %result.device_ip,
-                            reason = ?result.reason,
-                            status = ?result.status,
-                            "Firewall detection: Events accessible from device"
-                        );
-                    }
-                    DetectionReason::Timeout => {
-                        warn!(
-                            device_ip = %result.device_ip,
-                            reason = ?result.reason,
-                            status = ?result.status,
-                            "Firewall detection: No events received within timeout"
-                        );
-                    }
-                }
+                debug!(
+                    device_ip = %result.device_ip,
+                    reason = ?result.reason,
+                    status = ?result.status,
+                    "firewall detection result"
+                );
             }
         });
 
@@ -161,7 +151,7 @@ impl FirewallDetectionCoordinator {
                 debug!(
                     device_ip = %device_ip,
                     status = ?state.status,
-                    "Firewall detection: Using cached status for device"
+                    "firewall detection: using cached status for device"
                 );
                 return state.status;
             }
@@ -175,7 +165,7 @@ impl FirewallDetectionCoordinator {
         debug!(
             device_ip = %device_ip,
             timeout = ?self.config.event_wait_timeout,
-            "Firewall detection: Started monitoring device for events"
+            "firewall detection: waiting for the first event from device"
         );
 
         FirewallStatus::Unknown
@@ -207,11 +197,11 @@ impl FirewallDetectionCoordinator {
                     reason: DetectionReason::EventReceived,
                 });
 
-                info!(
+                debug!(
                     device_ip = %device_ip,
                     elapsed = ?elapsed,
                     status = ?FirewallStatus::Accessible,
-                    "Firewall detection: Event received from device, marking as accessible"
+                    "firewall detection: event received from device, marking it accessible"
                 );
             }
         }
@@ -251,7 +241,7 @@ impl FirewallDetectionCoordinator {
                 debug!(
                     oldest_ip = %oldest_ip,
                     cache_size = self.config.max_cached_devices,
-                    "Firewall detection: Removed oldest cached entry due to cache being full"
+                    "firewall detection: cache full, removed oldest entry"
                 );
             }
         }
@@ -295,7 +285,7 @@ impl FirewallDetectionCoordinator {
                             device_ip = %device_ip,
                             timeout = ?state.timeout_duration,
                             status = ?FirewallStatus::Blocked,
-                            "Firewall detection: No events received within timeout, marking as blocked"
+                            "no UPnP events arrived from speaker within timeout; a firewall may be blocking the callback port"
                         );
                     }
                 }

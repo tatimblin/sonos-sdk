@@ -176,9 +176,11 @@ pub fn get_iter() -> DiscoveryIterator {
 /// }
 /// ```
 pub fn get_iter_with_timeout(timeout: Duration) -> DiscoveryIterator {
-    DiscoveryIterator::new(timeout).unwrap_or_else(|_| {
+    DiscoveryIterator::new(timeout).unwrap_or_else(|e| {
         // If we fail to create the iterator, return an empty one
-        // This is better than panicking
+        // This is better than panicking. Warn as `fill_buffer` does for a
+        // failed search: otherwise this reads as "no speakers here".
+        tracing::warn!(error = %e, "ssdp discovery could not start");
         DiscoveryIterator::empty()
     })
 }

@@ -72,6 +72,8 @@ impl GroupRenderingControlEvent {
 
     /// Parse from UPnP event XML using serde
     pub fn from_xml(xml: &str) -> Result<Self> {
+        // The raw body, as RenderingControlEvent::from_xml logs it.
+        tracing::trace!(%xml, "GroupRenderingControl NOTIFY");
         quick_xml::de::from_str(xml).map_err(|e| {
             ApiError::ParseError(format!("Failed to parse GroupRenderingControl XML: {e}"))
         })

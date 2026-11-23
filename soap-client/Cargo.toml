@@ -17,6 +17,7 @@ name = "soap_client"
 ureq = { version = "2.9", features = ["json"] }
 quick-xml = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 
 [lints]
 workspace = true

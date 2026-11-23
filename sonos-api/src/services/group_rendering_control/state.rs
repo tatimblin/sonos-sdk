@@ -34,10 +34,8 @@ pub fn poll(client: &SonosClient, ip: &str) -> crate::Result<GroupRenderingContr
             .map_err(|e| crate::ApiError::ParseError(e.to_string()))?,
     )?;
 
-    let mute = super::get_group_mute_operation()
-        .build()
-        .ok()
-        .and_then(|op| client.execute_enhanced(ip, op).ok());
+    let mute =
+        crate::services::poll_optional(client, ip, super::get_group_mute_operation().build());
 
     Ok(GroupRenderingControlState {
         group_volume: Some(volume.current_volume),

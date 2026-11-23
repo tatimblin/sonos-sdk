@@ -9,7 +9,7 @@ use if_addrs::IfAddr;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 
 use super::router::{EventRouter, NotificationPayload};
 
@@ -84,7 +84,8 @@ fn usable_interfaces() -> Vec<Interface> {
     let addrs = match if_addrs::get_if_addrs() {
         Ok(addrs) => addrs,
         Err(e) => {
-            error!(error = %e, "Failed to enumerate network interfaces");
+            // Surfaces to callers as "no local IP"; this keeps the cause.
+            debug!(error = %e, "failed to enumerate network interfaces");
             return Vec::new();
         }
     };
@@ -442,14 +443,14 @@ impl CallbackServer {
                 Err(e) => {
                     // `ready_tx` drops here, so `new()` reports "Server failed to
                     // start" rather than handing back a server nothing can reach.
-                    error!(port, error = %e, "CallbackServer failed to bind");
+                    error!(port, error = %e, "callback server failed to bind");
                     return;
                 }
             };
 
             info!(
                 address = ?listener.local_addr(),
-                "CallbackServer listening - ready to process UPnP events"
+                "callback server listening for UPnP events"
             );
             // The socket is accepting as soon as `bind` returns, so signalling here
             // means callers can subscribe knowing events have somewhere to land.
@@ -461,7 +462,7 @@ impl CallbackServer {
                 })
                 .await
             {
-                error!(error = %e, "CallbackServer stopped with an error");
+                error!(error = %e, "callback server stopped with an error");
             }
         })
     }
@@ -510,8 +511,9 @@ enum NotifyRejection {
     NotNotify,
     /// No usable `Content-Length`, so the body cannot be bounded before reading it.
     LengthRequired,
-    /// `Content-Length` declares more than [`MAX_NOTIFY_BODY_BYTES`].
-    BodyTooLarge,
+    /// `Content-Length` declares more than [`MAX_NOTIFY_BODY_BYTES`]; carries the
+    /// declared length.
+    BodyTooLarge(u64),
     /// The body could not be buffered — over the limit while reading, or the
     /// connection failed part-way through.
     UnreadableBody(axum::extract::rejection::BytesRejection),
@@ -532,19 +534,22 @@ impl IntoResponse for NotifyRejection {
                 "Content-Length header is required",
             )
                 .into_response(),
-            Self::BodyTooLarge => {
-                error!(
+            // Warn, not debug: if a speaker sent this, a real event was lost.
+            Self::BodyTooLarge(declared_bytes) => {
+                warn!(
+                    declared_bytes,
                     limit_bytes = MAX_NOTIFY_BODY_BYTES,
-                    "Rejected NOTIFY body exceeding size limit"
+                    "rejected NOTIFY body exceeding size limit"
                 );
                 (StatusCode::PAYLOAD_TOO_LARGE, "NOTIFY body too large").into_response()
             }
             // 413 when the read hit the limit, 400 otherwise — axum's own mapping.
             Self::UnreadableBody(rejection) => {
-                error!(
+                debug!(
                     limit_bytes = MAX_NOTIFY_BODY_BYTES,
                     status = %rejection.status(),
-                    "Could not buffer NOTIFY body"
+                    error = %rejection,
+                    "could not buffer NOTIFY body"
                 );
                 rejection.into_response()
             }
@@ -583,7 +588,7 @@ where
             .await
             .map_err(NotifyRejection::UnreadableBody)?;
 
-        debug!(
+        trace!(
             method = NOTIFY_METHOD,
             path = %path,
             content_length,
@@ -591,24 +596,25 @@ where
             sid = ?sid,
             nt = ?nt,
             nts = ?nts,
-            "Received UPnP NOTIFY event"
+            "received UPnP NOTIFY"
         );
 
         // Validate UPnP headers *before* decoding the body to a `String`, so junk
         // requests never pay for that second full allocation.
         if !CallbackServer::validate_upnp_headers(sid.as_deref(), nt.as_deref(), nts.as_deref()) {
-            error!(
+            // Remote input the server answers with 400; not a local failure.
+            debug!(
                 sid = ?sid,
                 nt = ?nt,
                 nts = ?nts,
-                "Invalid UPnP headers in NOTIFY request"
+                "rejected NOTIFY with invalid UPnP headers"
             );
             return Err(NotifyRejection::InvalidUpnpHeaders);
         }
 
         // Guaranteed present by the validation above.
         let subscription_id = sid.ok_or_else(|| {
-            error!("Missing required SID header in UPnP NOTIFY request");
+            debug!("rejected NOTIFY without a SID header");
             NotifyRejection::InvalidUpnpHeaders
         })?;
 
@@ -632,7 +638,7 @@ fn declared_content_length(headers: &HeaderMap) -> Result<u64, NotifyRejection> 
         .ok_or(NotifyRejection::LengthRequired)?;
 
     if length > MAX_NOTIFY_BODY_BYTES as u64 {
-        return Err(NotifyRejection::BodyTooLarge);
+        return Err(NotifyRejection::BodyTooLarge(length));
     }
 
     Ok(length)
