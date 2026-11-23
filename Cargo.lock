@@ -1471,6 +1471,7 @@ version = "0.11.0"
 dependencies = [
  "quick-xml",
  "thiserror",
+ "tracing",
  "ureq 2.12.1",
 ]
 

@@ -46,9 +46,9 @@ impl SsdpClient {
         }
 
         tracing::debug!(
-            "SSDP will probe {} interface(s): {:?}",
-            interfaces.len(),
-            interfaces
+            ?interfaces,
+            "ssdp will probe {} interface(s)",
+            interfaces.len()
         );
 
         Ok(Self {
@@ -109,6 +109,11 @@ impl SsdpClient {
             )));
         }
 
+        // Some interfaces failed but others answered, so discovery goes on.
+        for error in &errors {
+            tracing::debug!(%error, "ssdp probe failed on one interface; skipping it");
+        }
+
         Ok(responses)
     }
 }
@@ -140,11 +145,13 @@ fn search_on_interface(
 
     loop {
         match socket.recv_from(&mut buffer) {
-            Ok((size, _)) => {
-                if let Ok(text) = std::str::from_utf8(&buffer[..size]) {
-                    if let Some(response) = parse_ssdp_response(text) {
-                        responses.push(response);
-                    }
+            Ok((size, from)) => {
+                match std::str::from_utf8(&buffer[..size])
+                    .ok()
+                    .and_then(parse_ssdp_response)
+                {
+                    Some(response) => responses.push(response),
+                    None => tracing::trace!(%ip, %from, size, "skipping unparseable ssdp response"),
                 }
                 // Malformed responses and invalid UTF-8 are skipped; unrelated
                 // UPnP devices on the network legitimately send both.
@@ -156,7 +163,10 @@ fn search_on_interface(
                 // Read timeout reached: normal end of the response window.
                 break;
             }
-            Err(_) => break,
+            Err(e) => {
+                tracing::debug!(%ip, error = %e, "ssdp receive failed; ending this interface's probe");
+                break;
+            }
         }
     }
 

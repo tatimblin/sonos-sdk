@@ -120,7 +120,15 @@ impl<'de, T: DeserializeOwned> Deserialize<'de> for NestedAttribute<T> {
         // Try to parse the nested XML
         match parse::<T>(&raw.val) {
             Ok(parsed) => Ok(NestedAttribute { val: Some(parsed) }),
-            Err(_) => Ok(NestedAttribute { val: None }),
+            Err(e) => {
+                // Lenient by design (the field reads as absent), so say why.
+                tracing::debug!(
+                    target_type = std::any::type_name::<T>(),
+                    error = %e,
+                    "could not parse nested event XML; treating it as absent"
+                );
+                Ok(NestedAttribute { val: None })
+            }
         }
     }
 }

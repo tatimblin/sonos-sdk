@@ -252,7 +252,15 @@ impl Drop for ManagedSubscription {
                     self.service,
                     &request,
                 ) {
-                    tracing::warn!(sid = %self.sid, "failed to unsubscribe during drop: {e}");
+                    // Routine: the speaker may be offline, or have already
+                    // expired the SID. It times the subscription out either way.
+                    tracing::debug!(
+                        sid = %self.sid,
+                        ip = %self.device_ip,
+                        service = ?self.service,
+                        error = %e,
+                        "unsubscribe on drop failed"
+                    );
                 }
             }
         }

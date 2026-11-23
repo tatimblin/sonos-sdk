@@ -66,12 +66,14 @@ fn spawn_worker(rx: Receiver<SpeakerId>, state_manager: Weak<StateManager>, clie
         });
 
     if let Err(e) = spawned {
-        tracing::warn!("failed to start the position refresh thread: {e}");
+        // Watched positions now go stale until the next manual fetch.
+        tracing::error!(error = %e, "could not start the position refresh thread");
     }
 }
 
 fn refresh(state_manager: &Arc<StateManager>, client: &SonosClient, speaker_id: SpeakerId) {
     let Some(ip) = state_manager.get_speaker_ip(&speaker_id) else {
+        tracing::debug!(speaker = %speaker_id, "position refresh skipped: speaker ip unknown");
         return;
     };
     let handle: PropertyHandle<Position> = PropertyHandle::new(SpeakerContext::new(
@@ -81,6 +83,6 @@ fn refresh(state_manager: &Arc<StateManager>, client: &SonosClient, speaker_id: 
         client.clone(),
     ));
     if let Err(e) = handle.fetch() {
-        tracing::debug!(speaker = %speaker_id, "position refresh failed: {e}");
+        tracing::debug!(speaker = %speaker_id, ip = %ip, error = %e, "position refresh failed");
     }
 }

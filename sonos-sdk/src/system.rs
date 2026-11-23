@@ -22,8 +22,8 @@ use crate::{cache, Group, SdkError, Speaker};
 enum Collisions {
     /// Two visible speakers share a name: a real, if unusual, conflict.
     Warn,
-    /// Satellites aren't known yet, so a home theater's own devices collide;
-    /// a later pass excludes them.
+    /// Satellites aren't known (yet, or at all when no speaker answered the
+    /// topology fetch), so a home theater's own devices collide.
     Quiet,
 }
 
@@ -36,6 +36,20 @@ fn display_name(device: &Device) -> String {
         device.name.clone()
     } else {
         device.room_name.clone()
+    }
+}
+
+/// Save the discovery cache, logging rather than failing on error.
+///
+/// A missing cache only costs the next run an SSDP sweep, so it is not fatal,
+/// but a cache that can never be written makes every run pay it.
+fn save_cache(devices: &[Device]) {
+    if let Err(e) = cache::save(devices) {
+        tracing::warn!(
+            dir = ?cache::cache_dir(),
+            error = %e,
+            "could not save the speaker discovery cache"
+        );
     }
 }
 
@@ -133,12 +147,13 @@ impl SonosSystem {
                 // Stale cache — try SSDP, fall back to stale data
                 let fresh = sonos_discovery::get_with_timeout(Duration::from_secs(3));
                 if fresh.is_empty() {
-                    tracing::warn!("Cache is stale and SSDP found no devices; using stale cache");
+                    tracing::warn!(
+                        cached_devices = cached.devices.len(),
+                        "no speakers answered discovery; using the expired speaker cache"
+                    );
                     cached.devices
                 } else {
-                    if let Err(e) = cache::save(&fresh) {
-                        tracing::warn!("Failed to save discovery cache: {}", e);
-                    }
+                    save_cache(&fresh);
                     fresh
                 }
             }
@@ -150,9 +165,7 @@ impl SonosSystem {
                         "no Sonos devices found on the network".to_string(),
                     ));
                 }
-                if let Err(e) = cache::save(&fresh) {
-                    tracing::warn!("Failed to save discovery cache: {}", e);
-                }
+                save_cache(&fresh);
                 fresh
             }
         };
@@ -406,9 +419,7 @@ impl SonosSystem {
                 move || -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     let mut initialized = init_lock.lock().map_err(|_| SdkError::LockPoisoned)?;
                     if *initialized {
-                        tracing::trace!(
-                            "Event manager init closure called but already initialized"
-                        );
+                        tracing::trace!("event manager already initialized");
                         return Ok(());
                     }
                     // A failed upgrade means the SonosSystem is being torn down
@@ -417,23 +428,25 @@ impl SonosSystem {
                     // building a runtime and a socket for a dead system.
                     let Some(sm) = weak_sm.upgrade() else {
                         tracing::debug!(
-                            "Event manager init skipped: SonosSystem has already been dropped"
+                            "event manager init skipped: the SonosSystem has been dropped"
                         );
                         return Ok(());
                     };
-                    tracing::info!("Lazy-initializing event manager (first watch() call)");
-                    let em = Arc::new(SonosEventManager::new().map_err(|e| {
-                        tracing::error!("Failed to create SonosEventManager: {}", e);
-                        SdkError::EventManager(e.to_string())
-                    })?);
-                    tracing::debug!("SonosEventManager created, wiring into StateManager");
+                    tracing::debug!("initializing the event manager (first watch() call)");
+                    // A failure is returned to the caller of `watch()`, so it
+                    // is not logged here as well.
+                    let em = Arc::new(
+                        SonosEventManager::new()
+                            .map_err(|e| SdkError::EventManager(e.to_string()))?,
+                    );
+                    tracing::debug!("event manager created, wiring into the state manager");
                     // The StateManager owns the only lasting reference, in its
                     // own OnceLock. SonosSystem deliberately keeps none: a
                     // second copy of this handle bought nothing and previously
                     // pretended to be the thing keeping it alive.
                     sm.set_event_manager(em).map_err(SdkError::StateError)?;
                     *initialized = true;
-                    tracing::info!("Event manager initialization complete");
+                    tracing::info!("event manager started");
                     Ok(())
                 },
             )
@@ -585,15 +598,34 @@ impl SonosSystem {
             &satellite_ids,
             &self.state_manager,
             &self.api_client,
-            Collisions::Warn,
+            self.collisions(),
         )?;
         if let Ok(mut speakers) = self.speakers.write() {
             *speakers = rebuilt;
         }
         if !satellite_ids.is_empty() {
-            tracing::debug!("Excluded {} satellite speakers", satellite_ids.len());
+            tracing::debug!(
+                satellites = satellite_ids.len(),
+                "excluded satellite speakers from the speaker map"
+            );
         }
         Ok(())
+    }
+
+    /// How a speaker-map rebuild should report a name collision.
+    ///
+    /// Only once topology is known are satellites excluded, so only then is a
+    /// collision between two visible speakers. When no speaker answered the
+    /// topology fetch (off the home network, say), every home theater still
+    /// collides with its own satellites, and warning would repeat the bug the
+    /// provisional pass avoids. Offline systems are handed their topology, so
+    /// it counts as known.
+    fn collisions(&self) -> Collisions {
+        if self.offline || self.state_manager.group_count() > 0 {
+            Collisions::Warn
+        } else {
+            Collisions::Quiet
+        }
     }
 
     /// Build the name-keyed Speaker map from a list of devices.
@@ -730,15 +762,19 @@ impl SonosSystem {
         self.last_rediscovery.store(now, Ordering::Relaxed);
 
         // 1. SSDP runs WITHOUT holding any lock (3s)
-        tracing::info!("speaker '{}' not found, running auto-rediscovery...", name);
+        tracing::info!(name, "speaker not found, rediscovering");
         let devices = sonos_discovery::get_with_timeout(Duration::from_secs(3));
         if devices.is_empty() {
+            tracing::debug!(
+                name,
+                "rediscovery found no speakers; keeping the current map"
+            );
             return;
         }
 
         // 2. Register devices with state manager (required for property tracking)
         if let Err(e) = self.state_manager.add_devices(devices.clone()) {
-            tracing::warn!("Failed to register rediscovered devices: {}", e);
+            tracing::warn!(error = %e, "could not register rediscovered speakers");
             return;
         }
 
@@ -756,11 +792,11 @@ impl SonosSystem {
             &satellite_ids,
             &self.state_manager,
             &self.api_client,
-            Collisions::Warn,
+            self.collisions(),
         ) {
             Ok(s) => s,
             Err(e) => {
-                tracing::warn!("Failed to build speakers from rediscovery: {}", e);
+                tracing::warn!(error = %e, "could not build speakers from rediscovery");
                 return;
             }
         };
@@ -771,9 +807,7 @@ impl SonosSystem {
         }
 
         // 5. Save cache (non-fatal on failure)
-        if let Err(e) = cache::save(&devices) {
-            tracing::warn!("Failed to save discovery cache: {}", e);
-        }
+        save_cache(&devices);
     }
 
     /// Get all speakers (sync)
@@ -894,7 +928,7 @@ impl SonosSystem {
             ) {
                 Ok(state) => state,
                 Err(e) => {
-                    tracing::debug!("Topology fetch failed for {}: {}", speaker_ip, e);
+                    tracing::debug!(ip = %speaker_ip, error = %e, "topology fetch failed");
                     continue;
                 }
             };
@@ -917,13 +951,20 @@ impl SonosSystem {
                 .set_home_theaters(topology_changes.home_theaters);
 
             tracing::debug!(
-                "Fetched zone group topology on-demand ({} groups)",
-                self.state_manager.group_count()
+                ip = %speaker_ip,
+                groups = self.state_manager.group_count(),
+                "fetched zone group topology"
             );
             return;
         }
 
-        tracing::warn!("ensure_topology: no speakers responded");
+        // Every speaker being unreachable (off the home network, say) is not
+        // the SDK's to report: whatever the caller does next fails with its own
+        // error, and a warn here would print on every such command.
+        tracing::debug!(
+            tried = speaker_ips.len(),
+            "no speaker returned zone group topology; groups are unknown"
+        );
     }
 
     // ========================================================================

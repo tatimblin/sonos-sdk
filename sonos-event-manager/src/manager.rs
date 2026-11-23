@@ -118,8 +118,9 @@ impl PendingTeardown {
         let mut pending = self.pending.lock();
 
         if self.cancelled.swap(true, Ordering::SeqCst) {
-            tracing::debug!(
-                "Grace period for {}:{:?} was cancelled by a re-acquire, keeping subscription",
+            // Per-frame in an immediate-mode UI: trace, not debug.
+            tracing::trace!(
+                "grace period for {}:{:?} was cancelled by a re-acquire, keeping subscription",
                 self.ip,
                 self.service
             );
@@ -137,7 +138,7 @@ impl PendingTeardown {
         }
 
         tracing::debug!(
-            "Grace period expired for {}:{:?}, unsubscribing",
+            "grace period expired for {}:{:?}, unsubscribing",
             self.ip,
             self.service
         );
@@ -481,7 +482,8 @@ impl SonosEventManager {
             let was_zero = *count == 0;
             *count += 1;
 
-            tracing::debug!(
+            // Per-frame in an immediate-mode UI: trace, not debug.
+            tracing::trace!(
                 "acquire_watch: ref count for {}:{:?}: {} -> {}",
                 ip,
                 service,
@@ -525,7 +527,7 @@ impl SonosEventManager {
         // 4. Subscribe if nothing was there to reuse.
         if should_subscribe {
             if cancelled {
-                tracing::debug!(
+                tracing::trace!(
                     "acquire_watch: cancelled grace period for {}:{:?}",
                     ip,
                     service
@@ -594,7 +596,7 @@ impl SonosEventManager {
             if let Some(count) = refs.get_mut(&(ip, service)) {
                 *count = count.saturating_sub(1);
 
-                tracing::debug!(
+                tracing::trace!(
                     "release_watch: ref count for {}:{:?}: {} -> {}",
                     ip,
                     service,
@@ -732,7 +734,7 @@ impl SonosEventManager {
             *count += 1;
 
             tracing::debug!(
-                "Service reference count for {}:{:?}: {} -> {}",
+                "service reference count for {}:{:?}: {} -> {}",
                 device_ip,
                 service,
                 if was_zero { 0 } else { *count - 1 },
@@ -803,7 +805,7 @@ impl SonosEventManager {
                 *count = count.saturating_sub(1);
 
                 tracing::debug!(
-                    "Service reference count for {}:{:?}: {} -> {}",
+                    "service reference count for {}:{:?}: {} -> {}",
                     device_ip,
                     service,
                     old_count,
@@ -818,7 +820,7 @@ impl SonosEventManager {
                 }
             } else {
                 tracing::warn!(
-                    "Attempted to release subscription for {}:{:?} but no references found",
+                    "attempted to release subscription for {}:{:?} but no references found",
                     device_ip,
                     service
                 );
@@ -947,7 +949,7 @@ impl SonosEventManager {
 impl Drop for SonosEventManager {
     fn drop(&mut self) {
         tracing::debug!(
-            "SonosEventManager dropping, {} active service subscriptions",
+            "event manager dropping with {} active service subscriptions",
             self.service_refs.read().len()
         );
 

@@ -72,22 +72,17 @@ pub fn poll(client: &SonosClient, ip: &str) -> crate::Result<AVTransportState> {
             .map_err(|e| crate::ApiError::ParseError(e.to_string()))?,
     )?;
 
-    let position = super::get_position_info_operation()
-        .build()
-        .ok()
-        .and_then(|op| client.execute_enhanced(ip, op).ok());
-    let settings = super::get_transport_settings_operation()
-        .build()
-        .ok()
-        .and_then(|op| client.execute_enhanced(ip, op).ok());
-    let crossfade = super::get_crossfade_mode_operation()
-        .build()
-        .ok()
-        .and_then(|op| client.execute_enhanced(ip, op).ok());
-    let media = super::get_media_info_operation()
-        .build()
-        .ok()
-        .and_then(|op| client.execute_enhanced(ip, op).ok());
+    let position =
+        crate::services::poll_optional(client, ip, super::get_position_info_operation().build());
+    let settings = crate::services::poll_optional(
+        client,
+        ip,
+        super::get_transport_settings_operation().build(),
+    );
+    let crossfade =
+        crate::services::poll_optional(client, ip, super::get_crossfade_mode_operation().build());
+    let media =
+        crate::services::poll_optional(client, ip, super::get_media_info_operation().build());
 
     Ok(AVTransportState {
         transport_state: Some(transport.current_transport_state),

@@ -26,3 +26,33 @@ pub mod group_management;
 pub mod group_rendering_control;
 pub mod rendering_control;
 pub mod zone_group_topology;
+
+use crate::operation::{ComposableOperation, UPnPOperation, ValidationError};
+use crate::SonosClient;
+
+/// Run one of a `poll()`'s optional reads, treating failure as "not available".
+///
+/// The failure is swallowed by design (the field polls as `None`), so it is
+/// logged here: otherwise a speaker that rejects, say, `GetBass` is invisible.
+pub(crate) fn poll_optional<Op: UPnPOperation>(
+    client: &SonosClient,
+    ip: &str,
+    operation: std::result::Result<ComposableOperation<Op>, ValidationError>,
+) -> Option<Op::Response> {
+    let result = operation
+        .map_err(|e| crate::ApiError::ParseError(e.to_string()))
+        .and_then(|op| client.execute_enhanced(ip, op));
+    match result {
+        Ok(response) => Some(response),
+        Err(e) => {
+            tracing::debug!(
+                %ip,
+                service = ?Op::SERVICE,
+                action = Op::ACTION,
+                error = %e,
+                "optional poll read failed; leaving it unset"
+            );
+            None
+        }
+    }
+}

@@ -44,7 +44,7 @@ pub fn spawn_event_worker(
         {
             Ok(rt) => rt,
             Err(e) => {
-                tracing::error!("Failed to create tokio runtime for event worker: {}", e);
+                tracing::error!(error = %e, "failed to create tokio runtime for event worker; no events will be delivered");
                 return;
             }
         };
@@ -65,7 +65,7 @@ async fn run_event_loop(
     let mut broker = match EventBroker::new(config).await {
         Ok(b) => b,
         Err(e) => {
-            tracing::error!("Failed to create EventBroker: {}", e);
+            tracing::error!(error = %e, "failed to create event broker; no events will be delivered");
             return;
         }
     };
@@ -74,7 +74,7 @@ async fn run_event_loop(
     let mut events = match broker.event_iterator() {
         Ok(iter) => iter,
         Err(e) => {
-            tracing::error!("Failed to get event iterator: {}", e);
+            tracing::error!(error = %e, "failed to get event iterator; no events will be delivered");
             return;
         }
     };
@@ -82,7 +82,7 @@ async fn run_event_loop(
     // Track registration IDs for each (ip, service) pair
     let mut registration_ids: HashMap<(IpAddr, Service), RegistrationId> = HashMap::new();
 
-    tracing::info!("Event worker started");
+    tracing::info!("event worker started");
 
     loop {
         tokio::select! {
@@ -92,45 +92,53 @@ async fn run_event_loop(
             cmd = command_rx.recv() => {
                 match cmd {
                     Some(Command::Subscribe { ip, service }) => {
-                        tracing::debug!("Worker: Subscribing to {}:{:?}", ip, service);
+                        tracing::debug!(%ip, ?service, "worker subscribing");
                         match broker.register_speaker_service(ip, service).await {
                             Ok(result) => {
                                 registration_ids.insert((ip, service), result.registration_id);
                                 tracing::debug!(
-                                    "Registered speaker service {}:{:?} with ID {}",
-                                    ip, service, result.registration_id
+                                    %ip,
+                                    ?service,
+                                    registration_id = %result.registration_id,
+                                    "registered speaker service"
                                 );
                             }
                             Err(e) => {
                                 tracing::warn!(
-                                    "Failed to register speaker service {}:{:?}: {}",
-                                    ip, service, e
+                                    %ip,
+                                    ?service,
+                                    error = %e,
+                                    "failed to register speaker service; no events or polling for it"
                                 );
                             }
                         }
                     }
                     Some(Command::Unsubscribe { ip, service }) => {
-                        tracing::debug!("Worker: Unsubscribing from {}:{:?}", ip, service);
+                        tracing::debug!(%ip, ?service, "worker unsubscribing");
                         if let Some(reg_id) = registration_ids.remove(&(ip, service)) {
                             if let Err(e) = broker.unregister_speaker_service(reg_id).await {
-                                tracing::warn!(
-                                    "Failed to unregister speaker service {}:{:?}: {}",
-                                    ip, service, e
+                                tracing::debug!(
+                                    %ip,
+                                    ?service,
+                                    error = %e,
+                                    "failed to unregister speaker service"
                                 );
                             }
                         } else {
-                            tracing::warn!(
-                                "No registration ID found for {}:{:?}",
-                                ip, service
+                            // Expected when the matching Subscribe failed to register.
+                            tracing::debug!(
+                                %ip,
+                                ?service,
+                                "no registration to unsubscribe"
                             );
                         }
                     }
                     Some(Command::Shutdown) => {
-                        tracing::info!("Worker received shutdown command");
+                        tracing::debug!("worker received shutdown command");
                         return;
                     }
                     None => {
-                        tracing::debug!("Command channel closed, shutting down worker");
+                        tracing::debug!("command channel closed, shutting down worker");
                         return;
                     }
                 }
@@ -141,12 +149,12 @@ async fn run_event_loop(
                 match event {
                     Some(e) => {
                         if event_tx.send(e).is_err() {
-                            tracing::debug!("Event receiver dropped, shutting down worker");
+                            tracing::debug!("event receiver dropped, shutting down worker");
                             break;
                         }
                     }
                     None => {
-                        tracing::info!("Event stream ended, shutting down worker");
+                        tracing::debug!("event stream ended, shutting down worker");
                         break;
                     }
                 }
@@ -154,7 +162,7 @@ async fn run_event_loop(
         }
     }
 
-    tracing::info!("Event worker shut down");
+    tracing::info!("event worker shut down");
 }
 
 #[cfg(test)]

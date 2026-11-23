@@ -82,22 +82,18 @@ pub fn poll(client: &SonosClient, ip: &str) -> crate::Result<RenderingControlSta
             .map_err(|e| crate::ApiError::ParseError(e.to_string()))?,
     )?;
 
-    let mute = super::get_mute_operation("Master".to_string())
-        .build()
-        .ok()
-        .and_then(|op| client.execute_enhanced(ip, op).ok());
-    let bass = super::get_bass_operation()
-        .build()
-        .ok()
-        .and_then(|op| client.execute_enhanced(ip, op).ok());
-    let treble = super::get_treble_operation()
-        .build()
-        .ok()
-        .and_then(|op| client.execute_enhanced(ip, op).ok());
-    let loudness = super::get_loudness_operation("Master".to_string())
-        .build()
-        .ok()
-        .and_then(|op| client.execute_enhanced(ip, op).ok());
+    let mute = crate::services::poll_optional(
+        client,
+        ip,
+        super::get_mute_operation("Master".to_string()).build(),
+    );
+    let bass = crate::services::poll_optional(client, ip, super::get_bass_operation().build());
+    let treble = crate::services::poll_optional(client, ip, super::get_treble_operation().build());
+    let loudness = crate::services::poll_optional(
+        client,
+        ip,
+        super::get_loudness_operation("Master".to_string()).build(),
+    );
 
     Ok(RenderingControlState {
         master_volume: Some(volume.current_volume.to_string()),

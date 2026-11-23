@@ -614,7 +614,7 @@ impl PropertyBag {
         if let Some(prev) = self.stamps.get(&type_id) {
             if !stamp.supersedes(prev) {
                 tracing::debug!(
-                    "Rejecting stale {:?} write for {}: observed {:?} before the stored {:?} write",
+                    "rejecting stale {:?} write for {}: observed {:?} before the stored {:?} write",
                     stamp.source,
                     P::KEY,
                     stamp.observed_at,
@@ -743,9 +743,12 @@ impl WatchRegistry for StateWatchRegistry {
         let speaker_id = match resolved {
             Some(id) => id,
             None => {
-                tracing::warn!(
-                    "unregister_watches_for_service: no speaker found for IP {}",
-                    ip
+                // Happens when a speaker's IP changed under a live subscription;
+                // nothing to clean up, and nothing the user can act on.
+                tracing::debug!(
+                    ip = %ip,
+                    service = ?service,
+                    "not unregistering watches: no speaker found for IP"
                 );
                 return;
             }
@@ -829,7 +832,7 @@ impl StateManager {
             // Update ip_to_speaker mapping
             ip_map.insert(ip, speaker_id.clone());
             tracing::debug!(
-                "Added speaker {} at IP {} to ip_to_speaker map",
+                "added speaker {} at IP {} to ip_to_speaker map",
                 speaker_id.as_str(),
                 ip
             );
@@ -856,7 +859,7 @@ impl StateManager {
                 .collect();
 
             if let Err(e) = em.add_devices(devices_for_em) {
-                tracing::warn!("Failed to add devices to event manager: {}", e);
+                tracing::warn!(error = %e, "failed to add devices to the event manager");
             }
         }
 
@@ -1132,10 +1135,11 @@ impl StateManager {
             if let Some(ip) = self.get_speaker_ip(speaker_id) {
                 if let Err(e) = em.ensure_service_subscribed(ip, P::SERVICE) {
                     tracing::warn!(
-                        "Failed to subscribe to {:?} for {}: {}",
-                        P::SERVICE,
-                        speaker_id.as_str(),
-                        e
+                        speaker = %speaker_id.as_str(),
+                        service = ?P::SERVICE,
+                        property = P::KEY,
+                        error = %e,
+                        "failed to subscribe; this property will not update live"
                     );
                 }
             }
@@ -1153,11 +1157,13 @@ impl StateManager {
         if let Some(em) = self.event_manager.get() {
             if let Some(ip) = self.get_speaker_ip(speaker_id) {
                 if let Err(e) = em.release_service_subscription(ip, P::SERVICE) {
-                    tracing::warn!(
-                        "Failed to unsubscribe from {:?} for {}: {}",
-                        P::SERVICE,
-                        speaker_id.as_str(),
-                        e
+                    // Only fails once the event manager's worker is gone, at
+                    // which point nothing is renewed anyway.
+                    tracing::debug!(
+                        speaker = %speaker_id.as_str(),
+                        service = ?P::SERVICE,
+                        error = %e,
+                        "failed to release subscription"
                     );
                 }
             }
@@ -1188,7 +1194,7 @@ impl StateManager {
         // `to_change`, so it warns rather than returning quietly.
         let Some(change) = value.to_change() else {
             tracing::warn!(
-                "Not emitting a change event for {}: no PropertyChange variant \
+                "not emitting a change event for {}: no PropertyChange variant \
                  (SonosProperty::to_change returned None)",
                 P::KEY
             );
@@ -1294,9 +1300,9 @@ impl StateManager {
     /// Spawns the event worker thread and registers all known devices.
     /// Can only be called once — subsequent calls are no-ops.
     pub fn set_event_manager(&self, em: Arc<SonosEventManager>) -> Result<()> {
-        tracing::debug!("StateManager::set_event_manager called");
+        tracing::debug!("wiring event manager into StateManager");
         if self.event_manager.set(Arc::clone(&em)).is_err() {
-            tracing::debug!("Event manager already set — no-op");
+            tracing::debug!("event manager already set, ignoring");
             return Ok(()); // Already set — no-op
         }
 
@@ -1323,8 +1329,8 @@ impl StateManager {
 
         if let Err(e) = em.add_devices(devices_for_em) {
             tracing::warn!(
-                "Failed to add devices to event manager during lazy init: {}",
-                e
+                error = %e,
+                "failed to add devices to the event manager during lazy init"
             );
         }
 
@@ -1337,7 +1343,7 @@ impl StateManager {
             Arc::clone(&self.ip_to_speaker),
             Arc::clone(&self.position_refresh),
         );
-        info!("StateManager event worker started (lazy init)");
+        info!("state event worker started (lazy init)");
 
         if let Ok(mut w) = self._worker.lock() {
             *w = Some(worker);
@@ -1472,7 +1478,7 @@ impl StateManagerBuilder {
                 Arc::clone(&ip_to_speaker),
                 Arc::clone(&position_refresh),
             );
-            info!("StateManager event worker started");
+            info!("state event worker started");
             worker = Some(worker_handle);
         }
 
@@ -1489,7 +1495,7 @@ impl StateManagerBuilder {
             event_init: OnceLock::new(),
         };
 
-        info!("StateManager created (sync-first mode)");
+        tracing::debug!("StateManager created");
         Ok(manager)
     }
 }

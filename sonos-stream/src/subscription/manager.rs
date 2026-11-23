@@ -245,14 +245,20 @@ impl SubscriptionManager {
                         tracing::debug!(
                             speaker_ip = %wrapper.speaker_service_pair.speaker_ip,
                             service = ?wrapper.speaker_service_pair.service,
+                            subscription_id = %wrapper.subscription_id(),
                             "renewed subscription"
                         );
                     }
                     Err(e) => {
-                        tracing::warn!(
+                        // Retried on the next check. If it never recovers the
+                        // event detector notices the silence and falls back to
+                        // polling, so this is not the place to warn.
+                        tracing::debug!(
                             speaker_ip = %wrapper.speaker_service_pair.speaker_ip,
                             service = ?wrapper.speaker_service_pair.service,
-                            "failed to renew subscription: {e}"
+                            subscription_id = %wrapper.subscription_id(),
+                            error = %e,
+                            "failed to renew subscription, will retry"
                         );
                         // Note: We continue processing other subscriptions even if one fails
                     }
@@ -309,7 +315,14 @@ impl SubscriptionManager {
                     tracing::debug!(%registration_id, "unsubscribed");
                 }
                 Err(e) => {
-                    tracing::warn!(%registration_id, "failed to unsubscribe: {e}");
+                    // Normal at shutdown: the speaker may be gone or unreachable,
+                    // and its subscription expires on its own.
+                    tracing::debug!(
+                        %registration_id,
+                        subscription_id = %wrapper.subscription_id(),
+                        error = %e,
+                        "failed to unsubscribe at shutdown"
+                    );
                 }
             }
         }

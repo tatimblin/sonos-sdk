@@ -124,7 +124,7 @@ impl TeardownTimer {
             // accumulating never-fired teardowns at 540 releases/sec is the one
             // outcome nobody can diagnose from the outside.
             tracing::error!(
-                "Failed to spawn teardown timer thread ({}); grace periods will be \
+                "failed to spawn teardown timer thread ({}); grace periods will be \
                  resolved inline instead",
                 e
             );
@@ -154,7 +154,7 @@ impl TeardownTimer {
     ) -> Result<(), Box<PendingTeardown>> {
         let Some(due) = Instant::now().checked_add(teardown.delay) else {
             tracing::error!(
-                "Grace period of {:?} for {}:{:?} is not a representable deadline; \
+                "grace period of {:?} for {}:{:?} is not a representable deadline; \
                  handing the teardown back to be resolved without one",
                 teardown.delay,
                 teardown.ip,
@@ -287,7 +287,7 @@ fn timer_thread(shared: &Arc<Shared>, command_tx: &tokio_mpsc::WeakUnboundedSend
             return;
         }
 
-        tracing::error!("Teardown timer thread panicked; resuming the timer loop");
+        tracing::error!("teardown timer thread panicked; resuming the timer loop");
 
         #[cfg(test)]
         shared
@@ -307,7 +307,7 @@ fn run(shared: &Arc<Shared>, command_tx: &tokio_mpsc::WeakUnboundedSender<Comman
 
             loop {
                 if queue.stopped {
-                    tracing::debug!("Teardown timer stopped");
+                    tracing::debug!("teardown timer stopped");
                     return;
                 }
 
@@ -343,7 +343,7 @@ fn run(shared: &Arc<Shared>, command_tx: &tokio_mpsc::WeakUnboundedSender<Comman
                     teardown.fire(&command_tx);
                 }
                 None => tracing::debug!(
-                    "Grace period for {}:{:?} outlived the manager, skipping teardown",
+                    "grace period for {}:{:?} outlived the manager, skipping teardown",
                     teardown.ip,
                     teardown.service
                 ),
