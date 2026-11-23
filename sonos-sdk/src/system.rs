@@ -17,6 +17,16 @@ use sonos_state::{EventInitFn, GroupId, SpeakerId, StateManager, Topology};
 
 use crate::{cache, Group, SdkError, Speaker};
 
+/// How `build_speakers` reports two devices that share a name.
+#[derive(Clone, Copy)]
+enum Collisions {
+    /// Two visible speakers share a name: a real, if unusual, conflict.
+    Warn,
+    /// Satellites aren't known yet, so a home theater's own devices collide;
+    /// a later pass excludes them.
+    Quiet,
+}
+
 /// Compute the display name for a device.
 ///
 /// Prefers `room_name` (user-assigned in the Sonos app, e.g., "Kitchen").
@@ -437,8 +447,16 @@ impl SonosSystem {
         // every device is a candidate. `from_devices_inner` rebuilds this map
         // once `ensure_topology` has run; the offline constructors have no
         // topology to consult and keep this provisional map as final.
-        let speakers =
-            Self::build_speakers(&devices, &HashSet::new(), &state_manager, &api_client)?;
+        //
+        // A home theater's satellites share its room name, so this pass sees
+        // name collisions that the rebuild resolves; it reports them quietly.
+        let speakers = Self::build_speakers(
+            &devices,
+            &HashSet::new(),
+            &state_manager,
+            &api_client,
+            Collisions::Quiet,
+        )?;
 
         // 4. Assemble struct from the SAME Arcs
         Ok(Self {
@@ -488,8 +506,14 @@ impl SonosSystem {
             .expect("add_devices should not fail with valid test data");
 
         let api_client = SonosClient::new();
-        let speakers = Self::build_speakers(&devices, &HashSet::new(), &state_manager, &api_client)
-            .expect("build_speakers should not fail with valid test data");
+        let speakers = Self::build_speakers(
+            &devices,
+            &HashSet::new(),
+            &state_manager,
+            &api_client,
+            Collisions::Warn,
+        )
+        .expect("build_speakers should not fail with valid test data");
 
         Self {
             state_manager,
@@ -548,25 +572,27 @@ impl SonosSystem {
     /// already been overwritten. Rebuilding with satellites skipped up front
     /// means the coordinator is the only candidate for the key.
     ///
-    /// No-op when no satellites are known, which keeps the offline constructors
-    /// (no topology fetch, empty satellite set) on their existing behavior.
+    /// Runs even when no satellites are known (the offline constructors, or a
+    /// household without a home theater): the map comes out the same, and this
+    /// is the pass that reports a name collision between two visible speakers,
+    /// which the provisional pass keeps quiet because satellites cause them.
     fn rebuild_speakers_excluding_satellites(&self, devices: &[Device]) -> Result<(), SdkError> {
         let satellite_ids: HashSet<SpeakerId> =
             self.state_manager.get_satellite_ids().into_iter().collect();
-        if satellite_ids.is_empty() {
-            return Ok(());
-        }
 
         let rebuilt = Self::build_speakers(
             devices,
             &satellite_ids,
             &self.state_manager,
             &self.api_client,
+            Collisions::Warn,
         )?;
         if let Ok(mut speakers) = self.speakers.write() {
             *speakers = rebuilt;
         }
-        tracing::debug!("Excluded {} satellite speakers", satellite_ids.len());
+        if !satellite_ids.is_empty() {
+            tracing::debug!("Excluded {} satellite speakers", satellite_ids.len());
+        }
         Ok(())
     }
 
@@ -598,6 +624,7 @@ impl SonosSystem {
         satellite_ids: &HashSet<SpeakerId>,
         state_manager: &Arc<StateManager>,
         api_client: &SonosClient,
+        collisions: Collisions,
     ) -> Result<HashMap<String, Speaker>, SdkError> {
         let mut speakers = HashMap::new();
         for device in devices {
@@ -621,11 +648,19 @@ impl SonosSystem {
             let base_name = display_name(device);
             let key = if speakers.contains_key(&base_name) {
                 let disambiguated = format!("{base_name} ({})", device.id);
-                tracing::warn!(
-                    "two visible speakers report the name \"{}\"; registering the second as \"{}\"",
-                    base_name,
-                    disambiguated
-                );
+                match collisions {
+                    Collisions::Warn => tracing::warn!(
+                        "two visible speakers report the name \"{}\"; registering the second as \"{}\"",
+                        base_name,
+                        disambiguated
+                    ),
+                    Collisions::Quiet => tracing::debug!(
+                        "\"{}\" reported by more than one device before satellites are known; \
+                         provisionally registering \"{}\"",
+                        base_name,
+                        disambiguated
+                    ),
+                }
                 disambiguated
             } else {
                 base_name
@@ -721,6 +756,7 @@ impl SonosSystem {
             &satellite_ids,
             &self.state_manager,
             &self.api_client,
+            Collisions::Warn,
         ) {
             Ok(s) => s,
             Err(e) => {
@@ -1721,6 +1757,68 @@ mod tests {
             )],
         )
         .unwrap()
+    }
+
+    /// Warnings logged while `build` runs on this thread.
+    fn warnings_during(build: impl FnOnce()) -> Vec<String> {
+        use std::io::Write;
+        use std::sync::Mutex;
+
+        #[derive(Clone, Default)]
+        struct Buffer(Arc<Mutex<Vec<u8>>>);
+        impl Write for Buffer {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let buffer = Buffer::default();
+        let writer = buffer.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, build);
+        let text = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
+        text.lines().map(str::to_string).collect()
+    }
+
+    /// A home theater's satellites share its room name, so the provisional
+    /// pass collides on every start; that must not reach the user as a
+    /// warning when the rebuild resolves it.
+    #[test]
+    fn test_home_theater_name_collisions_do_not_warn() {
+        let warnings = warnings_during(|| {
+            basement_system(basement_home_theater());
+        });
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    /// Two visible speakers with one name are still reported, once.
+    #[test]
+    fn test_visible_name_collision_warns_once() {
+        let kitchen = |id: &str, ip: &str| Device {
+            id: id.to_string(),
+            name: "Kitchen".to_string(),
+            room_name: "Kitchen".to_string(),
+            ip_address: ip.to_string(),
+            port: 1400,
+            model_name: "Sonos One".to_string(),
+        };
+        let warnings = warnings_during(|| {
+            SonosSystem::from_devices_offline(vec![
+                kitchen("RINCON_K1", "203.0.113.30"),
+                kitchen("RINCON_K2", "203.0.113.31"),
+            ])
+            .unwrap();
+        });
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("two visible speakers"), "{warnings:?}");
     }
 
     #[test]
