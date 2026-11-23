@@ -585,6 +585,13 @@ fn await_event(
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while std::time::Instant::now() < deadline {
         if let Some(event) = iter.recv_timeout(Duration::from_millis(200)) {
+            println!(
+                "    event: {} {} {:?} {:?}",
+                event.speaker_id,
+                event.property_key(),
+                event.source,
+                event.change
+            );
             if &event.speaker_id == speaker
                 && event.property_key() == key
                 && event.source == ChangeSource::Event
@@ -601,6 +608,12 @@ fn await_event(
 #[ignore] // Requires real hardware - run manually with --ignored
 fn test_home_theater_settings() -> Result<(), Box<dyn std::error::Error>> {
     use sonos_sdk::{MusicSurroundLevel, NightMode};
+
+    // RUST_LOG=sonos_api=trace prints each raw RenderingControl NOTIFY.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
 
     let system = require_real_speakers()?;
     let bar = find_home_theater(&system)?;
@@ -624,6 +637,7 @@ fn test_home_theater_settings() -> Result<(), Box<dyn std::error::Error>> {
 
     let night = bar.night_mode.fetch()?;
     let flipped = NightMode(!night.0);
+    println!("  setting night mode to {flipped:?}");
     bar.night_mode.set(flipped)?;
     let night_evented = await_event(
         &iter,
@@ -639,6 +653,7 @@ fn test_home_theater_settings() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         level.0 - 1
     });
+    println!("  setting music surround level to {nudged:?}");
     bar.music_surround_level.set(nudged)?;
     let level_evented = await_event(
         &iter,
@@ -656,10 +671,11 @@ fn test_home_theater_settings() -> Result<(), Box<dyn std::error::Error>> {
         level,
         "music surround level not restored"
     );
-    assert!(night_evented, "night mode change never arrived as an event");
     assert!(
-        level_evented,
-        "music surround level change never arrived as an event"
+        night_evented && level_evented,
+        "changes that never arrived as an event: night mode {}, music surround level {}",
+        if night_evented { "ok" } else { "MISSING" },
+        if level_evented { "ok" } else { "MISSING" },
     );
     Ok(())
 }

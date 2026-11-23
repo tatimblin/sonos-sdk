@@ -244,6 +244,9 @@ impl RenderingControlEvent {
 
     /// Parse from UPnP event XML using serde
     pub fn from_xml(xml: &str) -> Result<Self> {
+        // The raw body, for checking which state variables a device sends
+        // (RUST_LOG=sonos_api=trace).
+        tracing::trace!(%xml, "RenderingControl NOTIFY");
         quick_xml::de::from_str(xml)
             .map_err(|e| ApiError::ParseError(format!("Failed to parse RenderingControl XML: {e}")))
     }
