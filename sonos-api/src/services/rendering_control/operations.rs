@@ -10,8 +10,10 @@
 //! - `get_bass` / `set_bass` - Get/set bass level (-10 to +10)
 //! - `get_treble` / `set_treble` - Get/set treble level (-10 to +10)
 //! - `get_loudness` / `set_loudness` - Get/set loudness compensation
+//! - `get_eq` / `set_eq` - Get/set a home theater setting ([`EqType`]): sub and
+//!   surround levels, night mode, speech enhancement, audio delay
 
-use crate::operation::{parse_sonos_bool, validate_channel};
+use crate::operation::{parse_sonos_bool, response_text, validate_channel};
 use crate::{define_operation_with_response, define_upnp_operation, Validate};
 use paste::paste;
 
@@ -395,6 +397,183 @@ impl Validate for SetLoudnessOperationRequest {
 }
 
 pub use set_loudness_operation as set_loudness;
+
+// =============================================================================
+// GET / SET EQ (home theater settings)
+// =============================================================================
+
+/// A home theater setting read with `GetEQ` and written with `SetEQ`.
+///
+/// Sonos doesn't document these; the names come from its controller and are
+/// confirmed against a Playbar (firmware 17.2). A soundbar answers every type,
+/// including the sub ones when no sub is bonded, so whether a setting applies
+/// has to come from the topology.
+#[derive(serde::Serialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum EqType {
+    /// Sub on (1) or off (0).
+    SubEnable,
+    /// Sub level, -15 to +15.
+    SubGain,
+    /// Surrounds on (1) or off (0).
+    SurroundEnable,
+    /// Surround level for TV, -15 to +15.
+    SurroundLevel,
+    /// Surround level for music, -15 to +15.
+    MusicSurroundLevel,
+    /// Surrounds for music: ambient (0) or full (1).
+    SurroundMode,
+    /// Night mode on (1) or off (0).
+    NightMode,
+    /// Speech enhancement on (1) or off (0).
+    DialogLevel,
+    /// Audio delay (lip sync), 0 to 5.
+    AudioDelay,
+}
+
+impl EqType {
+    /// The `EQType` value sent to the speaker.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SubEnable => "SubEnable",
+            Self::SubGain => "SubGain",
+            Self::SurroundEnable => "SurroundEnable",
+            Self::SurroundLevel => "SurroundLevel",
+            Self::MusicSurroundLevel => "MusicSurroundLevel",
+            Self::SurroundMode => "SurroundMode",
+            Self::NightMode => "NightMode",
+            Self::DialogLevel => "DialogLevel",
+            Self::AudioDelay => "AudioDelay",
+        }
+    }
+
+    /// The values `SetEQ` accepts for this type.
+    pub fn range(self) -> std::ops::RangeInclusive<i32> {
+        match self {
+            Self::SubGain | Self::SurroundLevel | Self::MusicSurroundLevel => -15..=15,
+            Self::AudioDelay => 0..=5,
+            Self::SubEnable
+            | Self::SurroundEnable
+            | Self::SurroundMode
+            | Self::NightMode
+            | Self::DialogLevel => 0..=1,
+        }
+    }
+}
+
+impl std::fmt::Display for EqType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+pub struct GetEQOperationRequest {
+    pub eq_type: EqType,
+    pub instance_id: u32,
+}
+
+#[derive(serde::Deserialize, Debug, Clone, PartialEq)]
+pub struct GetEQResponse {
+    pub current_value: i32,
+}
+
+pub struct GetEQOperation;
+
+impl crate::operation::UPnPOperation for GetEQOperation {
+    type Request = GetEQOperationRequest;
+    type Response = GetEQResponse;
+
+    const SERVICE: crate::service::Service = crate::service::Service::RenderingControl;
+    const ACTION: &'static str = "GetEQ";
+
+    fn build_payload(request: &Self::Request) -> Result<String, crate::operation::ValidationError> {
+        Ok(format!(
+            "<InstanceID>{}</InstanceID><EQType>{}</EQType>",
+            request.instance_id, request.eq_type
+        ))
+    }
+
+    fn parse_response(xml: &str) -> Result<Self::Response, crate::error::ApiError> {
+        let text = response_text(xml, "CurrentValue").ok_or_else(|| {
+            crate::error::ApiError::ParseError("GetEQ response has no CurrentValue".to_string())
+        })?;
+        let current_value = text.trim().parse().map_err(|_| {
+            crate::error::ApiError::ParseError(format!(
+                "GetEQ CurrentValue {text:?} is not a number"
+            ))
+        })?;
+        Ok(GetEQResponse { current_value })
+    }
+}
+
+pub fn get_eq_operation(eq_type: EqType) -> crate::operation::OperationBuilder<GetEQOperation> {
+    crate::operation::OperationBuilder::new(GetEQOperationRequest {
+        eq_type,
+        instance_id: 0,
+    })
+}
+
+impl Validate for GetEQOperationRequest {}
+
+pub use get_eq_operation as get_eq;
+
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+pub struct SetEQOperationRequest {
+    pub eq_type: EqType,
+    pub desired_value: i32,
+    pub instance_id: u32,
+}
+
+pub struct SetEQOperation;
+
+impl crate::operation::UPnPOperation for SetEQOperation {
+    type Request = SetEQOperationRequest;
+    type Response = ();
+
+    const SERVICE: crate::service::Service = crate::service::Service::RenderingControl;
+    const ACTION: &'static str = "SetEQ";
+
+    fn build_payload(request: &Self::Request) -> Result<String, crate::operation::ValidationError> {
+        request.validate(crate::operation::ValidationLevel::Basic)?;
+        Ok(format!(
+            "<InstanceID>{}</InstanceID><EQType>{}</EQType><DesiredValue>{}</DesiredValue>",
+            request.instance_id, request.eq_type, request.desired_value
+        ))
+    }
+
+    fn parse_response(_xml: &str) -> Result<Self::Response, crate::error::ApiError> {
+        Ok(())
+    }
+}
+
+pub fn set_eq_operation(
+    eq_type: EqType,
+    desired_value: i32,
+) -> crate::operation::OperationBuilder<SetEQOperation> {
+    crate::operation::OperationBuilder::new(SetEQOperationRequest {
+        eq_type,
+        desired_value,
+        instance_id: 0,
+    })
+}
+
+impl Validate for SetEQOperationRequest {
+    fn validate_basic(&self) -> Result<(), crate::operation::ValidationError> {
+        let range = self.eq_type.range();
+        if !range.contains(&self.desired_value) {
+            return Err(crate::operation::ValidationError::range_error(
+                self.eq_type.as_str(),
+                range.start(),
+                range.end(),
+                self.desired_value,
+            ));
+        }
+        Ok(())
+    }
+}
+
+pub use set_eq_operation as set_eq;
 
 // Legacy convenience functions for backward compatibility
 pub use get_volume_operation as get_volume;
@@ -788,6 +967,61 @@ mod tests {
     // =========================================================================
     // Loudness operation tests
     // =========================================================================
+
+    #[test]
+    fn test_get_eq_payload() {
+        let op = get_eq_operation(EqType::MusicSurroundLevel)
+            .build()
+            .unwrap();
+        assert_eq!(
+            GetEQOperation::build_payload(op.request()).unwrap(),
+            "<InstanceID>0</InstanceID><EQType>MusicSurroundLevel</EQType>"
+        );
+    }
+
+    #[test]
+    fn test_get_eq_parses_current_value() {
+        // As the Playbar answers GetEQ for SurroundLevel.
+        let xml = r#"<u:GetEQResponse xmlns:u="urn:schemas-upnp-org:service:RenderingControl:1"><CurrentValue>8</CurrentValue></u:GetEQResponse>"#;
+        assert_eq!(
+            GetEQOperation::parse_response(xml).unwrap().current_value,
+            8
+        );
+        let negative = r#"<GetEQResponse><CurrentValue>-3</CurrentValue></GetEQResponse>"#;
+        assert_eq!(
+            GetEQOperation::parse_response(negative)
+                .unwrap()
+                .current_value,
+            -3
+        );
+    }
+
+    #[test]
+    fn test_get_eq_rejects_missing_or_garbled_value() {
+        assert!(GetEQOperation::parse_response("<GetEQResponse/>").is_err());
+        let garbled = r#"<GetEQResponse><CurrentValue>loud</CurrentValue></GetEQResponse>"#;
+        assert!(GetEQOperation::parse_response(garbled).is_err());
+    }
+
+    #[test]
+    fn test_set_eq_payload() {
+        let op = set_eq_operation(EqType::SubGain, -4).build().unwrap();
+        assert_eq!(
+            SetEQOperation::build_payload(op.request()).unwrap(),
+            "<InstanceID>0</InstanceID><EQType>SubGain</EQType><DesiredValue>-4</DesiredValue>"
+        );
+    }
+
+    #[test]
+    fn test_set_eq_validates_each_types_range() {
+        assert!(set_eq_operation(EqType::SurroundLevel, 15).build().is_ok());
+        assert!(set_eq_operation(EqType::SurroundLevel, 16).build().is_err());
+        assert!(set_eq_operation(EqType::SubGain, -16).build().is_err());
+        assert!(set_eq_operation(EqType::NightMode, 1).build().is_ok());
+        assert!(set_eq_operation(EqType::NightMode, 2).build().is_err());
+        assert!(set_eq_operation(EqType::AudioDelay, 5).build().is_ok());
+        assert!(set_eq_operation(EqType::AudioDelay, -1).build().is_err());
+    }
 
     #[test]
     fn test_get_loudness_builder() {

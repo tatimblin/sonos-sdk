@@ -65,6 +65,15 @@
 //! - Satellites are excluded from `speakers()` but listed by `speaker.satellites()`
 //! - Every satellite has a known role, a model name and an IP
 //! - Requires a home theater (soundbar with surrounds or a sub)
+
+//! ### test_home_theater_settings
+//! **Purpose:** Validates home theater settings read, write and arrive as events
+//! - Fetches every setting (sub, surround, night mode, speech, audio delay)
+//! - Toggles night mode and nudges the music surround level, then waits for
+//!   each change to arrive as a UPnP event, not just the local write
+//! - Restores both settings afterwards
+//! - Needs a soundbar: set `SONOS_HOME_THEATER` to its room name, or the first
+//!   Playbar, Playbase, Beam, Arc or Ray found is used
 //!
 //! ## Error Handling
 //!
@@ -543,5 +552,114 @@ fn test_home_theater_satellites() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
     }
+    Ok(())
+}
+
+/// The soundbar to test: `SONOS_HOME_THEATER`, else the first soundbar model.
+fn find_home_theater(system: &SonosSystem) -> Result<Speaker, Box<dyn std::error::Error>> {
+    if let Ok(name) = std::env::var("SONOS_HOME_THEATER") {
+        return system
+            .speaker(&name)
+            .ok_or_else(|| format!("SONOS_HOME_THEATER={name} not found").into());
+    }
+    system
+        .speakers()
+        .into_iter()
+        .find(|s| {
+            let model = s.model_name.to_lowercase();
+            ["playbar", "playbase", "beam", "arc", "ray"]
+                .iter()
+                .any(|m| model.contains(m))
+        })
+        .ok_or_else(|| "No soundbar found; set SONOS_HOME_THEATER to its room name".into())
+}
+
+/// Wait for `key` on `speaker` to arrive from the device as an event and
+/// satisfy `matches`.
+fn await_event(
+    iter: &sonos_sdk::ChangeIterator,
+    speaker: &SpeakerId,
+    key: &str,
+    matches: impl Fn(&PropertyChange) -> bool,
+) -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        if let Some(event) = iter.recv_timeout(Duration::from_millis(200)) {
+            if &event.speaker_id == speaker
+                && event.property_key() == key
+                && event.source == ChangeSource::Event
+                && matches(&event.change)
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[test]
+#[ignore] // Requires real hardware - run manually with --ignored
+fn test_home_theater_settings() -> Result<(), Box<dyn std::error::Error>> {
+    use sonos_sdk::{MusicSurroundLevel, NightMode};
+
+    let system = require_real_speakers()?;
+    let bar = find_home_theater(&system)?;
+    println!("{} • {}", bar.name, bar.model_name);
+
+    println!("  sub on:          {:?}", bar.sub_enabled.fetch()?);
+    println!("  sub level:       {:?}", bar.sub_level.fetch()?);
+    println!("  surrounds on:    {:?}", bar.surround_enabled.fetch()?);
+    println!("  TV surround:     {:?}", bar.surround_level.fetch()?);
+    println!("  music surround:  {:?}", bar.music_surround_level.fetch()?);
+    println!("  surround mode:   {:?}", bar.surround_mode.fetch()?);
+    println!("  night mode:      {:?}", bar.night_mode.fetch()?);
+    println!("  speech:          {:?}", bar.speech_enhancement.fetch()?);
+    println!("  audio delay:     {:?}", bar.audio_delay.fetch()?);
+
+    let iter = system.iter();
+    let _night = bar.night_mode.watch()?;
+    let _music = bar.music_surround_level.watch()?;
+    // Let the subscription's initial event land before changing anything.
+    thread::sleep(Duration::from_secs(2));
+
+    let night = bar.night_mode.fetch()?;
+    let flipped = NightMode(!night.0);
+    bar.night_mode.set(flipped)?;
+    let night_evented = await_event(
+        &iter,
+        &bar.id,
+        "night_mode",
+        |c| matches!(c, PropertyChange::NightMode(v) if *v == flipped),
+    );
+    bar.night_mode.set(night)?;
+
+    let level = bar.music_surround_level.fetch()?;
+    let nudged = MusicSurroundLevel::new(if level.0 < MusicSurroundLevel::MAX {
+        level.0 + 1
+    } else {
+        level.0 - 1
+    });
+    bar.music_surround_level.set(nudged)?;
+    let level_evented = await_event(
+        &iter,
+        &bar.id,
+        "music_surround_level",
+        |c| matches!(c, PropertyChange::MusicSurroundLevel(v) if *v == nudged),
+    );
+    bar.music_surround_level.set(level)?;
+
+    // Both settings are restored by now; check after so a failure can't
+    // leave the soundbar changed.
+    assert_eq!(bar.night_mode.fetch()?, night, "night mode not restored");
+    assert_eq!(
+        bar.music_surround_level.fetch()?,
+        level,
+        "music surround level not restored"
+    );
+    assert!(night_evented, "night mode change never arrived as an event");
+    assert!(
+        level_evented,
+        "music surround level change never arrived as an event"
+    );
     Ok(())
 }

@@ -52,6 +52,9 @@
 //! - `playback_state` - Current playback state (Playing/Paused/Stopped/Transitioning)
 //! - `mute` - Mute state
 //! - `bass`, `treble`, `loudness` - EQ settings
+//! - `sub_enabled`, `sub_level`, `surround_enabled`, `surround_level`,
+//!   `music_surround_level`, `surround_mode`, `night_mode`,
+//!   `speech_enhancement`, `audio_delay` - Home theater settings
 //! - `position` - Current track position
 //! - `current_track` - Track metadata
 //! - `play_mode` - Repeat / shuffle mode
@@ -108,9 +111,11 @@ pub use sonos_discovery;
 
 // Re-export commonly used types from sonos-state
 pub use sonos_state::{
-    Bass, ChangeEvent, ChangeIterator, ChangeSource, CrossfadeMode, CurrentTrack, GroupId,
-    GroupMute, GroupVolume, GroupVolumeChangeable, Loudness, Mute, PlaybackSource, PlaybackState,
-    PropertyChange, SatelliteRole, SleepTimer, SpeakerId, Treble, Volume, WriteOutcome, WriteStamp,
+    AudioDelay, Bass, ChangeEvent, ChangeIterator, ChangeSource, CrossfadeMode, CurrentTrack,
+    GroupId, GroupMute, GroupVolume, GroupVolumeChangeable, Loudness, MusicSurroundLevel, Mute,
+    NightMode, PlaybackSource, PlaybackState, PropertyChange, SatelliteRole, SleepTimer, SpeakerId,
+    SpeechEnhancement, SubEnabled, SubLevel, SurroundEnabled, SurroundLevel, SurroundMode, Treble,
+    Volume, WriteOutcome, WriteStamp,
 };
 
 /// The property trait, re-exported so downstream crates can write code that is

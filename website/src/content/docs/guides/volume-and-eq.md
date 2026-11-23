@@ -65,6 +65,38 @@ println!(
 );
 ```
 
+## Home theater settings
+
+A soundbar, or a speaker with a bonded sub, has settings of its own. Each one is
+a property on the main speaker, read with `fetch()`, written with `set()` and
+watchable like the EQ settings above:
+
+| Property | Value | Range |
+|---|---|---|
+| `sub_enabled` | `SubEnabled(bool)` | on / off |
+| `sub_level` | `SubLevel(i8)` | -15 to +15 |
+| `surround_enabled` | `SurroundEnabled(bool)` | on / off |
+| `surround_level` | `SurroundLevel(i8)` | -15 to +15, while playing TV |
+| `music_surround_level` | `MusicSurroundLevel(i8)` | -15 to +15, while playing music |
+| `surround_mode` | `SurroundMode` | `Ambient` or `Full`, for music |
+| `night_mode` | `NightMode(bool)` | on / off |
+| `speech_enhancement` | `SpeechEnhancement(bool)` | on / off |
+| `audio_delay` | `AudioDelay(u8)` | 0 to 5 (lip sync) |
+
+```rust
+use sonos_sdk::{MusicSurroundLevel, NightMode};
+
+let basement = sonos.speaker("Basement").unwrap();
+basement.night_mode.set(NightMode(true))?;
+basement.music_surround_level.set(MusicSurroundLevel::new(3))?;
+println!("TV surround level: {:?}", basement.surround_level.fetch()?);
+```
+
+A soundbar answers for every setting, sub settings included, even when no sub
+is bonded. Check `speaker.satellites()` before offering a sub or surround
+setting. Out-of-range values are rejected with `SdkError::ValidationFailed`
+before anything is sent.
+
 ## Group volume
 
 Group volume adjusts all members proportionally. Controlled via the group

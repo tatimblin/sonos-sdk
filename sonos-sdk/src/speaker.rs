@@ -78,9 +78,11 @@ impl SeekTarget {
 pub use sonos_state::PlayMode;
 
 use crate::property::{
-    BassHandle, CrossfadeModeHandle, CurrentTrackHandle, GroupMembershipHandle, LoudnessHandle,
-    MuteHandle, PlayModeHandle, PlaybackStateHandle, PositionHandle, PropertyHandle,
-    SleepTimerHandle, SpeakerContext, TrebleHandle, VolumeHandle,
+    AudioDelayHandle, BassHandle, CrossfadeModeHandle, CurrentTrackHandle, GroupMembershipHandle,
+    LoudnessHandle, MusicSurroundLevelHandle, MuteHandle, NightModeHandle, PlayModeHandle,
+    PlaybackStateHandle, PositionHandle, PropertyHandle, SleepTimerHandle, SpeakerContext,
+    SpeechEnhancementHandle, SubEnabledHandle, SubLevelHandle, SurroundEnabledHandle,
+    SurroundLevelHandle, SurroundModeHandle, TrebleHandle, VolumeHandle,
 };
 
 /// Speaker handle with property access
@@ -143,6 +145,32 @@ pub struct Speaker {
     pub treble: TrebleHandle,
     /// Loudness compensation setting
     pub loudness: LoudnessHandle,
+
+    // ========================================================================
+    // Home theater settings (RenderingControl GetEQ/SetEQ)
+    // ========================================================================
+    //
+    // Settings on a soundbar or a speaker with a bonded sub. A soundbar reports
+    // all of them, sub settings included, even with no sub bonded: check
+    // `satellites()` before offering one.
+    /// Whether the bonded sub plays
+    pub sub_enabled: SubEnabledHandle,
+    /// Sub level (-15 to +15)
+    pub sub_level: SubLevelHandle,
+    /// Whether the bonded surrounds play
+    pub surround_enabled: SurroundEnabledHandle,
+    /// Surround level while playing TV (-15 to +15)
+    pub surround_level: SurroundLevelHandle,
+    /// Surround level while playing music (-15 to +15)
+    pub music_surround_level: MusicSurroundLevelHandle,
+    /// How the surrounds play music (ambient or full)
+    pub surround_mode: SurroundModeHandle,
+    /// Night mode (quieter loud passages, louder quiet ones)
+    pub night_mode: NightModeHandle,
+    /// Speech enhancement (clearer dialogue)
+    pub speech_enhancement: SpeechEnhancementHandle,
+    /// Audio delay for lip sync (0 to 5)
+    pub audio_delay: AudioDelayHandle,
 
     // ========================================================================
     // AVTransport properties
@@ -238,6 +266,16 @@ impl Speaker {
             bass: PropertyHandle::new(Arc::clone(&context)),
             treble: PropertyHandle::new(Arc::clone(&context)),
             loudness: PropertyHandle::new(Arc::clone(&context)),
+            // Home theater settings
+            sub_enabled: PropertyHandle::new(Arc::clone(&context)),
+            sub_level: PropertyHandle::new(Arc::clone(&context)),
+            surround_enabled: PropertyHandle::new(Arc::clone(&context)),
+            surround_level: PropertyHandle::new(Arc::clone(&context)),
+            music_surround_level: PropertyHandle::new(Arc::clone(&context)),
+            surround_mode: PropertyHandle::new(Arc::clone(&context)),
+            night_mode: PropertyHandle::new(Arc::clone(&context)),
+            speech_enhancement: PropertyHandle::new(Arc::clone(&context)),
+            audio_delay: PropertyHandle::new(Arc::clone(&context)),
             // AVTransport properties
             playback_state: PropertyHandle::new(Arc::clone(&context)),
             position: PropertyHandle::new(Arc::clone(&context)),

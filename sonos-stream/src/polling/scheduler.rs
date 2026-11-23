@@ -716,6 +716,7 @@ mod tests {
                 loudness: None,
                 balance: None,
                 other_channels: HashMap::new(),
+                home_theater: Default::default(),
             };
             serde_json::to_string(&state).map_err(|e| PollingError::StateParsing(e.to_string()))
         }

@@ -45,6 +45,29 @@ pub struct RenderingControlState {
 
     /// Additional channel configurations (can be extended)
     pub other_channels: HashMap<String, String>,
+
+    /// Home theater settings. Only events carry these; `poll()` leaves them
+    /// `None` rather than issue a `GetEQ` per setting on every poll.
+    #[serde(default)]
+    pub home_theater: HomeTheaterState,
+}
+
+/// Home theater settings from a RenderingControl event, as raw values.
+///
+/// See `EqType` for what each one means and its range. A field is `None` when
+/// the event didn't carry it, which is the usual case: Sonos sends only what
+/// changed, and only soundbars and speakers with a bonded sub send these.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct HomeTheaterState {
+    pub sub_enabled: Option<String>,
+    pub sub_gain: Option<String>,
+    pub surround_enabled: Option<String>,
+    pub surround_level: Option<String>,
+    pub music_surround_level: Option<String>,
+    pub surround_mode: Option<String>,
+    pub night_mode: Option<String>,
+    pub dialog_level: Option<String>,
+    pub audio_delay: Option<String>,
 }
 
 /// Poll a speaker for complete RenderingControl state.
@@ -88,5 +111,6 @@ pub fn poll(client: &SonosClient, ip: &str) -> crate::Result<RenderingControlSta
         rf_mute: None,
         balance: None,
         other_channels: HashMap::new(),
+        home_theater: HomeTheaterState::default(),
     })
 }

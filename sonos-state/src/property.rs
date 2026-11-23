@@ -234,6 +234,177 @@ impl Loudness {
 }
 
 // ============================================================================
+// Speaker-scoped home theater settings (from RenderingControl GetEQ/SetEQ)
+// ============================================================================
+//
+// Settings on a soundbar, or on a speaker with a bonded sub. A soundbar reports
+// every one of them, sub settings included, whether or not that hardware is
+// bonded: check `Speaker::satellites()` before showing one.
+
+/// An on/off home theater setting.
+macro_rules! home_theater_switch {
+    ($(#[$doc:meta])* $name:ident, $key:literal) => {
+        $(#[$doc])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+        pub struct $name(pub bool);
+
+        impl Property for $name {
+            const KEY: &'static str = $key;
+        }
+
+        impl SonosProperty for $name {
+            const SCOPE: Scope = Scope::Speaker;
+            const SERVICE: Service = Service::RenderingControl;
+
+            fn to_change(&self) -> Option<crate::decoder::PropertyChange> {
+                Some(crate::decoder::PropertyChange::$name(*self))
+            }
+        }
+
+        impl $name {
+            pub fn new(enabled: bool) -> Self {
+                Self(enabled)
+            }
+
+            pub fn is_enabled(&self) -> bool {
+                self.0
+            }
+        }
+    };
+}
+
+/// A home theater level, clamped to `$min..=$max`.
+macro_rules! home_theater_level {
+    ($(#[$doc:meta])* $name:ident, $ty:ty, $key:literal, $min:literal, $max:literal) => {
+        $(#[$doc])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+        pub struct $name(pub $ty);
+
+        impl Property for $name {
+            const KEY: &'static str = $key;
+        }
+
+        impl SonosProperty for $name {
+            const SCOPE: Scope = Scope::Speaker;
+            const SERVICE: Service = Service::RenderingControl;
+
+            fn to_change(&self) -> Option<crate::decoder::PropertyChange> {
+                Some(crate::decoder::PropertyChange::$name(*self))
+            }
+        }
+
+        impl $name {
+            /// Lowest accepted value.
+            pub const MIN: $ty = $min;
+            /// Highest accepted value.
+            pub const MAX: $ty = $max;
+
+            pub fn new(value: $ty) -> Self {
+                Self(value.clamp(Self::MIN, Self::MAX))
+            }
+
+            pub fn value(&self) -> $ty {
+                self.0
+            }
+        }
+    };
+}
+
+home_theater_switch!(
+    /// Whether the bonded sub plays.
+    SubEnabled,
+    "sub_enabled"
+);
+home_theater_level!(
+    /// Sub level (-15 to +15).
+    SubLevel,
+    i8,
+    "sub_level",
+    -15,
+    15
+);
+home_theater_switch!(
+    /// Whether the bonded surrounds play.
+    SurroundEnabled,
+    "surround_enabled"
+);
+home_theater_level!(
+    /// Surround level while playing TV (-15 to +15).
+    SurroundLevel,
+    i8,
+    "surround_level",
+    -15,
+    15
+);
+home_theater_level!(
+    /// Surround level while playing music (-15 to +15).
+    MusicSurroundLevel,
+    i8,
+    "music_surround_level",
+    -15,
+    15
+);
+home_theater_switch!(
+    /// Night mode: quieter loud passages and louder quiet ones.
+    NightMode,
+    "night_mode"
+);
+home_theater_switch!(
+    /// Speech enhancement: clearer dialogue (`DialogLevel`).
+    SpeechEnhancement,
+    "speech_enhancement"
+);
+home_theater_level!(
+    /// Audio delay (lip sync), 0 to 5.
+    AudioDelay,
+    u8,
+    "audio_delay",
+    0,
+    5
+);
+
+/// How the surrounds play music.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SurroundMode {
+    /// Surrounds add ambience at a lower level (`0`).
+    Ambient,
+    /// Surrounds play at full volume (`1`).
+    Full,
+}
+
+impl Property for SurroundMode {
+    const KEY: &'static str = "surround_mode";
+}
+
+impl SonosProperty for SurroundMode {
+    const SCOPE: Scope = Scope::Speaker;
+    const SERVICE: Service = Service::RenderingControl;
+
+    fn to_change(&self) -> Option<crate::decoder::PropertyChange> {
+        Some(crate::decoder::PropertyChange::SurroundMode(*self))
+    }
+}
+
+impl SurroundMode {
+    /// Parse the device value: `0` is ambient, `1` full; anything else `None`.
+    pub fn from_value(value: i32) -> Option<Self> {
+        match value {
+            0 => Some(Self::Ambient),
+            1 => Some(Self::Full),
+            _ => None,
+        }
+    }
+
+    /// The device value.
+    pub fn value(self) -> i32 {
+        match self {
+            Self::Ambient => 0,
+            Self::Full => 1,
+        }
+    }
+}
+
+// ============================================================================
 // Group-scoped Properties (from GroupRenderingControl)
 // ============================================================================
 

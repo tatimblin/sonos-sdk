@@ -738,17 +738,19 @@ use sonos_api::services::{
         GetGroupVolumeResponse, SetGroupMuteOperation, SetGroupVolumeOperation,
     },
     rendering_control::{
-        self, GetBassOperation, GetBassResponse, GetLoudnessOperation, GetLoudnessResponse,
-        GetMuteOperation, GetMuteResponse, GetTrebleOperation, GetTrebleResponse,
-        GetVolumeOperation, GetVolumeResponse, SetBassOperation, SetLoudnessOperation,
-        SetMuteOperation, SetTrebleOperation, SetVolumeOperation,
+        self, EqType, GetBassOperation, GetBassResponse, GetEQOperation, GetEQResponse,
+        GetLoudnessOperation, GetLoudnessResponse, GetMuteOperation, GetMuteResponse,
+        GetTrebleOperation, GetTrebleResponse, GetVolumeOperation, GetVolumeResponse,
+        SetBassOperation, SetEQOperation, SetLoudnessOperation, SetMuteOperation,
+        SetTrebleOperation, SetVolumeOperation,
     },
     zone_group_topology::{self, GetZoneGroupStateOperation, GetZoneGroupStateResponse},
 };
 use sonos_state::{
-    Bass, CrossfadeMode, CurrentTrack, GroupId, GroupMembership, GroupMute, GroupVolume,
-    GroupVolumeChangeable, Loudness, Mute, PlayMode, PlaybackState, Position, SleepTimer, Treble,
-    Volume,
+    AudioDelay, Bass, CrossfadeMode, CurrentTrack, GroupId, GroupMembership, GroupMute,
+    GroupVolume, GroupVolumeChangeable, Loudness, MusicSurroundLevel, Mute, NightMode, PlayMode,
+    PlaybackState, Position, SleepTimer, SpeechEnhancement, SubEnabled, SubLevel, SurroundEnabled,
+    SurroundLevel, SurroundMode, Treble, Volume,
 };
 
 // ============================================================================
@@ -998,6 +1000,98 @@ impl Settable for Loudness {
 }
 
 // ============================================================================
+// Home theater settings (GetEQ / SetEQ)
+// ============================================================================
+
+/// `Fetchable` and `Settable` for a home theater setting stored as one
+/// `EQType`. `$from` maps the device value (`$v: i32`) to the property, `$to`
+/// maps the property (`$p: &Self`) back.
+macro_rules! eq_property {
+    ($ty:ty, $eq:expr, |$v:ident| $from:expr, |$p:ident| $to:expr) => {
+        impl Fetchable for $ty {
+            type Operation = GetEQOperation;
+
+            fn build_operation() -> Result<ComposableOperation<Self::Operation>, SdkError> {
+                rendering_control::get_eq($eq)
+                    .build()
+                    .map_err(|e| build_error("GetEQ", e))
+            }
+
+            fn from_response(response: GetEQResponse) -> Self {
+                let $v = response.current_value;
+                $from
+            }
+        }
+
+        impl Settable for $ty {
+            type Operation = SetEQOperation;
+
+            fn build_set_operation(
+                &self,
+            ) -> Result<ComposableOperation<Self::Operation>, SdkError> {
+                let $p = self;
+                Ok(rendering_control::set_eq($eq, $to).build()?)
+            }
+        }
+    };
+}
+
+eq_property!(SubEnabled, EqType::SubEnable, |v| SubEnabled(v != 0), |p| {
+    i32::from(p.0)
+});
+eq_property!(
+    SubLevel,
+    EqType::SubGain,
+    |v| SubLevel::new(clamp_i8(v)),
+    |p| i32::from(p.0)
+);
+eq_property!(
+    SurroundEnabled,
+    EqType::SurroundEnable,
+    |v| SurroundEnabled(v != 0),
+    |p| i32::from(p.0)
+);
+eq_property!(
+    SurroundLevel,
+    EqType::SurroundLevel,
+    |v| SurroundLevel::new(clamp_i8(v)),
+    |p| i32::from(p.0)
+);
+eq_property!(
+    MusicSurroundLevel,
+    EqType::MusicSurroundLevel,
+    |v| MusicSurroundLevel::new(clamp_i8(v)),
+    |p| i32::from(p.0)
+);
+// Only 0 and 1 are defined; treat any other non-zero value as full.
+eq_property!(
+    SurroundMode,
+    EqType::SurroundMode,
+    |v| SurroundMode::from_value(v).unwrap_or(SurroundMode::Full),
+    |p| p.value()
+);
+eq_property!(NightMode, EqType::NightMode, |v| NightMode(v != 0), |p| {
+    i32::from(p.0)
+});
+eq_property!(
+    SpeechEnhancement,
+    EqType::DialogLevel,
+    |v| SpeechEnhancement(v != 0),
+    |p| i32::from(p.0)
+);
+eq_property!(
+    AudioDelay,
+    EqType::AudioDelay,
+    |v| AudioDelay::new(v.clamp(0, i32::from(u8::MAX)) as u8),
+    |p| i32::from(p.0)
+);
+
+/// Narrow a device level to `i8`, saturating instead of wrapping.
+fn clamp_i8(v: i32) -> i8 {
+    v.clamp(i32::from(i8::MIN), i32::from(i8::MAX)) as i8
+}
+
+// ============================================================================
 // FetchableWithContext implementations
 // ============================================================================
 
@@ -1082,6 +1176,33 @@ pub type CrossfadeModeHandle = PropertyHandle<CrossfadeMode>;
 
 /// Handle for sleep timer state (fetch-only — not evented by the device)
 pub type SleepTimerHandle = PropertyHandle<SleepTimer>;
+
+/// Handle for whether the bonded sub plays
+pub type SubEnabledHandle = PropertyHandle<SubEnabled>;
+
+/// Handle for the sub level (-15 to +15)
+pub type SubLevelHandle = PropertyHandle<SubLevel>;
+
+/// Handle for whether the bonded surrounds play
+pub type SurroundEnabledHandle = PropertyHandle<SurroundEnabled>;
+
+/// Handle for the TV surround level (-15 to +15)
+pub type SurroundLevelHandle = PropertyHandle<SurroundLevel>;
+
+/// Handle for the music surround level (-15 to +15)
+pub type MusicSurroundLevelHandle = PropertyHandle<MusicSurroundLevel>;
+
+/// Handle for how the surrounds play music (ambient or full)
+pub type SurroundModeHandle = PropertyHandle<SurroundMode>;
+
+/// Handle for night mode
+pub type NightModeHandle = PropertyHandle<NightMode>;
+
+/// Handle for speech enhancement
+pub type SpeechEnhancementHandle = PropertyHandle<SpeechEnhancement>;
+
+/// Handle for audio delay (lip sync, 0 to 5)
+pub type AudioDelayHandle = PropertyHandle<AudioDelay>;
 
 // ============================================================================
 // Group Property Handles
@@ -2045,6 +2166,15 @@ mod tests {
         assert_settable::<Bass>();
         assert_settable::<Treble>();
         assert_settable::<Loudness>();
+        assert_settable::<SubEnabled>();
+        assert_settable::<SubLevel>();
+        assert_settable::<SurroundEnabled>();
+        assert_settable::<SurroundLevel>();
+        assert_settable::<MusicSurroundLevel>();
+        assert_settable::<SurroundMode>();
+        assert_settable::<NightMode>();
+        assert_settable::<SpeechEnhancement>();
+        assert_settable::<AudioDelay>();
 
         fn assert_group_settable<T: GroupSettable>() {}
         assert_group_settable::<GroupVolume>();
@@ -2101,6 +2231,64 @@ mod tests {
             .unwrap();
         assert!(mute.contains("<Channel>Master</Channel>"));
         assert!(mute.contains("<DesiredMute>1</DesiredMute>"));
+    }
+
+    /// Each home theater setting sends its own `EQType` with the value it was
+    /// given, and reads the device value back into the same setting.
+    #[test]
+    fn test_home_theater_settings_round_trip_through_eq() {
+        fn payload<T: Settable>(value: T) -> String {
+            value
+                .build_set_operation()
+                .unwrap()
+                .build_payload()
+                .unwrap()
+        }
+        fn eq(eq_type: &str, value: i32) -> String {
+            format!("<EQType>{eq_type}</EQType><DesiredValue>{value}</DesiredValue>")
+        }
+        fn read<T: Fetchable<Operation = GetEQOperation>>(value: i32) -> T {
+            T::from_response(GetEQResponse {
+                current_value: value,
+            })
+        }
+
+        assert!(payload(SubEnabled(false)).ends_with(&eq("SubEnable", 0)));
+        assert!(payload(SubLevel::new(-4)).ends_with(&eq("SubGain", -4)));
+        assert!(payload(SurroundEnabled(true)).ends_with(&eq("SurroundEnable", 1)));
+        assert!(payload(SurroundLevel::new(8)).ends_with(&eq("SurroundLevel", 8)));
+        assert!(payload(MusicSurroundLevel::new(-2)).ends_with(&eq("MusicSurroundLevel", -2)));
+        assert!(payload(SurroundMode::Ambient).ends_with(&eq("SurroundMode", 0)));
+        assert!(payload(NightMode(true)).ends_with(&eq("NightMode", 1)));
+        assert!(payload(SpeechEnhancement(true)).ends_with(&eq("DialogLevel", 1)));
+        assert!(payload(AudioDelay::new(3)).ends_with(&eq("AudioDelay", 3)));
+
+        // The values the Playbar reported in the live probe.
+        assert_eq!(read::<SubEnabled>(1), SubEnabled(true));
+        assert_eq!(read::<SurroundLevel>(8), SurroundLevel(8));
+        assert_eq!(read::<MusicSurroundLevel>(0), MusicSurroundLevel(0));
+        assert_eq!(read::<SurroundMode>(1), SurroundMode::Full);
+        assert_eq!(read::<SpeechEnhancement>(1), SpeechEnhancement(true));
+        // Out of range from the device: clamped, not wrapped.
+        assert_eq!(read::<SubLevel>(300), SubLevel(15));
+        assert_eq!(read::<AudioDelay>(-1), AudioDelay(0));
+    }
+
+    #[test]
+    fn test_home_theater_set_rejects_out_of_range_values() {
+        let context = create_test_context(create_test_state_manager());
+        let sub: SubLevelHandle = PropertyHandle::new(Arc::clone(&context));
+        let delay: AudioDelayHandle = PropertyHandle::new(context);
+
+        assert!(matches!(
+            sub.set(SubLevel(16)),
+            Err(SdkError::ValidationFailed(_))
+        ));
+        assert!(matches!(
+            delay.set(AudioDelay(6)),
+            Err(SdkError::ValidationFailed(_))
+        ));
+        assert_eq!(sub.get(), None);
     }
 
     #[test]
