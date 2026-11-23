@@ -930,7 +930,13 @@ impl StateManager {
 
     /// Store each main speaker's satellites from topology data, replacing any
     /// previously stored, and the satellite ID set derived from them.
-    pub fn set_home_theaters(&self, home_theaters: Vec<(SpeakerId, Vec<SatelliteMember>)>) {
+    ///
+    /// Each list is sorted into display order here, so `satellites()` keeps
+    /// that promise whatever order the caller supplied.
+    pub fn set_home_theaters(&self, mut home_theaters: Vec<(SpeakerId, Vec<SatelliteMember>)>) {
+        for (_, sats) in &mut home_theaters {
+            sats.sort_by(|a, b| a.role.cmp(&b.role));
+        }
         let mut store = self.store.write();
         store.satellite_ids = home_theaters
             .iter()
@@ -2557,7 +2563,8 @@ mod tests {
         let left = SatelliteMember::new(SpeakerId::new("RINCON_L"), SatelliteRole::LeftSurround);
         let sub = SatelliteMember::new(SpeakerId::new("RINCON_SUB"), SatelliteRole::Sub);
 
-        manager.set_home_theaters(vec![(main.clone(), vec![left.clone(), sub.clone()])]);
+        // Supplied out of order: stored in display order.
+        manager.set_home_theaters(vec![(main.clone(), vec![sub.clone(), left.clone()])]);
 
         assert_eq!(manager.satellites(&main), vec![left.clone(), sub.clone()]);
         assert!(manager.satellites(&left.id).is_empty());
